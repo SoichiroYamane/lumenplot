@@ -5,6 +5,36 @@ validation artifacts and disposable fixtures were kept outside the public tree.
 No GitHub setting, visibility, remote, commit, reset, stash, or history operation
 was run by the audit.
 
+## Applied repository settings readback
+
+The original settings manifest was a proposal at the time of the audit. After
+publication, the owner-authorized policy was applied and a read-only GitHub API
+readback at `2026-08-20T21:34:58Z` confirmed this live ruleset:
+
+| Field | Live value |
+| --- | --- |
+| Ruleset ID and name | `21096127`, `main-public-baseline` |
+| Target and enforcement | `refs/heads/main`, `active` |
+| Pull request requirement | required |
+| Strict required checks | `Rust gates (ubuntu-24.04)`; `Dependency policy`; |
+| | `Nix flake check` |
+| Required approving review count | `0` |
+| Stale-review dismissal on push | `true` |
+| Code-owner review / last-push approval | `false` / `false` |
+| Extra approval for unattributed changes | `true` |
+| Required reviewers | none |
+| Review-thread resolution | `true` |
+| Allowed merge methods | merge, squash, rebase |
+| Force pushes / branch deletion | prohibited / prohibited |
+| Bypass actors | none |
+
+The zero required approving-review count permits the sole maintainer or
+authenticated pull-request author to self-merge only after a pull request is
+open, every strict required check passes, and all review conversations are
+resolved. It is a GitHub identity-approval setting, not a bypass: independent
+reviewer or Kanban evidence remains required for architecture-sensitive work,
+and CI or conversation-resolution requirements are not waived.
+
 ## Source facts and status drift
 
 The source checkout was on `main` at `06c7857` tracking `origin/main`. At the
@@ -127,10 +157,10 @@ stable only because the current source has no toolchain file/MSRV declaration.
 - `gitleaks` and `trufflehog` were unavailable in the audit environment. A
   dedicated secret scanner over the selected tree and reachable history remains
   mandatory before visibility change.
-- The source repository and GitHub settings were not changed or re-read through
-  an admin operation. Apply and verify `repository-settings-manifest.yml` only
-  after the owner resolves publication, license, privacy/history,
-  architecture/status, support-contact, and clean-build decisions.
+- The original audit did not change or re-read GitHub settings. The later
+  owner-authorized application and read-only readback are recorded above and in
+  `repository-settings-manifest.yml`; this log does not authorize settings
+  mutation.
 - The pre-integration source lacked license metadata; the integrated baseline
   adds the decided project SPDX metadata and standard license texts before the
   dependency-policy workflow is used as a publication gate.

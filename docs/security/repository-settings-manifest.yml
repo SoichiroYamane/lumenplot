@@ -1,9 +1,11 @@
 schema_version: 1
-status: proposal_not_applied
+status: applied_and_verified
 scope: >-
-  Apply only after the owner resolves publication, license, privacy/history,
-  architecture/status, support-contact, and clean-build blockers. This file is
-  a handoff manifest, not a GitHub API mutation.
+  This manifest records the owner-applied and read-back repository policy.
+  `observed_before_integration` is historical input; `publication_target` is
+  the original target; `branch_ruleset` and `live_readback` describe the
+  applied state; `application_order` retains the original proposal sequence.
+  This file is a documentation record, not a GitHub API mutation.
 observed_before_integration:
   visibility: private
   default_branch: main
@@ -28,8 +30,9 @@ publication_target:
   template_repository: false
 
 branch_ruleset:
+  ruleset_id: 21096127
   name: main-public-baseline
-  target: main
+  target: refs/heads/main
   enforcement: active
   required_status_checks:
     strict: true
@@ -37,17 +40,40 @@ branch_ruleset:
       - "Rust gates (ubuntu-24.04)"
       - "Dependency policy"
       - "Nix flake check"
+  pull_request_required: true
   pull_request_reviews:
-    required_approvals: 1
+    required_approvals: 0
     dismiss_stale_reviews_on_push: true
     require_code_owner_review: false
+    require_extra_approval_for_unattributed_changes: true
+    require_last_push_approval: false
+    required_reviewers: []
+    allowed_merge_methods:
+      - merge
+      - squash
+      - rebase
   require_conversation_resolution: true
   allow_force_pushes: false
   allow_deletions: false
   bypass_actors: []
   note: >-
-    Select the owner/maintainer bypass actors explicitly in GitHub. Do not use
-    a blanket write bypass for fork contributors.
+    The sole maintainer/authenticated pull-request author may self-merge only
+    after a pull request exists, every strict required check passes, and all
+    review conversations are resolved. The zero-approval GitHub setting is not
+    a bypass and does not replace independent reviewer or Kanban evidence for
+    architecture-sensitive work.
+
+live_readback:
+  observed_at: "2026-08-20T21:34:58Z"
+  repository_visibility: public
+  ruleset_id: 21096127
+  name: main-public-baseline
+  target: refs/heads/main
+  enforcement: active
+  pull_request_rule: required
+  non_fast_forward_rule: present
+  deletion_rule: present
+  bypass_actors: []
 
 actions:
   default_workflow_permissions: read
