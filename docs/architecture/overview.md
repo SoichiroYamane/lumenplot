@@ -35,7 +35,7 @@ The adapter does not reverse the dependency direction or create a second authori
 
 ## Public high-level layers
 
-The exact crate and facade split is intentionally open. The conceptual layers and their allowed direction are fixed:
+[ADR 0003 — facade and crate DAG](../adr/0003-facade-and-crate-dag.md) records the accepted Option-C facade/crate split; workspace scaffolding, visibility/re-export, `publish = false`, and dependency-direction evidence remain pending. The conceptual layers and their allowed direction are fixed:
 
 1. **Frontend and product edges** — native viewer, standalone launch surface, future language frontends, and the Matplotlib adapter.
 2. **Engine facade boundary** — the future public ownership and capability surface. Exact public signatures are a follow-up decision.
@@ -105,7 +105,7 @@ Canonical scientific coordinates remain f64. Long-lived async/native state owns 
 
 The semantic/layout frame is shared by interactive rendering and export. It retains vector-aware meaning, resolved styles, clipping, annotations, Legend geometry, glyph positions, and explicit fallback facts. A renderer must not independently remeasure text or Legend geometry.
 
-The internal RenderPacket is a validated process-local projection of that frame for a renderer instance. It is immutable and tied to a Scene revision/generation. It carries opaque logical resource identifiers rather than platform objects. Exact fields, errors, cache lifetime, and visibility await a follow-up ADR.
+The internal RenderPacket is a validated process-local projection of that frame for a renderer instance. It is immutable and tied to a Scene revision/generation. It carries opaque logical resource identifiers rather than platform objects. [ADR 0004 — RenderPacket resource lifecycle](../adr/0004-renderpacket-resource-lifecycle.md) records the accepted internal packet/resource-lifecycle contract; implementation, validation, cache/lease/fence-retirement, and device-loss evidence remain pending.
 
 ## Matplotlib adapter boundary
 
