@@ -1,61 +1,131 @@
-# lumenplot
+# LumenPlot
 
-This repository is an intentionally neutral Rust workspace baseline. Product
-architecture and crate boundaries are not chosen yet; those decisions belong to
-the `sol-architect` Hermes profile before parallel implementation begins.
+**Status: pre-alpha** · **Public API: unstable** · **Production use: not recommended**
 
-## Reproducible NixOS development
+LumenPlot is an independent, GPU-native scientific visualization engine with a
+first-class Matplotlib adapter. This repository is an exploratory public
+baseline, not a stable release or a production support commitment.
 
-The development toolchain is pinned by `flake.lock` and is available without a
-system-wide Rust installation:
+The current public direction is:
 
-```bash
-nix develop
-cargo metadata --no-deps --format-version 1
+```text
+Matplotlib -> adapter -> LumenPlot engine
 ```
 
-The initial workspace contains only a dependency-free placeholder crate so
-that formatting and test gates are executable. It defines no product API or
-architecture; future crate boundaries must be approved by Sol and recorded in
-an ADR.
+Matplotlib remains the frontend and the source of plotting semantics at the
+adapter boundary. The engine is independent of Matplotlib; the dependency is
+one-way from Matplotlib through the adapter into the engine. The intended design
+includes a hybrid path: supported capabilities use the engine, unsupported or
+compatibility-sensitive cases use an explicit fallback, and an opt-in fast path
+may serve large data. Fallbacks must be observable and documented. Unsupported
+behavior must never silently degrade.
 
-## Hermes parallel workflow
+## Warning
 
-On the NixOS workstation, from this repository, initialize the two Hermes
-profiles and the project board once:
+This is **pre-alpha** software. APIs, file formats, performance, packaging, and
+compatibility are subject to change. The public API is unstable, and production
+use is not recommended. Matplotlib private APIs and arbitrary custom `Artist`
+implementations are not promised to be fully compatible. A capability that is
+not implemented or verified must be reported explicitly rather than presented
+as equivalent behavior.
+
+## Goals
+
+- Establish an independent engine boundary for scientific visualization.
+- Provide a first-class Matplotlib adapter without making Matplotlib a lower-
+  level engine dependency.
+- Keep fallback behavior explicit, testable, and visible to users.
+- Add an opt-in large-data path only after correctness and reproducible
+  measurements justify it.
+- Record cross-cutting architecture decisions before implementation freezes a
+  public contract.
+
+## Non-goals for this baseline
+
+- A stable public API or a production-ready renderer.
+- Full compatibility with Matplotlib private APIs or every custom `Artist`.
+- A claim that GPU execution, a fast path, or a particular output format is
+  already implemented.
+- Silent conversion, silent fallback, or silent loss of visual semantics.
+- Performance claims without a reproducible benchmark and environment record.
+
+## Current implementation status
+
+The current source snapshot contains one dependency-free Rust workspace
+package at version `0.1.0`. Its Cargo metadata records the dual license, project
+repository, root README, and `publish = false` for the internal core package.
+The current source contains no Python package, first-class Matplotlib adapter,
+GPU renderer, separate raster package, examples, or release packaging.
+Therefore this baseline does not describe those components as implemented or
+supported.
+
+No minimum supported Rust version (MSRV) is committed in this baseline. A local
+edition or CI toolchain is not a public MSRV promise.
+
+A superseded partial Rust/IR implementation is not part of this public baseline
+and must not be presented as the current product design. The historical
+CPU-only Matplotlib raster architecture record is retained for context and is
+explicitly superseded by the accepted GPU-native architecture decision. The
+canonical requirements, traceability record, and architecture documents are
+the authoritative public narrative for this baseline.
+
+## Verification commands
+
+These are the repository gates observed during the read-only audit and are the
+commands to run again after integration. Listing a command is not a claim that
+the current partial working tree passes it.
 
 ```bash
-hermes-nix-orchestration-setup --project-dir "$PWD"
+cargo fmt --all -- --check
+cargo test --locked --workspace --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo metadata --locked --no-deps --format-version 1
+nix flake check --all-systems --no-build --no-update-lock-file
+git diff --check
 ```
 
-This creates the user-owned `sol-architect` and `luna-worker` profiles and the
-`lumenplot` Kanban board. It does not import credentials or start a gateway.
+The final publication gate also needs a dedicated secret scanner over the
+approved working tree and reachable history. Do not treat a pattern-only scan
+as equivalent to a dedicated scanner.
 
-Use Sol for architecture decisions and task boundaries:
+## Project documents
 
-```bash
-hermes -p sol-architect chat
-```
+- [Canonical requirements](docs/requirements/lumenplot-v1.0.md)
+- [Requirements traceability](docs/requirements/traceability-v1.0.md)
+- [Roadmap](docs/roadmap.md)
+- [Architecture decision record index](docs/adr/README.md)
+- [Architecture overview and open decisions](docs/architecture/)
+- [Contributing](CONTRIBUTING.md)
+- [Support policy](SUPPORT.md)
+- [Security policy](SECURITY.md)
+- [Governance](GOVERNANCE.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [MIT license](LICENSE-MIT) and [Apache License 2.0](LICENSE-APACHE)
 
-Use Luna for implementation, testing, integration, and durable handoff records:
+The paths above are the proposed public paths. An integration worker must
+preserve them or update every link if the repository's canonical layout is
+changed.
 
-```bash
-hermes -p luna-worker chat
-```
+## Contribution and security
 
-Implementation cards should request isolated worktrees, for example:
+Public contributions should follow [CONTRIBUTING.md](CONTRIBUTING.md), the
+[Code of Conduct](CODE_OF_CONDUCT.md), and [GOVERNANCE.md](GOVERNANCE.md).
+Do not put secrets, private vulnerability details, or sensitive conduct reports
+in public issues or pull requests; use the routes described in
+[SECURITY.md](SECURITY.md) and [SUPPORT.md](SUPPORT.md).
 
-```bash
-hermes kanban --board lumenplot create \
-  "Implement the approved renderer boundary" \
-  --assignee luna-worker \
-  --workspace worktree \
-  --branch hermes/renderer-boundary \
-  --body "Follow the Sol architecture decision and include the required tests."
-```
+## License
 
-The setup command configures manual decomposition, Sol as the orchestrator,
-Luna as the default implementer, and first-class review dispatch. A persistent
-gateway or service is intentionally outside this repository's development
-baseline; dispatch can be run on demand with `hermes kanban dispatch` when
-needed.
+LumenPlot is released under the dual license **MIT OR Apache-2.0**. The default
+project attribution is `Copyright 2026 LumenPlot contributors`. See
+[LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
+
+## Benchmark claims policy
+
+The ranges **10M–100M data points** and **60/120 Hz** are unmeasured target
+envelopes only. They are not achieved-throughput claims, compatibility claims,
+or release criteria in this baseline. Any future performance statement must
+include the workload, data shape, hardware, driver/runtime versions, rendering
+settings, warm-up/repetition policy, output correctness checks, and a
+reproducible benchmark command or artifact. Until then, describe these numbers
+only as targets.

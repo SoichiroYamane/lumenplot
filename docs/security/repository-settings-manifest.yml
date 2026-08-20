@@ -1,0 +1,84 @@
+schema_version: 1
+status: proposal_not_applied
+scope: >-
+  Apply only after the owner resolves publication, license, privacy/history,
+  architecture/status, support-contact, and clean-build blockers. This file is
+  a handoff manifest, not a GitHub API mutation.
+observed_before_integration:
+  visibility: private
+  default_branch: main
+  archived: false
+  fork: false
+  template: false
+  issues: enabled
+  discussions: disabled
+  branch_protection_for_main: absent_http_404
+  rulesets: 0
+  actions_default_permissions: not_confirmed_by_audit
+  vulnerability_alerts_endpoint: unavailable_http_404
+  automated_security_fixes_endpoint: reachable_http_200
+  secret_scanning_endpoint: unavailable_http_404
+  code_scanning_endpoint: unavailable_or_not_authorized_http_403
+
+publication_target:
+  visibility: public
+  default_branch: main
+  repository_is_archived: false
+  allow_forking: true
+  template_repository: false
+
+branch_ruleset:
+  name: main-public-baseline
+  target: main
+  enforcement: active
+  required_status_checks:
+    strict: true
+    contexts:
+      - "Rust gates (ubuntu-24.04)"
+      - "Dependency policy"
+      - "Nix flake check"
+  pull_request_reviews:
+    required_approvals: 1
+    dismiss_stale_reviews_on_push: true
+    require_code_owner_review: false
+  require_conversation_resolution: true
+  allow_force_pushes: false
+  allow_deletions: false
+  bypass_actors: []
+  note: >-
+    Select the owner/maintainer bypass actors explicitly in GitHub. Do not use
+    a blanket write bypass for fork contributors.
+
+actions:
+  default_workflow_permissions: read
+  allow_fork_pull_request_write_tokens: false
+  allow_fork_pull_request_secrets: false
+  require_first_time_contributor_approval: true
+  required_checks_are_pr_only: false
+
+security:
+  dependency_graph: enable_if_available
+  dependabot_alerts: enable_if_available
+  dependabot_security_updates: enable_if_available
+  private_vulnerability_reporting: enable_if_available
+  security_advisories: enable_if_available
+  secret_scanning: enable_if_available
+  secret_scanning_push_protection: enable_if_available
+  code_scanning: defer_until_supported_scope_and_contact_exist
+  operator_must_recheck_unavailable_endpoints: true
+
+community:
+  issues: enabled_with_triage_and_security-routing
+  discussions: remain_disabled_until_support_and_moderation_plan_exists
+  wiki: defer_until_public_documentation_owner_exists
+  projects: defer_until_public_planning_policy_exists
+  support_contact: required_before_visibility_change
+  security_contact: required_before_visibility_change
+
+application_order:
+  - confirm owner-approved public file allowlist and history/privacy choice
+  - publish the approved clean tree with license and support/security files
+  - enable read-only Actions defaults and security capabilities where available
+  - create the main ruleset using the exact status-check contexts above
+  - verify a fork pull request receives no secrets and no write token
+  - re-read visibility, ruleset, checks, and security settings after application

@@ -1,0 +1,43 @@
+name: Feature request
+description: Propose a user-facing capability or improvement for the pre-alpha project.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets, private data, vulnerability details, or sensitive conduct reports. This form is not a private reporting channel.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Explain the scientific visualization problem and who it affects.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_behavior
+    attributes:
+      label: Proposed behavior
+      description: Describe the user-visible behavior, capability boundaries, and explicit unsupported cases.
+    validations:
+      required: true
+  - type: textarea
+    id: architecture_impact
+    attributes:
+      label: Architecture and compatibility impact
+      description: Explain the impact on the engine, Matplotlib adapter, dependency direction, lifecycle, or public API.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe workarounds or other approaches and why they are insufficient.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence or reproducible measurement
+      description: Link or attach public evidence. Performance claims require reproducible benchmark details.
+    validations:
+      required: false

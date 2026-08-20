@@ -4,3 +4,14 @@
 *.swp
 *.swo
 .DS_Store
+.env*
+*.pem
+*.key
+*.p12
+*.pfx
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/

@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# Fork pull requests run with a read-only token and no repository secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The repository currently documents Linux only as a CI build target.
+        # Nix evaluates the additional declared dev-shell systems separately.
+        os:
+          - ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Resolve repository Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          plain = Path("rust-toolchain")
+          toml = Path("rust-toolchain.toml")
+          if plain.exists() and toml.exists():
+              raise SystemExit("both rust-toolchain and rust-toolchain.toml exist")
+
+          channel = "stable"
+          components = []
+          targets = []
+          source = "no repository toolchain file; stable channel fallback"
+
+          if plain.exists():
+              channel = plain.read_text(encoding="utf-8").strip()
+              source = "rust-toolchain"
+          elif toml.exists():
+              config = tomllib.loads(toml.read_text(encoding="utf-8"))
+              toolchain = config.get("toolchain", {})
+              if not isinstance(toolchain, dict):
+                  raise SystemExit("[toolchain] must be a TOML table")
+              channel = toolchain.get("channel", "")
+              components = toolchain.get("components", [])
+              targets = toolchain.get("targets", [])
+              profile = toolchain.get("profile")
+              if profile not in (None, "minimal"):
+                  raise SystemExit(
+                      "only the minimal rustup profile is supported by this baseline; "
+                      f"found {profile!r}"
+                  )
+              source = "rust-toolchain.toml"
+
+          channel_pattern = re.compile(
+              r"(?:stable|beta|nightly)(?:-\d{4}-\d{2}-\d{2})?"
+              r"|(?:\d+\.){1,2}\d+(?:-[A-Za-z0-9._-]+)?"
+          )
+          if not isinstance(channel, str) or not channel_pattern.fullmatch(channel):
+              raise SystemExit(f"unsupported or unsafe Rust channel: {channel!r}")
+
+          def checked_list(name, value, pattern):
+              if value is None:
+                  return []
+              if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                  raise SystemExit(f"{name} must be a list of strings")
+              if not all(pattern.fullmatch(item) for item in value):
+                  raise SystemExit(f"unsupported or unsafe value in {name}: {value!r}")
+              return value
+
+          component_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9+_.-]*")
+          target_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+          components = checked_list("components", components, component_pattern)
+          targets = checked_list("targets", targets, target_pattern)
+          for required in ("rustfmt", "clippy"):
+              if required not in components:
+                  components.append(required)
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"channel={channel}\n")
+              output.write(f"components={','.join(components)}\n")
+              output.write(f"targets={','.join(targets)}\n")
+          print(f"Rust toolchain source: {source}; channel: {channel}")
+          PY
+
+      - name: Install Rust toolchain
+        # The action implementation is pinned to the verified 1.97.1 release
+        # commit; the selected channel comes from the repository file above or
+        # falls back to stable because this repository has no MSRV declaration.
+        uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: ${{ steps.rust-toolchain.outputs.components }}
+          targets: ${{ steps.rust-toolchain.outputs.targets }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run workspace tests
+        run: cargo test --locked --workspace --all-features
+
+      - name: Run Clippy with warnings denied
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+  nix:
+    name: Nix flake check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Nix
+        # No cache action is used: the flake check is evaluation-only and does
+        # not need a mutable or fork-readable build cache.
+        uses: DeterminateSystems/nix-installer-action@90bb610b90bf290cad97484ba341453bd1cbefea # v19
+        with:
+          determinate: false
+          diagnostic-endpoint: ""
+
+      - name: Evaluate all declared flake systems
+        run: nix flake check --all-systems --no-build --no-update-lock-file

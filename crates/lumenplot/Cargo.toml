@@ -2,3 +2,7 @@
 name = "lumenplot"
 edition.workspace = true
 version.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+readme.workspace = true

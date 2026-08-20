@@ -5,3 +5,6 @@ members = ["crates/lumenplot"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/SoichiroYamane/lumenplot"
+readme = "README.md"

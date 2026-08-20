@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a reproducible problem in supported or explicitly documented behavior.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets, private data, vulnerability details, or sensitive conduct reports. Use the security or conduct policy for those reports.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and the smallest useful context.
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: What did you expect?
+      description: Describe the expected result and the documented capability it relates to.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide a minimal reproduction that contains no secrets or private data.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include operating system, toolchain, relevant runtime versions, and rendering settings.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification already run
+      description: List the exact commands and their results, including any failing gate.
+    validations:
+      required: true
