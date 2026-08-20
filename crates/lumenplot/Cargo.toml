@@ -1,0 +1,4 @@
+[package]
+name = "lumenplot"
+edition.workspace = true
+version.workspace = true
