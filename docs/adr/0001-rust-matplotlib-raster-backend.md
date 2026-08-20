@@ -2,8 +2,8 @@
 
 - Status: Superseded
 - Date: 2026-08-20
-- Decision owner: Sol
-- Recorded by: Luna
+- Decision owner: architecture-authority
+- Recorded by: implementation-worker
 - Scope: lumenplot v0.1
 
 > **Superseded decision.** This historical ADR is retained as a record of the earlier headless raster-backend decision. The accepted replacement is [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md).
@@ -25,7 +25,7 @@ retained Figure or scene model that can become inconsistent with Matplotlib.
 The initial product is deliberately narrower than a general plotting library:
 PNG output and a deterministic CPU raster path are the first deliverable.
 
-This decision records the architecture selected by Sol from the following
+This decision records the architecture selected by the architecture-authority from the following
 inputs:
 
 - Historical repository architecture audit and constraint review.

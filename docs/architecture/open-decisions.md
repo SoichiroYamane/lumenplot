@@ -30,7 +30,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-01 — Exact facade and crate/module split
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: Rust workspace and binding fan-out
 - Decide: the exact public facade, internal crate/module boundaries, visibility, feature flags, publication metadata, and dependency graph.
 - Constraints: preserve the one-way DAG; keep concrete frontend/GPU/window types out of core; do not make a candidate crate layout a public API by accident.
@@ -39,7 +39,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-02 — Public Rust and Python API surface
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: frontend and FFI implementation
 - Decide: public Scene/facade ownership, handles, transaction/update model, revision observation, backend selection configuration, export entry points, viewer lifecycle surface, and Python object model.
 - Constraints: this bundle does not declare exact function, method, class, trait, or exception signatures; signatures must not leak internal RenderPacket fields.
@@ -48,7 +48,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-03 — Error and capability taxonomy
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: API, adapter, runtime, and fallback implementation
 - Decide: stable categories for invalid input, unsupported capability, fallback diagnostic, device loss, out-of-memory, cancellation, stale generation, host-loop misuse, and internal failure.
 - Constraints: strict mode must be explicit; hybrid fallback must be observable; no silent omission or best-effort degradation.
@@ -57,7 +57,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-04 — Internal RenderPacket schema and resource lifecycle
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: renderer fan-out
 - Decide: packet fields, semantic-to-packet lowering, validation order, opaque logical ID format, generation association, resource cache ownership, packet drop/close behavior, and renderer capability validation.
 - Constraints: immutable, validated, process-local, internal, non-serialized; no wgpu/window/Python concrete types; export does not reverse-engineer GPU buffers.
@@ -66,7 +66,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-05 — Scene ownership, mutation, revision, and history
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: core state and interaction fan-out
 - Decide: stable identity/handle policy, single-writer transaction/result type, revision increment rules, canonical view, current viewport, history entry semantics, visibility/Legend/annotation ownership, and export snapshot selection.
 - Constraints: native PlotScene authority; Matplotlib Figure/Artist authority in adapter mode; derived adapter Scene is revisioned cache; UI State cannot enter ordinary exports.
@@ -75,7 +75,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-06 — Window, viewer, host loop, and lifecycle semantics
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: standalone viewer, Python `show`, notebook, and platform fan-out
 - Decide: native-owned versus host-pumped loop, multiple-window ownership, close/drop, suspend/resume, resize, surface loss, device loss, OOM recovery, reentrancy, shutdown, and notebook transport behavior.
 - Constraints: runtime/window/surface/GPU main-thread rule; no Python callback lock crossing; Qt/WebAgg/ipympl transports are not silently included in the native latency claim.
@@ -84,7 +84,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-07 — Declared hardware, driver, and CI matrix
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: support and p99 release claims
 - Decide: OS versions, GPU vendors/models, driver ranges, API feature levels, Wayland/X11 cells, HiDPI scales, headless/CI policy, compositor/present semantics, and minimum evidence per cell.
 - Constraints: no generic support claim from a single environment; platform/GPU result is `environment required` until a declared cell is exercised.
@@ -93,7 +93,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-08 — Benchmark protocol and performance accounting
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: native gate and dependency updates
 - Decide: exact clock boundaries, present blocking semantics, GPU-complete/readback policy, warm-up definition, fixture order/randomization, sample rejection rules, allocation/copy counters, and p99 reporting format.
 - Constraints: at least 1000 measured frames per fixture; p50/p95/p99; input-to-present, event-to-packet, packet-to-submit, and submit-to-GPU-complete/readback separate; strict, hybrid, accelerated, and native profiles never combined.
@@ -102,7 +102,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-09 — Python ABI and NumPy ingestion policy
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: Python bridge and wheel fan-out
 - Decide: Python minor range, ABI/abi3 policy, NumPy supported dtypes, shape/stride/contiguity, finite/non-finite handling, read-only/mutable semantics, borrow window, GIL detach, copy boundary, thread/lifetime rules, and error mapping.
 - Constraints: NumPy zero-copy is an ingestion implementation technique only; long-lived state is owned sealed chunks; NumPy-to-GPU zero-copy is not promised.
@@ -111,7 +111,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-10 — Matplotlib compatibility and profile matrix
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: adapter release claim
 - Decide: exact supported Matplotlib/Python versions, public/common Artist set, image/Gouraud/hatch/filter policy, text/mathtext/TeX behavior, transport integrations, profile configuration syntax, and diagnostics visibility.
 - Constraints: fixed package/module names and three profile roles are accepted; full private/arbitrary compatibility is not a v1 requirement; standard adapter cannot inherit native zero-Python SLOs.
@@ -120,7 +120,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-11 — Coordinate, unit, color, alpha, and ICC policy
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: renderer and export fan-out
 - Decide: scientific/display/local coordinate transforms, origin and y orientation, logical versus physical pixels, PDF points, color space, alpha/premultiplication, ICC/profile handling, clipping, and HiDPI rounding.
 - Constraints: canonical f64 and local f32 rules remain fixed; screen/export semantic equivalence does not require byte-identical pixels.
@@ -129,7 +129,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-12 — Text, font fallback, and reproducibility strictness
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: shared text/layout and export fan-out
 - Decide: shaping stack, font identity/hash/variation manifest, system versus bundled fallback, license requirements, mathtext and TeX boundary, PDF subset/ToUnicode policy, deterministic outline fallback, and missing-glyph diagnostics.
 - Constraints: one shaping/layout result is shared; renderer remeasurement is prohibited; raster-only text/PDF is prohibited for supported vector semantics.
@@ -138,7 +138,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-13 — Annotation and interaction history details
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: v1 interaction/export fan-out
 - Decide: annotation geometry and coordinate systems, style and clipping, hit-testing, editability, persistence boundary, export inclusion, and history snapshot representation.
 - Constraints: basic annotations are v1 MUST; project/Scene serialization remains a v1 non-goal; transient cursor/UI state is excluded from ordinary exports.
@@ -147,7 +147,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-14 — Accessibility and standalone viewer semantics
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: v1 release review
 - Decide: keyboard focus model, visible focus rendering, contrast defaults, reduced-motion transitions, semantic screen-reader tree scope, platform accessibility APIs, viewer packaging, and fallback behavior.
 - Constraints: keyboard navigation/Legend, visible focus, contrast-aware defaults, and reduced motion are v1 MUST; screen-reader tree is SHOULD unless evidence promotes it.
@@ -156,7 +156,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-15 — GPU runtime and shader artifact details
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: renderer/runtime fan-out
 - Decide: wgpu feature limits, adapter/device selection, surface configuration, queue and staging ownership, shader artifact format, compiler invocation, cache key, artifact hash manifest, device-loss rebuild, and OOM policy details.
 - Constraints: `Backend::Auto` capability probe plus static override; no default startup microbenchmark; build/CI-time shader artifacts; no runtime untrusted shader compilation/download; Slang-RHI not in core.
@@ -165,7 +165,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-16 — Native backend adoption and retirement gates
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: Phase 4 prototype merge
 - Decide: meaningful-benefit threshold, maintenance-cost review, feature parity expectations, retirement criteria, and how native paths are represented in support and benchmark reports.
 - Constraints: Metal, D3D12/DXGI, and Vulkan remain conditional prototypes; adoption is never based solely on API novelty.
@@ -174,7 +174,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-17 — Dependency, publication, and supply-chain policy
 
 - State: Open
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: public package or native dependency release
 - Decide: exact MSRV, semver/API stability stage, publish controls, license allowlist, advisory policy, SBOM format, reproducible build inputs, artifact signing/verification, and dependency update cadence.
 - Constraints: pre-alpha is non-publishable until explicitly changed; reference versions are not normative pins; all updates require compatibility, correctness, security, license, MSRV, and performance review.
@@ -183,7 +183,7 @@ The following are fixed by the accepted architecture and must not be returned to
 ### O-18 — Future serialization schema
 
 - State: Deferred by non-goal
-- Decision owner: Sol
+- Decision owner: architecture-authority
 - Needed before: any project/Scene save or interchange feature
 - Decide: schema owner/versioning, migrations, resource identity, external data references, size limits, trust model, and security validation.
 - Constraints: no v1 Scene/project serialization or RenderPacket wire format; PNG/PDF/SVG are outputs, not persistence.

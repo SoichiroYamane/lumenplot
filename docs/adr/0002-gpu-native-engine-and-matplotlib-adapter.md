@@ -2,8 +2,8 @@
 
 - Status: **Accepted**
 - Date: 2026-08-20
-- Decision owner: Sol
-- Recorded by: Luna
+- Decision owner: architecture-authority
+- Recorded by: implementation-worker
 - Scope: LumenPlot v1 pre-alpha architecture
 - Supersedes: [ADR 0001 — Rust Matplotlib raster backend architecture](0001-rust-matplotlib-raster-backend.md)
 

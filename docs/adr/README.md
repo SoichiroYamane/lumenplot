@@ -1,6 +1,6 @@
 # Architecture decision records
 
-Sol owns architecture decisions; Luna records accepted decisions in this directory. The records are public-facing documentation and must not depend on private work-item identifiers, local paths, profile memory, or transient research artifacts.
+The architecture-authority owns architecture decisions; the implementation-worker records accepted decisions in this directory. The records are public-facing documentation and must not depend on private work-item identifiers, local paths, profile memory, or transient research artifacts.
 
 ## Index
 
