@@ -146,6 +146,24 @@ The event loop, window, surface, and GPU runtime are main-thread confined or own
 
 `Backend::Auto` uses capability probing plus static override and does not run a default startup microbenchmark. Portable wgpu and window-handle references are candidate baselines, not fixed dependency requirements. Native Metal, D3D12/DXGI, and Vulkan paths are Phase 4 prototypes adopted only after measured benefit.
 
+## Accepted follow-up contract records
+
+O-01 through O-17 are now accepted contracts recorded in the linked ADR/API documents below. Their implementation, compatibility, platform, and benchmark evidence remains pending; these records do not change the `Not implemented`, `Not measured`, or `environment required` statuses in the [traceability registry](../requirements/traceability-v1.0.md).
+
+| Decision | Accepted record | Evidence boundary |
+| --- | --- | --- |
+| O-01 | [ADR 0003 — facade and crate DAG](../adr/0003-facade-and-crate-dag.md) | Static DAG, visibility, and publication guards pending |
+| O-02R/O-05 | [API 0001 — native Scene state](api-0001-native-scene-state.md) | Scene, revision, invalidation, and history tests pending |
+| O-03 | [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md) | Error mapping and fallback fixtures pending |
+| O-04 | [ADR 0004 — RenderPacket resource lifecycle](../adr/0004-renderpacket-resource-lifecycle.md) | Packet and resource-lifetime tests pending |
+| O-06 | [ADR 0005 — runtime, viewer, and host loop](../adr/0005-runtime-viewer-host-loop.md) | Lifecycle and platform matrix pending |
+| O-07/O-08/O-16 | [ADR 0006 — support, benchmark, and native gates](../adr/0006-support-benchmark-native-gates.md) | All target cells and five-block measurements remain environment required |
+| O-02P/O-09/O-10 | [API 0003 — Python, NumPy, and Matplotlib](api-0003-python-numpy-matplotlib.md) | Wheel, import, and headless PNG evidence pending |
+| O-11/O-12 | [ADR 0007 — coordinate, color, text, and export](../adr/0007-coordinate-color-text-export.md) | Transform, color, font, and output evidence pending |
+| O-13/O-14 | [API 0004 — annotations and accessibility](api-0004-annotations-accessibility.md) | Interaction, accessibility, and viewer evidence pending |
+| O-15 | [ADR 0008 — portable GPU and shaders](../adr/0008-portable-gpu-and-shaders.md) | Portable runtime, shader, and loss/OOM evidence pending |
+| O-17/O-18 | [ADR 0009 — version, publication, and supply chain](../adr/0009-version-publication-supply-chain.md) | Policy is accepted; O-18 remains Deferred/Closed and only negative guards are allowed |
+
 ## Publication-before-implementation boundary
 
 The requirements, traceability registry, and ADRs define the contract and evidence gates. They do not report:
@@ -159,4 +177,4 @@ The requirements, traceability registry, and ADRs define the contract and eviden
 - a completed Matplotlib fallback implementation;
 - a persistent Scene/project format.
 
-The honest baseline is `Not implemented`, `Not measured`, or `environment required` until an implementation worker supplies reproducible evidence. Exact public signatures, facade/crate visibility, packet schema, error types, units/colors, host-loop behavior, font strictness, hardware cells, and future serialization are tracked in `open-decisions.md`.
+The honest baseline is `Not implemented`, `Not measured`, or `environment required` until an implementation worker supplies reproducible evidence. Accepted follow-up records now define the public signatures, facade/crate visibility, packet boundary, error types, units/colors, host-loop behavior, font strictness, and hardware cells. Future serialization remains the Deferred/Closed O-18 non-goal in [ADR 0009](../adr/0009-version-publication-supply-chain.md) and [open decisions](open-decisions.md#o-18-future-serialization-schema).

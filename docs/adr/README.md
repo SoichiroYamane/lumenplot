@@ -8,8 +8,28 @@ The architecture-authority owns architecture decisions; the implementation-worke
 | --- | --- | --- | --- |
 | [0001](0001-rust-matplotlib-raster-backend.md) | Superseded | Rust Matplotlib raster backend architecture | Historical v0.1 headless raster decision |
 | [0002](0002-gpu-native-engine-and-matplotlib-adapter.md) | Accepted | GPU-native engine and first-class Matplotlib adapter | Current v1 pre-alpha architecture |
+| [0003](0003-facade-and-crate-dag.md) | Accepted | Facade and crate dependency graph | O-01 facade, visibility, publication guards, and first-slice order |
+| [0004](0004-renderpacket-resource-lifecycle.md) | Accepted | RenderPacket and renderer resource lifecycle | O-04 internal packet and resource ownership |
+| [0005](0005-runtime-viewer-host-loop.md) | Accepted | Runtime, viewer, and host-loop lifecycle | O-06 session, viewer, host, and recovery semantics |
+| [0006](0006-support-benchmark-native-gates.md) | Accepted — evidence pending | Support cells, benchmark protocol, and native-backend gates | O-07/O-08/O-16 target and adoption evidence |
+| [0007](0007-coordinate-color-text-export.md) | Accepted — dependency choices staged | Coordinate, color, text, and export semantics | O-11/O-12 semantic and export boundary |
+| [0008](0008-portable-gpu-and-shaders.md) | Accepted — evidence pending | Portable GPU runtime and shader artifacts | O-15 implementation baseline and shader policy |
+| [0009](0009-version-publication-supply-chain.md) | Accepted current policy | Version, publication, and supply-chain policy | O-17 policy and O-18 serialization exclusion |
 
 ADR 0002 explicitly supersedes ADR 0001. ADR 0001 remains available as historical context; it must not be used as the current v1 architecture without the replacement contract.
+
+## API decision records
+
+These records are accepted follow-up contracts in `docs/architecture/`. They are indexed here so the ADR set and the API set can be reviewed together without making API records into crate or persistence formats.
+
+| Record | Status | Scope |
+| --- | --- | --- |
+| [API 0001](../architecture/api-0001-native-scene-state.md) | Accepted — candidate signatures recorded | O-02R/O-05 native Scene state, transactions, revisions, and view history |
+| [API 0002](../architecture/api-0002-errors-capabilities-fallback.md) | Accepted | O-03 errors, capabilities, fallback diagnostics, and FFI mapping |
+| [API 0003](../architecture/api-0003-python-numpy-matplotlib.md) | Accepted — evidence pending | O-02P/O-09/O-10 Python, NumPy, and headless Matplotlib PNG bridge |
+| [API 0004](../architecture/api-0004-annotations-accessibility.md) | Accepted — evidence pending | O-13/O-14 annotations, interaction history, and accessibility |
+
+O-01 through O-17 are accepted contracts with implementation or environment evidence still pending. [ADR 0009](0009-version-publication-supply-chain.md) records O-18 as Deferred/Closed by the v1 non-goal; it is not an implementation fan-out item.
 
 ## Convention
 
