@@ -1,6 +1,6 @@
 # API 0003: Phase-3A Python, NumPy, and private line/PNG helper
 
-- Status: **Accepted staged Phase-3A contract; helper/package evidence pending; Phase-3B public Matplotlib contract open**
+- Status: **Accepted staged Phase-3A contract; Phase-3A2 builder/evidence contract recorded; helper/package evidence pending; Phase-3B public Matplotlib contract open**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
@@ -9,6 +9,7 @@
 - Boundary record: [ADR 0003 — facade and crate dependency graph](../adr/0003-facade-and-crate-dag.md)
 - Error record: [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md)
 - Governing staged decision: [ADR 0013 — hidden line/PNG facade and private Python helper](../adr/0013-hidden-facade-private-python-line-png.md)
+- Phase-3A2 evidence decision: [ADR 0014 — pinned manylinux wheel evidence](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md)
 - Open-decision records: [O-09 — Python ABI and NumPy ingestion policy](open-decisions.md#o-09-python-abi-and-numpy-ingestion-policy) and [O-10 — Matplotlib compatibility and profile matrix](open-decisions.md#o-10-matplotlib-compatibility-and-profile-matrix)
 
 This record narrows API 0003 to the first implementable, owned Phase-3A
@@ -32,11 +33,14 @@ bounded private Rust/export path. The next seam must carry owned values across
 Python without leaking engine/export internals, borrowed NumPy memory, or a
 premature public Matplotlib schema.
 
-Phase-3A has two ordered implementation slices:
+Phase-3A has two ordered implementation slices, with the second slice governed
+by its own accepted evidence contract:
 
 1. the exact `lumenplot::__private` Rust facade in [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md);
 2. the private `_native.render_line_png` helper and local package/wheel evidence
-   over that integrated seam.
+   over that integrated seam; [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md)
+   fixes the builder, same-wheel matrix, and CI-local manifest boundary for this
+   slice without claiming that its implementation exists.
 
 Phase-3A is helper-only. It has no `backend.py`, no Matplotlib import or
 dependency, no `matplotlib.backend` entry point, no public `render_png`, no
@@ -195,6 +199,14 @@ Windows ARM64, musllinux, other artifacts, free-threaded interpreters,
 non-CPython interpreters, and package publication are unsupported or unclaimed
 until separate evidence and a reviewed decision exist.
 
+[ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) records the
+accepted direct manylinux builder, immutable image/tag/digest and tool inputs,
+locked/offline build, explicit GIL CPython interpreter paths, fresh-venv
+same-wheel matrix, auditwheel/ELF/abi3/SBOM checks, action pins, and exact
+CI-local `phase3a2-wheel-evidence.json` schema. This record remains a contract
+only: no wheel, package, workflow, or runtime result is claimed until that
+evidence is generated and reviewed.
+
 ## Phase-3B boundary remains open
 
 The public-backend research supplies mandatory inputs to a later decision; it
@@ -243,11 +255,13 @@ canvas property schema is adopted here.
 
 ## Verification and evidence boundary
 
-This record changes documentation and the conditional architecture inventory
-only. It does not add Rust/Python product source, Cargo/Python manifests,
-`Cargo.lock`, CI dependencies, packages, or publication settings. The
-requirements traceability registry remains `Not implemented`, `Not measured`,
-or `environment required` for full-v1 rows until their evidence gates close.
+This record and [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md)
+change the accepted documentation contract and conditional architecture
+inventory only. They do not add Rust/Python product source, Cargo/Python
+manifests, `Cargo.lock`, CI dependencies, packages, or publication settings.
+The requirements traceability registry remains `Not implemented`, `Not
+measured`, or `environment required` for full-v1 rows until their evidence
+gates close.
 
 ## Related records
 
@@ -255,6 +269,8 @@ or `environment required` for full-v1 rows until their evidence gates close.
 - [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](../adr/0002-gpu-native-engine-and-matplotlib-adapter.md)
 - [ADR 0003 — facade and crate dependency graph](../adr/0003-facade-and-crate-dag.md)
 - [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md)
+- [ADR 0014 — Phase-3A2 pinned manylinux wheel evidence](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md)
+- [Phase-3A2 wheel and same-wheel evidence contract](phase3a2-manylinux-wheel-evidence.md)
 - [ADR 0012 — private line frame and deterministic PNG contract](../adr/0012-private-line-frame-and-png-contract.md)
 - [ADR 0013 — hidden line/PNG facade and private Python helper](../adr/0013-hidden-facade-private-python-line-png.md)
 - [Architecture overview](overview.md)

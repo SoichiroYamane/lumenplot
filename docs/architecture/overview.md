@@ -143,7 +143,11 @@ Unknown custom Artists/effects never disappear silently. Subtree fallback is res
 
 Phase-3A is deliberately below the public Matplotlib canvas: it is the exact
 owned `lumenplot::__private` line/PNG seam and private
-`lumenplot_mpl._native.render_line_png` helper only. It has no Matplotlib
+`lumenplot_mpl._native.render_line_png` helper only. Its Phase-3A2 packaging
+evidence is bounded by [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md)
+and [the wheel evidence contract](phase3a2-manylinux-wheel-evidence.md): one pinned
+manylinux cp311-abi3 wheel, explicit GIL CPython same-wheel cells, and a
+CI-local manifest with no public/support claim. It has no Matplotlib
 dependency, backend entry point, public result/diagnostic/warning/canvas API,
 or fallback schema. A separate Phase-3B decision must record those public
 surfaces after helper and wheel evidence exists.
@@ -169,7 +173,7 @@ The event loop, window, surface, and GPU runtime are main-thread confined or own
 
 ## Accepted follow-up contract records
 
-O-01 through O-17 are now accepted contracts recorded in the linked ADR/API documents below. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) resolves the Phase-1 native core/facade boundary and the API 0001/API 0002 candidates, and [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) narrows the Phase-1B namespace, token, and trait observations. Phase-1A/B implementation and local contract evidence now exist; their broader compatibility, platform, benchmark, product, and release evidence remains pending. [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and deterministic line/PNG contract, whose bounded implementation and local evidence remain private and do not close full-v1 export. [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) records the staged Phase-3A hidden facade and private Python helper; helper/package evidence is pending and the public Phase-3B Matplotlib contract remains open. These records do not change the `Not implemented`, `Not measured`, or `environment required` statuses in the [traceability registry](../requirements/traceability-v1.0.md).
+O-01 through O-17 are now accepted contracts recorded in the linked ADR/API documents below. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) resolves the Phase-1 native core/facade boundary and the API 0001/API 0002 candidates, and [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) narrows the Phase-1B namespace, token, and trait observations. Phase-1A/B implementation and local contract evidence now exist; their broader compatibility, platform, benchmark, product, and release evidence remains pending. [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and deterministic line/PNG contract, whose bounded implementation and local evidence remain private and do not close full-v1 export. [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) records the staged Phase-3A hidden facade and private Python helper; [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) records the Phase-3A2 pinned builder, same-wheel matrix, and CI-local evidence boundary. Helper/package/wheel evidence is pending and the public Phase-3B Matplotlib contract remains open. These records do not change the `Not implemented`, `Not measured`, or `environment required` statuses in the [traceability registry](../requirements/traceability-v1.0.md).
 
 | Decision | Accepted record | Evidence boundary |
 | --- | --- | --- |
@@ -179,7 +183,7 @@ O-01 through O-17 are now accepted contracts recorded in the linked ADR/API docu
 | O-04 | [ADR 0004 — RenderPacket resource lifecycle](../adr/0004-renderpacket-resource-lifecycle.md) | Packet and resource-lifetime tests pending |
 | O-06 | [ADR 0005 — runtime, viewer, and host loop](../adr/0005-runtime-viewer-host-loop.md) | Lifecycle and platform matrix pending |
 | O-07/O-08/O-16 | [ADR 0006 — support, benchmark, and native gates](../adr/0006-support-benchmark-native-gates.md) | All target cells and five-block measurements remain environment required |
-| O-02P/O-09/O-10 | [API 0003 — Phase-3A Python, NumPy, and private helper](api-0003-python-numpy-matplotlib.md) + [ADR 0013 — hidden facade/private Python helper](../adr/0013-hidden-facade-private-python-line-png.md) | Phase-3A helper, wheel, and runtime evidence pending; public Phase-3B Matplotlib canvas/result/fallback contract open |
+| O-02P/O-09/O-10 | [API 0003 — Phase-3A Python, NumPy, and private helper](api-0003-python-numpy-matplotlib.md) + [ADR 0013 — hidden facade/private Python helper](../adr/0013-hidden-facade-private-python-line-png.md) + [ADR 0014 — pinned wheel evidence](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) | Phase-3A2 builder, same-wheel, and manifest contract recorded; helper/package/wheel/runtime evidence pending; public Phase-3B Matplotlib canvas/result/fallback contract open |
 | O-11/O-12 | [ADR 0007 — coordinate, color, text, and export](../adr/0007-coordinate-color-text-export.md) | Transform, color, font, and output evidence pending |
 | Phase-2A/2B line frame and PNG | [ADR 0012 — private line frame and deterministic PNG](../adr/0012-private-line-frame-and-png-contract.md) | Bounded private implementation and local evidence recorded; full-v1 export and public adapter evidence pending |
 | O-13/O-14 | [API 0004 — annotations and accessibility](api-0004-annotations-accessibility.md) | Interaction, accessibility, and viewer evidence pending |
