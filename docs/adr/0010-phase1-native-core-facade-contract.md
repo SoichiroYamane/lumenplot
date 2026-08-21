@@ -1,6 +1,6 @@
 # ADR 0010: Accepted Phase-1 native core and facade contract
 
-- Status: **Accepted contract; implementation evidence pending**
+- Status: **Accepted contract; Phase-1 implementation and local contract evidence recorded**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
@@ -8,14 +8,16 @@
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Related boundary record: [ADR 0003 — facade and crate dependency graph](0003-facade-and-crate-dag.md)
 - Amendment: [ADR 0011 — Phase-1B facade namespace and observation traits](0011-phase1b-facade-namespace-observation-traits.md)
+- Follow-up amendment: [ADR 0012 — private line frame and deterministic PNG contract](0012-private-line-frame-and-png-contract.md)
 - API records: [API 0001 — native Scene state](../architecture/api-0001-native-scene-state.md), [API 0002 — errors, capabilities, and fallback](../architecture/api-0002-errors-capabilities-fallback.md)
 - Open-decision records: [O-01 — Exact facade and crate/module split](../architecture/open-decisions.md#o-01-exact-facade-and-cratemodule-split), [O-02 — Public Rust and Python API surface](../architecture/open-decisions.md#o-02-public-rust-and-python-api-surface), [O-03 — Error and capability taxonomy](../architecture/open-decisions.md#o-03-error-and-capability-taxonomy), [O-05 — Scene ownership, mutation, revision, and history](../architecture/open-decisions.md#o-05-scene-ownership-mutation-revision-and-history)
 
 This record is the accepted authority for the Phase-1 native core and facade
 slice. It resolves the candidate `SceneError`/`PublicError` and Scene/view/data
-surface recorded in API 0001 and API 0002 for this phase. It does not change the
-normative requirements, claim implementation evidence, or authorize package
-publication. [ADR 0011](0011-phase1b-facade-namespace-observation-traits.md)
+surface recorded in API 0001 and API 0002 for this phase. Phase-1A/B source and
+local contract evidence now exist, but this record does not claim full v1
+implementation, support, performance, release, or package publication.
+[ADR 0011](0011-phase1b-facade-namespace-observation-traits.md)
 is a narrow accepted amendment that fixes the Phase-1B root namespace, stable
 token observations, and exact public trait guarantees; all other decisions in
 this record remain unchanged.
@@ -459,13 +461,14 @@ altering this public contract.
 
 ## Verification and evidence boundary
 
-This document records an accepted decision, not implementation completion. The
-implementation stages must pass the repository architecture checker and
-mutation suite, locked Rust format/check/test/clippy/metadata checks, applicable
-Nix and security/documentation checks, and the contract-focused tests listed
-above. The traceability registry must continue to report product requirements
-as `Not implemented`, `Not measured`, or `environment required` until those
-artifacts exist.
+This document records an accepted decision and the Phase-1 implementation/local
+contract evidence, not v1 implementation completion. The implementation stages
+must pass the repository architecture checker and mutation suite, locked Rust
+format/check/test/clippy/metadata checks, applicable Nix and
+security/documentation checks, and the contract-focused tests listed above. The
+traceability registry must continue to report the broader product requirements
+as `Not implemented`, `Not measured`, or `environment required` until their
+separate artifacts exist.
 
 ## Residual risks and follow-up
 
@@ -487,6 +490,7 @@ artifacts exist.
 - [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - [ADR 0003 — facade and crate dependency graph](0003-facade-and-crate-dag.md)
 - [ADR 0011 — Phase-1B facade namespace and observation traits](0011-phase1b-facade-namespace-observation-traits.md)
+- [ADR 0012 — private line frame and deterministic PNG contract](0012-private-line-frame-and-png-contract.md)
 - [API 0001 — native Scene, view, and owned data](../architecture/api-0001-native-scene-state.md)
 - [API 0002 — errors, capability diagnostics, and fallback](../architecture/api-0002-errors-capabilities-fallback.md)
 - [Architecture overview](../architecture/overview.md)

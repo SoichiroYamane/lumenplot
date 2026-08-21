@@ -1,6 +1,6 @@
 # API 0002: Errors, capability diagnostics, and fallback contract
 
-- Status: **Accepted Phase-1 contract; implementation evidence pending**
+- Status: **Accepted Phase-1 contract; local mapping and contract evidence recorded**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
@@ -215,8 +215,9 @@ Required evidence includes the exhaustive Phase-1 mapping table, stable token
 and category tests, private-field/source-redaction tests, Rust-to-Python failure
 and panic fixtures, strict unsupported fixtures, hybrid diagnostics and golden
 outputs, device-loss and OOM failures, stale/cancel counters, and checks that
-fallback diagnostics never encode device loss or OOM. The current status is
-pending implementation and failure evidence.
+fallback diagnostics never encode device loss or OOM. Local Phase-1 mapping and
+sanitization evidence exists; Python, lifecycle, fallback, device-loss, OOM,
+and stale/cancel failure evidence remains pending.
 
 ## Residual risks
 

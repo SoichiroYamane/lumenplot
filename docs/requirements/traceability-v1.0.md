@@ -1,14 +1,14 @@
 # LumenPlot v1.0 requirement traceability
 
-- Status: pre-alpha publication; no product implementation or benchmark completion is claimed.
+- Status: pre-alpha publication; Phase-1A/B implementation and local contract evidence exist, but no full-v1 product, benchmark, support, or release completion is claimed.
 - Source of truth: `docs/requirements/lumenplot-v1.0.md` and its Appendix A coverage matrix.
-- This document maps every stable requirement entry to an evidence type and records the current result separately from its target. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md), its narrow [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) amendment, and the updated [API 0001](../architecture/api-0001-native-scene-state.md)/[API 0002](../architecture/api-0002-errors-capabilities-fallback.md) record the accepted Phase-1 native core/facade contract; they do not change any product result below.
+- This document maps every stable requirement entry to an evidence type and records the current result separately from its target. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md), its narrow [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) amendment, and the updated [API 0001](../architecture/api-0001-native-scene-state.md)/[API 0002](../architecture/api-0002-errors-capabilities-fallback.md) record the accepted Phase-1 native core/facade contract; [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and PNG contract. They do not change any product result below.
 
 ## Status rules
 
 | Result | Meaning |
 | --- | --- |
-| `Not implemented` | The requirement has no product implementation evidence in this bundle. |
+| `Not implemented` | The full requirement has not been closed by product implementation evidence in this bundle; a bounded Phase-1 slice may exist without closing the row. |
 | `Not measured` | A benchmark or numeric target has no product measurement in this bundle. |
 | `environment required` | Platform, GPU, driver, display, or present evidence requires a declared test environment; it is not inferred from source research. |
 | `Reference only` | A candidate technology or dated version is not a support claim or dependency pin. |
@@ -31,17 +31,19 @@
 
 ## Accepted Phase-1 contract records
 
-The following records are accepted architecture/API contracts and documentation
-evidence only. They refine the implementation boundary without changing the
-requirement registry's `Not implemented`, `Not measured`, or
-`environment required` results.
+The following records are accepted architecture/API contracts. Phase-1A/B has
+implementation and local contract evidence, while the Phase-2A/2B record below
+is still an implementation boundary. None of these bounded records changes the
+requirement registry's `Not implemented`, `Not measured`, or `environment
+required` results.
 
 | Contract | Record | Current status |
 | --- | --- | --- |
-| Phase-1 native core and minimal facade | [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) | Accepted contract; implementation and architecture evidence pending |
-| Phase-1B facade namespace and observation traits | [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) | Accepted amendment; implementation and architecture evidence pending |
-| Phase-1 Scene, view, and owned data surface | [API 0001](../architecture/api-0001-native-scene-state.md) | Accepted contract; implementation evidence pending |
-| Phase-1 engine error ownership and mapping | [API 0002](../architecture/api-0002-errors-capabilities-fallback.md) | Accepted contract; mapping and failure evidence pending |
+| Phase-1 native core and minimal facade | [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) | Accepted contract; Phase-1 implementation and local contract evidence recorded |
+| Phase-1B facade namespace and observation traits | [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) | Accepted amendment; Phase-1B implementation and local contract evidence recorded |
+| Phase-1 Scene, view, and owned data surface | [API 0001](../architecture/api-0001-native-scene-state.md) | Accepted contract; Phase-1 local implementation evidence recorded |
+| Phase-1 engine error ownership and mapping | [API 0002](../architecture/api-0002-errors-capabilities-fallback.md) | Accepted contract; Phase-1 mapping/local failure evidence recorded |
+| Phase-2A/2B private line frame and deterministic PNG | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) | Accepted amendment; implementation and evidence pending |
 
 ## Coverage summary
 
@@ -51,7 +53,7 @@ requirement registry's `Not implemented`, `Not measured`, or
 - Stable families: `DATA` (10), `EXPORT` (10), `FUNC` (31), `LOD` (7), `MPL` (19), `PERF` (16), `PLAT` (12), `PROD` (18), `QUAL` (28), `REL` (14), `RENDER` (10), `SEC` (8), `TEXT` (7), `UX` (33).
 - Evidence gates referenced: **92**.
 
-Every `MUST` and `MUST NOT` entry appears in the registry below with at least one acceptance gate. The `Result` column is not a pass/fail claim; it is the honest pre-implementation state.
+Every `MUST` and `MUST NOT` entry appears in the registry below with at least one acceptance gate. The `Result` column is not a pass/fail claim; it is the honest status of the full requirement. A bounded Phase-1 implementation does not automatically promote a row to closure.
 
 ## Complete requirement registry
 
@@ -440,17 +442,17 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 
 | Family | Evidence focus | Current boundary |
 | --- | --- | --- |
-| `LP-DATA` | f64 authority, sealed chunk ownership, local-f32 conversion, and residency | Phase-1 owned-data/chunk contract recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); implementation and evidence pending. |
-| `LP-EXPORT` | PNG/PDF blockers, SVG non-blocking path, state snapshots, and fallback scope | Pending implementation and evidence; no completion is claimed. |
-| `LP-FUNC` | native functional interaction, annotations, viewer, and optional capability scope | Phase-1 view/scale observations are recorded in [API 0001](../architecture/api-0001-native-scene-state.md); implementation and evidence pending. |
-| `LP-LOD` | MonotonicX dyadic extrema and ArbitraryXY correctness/culling | Phase-1 selection contract recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); implementation and evidence pending. |
+| `LP-DATA` | f64 authority, sealed chunk ownership, local-f32 conversion, and residency | Phase-1 owned-data/chunk implementation and local evidence exist under [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); full v1 local-f32, residency, and scale evidence remains pending. |
+| `LP-EXPORT` | PNG/PDF blockers, SVG non-blocking path, state snapshots, and fallback scope | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the private line/PNG boundary; Phase-2 implementation and full export evidence remain pending. |
+| `LP-FUNC` | native functional interaction, annotations, viewer, and optional capability scope | Phase-1 view/scale implementation and local evidence are recorded in [API 0001](../architecture/api-0001-native-scene-state.md); interaction, annotations, viewer, and v1 evidence remain pending. |
+| `LP-LOD` | MonotonicX dyadic extrema and ArbitraryXY correctness/culling | Phase-1 selection implementation and local evidence are recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); v1 correctness/performance evidence remains pending. |
 | `LP-MPL` | loader, profiles, authority, fallback diagnostics, FFI, and separated performance claims | Phase-1 public error mapping is recorded in [API 0002](../architecture/api-0002-errors-capabilities-fallback.md); adapter implementation and evidence pending. |
 | `LP-PERF` | 10M native gate, workload fixtures, warm-up, segments, quantiles, and manifests | Pending implementation and evidence; no completion is claimed. |
 | `LP-PLAT` | capability selection, main-thread runtime, surfaces, device loss, and platform matrix | Pending implementation and evidence; no completion is claimed. |
-| `LP-PROD` | product independence, shared semantic frame, and core dependency direction | Phase-1 native core/facade boundary is recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); implementation and evidence pending. |
-| `LP-QUAL` | hot path, lifecycle, shaders, dependency gates, repository boundary, and release quality | Phase-1 Scene ownership and publication rules are recorded in [API 0001](../architecture/api-0001-native-scene-state.md); implementation and evidence pending. |
-| `LP-REL` | phase placement, release inclusion, and no-claim-before-evidence review | Pending implementation and evidence; no completion is claimed. |
-| `LP-RENDER` | line expansion, width, HiDPI, alpha, clipping, and antialiasing | Pending implementation and evidence; no completion is claimed. |
+| `LP-PROD` | product independence, shared semantic frame, and core dependency direction | Phase-1 native core/facade implementation and local evidence are recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); the shared v1 frame and product evidence remain pending. |
+| `LP-QUAL` | hot path, lifecycle, shaders, dependency gates, repository boundary, and release quality | Phase-1 Scene ownership/publication implementation and local evidence are recorded in [API 0001](../architecture/api-0001-native-scene-state.md); lifecycle, hot-path, shader, and release evidence remain pending. |
+| `LP-REL` | phase placement, release inclusion, and no-claim-before-evidence review | Phase-1A/B local implementation evidence is present; v1 release inclusion and no-claim gates remain open. |
+| `LP-RENDER` | line expansion, width, HiDPI, alpha, clipping, and antialiasing | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the private line-frame/coverage boundary; renderer, golden, and v1 evidence remain pending. |
 | `LP-SEC` | unsafe boundary, runtime shader policy, input validation, provenance, SBOM, fonts, and public docs | Pending implementation and evidence; no completion is claimed. |
 | `LP-TEXT` | one shaping/layout result, font identity, PDF text, and vector semantics | Pending implementation and evidence; no completion is claimed. |
 | `LP-UX` | direct manipulation, Legend state, keyboard, focus, contrast, and reduced motion | Pending implementation and evidence; no completion is claimed. |
