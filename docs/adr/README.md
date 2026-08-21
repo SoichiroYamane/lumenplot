@@ -46,7 +46,7 @@ Each ADR should state:
 6. affected interfaces and required verification;
 7. residual risks and follow-up decisions.
 
-Architecture records should use stable public links, remove unnecessary tracking query parameters, and avoid private identifiers and local filesystem references. An ADR records an accepted architecture choice; it does not claim that the choice has been implemented. Implementation status and evidence belong in requirements traceability and release records.
+Architecture records should use stable public links, remove unnecessary tracking query parameters, and avoid private identifiers and local filesystem references. An accepted ADR records a decision; ADR acceptance alone is not implementation evidence. Implementation status may be stated explicitly in the ADR index/status prose only when backed by traceability, review, or release evidence; otherwise it remains unimplemented or pending. No implementation, compatibility, platform, benchmark, or release claim may be inferred from ADR acceptance alone.
 
 Exact public signatures, packet schemas, dependency pins, and routine local implementation details belong in a later ADR only when they are architecture decisions. Keep public and internal boundaries explicit, and never promote a candidate dependency version into a normative requirement without compatibility, correctness, security, license, MSRV, and performance evidence.
 
