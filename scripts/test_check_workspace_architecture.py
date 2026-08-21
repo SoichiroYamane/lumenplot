@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -89,8 +90,16 @@ pub mod __private {
         pub fn category(&self) -> ErrorCategory { unreachable!() }
         pub fn message(&self) -> &str { unreachable!() }
     }
-    impl fmt::Debug for BridgeError {}
-    impl fmt::Display for BridgeError {}
+    impl fmt::Debug for BridgeError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.debug_struct("BridgeError").finish()
+        }
+    }
+    impl fmt::Display for BridgeError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
     impl std::error::Error for BridgeError {}
 
     pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> { unreachable!() }
@@ -140,6 +149,113 @@ pub mod __private {
 
         self.assert_mutation_rejected(mutate, expected)
 
+    def run_external_consumer(
+        self,
+        fixture_root: Path,
+        source: str,
+        flags: tuple[str, ...] = (),
+    ) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory(prefix="lumenplot-consumer-") as temporary:
+            consumer = Path(temporary)
+            (consumer / "src").mkdir()
+            dependency_path = (fixture_root / "crates/lumenplot").as_posix().replace('"', '\\"')
+            (consumer / "Cargo.toml").write_text(
+                f"""[package]
+name = "external-consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lumenplot = {{ path = "{dependency_path}" }}
+""",
+                encoding="utf-8",
+            )
+            (consumer / "src/main.rs").write_text(source, encoding="utf-8")
+            environment = dict(os.environ)
+            environment["CARGO_NET_OFFLINE"] = "true"
+            environment["CARGO_TARGET_DIR"] = str(fixture_root / "target-external-consumer")
+            return subprocess.run(
+                ["cargo", "check", "--manifest-path", str(consumer / "Cargo.toml"), *flags],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+    def assert_external_consumer_matrix(self, fixture_root: Path, source: str) -> None:
+        for flags in ((), ("--all-features", "--all-targets")):
+            result = self.run_external_consumer(fixture_root, source, flags)
+            self.assertEqual(
+                result.returncode,
+                0,
+                f"external consumer failed for flags {flags}:\n{result.stdout}\n{result.stderr}",
+            )
+
+    @staticmethod
+    def required_surface_consumer() -> str:
+        return """
+use lumenplot::{
+    AxisRange, AxisScale, AxisScales, CommitReceipt, ErrorCategory, ErrorCode, PlotScene,
+    PublicError, SceneRevision, SceneSnapshot, SceneTransaction, SeriesData, SeriesId,
+    SeriesTopology, Viewport,
+};
+
+fn main() {
+    let _ = ErrorCategory::as_str;
+    let _ = ErrorCode::as_str;
+    let _ = PublicError::code;
+    let _ = AxisRange::new;
+    let _ = AxisRange::min;
+    let _ = AxisRange::max;
+    let _ = AxisScale::Linear;
+    let _ = AxisScale::Log10;
+    let _ = AxisScales::new;
+    let _ = AxisScales::x;
+    let _ = AxisScales::y;
+    let _ = AxisScales::validate;
+    let _ = Viewport::new;
+    let _ = Viewport::from_bounds;
+    let _ = Viewport::x;
+    let _ = Viewport::y;
+    let _ = SeriesTopology::MonotonicX;
+    let _ = SeriesTopology::ArbitraryXY;
+    let _ = SeriesData::from_owned_xy;
+    let _ = SeriesData::from_owned_xy_segments;
+    let _ = SeriesData::topology;
+    let _ = SeriesData::source_len;
+    let _ = SeriesData::point_count;
+    let _ = SeriesData::is_empty;
+    let _ = PlotScene::new;
+    let _ = PlotScene::transaction;
+    let _ = PlotScene::snapshot;
+    let _ = PlotScene::revision;
+    let _ = SceneTransaction::replace_canonical_view;
+    let _ = SceneTransaction::set_viewport;
+    let _ = SceneTransaction::set_axis_scales;
+    let _ = SceneTransaction::add_series;
+    let _ = SceneTransaction::append_series;
+    let _ = SceneTransaction::commit;
+    let _ = SceneTransaction::abort;
+    let _ = SceneSnapshot::revision;
+    let _ = SceneSnapshot::canonical_view;
+    let _ = SceneSnapshot::viewport;
+    let _ = SceneSnapshot::axis_scales;
+    let _: Option<CommitReceipt> = None;
+    let _: Option<SceneRevision> = None;
+    let _: Option<SceneSnapshot> = None;
+    let _: Option<SceneTransaction<'static>> = None;
+    let _: Option<SeriesId> = None;
+    let _: Option<AxisScale> = None;
+    let _ = lumenplot::__private::LinePngGeometry::new;
+    let _ = lumenplot::__private::LinePngStyle::new;
+    let _ = lumenplot::__private::OwnedLinePngRequest::new;
+    let _ = lumenplot::__private::BridgeError::code;
+    let _ = lumenplot::__private::BridgeError::category;
+    let _ = lumenplot::__private::BridgeError::message;
+    let _ = lumenplot::__private::render_line_png;
+}
+"""
+
     def wrap_hidden_facade(self, root: Path, opener: str) -> None:
         path = root / "crates/lumenplot/src/lib.rs"
         source = path.read_text(encoding="utf-8")
@@ -151,6 +267,306 @@ pub mod __private {
             1,
         )
         path.write_text(source[:start] + opener + "\n" + hidden + "}\n", encoding="utf-8")
+
+    def test_external_consumer_compiles_required_surface_in_both_feature_modes(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.add_valid_hidden_facade(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+            self.assert_external_consumer_matrix(fixture_root, self.required_surface_consumer())
+
+    def test_external_oracle_reaches_same_line_cross_file_inherent_impl(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            view_path = fixture_root / "crates/lumenplot/src/view.rs"
+            view_path.write_text(
+                view_path.read_text(encoding="utf-8")
+                + "\nmod nested { use super::AxisRange; impl AxisRange { pub fn leaked(&self) -> f64 { self.min() } } }\n",
+                encoding="utf-8",
+            )
+            consumer = "use lumenplot::AxisRange; fn main() { let _ = AxisRange::leaked; }\n"
+            self.assert_external_consumer_matrix(fixture_root, consumer)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertNotEqual(returncode, 0, output)
+            self.assertIn("public method 'leaked' on 'AxisRange' is not allowed", output)
+
+    def test_external_oracle_preserves_unreachable_private_and_block_pub_controls(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            root_path = fixture_root / "crates/lumenplot/src/lib.rs"
+            root_path.write_text(
+                root_path.read_text(encoding="utf-8")
+                + "\nmod lexical_control { pub struct HiddenFromRoot; }\n"
+                + "const _: () = { pub struct BlockOnly; () };\n",
+                encoding="utf-8",
+            )
+            consumer = """
+fn main() {
+    let _: Option<lumenplot::HiddenFromRoot> = None;
+    let _: Option<lumenplot::BlockOnly> = None;
+}
+"""
+            result = self.run_external_consumer(fixture_root, consumer)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_external_oracle_rejects_public_associated_const_inventory_expansion(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            view_path = fixture_root / "crates/lumenplot/src/view.rs"
+            view_path.write_text(
+                view_path.read_text(encoding="utf-8")
+                + "\nimpl AxisRange { pub const LEAK: u8 = 1; }\n",
+                encoding="utf-8",
+            )
+            consumer = "use lumenplot::AxisRange; fn main() { let _ = AxisRange::LEAK; }\n"
+            self.assert_external_consumer_matrix(fixture_root, consumer)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertNotEqual(returncode, 0, output)
+            self.assertIn("public associated const 'LEAK' on 'AxisRange' is not allowed", output)
+
+    def test_external_oracle_rejects_unknown_root_export_attribute(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.add_valid_hidden_facade(fixture_root)
+            root_path = fixture_root / "crates/lumenplot/src/lib.rs"
+            source = root_path.read_text(encoding="utf-8")
+            marker = "pub use view::{AxisRange, AxisScale, AxisScales, Viewport};"
+            self.assertIn(marker, source)
+            root_path.write_text(source.replace(marker, "#[doc(hidden)]\n" + marker, 1), encoding="utf-8")
+            self.assert_external_consumer_matrix(fixture_root, self.required_surface_consumer())
+            returncode, output = self.run_checker(fixture_root)
+            self.assertNotEqual(returncode, 0, output)
+            self.assertIn("root export attributes are not allowlisted", output)
+
+    def test_external_oracle_rejects_unknown_public_impl_attribute(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            view_path = fixture_root / "crates/lumenplot/src/view.rs"
+            view_path.write_text(
+                view_path.read_text(encoding="utf-8")
+                + "\n#[allow(dead_code)]\nimpl AxisRange { pub fn attributed(&self) -> f64 { self.min() } }\n",
+                encoding="utf-8",
+            )
+            consumer = "use lumenplot::AxisRange; fn main() { let _ = AxisRange::attributed; }\n"
+            self.assert_external_consumer_matrix(fixture_root, consumer)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertNotEqual(returncode, 0, output)
+            self.assertIn("facade impl for 'AxisRange' has unallowlisted attributes", output)
+
+    def test_external_oracle_rejects_cfg_attr_on_required_root_export(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.add_valid_hidden_facade(fixture_root)
+            root_path = fixture_root / "crates/lumenplot/src/lib.rs"
+            source = root_path.read_text(encoding="utf-8")
+            marker = "pub use view::{AxisRange, AxisScale, AxisScales, Viewport};"
+            self.assertIn(marker, source)
+            root_path.write_text(
+                source.replace(marker, '#[cfg_attr(feature = "never", doc(hidden))]\n' + marker, 1),
+                encoding="utf-8",
+            )
+            self.assert_external_consumer_matrix(fixture_root, self.required_surface_consumer())
+            returncode, output = self.run_checker(fixture_root)
+            self.assertNotEqual(returncode, 0, output)
+            self.assertIn("required root export is conditional", output)
+
+    def test_external_oracle_rejects_cfg_on_required_root_export(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.add_valid_hidden_facade(fixture_root)
+            root_path = fixture_root / "crates/lumenplot/src/lib.rs"
+            source = root_path.read_text(encoding="utf-8")
+            marker = "pub use view::{AxisRange, AxisScale, AxisScales, Viewport};"
+            self.assertIn(marker, source)
+            root_path.write_text(
+                source.replace(marker, '#[cfg(feature = "never")]\n' + marker, 1),
+                encoding="utf-8",
+            )
+            consumer = self.required_surface_consumer()
+            for flags in ((), ("--all-features", "--all-targets")):
+                result = self.run_external_consumer(fixture_root, consumer, flags)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertNotEqual(returncode, 0, output)
+            self.assertIn("required root export is conditional", output)
+
+    def test_external_oracle_rejects_nameable_path_redirected_required_module(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.add_valid_hidden_facade(fixture_root)
+            original = fixture_root / "crates/lumenplot/src/error.rs"
+            redirected = fixture_root / "crates/lumenplot/redirected_error.rs"
+            redirected.write_text(original.read_text(encoding="utf-8"), encoding="utf-8")
+            root_path = fixture_root / "crates/lumenplot/src/lib.rs"
+            source = root_path.read_text(encoding="utf-8")
+            self.assertIn("mod error;", source)
+            root_path.write_text(
+                source.replace("mod error;", '#[path = "../redirected_error.rs"]\nmod error;', 1),
+                encoding="utf-8",
+            )
+            self.assert_external_consumer_matrix(fixture_root, self.required_surface_consumer())
+            returncode, output = self.run_checker(fixture_root)
+            self.assertNotEqual(returncode, 0, output)
+            self.assertIn("module path redirection is not allowed", output)
+
+    def test_external_oracle_rejects_item_macro_generated_root_api(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            root_path = fixture_root / "crates/lumenplot/src/lib.rs"
+            root_path.write_text(
+                root_path.read_text(encoding="utf-8")
+                + "\nmacro_rules! generated { () => { pub fn generated() {} }; }\ngenerated!();\n",
+                encoding="utf-8",
+            )
+            consumer = "fn main() { let _ = lumenplot::generated; }\n"
+            self.assert_external_consumer_matrix(fixture_root, consumer)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertNotEqual(returncode, 0, output)
+            self.assertIn("crate-root macro", output)
+
+    def test_external_oracle_rejects_compile_valid_hidden_derive_attribute(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.add_valid_hidden_facade(fixture_root)
+            hidden_path = fixture_root / "crates/lumenplot/src/lib.rs"
+            source = hidden_path.read_text(encoding="utf-8")
+            marker = "    pub struct LinePngGeometry {"
+            self.assertIn(marker, source)
+            hidden_path.write_text(source.replace(marker, "    #[derive(Debug)]\n" + marker, 1), encoding="utf-8")
+            self.assert_external_consumer_matrix(fixture_root, self.required_surface_consumer())
+            returncode, output = self.run_checker(fixture_root)
+            self.assertNotEqual(returncode, 0, output)
+            self.assertIn("hidden facade incidental public traits", output)
+
+    def test_external_oracle_allows_non_api_attribute_inside_hidden_method_body(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.add_valid_hidden_facade(fixture_root)
+            hidden_path = fixture_root / "crates/lumenplot/src/lib.rs"
+            source = hidden_path.read_text(encoding="utf-8")
+            marker = "pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> { unreachable!() }"
+            replacement = "pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> { #[allow(unused_variables)] let _ = request; unreachable!() }"
+            self.assertIn(marker, source)
+            hidden_path.write_text(source.replace(marker, replacement, 1), encoding="utf-8")
+            self.assert_external_consumer_matrix(fixture_root, self.required_surface_consumer())
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_cfg_test_private_hidden_module_is_a_non_shipping_control(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.add_valid_hidden_facade(fixture_root)
+            hidden_path = fixture_root / "crates/lumenplot/src/lib.rs"
+            source = hidden_path.read_text(encoding="utf-8")
+            marker = "    pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> { unreachable!() }\n"
+            insertion = """
+    #[cfg(test)]
+    mod tests {
+        macro_rules! test_only_item { () => { pub struct TestOnly; }; }
+        test_only_item!();
+        #[allow(dead_code)]
+        pub fn test_only_function() {}
+    }
+"""
+            self.assertIn(marker, source)
+            hidden_path.write_text(source.replace(marker, marker + insertion, 1), encoding="utf-8")
+            self.assert_external_consumer_matrix(fixture_root, self.required_surface_consumer())
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_cfg_test_private_module_and_body_macro_are_non_shipping_controls(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            root_path = fixture_root / "crates/lumenplot/src/lib.rs"
+            root_path.write_text(
+                root_path.read_text(encoding="utf-8")
+                + """
+
+#[cfg(test)]
+mod tests {
+    macro_rules! test_only_item { () => { pub struct TestOnly; }; }
+    test_only_item!();
+    #[allow(dead_code)]
+    pub fn test_only_function() {}
+}
+""",
+                encoding="utf-8",
+            )
+            result = self.run_external_consumer(fixture_root, "fn main() {}\n", ("--all-features", "--all-targets"))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_external_oracle_rejects_hidden_type_impl_moved_across_facade_file(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.add_valid_hidden_facade(fixture_root)
+            view_path = fixture_root / "crates/lumenplot/src/view.rs"
+            view_path.write_text(
+                view_path.read_text(encoding="utf-8")
+                + "\nuse crate::__private::BridgeError;\nimpl BridgeError { pub fn leaked(&self) -> &str { self.message() } }\n",
+                encoding="utf-8",
+            )
+            consumer = "use lumenplot::__private::BridgeError; fn main() { let _ = BridgeError::leaked; }\n"
+            self.assert_external_consumer_matrix(fixture_root, consumer)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertNotEqual(returncode, 0, output)
+            self.assertIn("hidden facade implementation for 'BridgeError' is misplaced", output)
+
+    def test_external_scope_matrix_distinguishes_unreachable_decoys_and_impl_members(self) -> None:
+        cases = (
+            (
+                "nested private struct",
+                "mod lexical_struct { pub struct HiddenFromRoot; }",
+                "fn main() { let _: Option<lumenplot::HiddenFromRoot> = None; }\n",
+                False,
+            ),
+            (
+                "nested private function",
+                "mod lexical_function { pub fn hidden_from_root() {} }",
+                "fn main() { let _ = lumenplot::hidden_from_root; }\n",
+                False,
+            ),
+            (
+                "block private struct",
+                "const _: () = { pub struct BlockOnly; () };",
+                "fn main() { let _: Option<lumenplot::BlockOnly> = None; }\n",
+                False,
+            ),
+            (
+                "nested protected impl",
+                "mod nested { use super::AxisRange; impl AxisRange { pub fn leaked_nested(&self) -> f64 { self.min() } } }",
+                "use lumenplot::AxisRange; fn main() { let _ = AxisRange::leaked_nested; }\n",
+                True,
+            ),
+            (
+                "block protected impl",
+                "const _: () = { impl crate::AxisRange { pub fn leaked_block(&self) -> f64 { self.min() } } () };",
+                "use lumenplot::AxisRange; fn main() { let _ = AxisRange::leaked_block; }\n",
+                True,
+            ),
+        )
+        for label, insertion, consumer, externally_nameable in cases:
+            with self.subTest(label=label):
+                with self.fixture() as temporary:
+                    fixture_root = Path(temporary)
+                    target = fixture_root / "crates/lumenplot/src/view.rs" if "impl" in label else fixture_root / "crates/lumenplot/src/lib.rs"
+                    target.write_text(target.read_text(encoding="utf-8") + "\n" + insertion + "\n", encoding="utf-8")
+                    for flags in ((), ("--all-features", "--all-targets")):
+                        result = self.run_external_consumer(fixture_root, consumer, flags)
+                        if externally_nameable:
+                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        else:
+                            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    returncode, output = self.run_checker(fixture_root)
+                    if externally_nameable:
+                        self.assertNotEqual(returncode, 0, output)
+                        self.assertIn("public method", output)
+                    else:
+                        self.assertEqual(returncode, 0, output)
 
     def test_valid_hidden_facade_is_conditional_and_passes(self) -> None:
         with self.fixture() as temporary:
