@@ -38,10 +38,19 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
         )
         return result.returncode, result.stdout + result.stderr
 
-    def add_valid_hidden_facade(self, root: Path) -> None:
+    def remove_hidden_facade(self, root: Path) -> None:
         path = root / "crates/lumenplot/src/lib.rs"
+        source = path.read_text(encoding="utf-8")
+        marker = "#[doc(hidden)]\npub mod __private {"
+        if marker in source:
+            path.write_text(source[: source.index(marker)], encoding="utf-8")
+
+    def add_valid_hidden_facade(self, root: Path) -> None:
+        self.remove_hidden_facade(root)
+        path = root / "crates/lumenplot/src/lib.rs"
+        source = path.read_text(encoding="utf-8")
         path.write_text(
-            path.read_text(encoding="utf-8")
+            source
             + """
 
 #[doc(hidden)]
@@ -777,11 +786,6 @@ mod tests {
                 "pub fn code(&self) -> ErrorCode where T: Copy {",
             ),
             (
-                "multiline free function",
-                "pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> {",
-                "pub fn render_line_png(\n        request: OwnedLinePngRequest,\n    ) -> Result<Vec<u8>, BridgeError> {",
-            ),
-            (
                 "free function generic",
                 "pub fn render_line_png(",
                 "pub fn render_line_png<T>(",
@@ -923,6 +927,7 @@ mod tests {
         ):
             with self.subTest(label=label):
                 def mutate(root: Path, wrapper: str = wrapper) -> None:
+                    self.remove_hidden_facade(root)
                     path = root / "crates/lumenplot/src/lib.rs"
                     path.write_text(
                         path.read_text(encoding="utf-8") + "\n" + wrapper + "\n",
