@@ -35,6 +35,70 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
         )
         return result.returncode, result.stdout + result.stderr
 
+    def add_valid_hidden_facade(self, root: Path) -> None:
+        path = root / "crates/lumenplot/src/lib.rs"
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            + """
+
+#[doc(hidden)]
+pub mod __private {
+    use std::fmt;
+    use std::ops::Range;
+    use super::{ErrorCategory, ErrorCode};
+
+    pub struct LinePngGeometry {
+        viewport: [f64; 4],
+        canvas: [f64; 2],
+        plot_rect: [f64; 4],
+        logical_units_per_inch: f64,
+    }
+
+    pub struct LinePngStyle {
+        line_rgba: [u8; 4],
+        line_width: f64,
+        background_rgba: [u8; 4],
+    }
+
+    pub struct OwnedLinePngRequest {
+        x: Vec<f64>,
+        y: Vec<f64>,
+        valid_segments: Vec<Range<usize>>,
+        geometry: LinePngGeometry,
+        style: LinePngStyle,
+        output_dpi: f64,
+    }
+
+    pub struct BridgeError {
+        code: ErrorCode,
+        category: ErrorCategory,
+        message: String,
+    }
+
+    impl LinePngGeometry {
+        pub fn new(viewport: [f64; 4], canvas: [f64; 2], plot_rect: [f64; 4], logical_units_per_inch: f64) -> Result<Self, BridgeError> { unreachable!() }
+    }
+    impl LinePngStyle {
+        pub fn new(line_rgba: [u8; 4], line_width: f64, background_rgba: [u8; 4]) -> Result<Self, BridgeError> { unreachable!() }
+    }
+    impl OwnedLinePngRequest {
+        pub fn new(x: Vec<f64>, y: Vec<f64>, valid_segments: Vec<Range<usize>>, geometry: LinePngGeometry, style: LinePngStyle, output_dpi: f64) -> Result<Self, BridgeError> { unreachable!() }
+    }
+    impl BridgeError {
+        pub fn code(&self) -> ErrorCode { unreachable!() }
+        pub fn category(&self) -> ErrorCategory { unreachable!() }
+        pub fn message(&self) -> &str { unreachable!() }
+    }
+    impl fmt::Debug for BridgeError {}
+    impl fmt::Display for BridgeError {}
+    impl std::error::Error for BridgeError {}
+
+    pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> { unreachable!() }
+}
+""",
+            encoding="utf-8",
+        )
+
     def assert_mutation_rejected(self, mutate, expected: str) -> None:
         with self.fixture() as temporary:
             fixture_root = Path(temporary)
@@ -43,6 +107,154 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
             self.assertNotEqual(returncode, 0, output)
             self.assertIn(expected, output)
             self.assertNotIn(str(fixture_root), output)
+
+    def test_valid_hidden_facade_is_conditional_and_passes(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.add_valid_hidden_facade(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(output, "workspace architecture: OK\n")
+
+    def test_hidden_facade_requires_doc_hidden(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("#[doc(hidden)]\npub mod __private", "pub mod __private", 1),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "hidden facade module must be doc-hidden")
+
+    def test_hidden_facade_type_inventory_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "    pub struct BridgeError {",
+                    "    pub struct Unexpected {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "hidden facade public type is not allowed Unexpected")
+
+    def test_hidden_facade_method_inventory_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "pub fn message(&self) -> &str { unreachable!() }",
+                    "pub fn raw(&self) {}\n        pub fn message(&self) -> &str { unreachable!() }",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "hidden facade public method 'raw' on 'BridgeError' is not allowed",
+        )
+
+    def test_hidden_facade_signature_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "Result<Vec<u8>, BridgeError>",
+                    "Result<Vec<u16>, BridgeError>",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "hidden facade render_line_png has an unexpected signature",
+        )
+
+    def test_hidden_facade_public_field_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "        viewport: [f64; 4],",
+                    "        pub viewport: [f64; 4],",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "hidden facade type 'LinePngGeometry' exposes a public field")
+
+    def test_hidden_facade_raw_formatting_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "    pub struct LinePngGeometry {",
+                    "    #[derive(Debug)]\n    pub struct LinePngGeometry {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "hidden facade incidental public traits on 'LinePngGeometry' are not allowed",
+        )
+
+    def test_hidden_facade_root_reexport_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            with path.open("a", encoding="utf-8") as source:
+                source.write("\npub use __private::render_line_png;\n")
+
+        self.assert_mutation_rejected(mutate, "package lumenplot: exact root export inventory mismatch")
+
+    def test_hidden_facade_forbidden_signature_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "pub fn render_line_png(request: OwnedLinePngRequest)",
+                    "pub fn render_line_png(request: *const u8)",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "hidden facade render_line_png leaks an internal type",
+        )
+
+    def test_hidden_facade_type_kind_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "    pub struct LinePngGeometry {",
+                    "    pub enum LinePngGeometry {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "hidden facade type 'LinePngGeometry' must be a struct",
+        )
 
     def test_unmodified_fixture_passes(self) -> None:
         with self.fixture() as temporary:

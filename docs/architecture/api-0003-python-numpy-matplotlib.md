@@ -1,119 +1,258 @@
-# API 0003: Python, NumPy, and Matplotlib bridge contract
+# API 0003: Phase-3A Python, NumPy, and private line/PNG helper
 
-- Status: **Accepted initial contract; evidence pending**
+- Status: **Accepted staged Phase-3A contract; helper/package evidence pending; Phase-3B public Matplotlib contract open**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
-- Scope: O-02P/O-09/O-10 initial CPython/abi3/NumPy ownership and headless Matplotlib PNG profile
+- Scope: O-02P/O-09 Phase-3A CPython/abi3/NumPy ownership and private native helper
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](../adr/0002-gpu-native-engine-and-matplotlib-adapter.md)
-- Open-decision records: [O-09 — Python ABI and NumPy ingestion policy](open-decisions.md#o-09-python-abi-and-numpy-ingestion-policy), [O-10 — Matplotlib compatibility and profile matrix](open-decisions.md#o-10-matplotlib-compatibility-and-profile-matrix)
+- Boundary record: [ADR 0003 — facade and crate dependency graph](../adr/0003-facade-and-crate-dag.md)
+- Error record: [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md)
+- Governing staged decision: [ADR 0013 — hidden line/PNG facade and private Python helper](../adr/0013-hidden-facade-private-python-line-png.md)
+- Open-decision records: [O-09 — Python ABI and NumPy ingestion policy](open-decisions.md#o-09-python-abi-and-numpy-ingestion-policy) and [O-10 — Matplotlib compatibility and profile matrix](open-decisions.md#o-10-matplotlib-compatibility-and-profile-matrix)
 
-This record declares the initial bridge boundary and compatibility scope. It does not claim a built wheel, a supported Python/Matplotlib matrix, or a completed adapter. The exact NumPy dependency range is evidence-gated before manifest integration; it is not an unresolved public API field.
+This record narrows API 0003 to the first implementable, owned Phase-3A
+vertical slice. It records no Python product source, package artifact, wheel,
+Matplotlib dependency, backend entry point, or support result. The broad v1
+Matplotlib requirements remain normative, but the public Phase-3B result,
+diagnostic, warning, canvas, fallback, profile, generation, and file/path
+schemas are deliberately open until the private helper produces real evidence.
 
 ## Requirement references
 
-The bridge boundary covers `LP-DATA-001`, `LP-DATA-006`, `LP-DATA-007`, `LP-SEC-004`, and `LP-MPL-001` through `LP-MPL-017` in the [requirements](../requirements/lumenplot-v1.0.md#15-python-and-matplotlib-bridge).
+The staged boundary supports the ownership and bridge portions of `LP-DATA-001`,
+`LP-DATA-006`, `LP-DATA-007`, `LP-SEC-004`, and `LP-MPL-001` through `LP-MPL-017`
+in the [accepted requirements](../requirements/lumenplot-v1.0.md). A Phase-3A
+helper is not completion evidence for the full v1 adapter rows.
 
-## Context
+## Context and phase boundary
 
-NumPy arrays may be borrowed for bounded validation, but long-lived asynchronous and native state must not retain a Python-owned buffer. The first adapter slice needs a deliberately small headless PNG profile, explicit fallback behavior, and separate native/adapter performance claims.
+The merged Phase-2A line-frame and Phase-2B deterministic PNG sink provide a
+bounded private Rust/export path. The next seam must carry owned values across
+Python without leaking engine/export internals, borrowed NumPy memory, or a
+premature public Matplotlib schema.
+
+Phase-3A has two ordered implementation slices:
+
+1. the exact `lumenplot::__private` Rust facade in [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md);
+2. the private `_native.render_line_png` helper and local package/wheel evidence
+   over that integrated seam.
+
+Phase-3A is helper-only. It has no `backend.py`, no Matplotlib import or
+dependency, no `matplotlib.backend` entry point, no public `render_png`, no
+result/diagnostic/warning types, and no public canvas. A separate accepted
+Phase-3B record is required before any of those surfaces are implemented.
 
 ## Decision
 
-### CPython, ABI, and initial capabilities
+### 1. Identity and staged package layout
 
-The initial implementation target is GIL-enabled CPython 3.11 through 3.14 with `abi3-py311`.
-
-The following are unsupported initial capabilities: PyPy, free-threaded/`abi3t` builds, generic Buffer Protocol ingestion, and DLPack. The ABI tag is a packaging mechanism, not a support claim; the Python/wheel matrix must pass its own evidence gates.
-
-### NumPy ownership and ingestion
-
-The bridge uses typed rust-numpy borrowing only while the Python GIL is attached. The initial input is a one-dimensional, equal-length pair of `float32` or `float64` x/y arrays. The public long-lived ingestion policy is `copy="always"`:
-
-1. traverse any valid strided view in logical order while the attached borrow is valid;
-2. validate shape, dtype, values, topology, and lengths;
-3. immediately copy to Rust-owned canonical f64 sealed chunks;
-4. release the Python borrow before workers, asynchronous work, or GPU work can observe the data.
-
-Borrowed arrays never reach workers, async tasks, or the GPU. There is no initial `copy="never"`, `render_into`, generic buffer, or NumPy-to-GPU zero-copy API.
-
-Value and topology rules:
-
-- `NaN` in either coordinate denotes a gap;
-- positive or negative infinity is rejected;
-- integer, object, complex, and boolean input is rejected;
-- for MonotonicX, finite x values are globally nondecreasing when gaps are ignored;
-- duplicate x values are allowed and source order is preserved;
-- ArbitraryXY preserves source order and gaps.
-
-Canonical scientific data remains f64 even when input uses float32. The owned sealed-chunk boundary is the lifetime and async safety boundary.
-
-The exact NumPy dependency range must pass a dedicated CPython 3.11–3.14 wheel/import/runtime matrix before it is added to the package manifest. The range is therefore evidence-gated policy, not an unresolved public field and not a support result.
-
-### Initial Matplotlib evaluation matrix
-
-The initial declared evaluation matrix is CPython 3.11–3.14 with Matplotlib 3.11.x and backend API 1.1. Matplotlib 3.10/API 1.0 is a future separately tested bridge, not initial support.
-
-The distribution and module names are fixed:
+The intended identity is:
 
 - distribution: `lumenplot-mpl`;
 - import package: `lumenplot_mpl`;
-- backend module: `lumenplot_mpl.backend`;
-- Matplotlib loader: `module://lumenplot_mpl.backend`;
-- backend entry point: `lumenplot`.
+- private extension: `lumenplot_mpl._native`;
+- later reserved backend module: `lumenplot_mpl.backend`.
 
-### Phase-0 headless PNG profile
+The future helper-only source layout is
+`python/lumenplot_mpl/{__init__.py,_native.pyi,py.typed}` with a repository-root
+`pyproject.toml`, built through `crates/lumenplot-python/Cargo.toml`. This
+recording lane adds none of those files, manifests, lockfile entries, CI
+dependencies, package artifacts, or publication settings. The local evidence
+package remains unpublished.
 
-The first adapter slice supports headless PNG through public backend boundaries:
+The Rust crate DAG remains exactly:
 
-- `draw_path` with affine transformation;
-- rectangular/path clipping;
-- fill, stroke, alpha, dash, cap, and join;
-- marker and collection behavior only through tested public/base expansion;
-- ordinary text and mathtext through documented `TextToPath`/resolved outline behavior;
-- axes, grid, and Legend through those supported primitives.
+```text
+lumenplot-python -> lumenplot -> {lumenplot-engine, lumenplot-export}
+```
 
-The following are unsupported initial capabilities: images and arbitrary affine-image behavior, Gouraud, hatch, TeX, filters/path effects, GUI/blit/WebAgg/ipympl/Qt/MacOSX transports, and unknown private or custom behavior.
+There is no direct Python-to-engine/export edge and no new bridge crate.
 
-The initial profile policy is:
+### 2. Exact private native function
 
-| Profile | Initial result |
-| --- | --- |
-| `strict-common-2d` | Return an explicit unsupported operation error at an unsupported boundary. |
-| `hybrid-explicit` | Default profile. Produce a whole-frame **Agg PNG** fallback with a structured warning/result diagnostic when an unsupported boundary is encountered. Never omit it silently. |
-| `accelerated-native` | Declared profile, but return explicit unsupported until a sealed-aware implementation exists. |
+The only Phase-3A Python-visible native function is:
 
-A PDF whole-frame raster fallback is prohibited. Later PDF output must use semantics-preserving vector fallback or explicit failure. Mapped subtree fallback requires explicit proof of z-order, clipping, and compositing preservation.
+```text
+lumenplot_mpl._native.render_line_png(
+    x, y, *,
+    viewport, canvas, plot_rect,
+    logical_units_per_inch, output_dpi,
+    line_rgba, line_width, background_rgba,
+) -> bytes
+```
 
-The primary Matplotlib path is `Figure.savefig`/canvas `print_png`. Initial adapter configuration exposes profile and diagnostic mode only; it does not expose a public CPU/WGPU/Metal/DX12/Vulkan backend enum. The canvas retains its last diagnostics, and a helper result API is documented separately. There is no GUI `show` in Phase 0.
+The function delegates to the exact owned Rust types and operation in
+[ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md). Geometry is
+top-left `DisplayLogical`; `viewport` is `[x_min,x_max,y_min,y_max]`, `canvas`
+is `[width,height]`, and `plot_rect` is `[x_min,y_min,x_max,y_max]`. Color
+arguments are four integer channels in `0..=255`. There is no topology option:
+the helper is one full-resolution `ArbitraryXY` series, linear axes, uniform
+solid Butt/Miter/limit-4 style, and PNG only. It returns owned bytes and no
+diagnostics.
 
-Fallback diagnostics retain at least reason, type, generation, output format, and raster/vector scope. Adapter measurements report Python, FFI, copy, upload, and fallback costs separately from native zero-Python claims.
+The Rust facade repeats equal-length, finite/infinity, NaN-gap, exact maximal
+range, geometry, style, DPI, checked-arithmetic, ceiling, and PNG validation.
+The request is copied into owned f64 vectors and consumed by a synchronous,
+temporary Scene/frame/export operation. No Scene, borrow, pointer, callback,
+worker, cache, output target, or Python object crosses the owned detached
+interval.
 
-## Consequences
+### 3. Candidate dependencies and ABI gate
 
-- Python-owned input cannot outlive the attached borrow into worker or GPU state.
-- Strided and gapped input is defined without promising zero-copy GPU ingestion.
-- The adapter can provide useful common headless PNG behavior while remaining honest about unsupported effects and transports.
-- The default hybrid profile is observable rather than silently approximate.
-- Native Scene authority and the Matplotlib Figure/Artist authority remain distinct.
+Add these exact candidates only in the later implementation lane and only
+after the evidence gate passes:
+
+```toml
+pyo3 = { version = "=0.29.2", default-features = false,
+         features = ["macros", "extension-module", "abi3-py311"] }
+numpy = { version = "=0.29.0", default-features = false }
+```
+
+The PEP-517 build frontend is exactly `maturin==1.14.1`. Candidate metadata
+uses `Requires-Python >=3.11,<3.15`. The initial runtime evidence pin is
+exactly `numpy==2.4.6`; it is not a runtime support range or a NumPy ABI
+promise. `abi3-py311` authorizes only GIL-enabled CPython 3.11, 3.12, 3.13,
+and 3.14 evaluation. It is not a LumenPlot C ABI, NumPy ABI guarantee,
+platform result, or future-CPython promise.
+
+No `abi3t`/free-threaded, PyPy/GraalPy, handwritten NumPy C API/layout/header
+or symbol contract, generic Buffer Protocol, DLPack, zero-copy, borrowed
+escape, or project unsafe code is accepted. Dependency build/unsafe surfaces,
+the exact lock graph, checksums, licenses, SBOM/notices, maturin build
+surface, wheel repair, and provenance remain evidence gates.
+
+### 4. Exact NumPy ingestion policy
+
+Accept only exact built-in NumPy `ndarray` objects, not ndarray subclasses or
+masked arrays. Each input is one-dimensional, equal-length, aligned, and
+native-endian `float32` or `float64`, with at most `1_000_000` values. Safe
+logical positive, negative, and zero strides are accepted. Read-only and
+writable arrays are both accepted and are never mutated.
+
+Reject integer, boolean, object, complex, float16, structured, non-native-
+endian, unaligned, wrong-dimensional, masked, subclass, and malformed-byte-span
+inputs with sanitized `invalid-input`. The caller must not mutate either array
+concurrently during the call; LumenPlot provides no synchronization for that
+misuse. Mutation after the copy cannot affect output.
+
+While the GIL is attached, the helper validates dtype, shape, endianness,
+alignment, stride, capacity, and values, traverses logical order, treats NaN
+in either coordinate as a gap, rejects every infinity, builds exact
+source-index maximal finite ranges, and copies immediately to owned f64
+vectors. Every NumPy/Python borrow and object reference is dropped before
+`Python::detach`. Only the pure-owned request/render/output interval may run
+detached. The bridge reattaches before constructing Python bytes or an
+exception. No Python object, borrow guard, pointer, callback, lock, worker,
+Scene, or output target crosses the detached interval. Independent one-shot
+calls are reentrant and use no global mutable state.
+
+### 5. Python error boundary
+
+`lumenplot_mpl.LumenPlotError(RuntimeError)` is the only Phase-3A LumenPlot
+exception. It has read-only string observations `code`, `category`, and
+`message`, and `str(error) == message`. Values are the exact lowercase
+API-0002 tokens. There are no subclasses, Python enums, numeric discriminants,
+parsers, JSON/wire identity, stable repr or message wording, Rust cause, or
+panic payload. Semantic input and bridge failures use this class and are
+raised from `None`.
+
+Python call-binding errors remain `TypeError`; interpreter allocation may remain
+`MemoryError`; `KeyboardInterrupt` and `SystemExit` remain native exceptions.
+Rust-controlled allocation failure maps to `out-of-memory`/`resource`; creating
+the final Python `bytes` may raise native `MemoryError`. Device loss and OOM
+are never fallback reasons.
+
+The hidden Rust `BridgeError` mapping is exhaustive and leaves existing
+`PublicError` mapping unchanged:
+
+| Export source | Code | Category |
+| --- | --- | --- |
+| `InvalidInput` | `invalid-input` | `input` |
+| `UnsupportedCapability` | `unsupported-capability` | `capability` |
+| `CapacityExceeded` | `invalid-input` | `input` |
+| `AllocationFailed` | `out-of-memory` | `resource` |
+| `EncodingFailed` | `internal` | `internal` |
+| `Internal` | `internal` | `internal` |
+
+Category derives from code. Messages are sanitized non-contract text,
+`source()` is `None`, and unexpected Rust panics are redacted to
+`internal`/`internal`.
+
+### 6. Wheel and runtime evidence gate
+
+Before Phase-3A Python integration is accepted, build one locked
+`cp311-abi3` `manylinux_2_28` x86_64 single-wheel artifact and test that same
+artifact in clean GIL-enabled CPython 3.11, 3.12, 3.13, and 3.14 environments
+with exactly NumPy 2.4.6. The matrix covers install/import, extension
+initialization, all accepted/rejected dtype/stride/alignment/gap/error/
+ownership cases, detached rendering, bytes ownership, and error redaction.
+It also covers wheel metadata/`RECORD`, auditwheel, dependency/license/SBOM,
+and provenance checks.
+
+The wheel tag alone proves nothing. macOS, Windows, aarch64, universal2,
+Windows ARM64, musllinux, other artifacts, free-threaded interpreters,
+non-CPython interpreters, and package publication are unsupported or unclaimed
+until separate evidence and a reviewed decision exist.
+
+## Phase-3B boundary remains open
+
+The public-backend research supplies mandatory inputs to a later decision; it
+does not authorize Phase-3B implementation or freeze a public schema. That
+decision must at minimum preserve:
+
+- public Matplotlib APIs only; private backend, renderer, artist, transform,
+  cache, and helper names are not a contract;
+- an exact eligible object whitelist and public `RendererBase` collector before
+  native allocation/output;
+- the exact eligible trace of one Figure background path and one Line2D path,
+  with unexpected callbacks/custom artists treated as unsupported;
+- rejection of fixed-style mismatches rather than silent approximation;
+- 72 DisplayLogical points per inch, effective savefig DPI as output DPI, and
+  bottom-left-to-top-left geometry mapping with callback/source reconciliation;
+- an explicit non-PNG guard rather than a base-class backend switch;
+- only a future public whole-frame `FigureCanvasAgg` fallback, never a partial
+  native/Agg composite;
+- no fallback after invalid input, capacity/overflow, allocation/OOM,
+  encoding/internal/panic, reentrancy/stale publication, or I/O failure; and
+- Figure/Artist authority with no non-reentrant lock held across public
+  callbacks.
+
+The public result, diagnostic, warning, canvas, fallback, profile, generation,
+and file/path schemas require that separate accepted contract. No provisional
+`PngResult`, `FallbackDiagnostic`, `LumenPlotFallbackWarning`, `render_png`, or
+canvas property schema is adopted here.
+
+## Consequences and residual risks
+
+- The engine remains independent of Python and Matplotlib, and the accepted
+  crate DAG remains unchanged.
+- The first Python slice has a small, auditable ownership boundary but no
+  end-user Matplotlib backend or public fallback/result surface.
+- NumPy arrays are copied under the GIL; concurrent caller mutation is an
+  explicit caller responsibility, not a hidden synchronization feature.
+- A single Linux wheel matrix is not cross-platform support, and an abi3 tag is
+  not runtime evidence.
+- Full v1 adapter, Matplotlib compatibility, fallback, output, platform,
+  benchmark, and release claims remain pending.
 
 ## Verification and evidence boundary
 
-Required evidence includes dtype/stride/shape/gap/Inf/topology tests, copy and lifetime tests, FFI panic/error fixtures, CPython 3.11–3.14 wheel/import/runtime matrix, Matplotlib loader and entry-point tests, strict unsupported fixtures, Agg fallback goldens and diagnostics, and profile-separated performance reports. No wheel or compatibility cell is claimed here.
-
-## Residual risks
-
-- Matplotlib public backend behavior can vary by version and renderer; the initial matrix is bounded and separately tested.
-- TextToPath outlines at the adapter boundary do not establish native font ownership or the later PDF/text contract.
-- The exact NumPy dependency range and future Matplotlib 3.10 bridge require evidence before their package policy changes.
+This record changes documentation and the conditional architecture inventory
+only. It does not add Rust/Python product source, Cargo/Python manifests,
+`Cargo.lock`, CI dependencies, packages, or publication settings. The
+requirements traceability registry remains `Not implemented`, `Not measured`,
+or `environment required` for full-v1 rows until their evidence gates close.
 
 ## Related records
 
 - [ADR index](../adr/README.md)
+- [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](../adr/0002-gpu-native-engine-and-matplotlib-adapter.md)
+- [ADR 0003 — facade and crate dependency graph](../adr/0003-facade-and-crate-dag.md)
+- [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md)
+- [ADR 0012 — private line frame and deterministic PNG contract](../adr/0012-private-line-frame-and-png-contract.md)
+- [ADR 0013 — hidden line/PNG facade and private Python helper](../adr/0013-hidden-facade-private-python-line-png.md)
 - [Architecture overview](overview.md)
-- [API 0001 — native Scene state](api-0001-native-scene-state.md)
+- [Open decisions](open-decisions.md)
 - [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md)
-- [ADR 0007 — coordinate, color, text, and export](../adr/0007-coordinate-color-text-export.md)
-- [O-09 open-decision entry](open-decisions.md#o-09-python-abi-and-numpy-ingestion-policy)
-- [O-10 open-decision entry](open-decisions.md#o-10-matplotlib-compatibility-and-profile-matrix)
 - [Accepted requirements: Python bridge](../requirements/lumenplot-v1.0.md#15-python-and-matplotlib-bridge)

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Check the accepted Phase-1A/Phase-1B Cargo workspace boundary.
+"""Check the accepted Rust workspace and conditional Phase-3A facade boundary.
 
 This checker intentionally uses only the Python standard library.  It validates
 repository structure and negative public-surface guards without compiling or
-importing product code.
+importing product code.  The hidden Phase-3A facade is absent before
+implementation and, when present, must match its exact owned inventory.
 """
 
 from __future__ import annotations
@@ -178,6 +179,47 @@ FACADE_TRAIT_IMPLS = {
     ("PublicError", "Display"),
     ("PublicError", "Error"),
 }
+HIDDEN_FACADE_SOURCE_FILE = "src/__private.rs"
+HIDDEN_FACADE_TYPES = {
+    "LinePngGeometry",
+    "LinePngStyle",
+    "OwnedLinePngRequest",
+    "BridgeError",
+}
+HIDDEN_FACADE_METHODS = {
+    "LinePngGeometry": {"new"},
+    "LinePngStyle": {"new"},
+    "OwnedLinePngRequest": {"new"},
+    "BridgeError": {"code", "category", "message"},
+}
+HIDDEN_FACADE_SIGNATURES = {
+    ("LinePngGeometry", "new"): (
+        "pub fn new(viewport: [f64; 4], canvas: [f64; 2], "
+        "plot_rect: [f64; 4], logical_units_per_inch: f64) "
+        "-> Result<Self, BridgeError>"
+    ),
+    ("LinePngStyle", "new"): (
+        "pub fn new(line_rgba: [u8; 4], line_width: f64, "
+        "background_rgba: [u8; 4]) -> Result<Self, BridgeError>"
+    ),
+    ("OwnedLinePngRequest", "new"): (
+        "pub fn new(x: Vec<f64>, y: Vec<f64>, "
+        "valid_segments: Vec<Range<usize>>, geometry: LinePngGeometry, "
+        "style: LinePngStyle, output_dpi: f64) -> Result<Self, BridgeError>"
+    ),
+    ("BridgeError", "code"): "pub fn code(&self) -> ErrorCode",
+    ("BridgeError", "category"): "pub fn category(&self) -> ErrorCategory",
+    ("BridgeError", "message"): "pub fn message(&self) -> &str",
+}
+HIDDEN_FACADE_TRAIT_IMPLS = {
+    ("BridgeError", "Debug"),
+    ("BridgeError", "Display"),
+    ("BridgeError", "Error"),
+}
+HIDDEN_FACADE_FREE_SIGNATURE = (
+    "pub fn render_line_png(request: OwnedLinePngRequest) "
+    "-> Result<Vec<u8>, BridgeError>"
+)
 FACADE_RAW_TOKENS = (
     "lumenplot_engine",
     "bridge",
@@ -200,6 +242,25 @@ FACADE_RAW_TOKENS = (
     "lumenplot_runtime",
     "lumenplot_render",
     "lumenplot_python",
+)
+HIDDEN_FACADE_RAW_TOKENS = FACADE_RAW_TOKENS + (
+    "PlotScene",
+    "SceneTransaction",
+    "SceneSnapshot",
+    "ExportError",
+    "ExportErrorKind",
+    "PngSpec",
+    "tiny_skia",
+    "png",
+    "*const",
+    "*mut",
+    "dyn",
+    "extern",
+    "serde",
+    "pyo3",
+    "numpy",
+    "python",
+    "matplotlib",
 )
 BRIDGE_TYPES = {
     "SceneErrorKind",
@@ -622,6 +683,8 @@ def _facade_public_impls(code: str) -> list[tuple[int, int, str, str | None, str
 def _facade_token_pattern(token: str) -> str:
     if token == "Engine":
         return r"\bEngine[A-Za-z0-9_]*"
+    if token.startswith("*"):
+        return re.escape(token)
     if token.endswith("_"):
         return token
     return rf"\b{re.escape(token)}\b"
@@ -724,6 +787,155 @@ def _check_facade_public_surface(sources: dict[str, str], errors: list[str]) -> 
             break
 
 
+def _extract_hidden_facade_module(
+    root_code: str,
+    errors: list[str],
+) -> tuple[str | None, bool, str]:
+    declarations = list(re.finditer(r"^\s*pub\s+mod\s+__private\b", root_code, re.MULTILINE))
+    if not declarations:
+        return None, False, root_code
+    if len(declarations) != 1:
+        errors.append("package lumenplot: hidden facade module must be declared exactly once")
+        return None, False, root_code
+
+    declaration = declarations[0]
+    line_start = root_code.rfind("\n", 0, declaration.start()) + 1
+    preceding = root_code[max(0, line_start - 256) : line_start]
+    if re.search(r"#\[\s*doc\s*\(\s*hidden\s*\)\s*\]\s*$", preceding.strip()) is None:
+        errors.append("package lumenplot: hidden facade module must be doc-hidden")
+
+    suffix = root_code[declaration.end() :]
+    whitespace = len(suffix) - len(suffix.lstrip())
+    first = declaration.end() + whitespace
+    if first >= len(root_code):
+        errors.append("package lumenplot: hidden facade module declaration is malformed")
+        return None, False, root_code
+    if root_code[first] == ";":
+        return None, True, root_code[: declaration.start()] + root_code[first + 1 :]
+    if root_code[first] != "{":
+        errors.append("package lumenplot: hidden facade module declaration is malformed")
+        return None, False, root_code
+
+    closing = _find_matching_brace(root_code, first)
+    if closing >= len(root_code):
+        errors.append("package lumenplot: hidden facade module body is not closed")
+        return None, False, root_code
+    body = root_code[first + 1 : closing]
+    root_without_module = root_code[: declaration.start()] + root_code[closing + 1 :]
+    return body, False, root_without_module
+
+
+def _check_hidden_facade(code: str, errors: list[str]) -> None:
+    declarations = _facade_type_declarations(code)
+    declared_names = [match.group("name") for match, _, _ in declarations]
+    declared_types = set(declared_names)
+    unexpected = sorted(declared_types - HIDDEN_FACADE_TYPES)
+    missing = sorted(HIDDEN_FACADE_TYPES - declared_types)
+    if unexpected:
+        errors.append("package lumenplot: hidden facade public type is not allowed " + ",".join(unexpected))
+    if missing:
+        errors.append(
+            "package lumenplot: hidden facade type inventory mismatch (missing "
+            + ",".join(missing)
+            + ")"
+        )
+    duplicates = sorted(name for name in set(declared_names) if declared_names.count(name) > 1)
+    if duplicates:
+        errors.append("package lumenplot: hidden facade type is declared more than once " + ",".join(duplicates))
+
+    for match, kind, body in declarations:
+        name = match.group("name")
+        if kind != "struct":
+            errors.append(f"package lumenplot: hidden facade type {name!r} must be a struct")
+        actual_derives = _facade_derive_traits(match.group("attributes"))
+        if actual_derives:
+            errors.append(f"package lumenplot: hidden facade incidental public traits on {name!r} are not allowed")
+        if re.search(r"^\s*pub(?:\s*\([^)]*\))?\s+", body, re.MULTILINE):
+            errors.append(f"package lumenplot: hidden facade type {name!r} exposes a public field")
+        if re.search(r"\bpub\s+struct\s+\w+\s*\(\s*pub(?:\s*\([^)]*\))?\b", code):
+            errors.append("package lumenplot: hidden facade tuple field is public")
+
+    method_inventory: dict[str, set[str]] = {}
+    trait_impls: set[tuple[str, str]] = set()
+    impl_ranges: list[tuple[int, int]] = []
+    for start, end, implementation_kind, target, body_or_trait in _facade_public_impls(code):
+        impl_ranges.append((start, end))
+        if implementation_kind == "trait":
+            if target is None or (target, body_or_trait) not in HIDDEN_FACADE_TRAIT_IMPLS:
+                errors.append(
+                    f"package lumenplot: hidden facade public trait implementation "
+                    f"{body_or_trait!r} for {target!r} is not allowed"
+                )
+            else:
+                trait_impls.add((target, body_or_trait))
+            continue
+
+        body = body_or_trait
+        if target not in HIDDEN_FACADE_TYPES:
+            errors.append(f"package lumenplot: hidden facade inherent implementation for {target!r} is not allowed")
+            continue
+        methods = re.findall(r"^\s*pub\s+fn\s+(\w+)\b", body, re.MULTILINE)
+        method_inventory.setdefault(target, set()).update(methods)
+        for method in sorted(set(methods) - HIDDEN_FACADE_METHODS[target]):
+            errors.append(
+                f"package lumenplot: hidden facade public method {method!r} on {target!r} is not allowed"
+            )
+        for method_match in re.finditer(r"^\s*pub\s+fn\s+(\w+)\b", body, re.MULTILINE):
+            method = method_match.group(1)
+            signature_start = method_match.start()
+            opening = body.find("{", signature_start)
+            signature = body[signature_start:] if opening < 0 else body[signature_start:opening]
+            expected_signature = HIDDEN_FACADE_SIGNATURES.get((target, method))
+            if expected_signature is not None and (
+                _normalize_bridge_signature(signature)
+                != _normalize_bridge_signature(expected_signature)
+            ):
+                errors.append(
+                    f"package lumenplot: hidden facade public method {method!r} on {target!r} "
+                    "has an unexpected signature"
+                )
+            for token in HIDDEN_FACADE_RAW_TOKENS:
+                if re.search(_facade_token_pattern(token), signature):
+                    errors.append(f"package lumenplot: hidden facade method {method!r} leaks an internal type")
+                    break
+
+    for type_name, expected_methods in HIDDEN_FACADE_METHODS.items():
+        if method_inventory.get(type_name, set()) != expected_methods:
+            errors.append(f"package lumenplot: hidden facade public method inventory mismatch for {type_name!r}")
+    if trait_impls != HIDDEN_FACADE_TRAIT_IMPLS:
+        errors.append("package lumenplot: hidden facade trait inventory mismatch for 'BridgeError'")
+
+    public_functions = list(PUBLIC_FN_RE.finditer(code))
+    free_functions = [
+        match
+        for match in public_functions
+        if not any(start <= match.start() <= end for start, end in impl_ranges)
+    ]
+    expected_public_functions = {"new", "code", "category", "message", "render_line_png"}
+    if {match.group(1) for match in public_functions} != expected_public_functions:
+        errors.append("package lumenplot: hidden facade public function inventory mismatch")
+    if len(free_functions) != 1 or free_functions[0].group(1) != "render_line_png":
+        errors.append("package lumenplot: hidden facade public free function inventory mismatch")
+    else:
+        match = free_functions[0]
+        opening = code.find("{", match.start())
+        signature = code[match.start():] if opening < 0 else code[match.start():opening]
+        if _normalize_bridge_signature(signature) != _normalize_bridge_signature(HIDDEN_FACADE_FREE_SIGNATURE):
+            errors.append("package lumenplot: hidden facade render_line_png has an unexpected signature")
+        for token in HIDDEN_FACADE_RAW_TOKENS:
+            if re.search(_facade_token_pattern(token), signature):
+                errors.append("package lumenplot: hidden facade render_line_png leaks an internal type")
+                break
+
+    for line in code.splitlines():
+        if not re.match(r"^\s*pub\s+", line):
+            continue
+        if re.match(r"^\s*pub\s+(?:struct|enum|fn)\b", line):
+            continue
+        errors.append("package lumenplot: hidden facade public item is not allowlisted")
+        break
+
+
 def _check_facade_root(root_code: str, errors: list[str]) -> None:
     module_names = set(re.findall(r"^\s*mod\s+(\w+)\s*;", root_code, re.MULTILINE))
     expected_modules = {"error", "view", "series", "scene"}
@@ -769,9 +981,18 @@ def _check_facade_source(package_dir: Path, root: Path, errors: list[str]) -> No
         if source_dir.is_dir()
         else set()
     )
-    if rust_files != EXPECTED_FACADE_SOURCE_FILES:
-        missing = sorted(EXPECTED_FACADE_SOURCE_FILES - rust_files)
-        extra = sorted(rust_files - EXPECTED_FACADE_SOURCE_FILES)
+    root_path = source_dir / "lib.rs"
+    try:
+        root_code = _strip_rust_comments_and_literals(root_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
+        errors.append(f"package lumenplot: cannot read src/lib.rs")
+        return
+    expected_source_files = EXPECTED_FACADE_SOURCE_FILES | (
+        {HIDDEN_FACADE_SOURCE_FILE} if HIDDEN_FACADE_SOURCE_FILE in rust_files else set()
+    )
+    if rust_files != expected_source_files:
+        missing = sorted(expected_source_files - rust_files)
+        extra = sorted(rust_files - expected_source_files)
         details: list[str] = []
         if missing:
             details.append("missing " + ",".join(missing))
@@ -798,8 +1019,24 @@ def _check_facade_source(package_dir: Path, root: Path, errors: list[str]) -> No
 
     if not sources:
         return
-    _check_facade_root(sources["src/lib.rs"], errors)
-    _check_facade_public_surface(sources, errors)
+    hidden_code, external_hidden_module, root_without_hidden = _extract_hidden_facade_module(
+        sources["src/lib.rs"], errors
+    )
+    if external_hidden_module:
+        if HIDDEN_FACADE_SOURCE_FILE not in sources:
+            errors.append("package lumenplot: external hidden facade module source is missing")
+        else:
+            hidden_code = sources[HIDDEN_FACADE_SOURCE_FILE]
+    elif HIDDEN_FACADE_SOURCE_FILE in sources:
+        errors.append("package lumenplot: hidden facade source requires a module declaration")
+    visible_sources = {
+        relative: code for relative, code in sources.items() if relative != HIDDEN_FACADE_SOURCE_FILE
+    }
+    visible_sources["src/lib.rs"] = root_without_hidden
+    _check_facade_root(root_without_hidden, errors)
+    _check_facade_public_surface(visible_sources, errors)
+    if hidden_code is not None:
+        _check_hidden_facade(hidden_code, errors)
 
 
 def _normalize_bridge_signature(signature: str) -> str:

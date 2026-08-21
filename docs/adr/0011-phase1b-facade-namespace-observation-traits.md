@@ -9,6 +9,7 @@
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Boundary record: [ADR 0003 — facade and crate dependency graph](0003-facade-and-crate-dag.md)
 - API records: [API 0001 — native Scene state](../architecture/api-0001-native-scene-state.md), [API 0002 — errors, capabilities, and fallback](../architecture/api-0002-errors-capabilities-fallback.md)
+- Follow-up staged boundary: [ADR 0013 — hidden line/PNG facade and private Python helper](0013-hidden-facade-private-python-line-png.md)
 
 This record is a narrow accepted amendment to ADR 0010. It removes remaining
 ambiguity about the Phase-1B Rust facade's root namespace, stable token
@@ -17,7 +18,10 @@ requirements, the Phase-1A engine contract, the exact constructors or Scene
 operation signatures, or the broader product implementation/evidence status in
 the [traceability registry](../requirements/traceability-v1.0.md). Phase-1B
 source and local contract evidence now exist; v1 product, platform, support,
-and release evidence remains pending.
+and release evidence remains pending. The later Phase-3A hidden facade recorded
+in [ADR 0013](0013-hidden-facade-private-python-line-png.md) is a
+separately inventoried Rust-public implementation seam; it does not add a root
+type, root re-export, or Phase-1B trait guarantee.
 
 ## Requirement references
 
@@ -72,7 +76,10 @@ alternative path.
 `lumenplot_engine`, its `bridge`, engine `SceneError` and `SceneErrorKind`,
 chunks, segments, LOD/index/selection types, component revisions, and raw state
 are never re-exported and never appear in public signatures. The hidden bridge
-remains an implementation seam, not a product namespace or public API.
+remains an implementation seam, not a product namespace or public API. A later
+`#[doc(hidden)] pub mod __private` is not a Phase-1B submodule or stable product
+namespace; its exact owned line/PNG inventory, private fields, and no-root-reexport
+rule are defined only by [ADR 0013](0013-hidden-facade-private-python-line-png.md).
 
 ### 2. Stable token observations
 
@@ -193,11 +200,11 @@ persistence commitments.
 
 This amendment records the accepted boundary and the local Phase-1B
 implementation/API-inventory evidence. The repository architecture checker,
-mutation suite, locked Rust checks, and applicable documentation/publication
-scans remain required for continued integration. None of this local evidence
-closes a full product or compatibility claim, and the traceability registry
-remains `Not implemented`, `Not measured`, or `environment required` as
-applicable.
+including its conditional Phase-3A hidden-facade inventory, mutation suite,
+locked Rust checks, and applicable documentation/publication scans remain
+required for continued integration. None of this local evidence closes a full
+product or compatibility claim, and the traceability registry remains `Not
+implemented`, `Not measured`, or `environment required` as applicable.
 
 ## Residual risks and follow-up
 
@@ -216,6 +223,7 @@ applicable.
 - [ADR 0003 — facade and crate dependency graph](0003-facade-and-crate-dag.md)
 - [ADR 0010 — accepted Phase-1 native core and facade contract](0010-phase1-native-core-facade-contract.md)
 - [ADR 0012 — private line frame and deterministic PNG contract](0012-private-line-frame-and-png-contract.md)
+- [ADR 0013 — hidden line/PNG facade and private Python helper](0013-hidden-facade-private-python-line-png.md)
 - [API 0001 — native Scene, view, and owned data](../architecture/api-0001-native-scene-state.md)
 - [API 0002 — errors, capabilities, and fallback](../architecture/api-0002-errors-capabilities-fallback.md)
 - [Architecture overview](../architecture/overview.md)

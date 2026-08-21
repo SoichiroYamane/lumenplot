@@ -1,6 +1,6 @@
 # ADR 0012: Private line frame and deterministic PNG contract
 
-- Status: **Accepted amendment; Phase-2 implementation evidence pending**
+- Status: **Accepted amendment; Phase-2A/2B implementation and local evidence recorded**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
@@ -12,10 +12,12 @@
 
 This record selects the smallest accepted private seam for the next implementation
 slice: an engine-owned, line/polyline-only semantic frame followed by a
-custom-composited deterministic PNG sink. It does not change the normative v1
+custom-composited deterministic PNG sink. The bounded Phase-2A/2B Rust
+implementation, local contract tests, and dependency/static checks are now
+present in the repository. This record still does not change the normative v1
 requirements, add a public facade or export API, make `RenderPacket` public, or
-claim that Phase-2A/2B implementation, output, platform support, performance,
-MSRV, ABI, or release evidence exists.
+claim full-v1 output, platform support, performance, MSRV, ABI, or release
+evidence.
 
 ## Requirement references
 
@@ -50,10 +52,14 @@ and runtime behavior require later contracts and evidence.
 The work is delivered in this order:
 
 1. Integrate and independently review this ADR and its documentation links.
-2. Implement Phase-2A in the private engine frame module.
-3. Independently review and merge Phase-2A.
-4. Implement Phase-2B in the private export sink, adding its exact dependency
-   graph only at that stage.
+2. Implement Phase-2A in the private engine frame module and independently
+   review/integrate it.
+3. Implement Phase-2B in the private export sink, adding its exact dependency
+   graph only at that stage, and independently review/integrate it.
+
+The ordered implementation and review gates above have been exercised for the
+merged bounded slice. They remain the evidence boundary for future changes;
+they do not authorize a public facade or Matplotlib adapter.
 
 Phase-2A owns conversion from one immutable engine snapshot to an owned private
 line frame. Phase-2B owns raster coverage, linear-sRGB compositing, and PNG
@@ -359,14 +365,14 @@ This amendment does not authorize or claim:
 
 ## Verification and evidence boundary
 
-The ADR integration is documentation evidence that an architecture-authority
-decision has been recorded. Phase-2A and Phase-2B implementation evidence must
-be supplied by the ordered implementation and independent-review gates above.
-This task changes documentation only; it intentionally does not modify Rust
+The ADR integration records the architecture-authority decision. The merged
+Phase-2A and Phase-2B implementation, local contract tests, dependency graph
+checker, and bounded review/integration history provide local evidence for this
+private slice. This Phase-3A recording lane intentionally does not modify Rust
 source, manifests, or `Cargo.lock`. The requirements and traceability results
-remain honest: Phase-1A/B implementation and local contract evidence may be
-reported, while the full v1 functional, export, platform, performance, support,
-and release gates remain open.
+remain honest: bounded Phase-2 local evidence may be reported, while the full
+v1 functional, export, platform, performance, support, and release gates remain
+open.
 
 ## Related records
 
@@ -376,6 +382,7 @@ and release gates remain open.
 - [ADR 0007 — coordinate, color, text, and export semantics](0007-coordinate-color-text-export.md)
 - [ADR 0010 — accepted Phase-1 native core and facade contract](0010-phase1-native-core-facade-contract.md)
 - [ADR 0011 — Phase-1B facade namespace and observation traits](0011-phase1b-facade-namespace-observation-traits.md)
+- [ADR 0013 — hidden line/PNG facade and private Python helper](0013-hidden-facade-private-python-line-png.md)
 - [Architecture overview](../architecture/overview.md)
 - [Open architecture decisions](../architecture/open-decisions.md)
 - [Accepted v1 requirements](../requirements/lumenplot-v1.0.md)

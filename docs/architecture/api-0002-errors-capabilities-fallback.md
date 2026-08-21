@@ -1,6 +1,6 @@
 # API 0002: Errors, capability diagnostics, and fallback contract
 
-- Status: **Accepted Phase-1 contract; local mapping and contract evidence recorded**
+- Status: **Accepted Phase-1 contract; Phase-3A bridge mapping recorded; public adapter envelope pending**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
@@ -8,6 +8,7 @@
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](../adr/0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Governing Phase-1 record: [ADR 0010 — accepted Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md)
 - Facade amendment: [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md)
+- Phase-3A amendment: [ADR 0013 — hidden line/PNG facade and private Python helper](../adr/0013-hidden-facade-private-python-line-png.md)
 - Open-decision record: [O-03 — Error and capability taxonomy](open-decisions.md#o-03-error-and-capability-taxonomy)
 
 This record separates engine-owned failure, facade-owned public errors,
@@ -168,8 +169,8 @@ results into Python-visible behavior:
 - Python-facing exceptions or helper results retain the stable code and
   category, but Python class names are not used by the Rust core as a dependency
   or error contract;
-- successful outputs and `show` results may carry capability/fallback
-  diagnostics in the same structured envelope;
+- later public outputs and `show` results may carry capability/fallback
+  diagnostics in a separately reviewed structured envelope;
 - `WorkOutcome::Cancelled` and `StaleDropped` remain internal and do not become
   ordinary Python exceptions;
 - a contained Rust panic maps to `internal` and never exposes its raw payload;
@@ -177,6 +178,33 @@ results into Python-visible behavior:
 
 This is a one-way mapping boundary: the core does not import Python exception
 classes, and Python/Matplotlib objects do not appear in core error types.
+
+### Phase-3A hidden bridge mapping
+
+[ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) narrows the
+first Python-to-native slice to an owned `lumenplot::__private` line/PNG seam.
+Its `BridgeError` is source-less, has private fields, exposes only `code`,
+`category`, and `message`, and returns the existing facade `ErrorCode` and
+`ErrorCategory` observations. It has no diagnostic/result wrapper, fallback
+reason, topology/kind object, or public Matplotlib schema. The native operation
+returns one owned `Vec<u8>` and does not fallback.
+
+The export mapping at this seam is exhaustive:
+
+| `ExportErrorKind` | `BridgeError` code | Category |
+| --- | --- | --- |
+| `InvalidInput` | `invalid-input` | `input` |
+| `UnsupportedCapability` | `unsupported-capability` | `capability` |
+| `CapacityExceeded` | `invalid-input` | `input` |
+| `AllocationFailed` | `out-of-memory` | `resource` |
+| `EncodingFailed` | `internal` | `internal` |
+| `Internal` | `internal` | `internal` |
+
+The existing `PublicError` mapping is unchanged. Bridge messages are sanitized
+non-contract text, `source()` is always `None`, and a later Python exception
+boundary redacts unexpected panic payloads as `internal`/`internal`. The
+public Matplotlib result, diagnostic, warning, canvas, and fallback envelope
+remains a separate Phase-3B decision.
 
 ### Strict unsupported versus hybrid fallback
 
@@ -238,7 +266,8 @@ and stale/cancel failure evidence remains pending.
 - [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md)
 - [Architecture overview](overview.md)
 - [API 0001 — native Scene, view, and owned data](api-0001-native-scene-state.md)
-- [API 0003 — Python, NumPy, and Matplotlib](api-0003-python-numpy-matplotlib.md)
+- [API 0003 — Phase-3A Python, NumPy, and private helper](api-0003-python-numpy-matplotlib.md)
+- [ADR 0013 — hidden line/PNG facade and private Python helper](../adr/0013-hidden-facade-private-python-line-png.md)
 - [ADR 0005 — runtime, viewer, and host loop](../adr/0005-runtime-viewer-host-loop.md)
 - [O-03 open-decision entry](open-decisions.md#o-03-error-and-capability-taxonomy)
 - [Accepted requirements: Matplotlib bridge](../requirements/lumenplot-v1.0.md#15-python-and-matplotlib-bridge)
