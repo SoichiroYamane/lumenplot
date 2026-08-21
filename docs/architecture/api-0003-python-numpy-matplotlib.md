@@ -201,12 +201,17 @@ The public-backend research supplies mandatory inputs to a later decision; it
 does not authorize Phase-3B implementation or freeze a public schema. That
 decision must at minimum preserve:
 
-- public Matplotlib APIs only; private backend, renderer, artist, transform,
-  cache, and helper names are not a contract;
+- evaluate exactly Matplotlib 3.11.1 with backend API 1.1; this is a future
+  Phase-3B evidence target, not a Phase-3A dependency or support result;
+- use documented public Matplotlib APIs only; `_Backend`, `_renderer`, `_api`,
+  `_pylab_helpers`, any `matplotlib._*` path, private artist/transform/cache
+  helpers, and undocumented `Axes.axison` are forbidden and are not a contract;
 - an exact eligible object whitelist and public `RendererBase` collector before
   native allocation/output;
-- the exact eligible trace of one Figure background path and one Line2D path,
-  with unexpected callbacks/custom artists treated as unsupported;
+- the exact eligible collector trace of one Figure-background `draw_path` plus
+  one Line2D `draw_path`; axes patch, spines, ticks, text, markers, images,
+  collections, mesh/Gouraud, custom artists, and every other renderer callback
+  are excluded and must cause explicit unsupported handling;
 - rejection of fixed-style mismatches rather than silent approximation;
 - 72 DisplayLogical points per inch, effective savefig DPI as output DPI, and
   bottom-left-to-top-left geometry mapping with callback/source reconciliation;

@@ -216,6 +216,15 @@ HIDDEN_FACADE_TRAIT_IMPLS = {
     ("BridgeError", "Display"),
     ("BridgeError", "Error"),
 }
+HIDDEN_FACADE_IMPL_HEADERS = {
+    "LinePngGeometry",
+    "LinePngStyle",
+    "OwnedLinePngRequest",
+    "BridgeError",
+    "fmt::Debug for BridgeError",
+    "fmt::Display for BridgeError",
+    "std::error::Error for BridgeError",
+}
 HIDDEN_FACADE_FREE_SIGNATURE = (
     "pub fn render_line_png(request: OwnedLinePngRequest) "
     "-> Result<Vec<u8>, BridgeError>"
@@ -572,17 +581,130 @@ def _walk_tables(value: Any, path: tuple[str, ...] = ()) -> Iterable[tuple[tuple
             yield from _walk_tables(child, child_path)
 
 
-def _strip_rust_comments_and_literals(source: str) -> str:
-    """Remove documentation/comments and literals before code-only scans."""
+INVALID_RUST_SYNTAX = "\x00"
 
-    block_comment = re.compile(r"/\*.*?\*/", re.DOTALL)
-    line_comment = re.compile(r"//[^\n]*")
-    string_literal = re.compile(r"(?:b)?\"(?:\\.|[^\"\\])*\"")
-    char_literal = re.compile(r"'(?:\\.|[^'\\])'")
-    without_comments = block_comment.sub("", source)
-    without_comments = line_comment.sub("\n", without_comments)
-    without_literals = string_literal.sub("\"\"", without_comments)
-    return char_literal.sub("''", without_literals)
+
+def _blank_rust_range(chars: list[str], source: str, start: int, end: int) -> None:
+    for position in range(start, end):
+        if source[position] != "\n":
+            chars[position] = " "
+
+
+def _strip_rust_comments_and_literals(source: str) -> str:
+    """Remove comments and literals while preserving line structure.
+
+    The checker is intentionally stdlib-only, so this is a small lexical pass
+    rather than a Rust parser.  Raw strings and nested block comments must be
+    handled before code-only scans; otherwise braces, attributes, or forbidden
+    words in an otherwise private literal can change the apparent public
+    inventory.  An unterminated literal/comment leaves a sentinel for the
+    caller to reject instead of silently dropping malformed source.
+    """
+
+    chars = list(source)
+    length = len(source)
+    position = 0
+    raw_string = re.compile(r'(?:br|r)(?P<hashes>#{0,255})"(?s:.*?)"(?P=hashes)')
+    raw_prefix = re.compile(r'(?:br|r)#{0,255}"')
+
+    while position < length:
+        if source.startswith("//", position):
+            end = source.find("\n", position + 2)
+            if end < 0:
+                end = length
+            _blank_rust_range(chars, source, position, end)
+            position = end
+            continue
+
+        if source.startswith("/*", position):
+            start = position
+            depth = 1
+            position += 2
+            while position < length and depth:
+                if source.startswith("/*", position):
+                    depth += 1
+                    position += 2
+                elif source.startswith("*/", position):
+                    depth -= 1
+                    position += 2
+                else:
+                    position += 1
+            end = position
+            _blank_rust_range(chars, source, start, end)
+            if depth:
+                chars[start] = INVALID_RUST_SYNTAX
+            continue
+
+        raw_match = None
+        if (position == 0 or not (source[position - 1].isalnum() or source[position - 1] == "_")):
+            raw_match = raw_string.match(source, position)
+        if raw_match is not None:
+            end = raw_match.end()
+            _blank_rust_range(chars, source, position, end)
+            position = end
+            continue
+
+        if raw_prefix.match(source, position) is not None:
+            _blank_rust_range(chars, source, position, length)
+            chars[position] = INVALID_RUST_SYNTAX
+            break
+
+        string_start = position
+        if source[position] == '"':
+            position += 1
+        elif source.startswith('b"', position):
+            position += 2
+        else:
+            string_start = -1
+        if string_start >= 0:
+            escaped = False
+            while position < length:
+                character = source[position]
+                position += 1
+                if character == "\n":
+                    break
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    _blank_rust_range(chars, source, string_start, position)
+                    break
+            else:
+                _blank_rust_range(chars, source, string_start, length)
+                chars[string_start] = INVALID_RUST_SYNTAX
+                break
+            if position > 0 and source[position - 1] == '"':
+                continue
+            _blank_rust_range(chars, source, string_start, position)
+            chars[string_start] = INVALID_RUST_SYNTAX
+            continue
+
+        if source[position] == "'":
+            closing = position + 1
+            escaped = False
+            while closing < length and source[closing] != "\n":
+                character = source[closing]
+                if not escaped and character == "'":
+                    literal = source[position : closing + 1]
+                    if len(literal) >= 3 and not any(char.isspace() for char in literal[1:-1]):
+                        _blank_rust_range(chars, source, position, closing + 1)
+                        position = closing + 1
+                    else:
+                        position += 1
+                    break
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                closing += 1
+            else:
+                position += 1
+            continue
+
+        position += 1
+
+    return "".join(chars)
 
 
 def _expected_dependency_path(package_name: str, dependency_name: str) -> str:
@@ -633,6 +755,91 @@ def _find_matching_brace(code: str, opening: int) -> int:
             if depth == 0:
                 return position
     return len(code)
+
+
+def _find_matching_square_bracket(code: str, opening: int) -> int:
+    depth = 0
+    for position in range(opening, len(code)):
+        if code[position] == "[":
+            depth += 1
+        elif code[position] == "]":
+            depth -= 1
+            if depth == 0:
+                return position
+    return len(code)
+
+
+def _hidden_attribute_spans(code: str, errors: list[str]) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for match in re.finditer(r"#", code):
+        opening = match.end()
+        while opening < len(code) and code[opening].isspace():
+            opening += 1
+        if opening >= len(code) or code[opening] != "[":
+            errors.append("package lumenplot: hidden facade attribute syntax is malformed")
+            continue
+        closing = _find_matching_square_bracket(code, opening)
+        if closing >= len(code):
+            errors.append("package lumenplot: hidden facade attribute is not closed")
+            continue
+        spans.append((match.start(), closing + 1))
+    return spans
+
+
+def _hidden_attributes_before(
+    code: str,
+    spans: list[tuple[int, int]],
+    item_start: int,
+) -> str:
+    selected: list[tuple[int, int]] = []
+    cursor = item_start
+    for attribute_start, attribute_end in reversed(spans):
+        if attribute_end > cursor:
+            continue
+        if code[attribute_end:cursor].strip():
+            break
+        selected.append((attribute_start, attribute_end))
+        cursor = attribute_start
+    return "".join(code[start:end] for start, end in reversed(selected))
+
+
+def _hidden_type_declarations(
+    code: str,
+    errors: list[str],
+    attribute_spans: list[tuple[int, int]],
+) -> list[tuple[str, str, str, str]]:
+    declaration = re.compile(
+        r"^[ \t]*pub[ \t]+(?P<kind>struct|enum)\b",
+        re.MULTILINE,
+    )
+    declarations: list[tuple[str, str, str, str]] = []
+    for match in declaration.finditer(code):
+        name_match = re.match(r"[ \t]+(?P<name>[A-Za-z_]\w*)", code[match.end() :])
+        if name_match is None:
+            errors.append("package lumenplot: hidden facade type declaration is malformed")
+            continue
+        name = name_match.group("name")
+        name_end = match.end() + name_match.end()
+        opening = name_end
+        while opening < len(code) and code[opening] in " \t":
+            opening += 1
+        if opening >= len(code) or code[opening] != "{":
+            errors.append(
+                f"package lumenplot: hidden facade type {name!r} has an unexpected declaration"
+            )
+            body = ""
+        else:
+            closing = _find_matching_brace(code, opening)
+            if closing >= len(code):
+                errors.append(f"package lumenplot: hidden facade type {name!r} body is not closed")
+                body = code[opening + 1 :]
+            else:
+                body = code[opening + 1 : closing]
+        if "\n" in code[match.start() : opening] or "\r" in code[match.start() : opening]:
+            errors.append(f"package lumenplot: hidden facade type {name!r} declaration is multiline")
+        attributes = _hidden_attributes_before(code, attribute_spans, match.start())
+        declarations.append((name, match.group("kind"), body, attributes))
+    return declarations
 
 
 def _facade_type_declarations(code: str) -> list[tuple[re.Match[str], str, str]]:
@@ -791,8 +998,10 @@ def _extract_hidden_facade_module(
     root_code: str,
     errors: list[str],
 ) -> tuple[str | None, bool, str]:
-    declarations = list(re.finditer(r"^\s*pub\s+mod\s+__private\b", root_code, re.MULTILINE))
+    declarations = list(re.finditer(r"^[ \t]*pub[ \t]+mod[ \t]+__private\b", root_code, re.MULTILINE))
     if not declarations:
+        if re.search(r"\b__private\b", root_code):
+            errors.append("package lumenplot: hidden facade module declaration is malformed")
         return None, False, root_code
     if len(declarations) != 1:
         errors.append("package lumenplot: hidden facade module must be declared exactly once")
@@ -800,9 +1009,13 @@ def _extract_hidden_facade_module(
 
     declaration = declarations[0]
     line_start = root_code.rfind("\n", 0, declaration.start()) + 1
-    preceding = root_code[max(0, line_start - 256) : line_start]
-    if re.search(r"#\[\s*doc\s*\(\s*hidden\s*\)\s*\]\s*$", preceding.strip()) is None:
+    prefix_lines = [line.strip() for line in root_code[:line_start].splitlines() if line.strip()]
+    if not prefix_lines or re.fullmatch(
+        r"#\[\s*doc\s*\(\s*hidden\s*\)\s*\]", prefix_lines[-1]
+    ) is None:
         errors.append("package lumenplot: hidden facade module must be doc-hidden")
+    if len(prefix_lines) >= 2 and prefix_lines[-2].startswith("#"):
+        errors.append("package lumenplot: hidden facade module has an unexpected attribute")
 
     suffix = root_code[declaration.end() :]
     whitespace = len(suffix) - len(suffix.lstrip())
@@ -825,9 +1038,40 @@ def _extract_hidden_facade_module(
     return body, False, root_without_module
 
 
+def _check_hidden_public_signature(
+    signature: str,
+    expected_signature: str,
+    description: str,
+    errors: list[str],
+) -> None:
+    if "\n" in signature or "\r" in signature:
+        errors.append(f"package lumenplot: hidden facade {description} has a multiline signature")
+    if re.search(r"\bfn[ \t]+\w+[ \t]*<", signature) or re.search(r"\bwhere\b", signature):
+        errors.append(
+            f"package lumenplot: hidden facade {description} has forbidden generic parameters or a where clause"
+        )
+    if _normalize_bridge_signature(signature) != _normalize_bridge_signature(expected_signature):
+        errors.append(f"package lumenplot: hidden facade {description} has an unexpected signature")
+
+
+def _check_hidden_public_item_placement(code: str, errors: list[str]) -> None:
+    for match in re.finditer(r"\bpub\b", code):
+        line_start = code.rfind("\n", 0, match.start()) + 1
+        line_prefix = code[line_start : match.start()]
+        suffix = code[match.end() :]
+        if line_prefix.strip() or re.match(r"[ \t]+(?:struct|enum|fn)\b", suffix) is None:
+            errors.append("package lumenplot: hidden facade public item is not allowlisted")
+            break
+
+
 def _check_hidden_facade(code: str, errors: list[str]) -> None:
-    declarations = _facade_type_declarations(code)
-    declared_names = [match.group("name") for match, _, _ in declarations]
+    _check_hidden_public_item_placement(code, errors)
+    attribute_spans = _hidden_attribute_spans(code, errors)
+    if attribute_spans:
+        errors.append("package lumenplot: hidden facade attributes are not allowed")
+
+    declarations = _hidden_type_declarations(code, errors, attribute_spans)
+    declared_names = [name for name, _, _, _ in declarations]
     declared_types = set(declared_names)
     unexpected = sorted(declared_types - HIDDEN_FACADE_TYPES)
     missing = sorted(HIDDEN_FACADE_TYPES - declared_types)
@@ -843,13 +1087,14 @@ def _check_hidden_facade(code: str, errors: list[str]) -> None:
     if duplicates:
         errors.append("package lumenplot: hidden facade type is declared more than once " + ",".join(duplicates))
 
-    for match, kind, body in declarations:
-        name = match.group("name")
+    for name, kind, body, attributes in declarations:
         if kind != "struct":
             errors.append(f"package lumenplot: hidden facade type {name!r} must be a struct")
-        actual_derives = _facade_derive_traits(match.group("attributes"))
+        actual_derives = _facade_derive_traits(attributes)
         if actual_derives:
             errors.append(f"package lumenplot: hidden facade incidental public traits on {name!r} are not allowed")
+        if attributes:
+            errors.append(f"package lumenplot: hidden facade attributes on public type {name!r} are not allowed")
         if re.search(r"^\s*pub(?:\s*\([^)]*\))?\s+", body, re.MULTILINE):
             errors.append(f"package lumenplot: hidden facade type {name!r} exposes a public field")
         if re.search(r"\bpub\s+struct\s+\w+\s*\(\s*pub(?:\s*\([^)]*\))?\b", code):
@@ -858,6 +1103,19 @@ def _check_hidden_facade(code: str, errors: list[str]) -> None:
     method_inventory: dict[str, set[str]] = {}
     trait_impls: set[tuple[str, str]] = set()
     impl_ranges: list[tuple[int, int]] = []
+    for implementation in re.finditer(r"^[ \t]*impl\b", code, re.MULTILINE):
+        opening = code.find("{", implementation.end())
+        if opening < 0:
+            errors.append("package lumenplot: hidden facade impl declaration is malformed")
+            continue
+        closing = _find_matching_brace(code, opening)
+        if closing >= len(code):
+            errors.append("package lumenplot: hidden facade impl body is not closed")
+        head = code[implementation.end() : opening]
+        normalized_head = " ".join(head.split())
+        if "\n" in head or "\r" in head or normalized_head not in HIDDEN_FACADE_IMPL_HEADERS:
+            errors.append("package lumenplot: hidden facade impl declaration is not allowlisted")
+
     for start, end, implementation_kind, target, body_or_trait in _facade_public_impls(code):
         impl_ranges.append((start, end))
         if implementation_kind == "trait":
@@ -885,14 +1143,14 @@ def _check_hidden_facade(code: str, errors: list[str]) -> None:
             signature_start = method_match.start()
             opening = body.find("{", signature_start)
             signature = body[signature_start:] if opening < 0 else body[signature_start:opening]
+            signature = signature.lstrip(" \t\r\n")
             expected_signature = HIDDEN_FACADE_SIGNATURES.get((target, method))
-            if expected_signature is not None and (
-                _normalize_bridge_signature(signature)
-                != _normalize_bridge_signature(expected_signature)
-            ):
-                errors.append(
-                    f"package lumenplot: hidden facade public method {method!r} on {target!r} "
-                    "has an unexpected signature"
+            if expected_signature is not None:
+                _check_hidden_public_signature(
+                    signature,
+                    expected_signature,
+                    f"public method {method!r} on {target!r}",
+                    errors,
                 )
             for token in HIDDEN_FACADE_RAW_TOKENS:
                 if re.search(_facade_token_pattern(token), signature):
@@ -920,17 +1178,30 @@ def _check_hidden_facade(code: str, errors: list[str]) -> None:
         match = free_functions[0]
         opening = code.find("{", match.start())
         signature = code[match.start():] if opening < 0 else code[match.start():opening]
-        if _normalize_bridge_signature(signature) != _normalize_bridge_signature(HIDDEN_FACADE_FREE_SIGNATURE):
-            errors.append("package lumenplot: hidden facade render_line_png has an unexpected signature")
+        signature = signature.lstrip(" \t\r\n")
+        _check_hidden_public_signature(
+            signature,
+            HIDDEN_FACADE_FREE_SIGNATURE,
+            "render_line_png",
+            errors,
+        )
         for token in HIDDEN_FACADE_RAW_TOKENS:
             if re.search(_facade_token_pattern(token), signature):
                 errors.append("package lumenplot: hidden facade render_line_png leaks an internal type")
                 break
 
+    for match in PUBLIC_FN_RE.finditer(code):
+        attributes = _hidden_attributes_before(code, attribute_spans, match.start())
+        if attributes:
+            errors.append(
+                f"package lumenplot: hidden facade attributes on public function "
+                f"{match.group(1)!r} are not allowed"
+            )
+
     for line in code.splitlines():
-        if not re.match(r"^\s*pub\s+", line):
+        if not re.match(r"^[ \t]*pub\b", line):
             continue
-        if re.match(r"^\s*pub\s+(?:struct|enum|fn)\b", line):
+        if re.match(r"^[ \t]*pub[ \t]+(?:struct|enum|fn)\b", line):
             continue
         errors.append("package lumenplot: hidden facade public item is not allowlisted")
         break
@@ -987,6 +1258,8 @@ def _check_facade_source(package_dir: Path, root: Path, errors: list[str]) -> No
     except (OSError, UnicodeError):
         errors.append(f"package lumenplot: cannot read src/lib.rs")
         return
+    if INVALID_RUST_SYNTAX in root_code:
+        errors.append("package lumenplot: malformed Rust syntax")
     expected_source_files = EXPECTED_FACADE_SOURCE_FILES | (
         {HIDDEN_FACADE_SOURCE_FILE} if HIDDEN_FACADE_SOURCE_FILE in rust_files else set()
     )
@@ -1013,6 +1286,8 @@ def _check_facade_source(package_dir: Path, root: Path, errors: list[str]) -> No
             errors.append(f"package lumenplot: cannot read {relative}")
             continue
         sources[relative] = code
+        if INVALID_RUST_SYNTAX in code:
+            errors.append("package lumenplot: malformed Rust syntax")
         for label, pattern in FACADE_FORBIDDEN_CODE_PATTERNS:
             if pattern.search(code):
                 errors.append(f"package lumenplot: {label} is not allowed")

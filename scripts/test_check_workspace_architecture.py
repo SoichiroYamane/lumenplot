@@ -108,6 +108,16 @@ pub mod __private {
             self.assertIn(expected, output)
             self.assertNotIn(str(fixture_root), output)
 
+    def assert_hidden_replacement_rejected(self, old: str, new: str, expected: str) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            self.assertIn(old, source)
+            path.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+        self.assert_mutation_rejected(mutate, expected)
+
     def test_valid_hidden_facade_is_conditional_and_passes(self) -> None:
         with self.fixture() as temporary:
             fixture_root = Path(temporary)
@@ -255,6 +265,185 @@ pub mod __private {
             mutate,
             "hidden facade type 'LinePngGeometry' must be a struct",
         )
+
+    def test_hidden_facade_type_generics_and_where_are_rejected(self) -> None:
+        mutations = (
+            ("type", "    pub struct LinePngGeometry {", "    pub struct LinePngGeometry<T> {"),
+            ("lifetime", "    pub struct LinePngStyle {", "    pub struct LinePngStyle<'a> {"),
+            (
+                "const",
+                "    pub struct OwnedLinePngRequest {",
+                "    pub struct OwnedLinePngRequest<const N: usize> {",
+            ),
+            (
+                "default",
+                "    pub struct LinePngGeometry {",
+                "    pub struct LinePngGeometry<T = f64> {",
+            ),
+            (
+                "where",
+                "    pub struct BridgeError {",
+                "    pub struct BridgeError where T: Copy {",
+            ),
+        )
+        for label, old, new in mutations:
+            with self.subTest(label=label):
+                self.assert_hidden_replacement_rejected(old, new, "hidden facade")
+
+    def test_hidden_facade_multiline_type_declaration_is_rejected(self) -> None:
+        self.assert_hidden_replacement_rejected(
+            "    pub struct LinePngGeometry {",
+            "    pub struct LinePngGeometry\n    {",
+            "hidden facade type 'LinePngGeometry' has an unexpected declaration",
+        )
+
+    def test_hidden_facade_public_function_signatures_are_exact(self) -> None:
+        mutations = (
+            (
+                "method generic",
+                "pub fn new(viewport:",
+                "pub fn new<T>(viewport:",
+            ),
+            (
+                "method lifetime",
+                "pub fn code(&self)",
+                "pub fn code<'a>(&self)",
+            ),
+            (
+                "method const",
+                "pub fn new(viewport:",
+                "pub fn new<const N: usize>(viewport:",
+            ),
+            (
+                "method default",
+                "pub fn new(viewport:",
+                "pub fn new<T = f64>(viewport:",
+            ),
+            (
+                "method where",
+                "pub fn code(&self) -> ErrorCode {",
+                "pub fn code(&self) -> ErrorCode where T: Copy {",
+            ),
+            (
+                "multiline free function",
+                "pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> {",
+                "pub fn render_line_png(\n        request: OwnedLinePngRequest,\n    ) -> Result<Vec<u8>, BridgeError> {",
+            ),
+            (
+                "free function generic",
+                "pub fn render_line_png(",
+                "pub fn render_line_png<T>(",
+            ),
+            (
+                "free function where",
+                "pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> {",
+                "pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> where T: Copy {",
+            ),
+        )
+        for label, old, new in mutations:
+            with self.subTest(label=label):
+                self.assert_hidden_replacement_rejected(old, new, "hidden facade")
+
+    def test_hidden_facade_multiline_attribute_is_rejected(self) -> None:
+        self.assert_hidden_replacement_rejected(
+            "    pub struct LinePngGeometry {",
+            "    #[repr(\n        C\n    )]\n    pub struct LinePngGeometry {",
+            "hidden facade attributes",
+        )
+
+    def test_hidden_facade_forbidden_attributes_are_rejected(self) -> None:
+        mutations = (
+            ("no_mangle", "#[no_mangle]\n    pub fn render_line_png("),
+            ("unsafe no_mangle", "#[unsafe(no_mangle)]\n    pub fn render_line_png("),
+            ("export_name", "#[export_name = \"lp_render\"]\n    pub fn render_line_png("),
+            (
+                "unsafe export_name",
+                "#[unsafe(export_name = \"lp_render\")]\n    pub fn render_line_png(",
+            ),
+            ("link_name", "#[link_name = \"lp_render\"]\n    pub fn render_line_png("),
+            ("link_section", "#[link_section = \".text\"]\n    pub fn render_line_png("),
+            ("used", "#[used]\n    pub fn render_line_png("),
+            ("repr C", "#[repr(C)]\n    pub struct LinePngGeometry {"),
+            ("repr transparent", "#[repr(transparent)]\n    pub struct LinePngStyle {"),
+            ("non exhaustive", "#[non_exhaustive]\n    pub struct BridgeError {"),
+            ("unknown type", "#[allow(dead_code)]\n    pub struct LinePngGeometry {"),
+            ("unknown function", "#[inline]\n    pub fn render_line_png("),
+            ("unknown method", "#[allow(dead_code)]\n        pub fn code(&self) -> ErrorCode {"),
+        )
+        for label, replacement in mutations:
+            with self.subTest(label=label):
+                if "pub struct" in replacement:
+                    old = replacement.split("\n", 1)[1]
+                elif "pub fn code" in replacement:
+                    old = replacement.split("\n", 1)[1]
+                else:
+                    old = "    pub fn render_line_png("
+                self.assert_hidden_replacement_rejected(old, replacement, "hidden facade attributes")
+
+    def test_hidden_facade_public_items_cannot_share_a_line(self) -> None:
+        mutations = (
+            (
+                "extra type",
+                "    }\n\n    impl LinePngGeometry",
+                "    } pub struct Unexpected {}\n\n    impl LinePngGeometry",
+            ),
+            (
+                "extra free function",
+                "pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> { unreachable!() }",
+                "pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> { unreachable!() } pub fn leak() {}",
+            ),
+            (
+                "extra method",
+                "pub fn code(&self) -> ErrorCode { unreachable!() }",
+                "pub fn code(&self) -> ErrorCode { unreachable!() } pub fn raw(&self) {}",
+            ),
+            (
+                "public field",
+                "        viewport: [f64; 4],",
+                "        viewport: [f64; 4], pub exposed: u8,",
+            ),
+            (
+                "extra trait",
+                "    }\n\n    impl LinePngGeometry",
+                "    } pub trait Unexpected {}\n\n    impl LinePngGeometry",
+            ),
+        )
+        for label, old, new in mutations:
+            with self.subTest(label=label):
+                self.assert_hidden_replacement_rejected(old, new, "hidden facade public item is not allowlisted")
+
+    def test_hidden_facade_raw_strings_are_ignored_by_code_scans(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            source = source.replace(
+                "pub mod __private {\n",
+                'pub mod __private {\n    const RAW: &str = r#"} #[doc(hidden)] pub fn leak() {"#;\n',
+                1,
+            )
+            path.write_text(source, encoding="utf-8")
+
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            mutate(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(output, "workspace architecture: OK\n")
+
+    def test_hidden_facade_unterminated_raw_string_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            source = source.replace(
+                "pub mod __private {\n",
+                'pub mod __private {\n    const RAW: &str = r#"unterminated;\n',
+                1,
+            )
+            path.write_text(source, encoding="utf-8")
+
+        self.assert_mutation_rejected(mutate, "malformed Rust syntax")
 
     def test_unmodified_fixture_passes(self) -> None:
         with self.fixture() as temporary:

@@ -125,7 +125,15 @@ The following are fixed by the accepted architecture and must not be returned to
 - Decision owner: architecture-authority
 - Needed before: adapter release claim
 - Record: [API 0003 — Phase-3A Python, NumPy, and private helper](api-0003-python-numpy-matplotlib.md) and [ADR 0013 — hidden line/PNG facade and private Python helper](../adr/0013-hidden-facade-private-python-line-png.md)
-- Accepted scope: Phase-3A explicitly excludes a Matplotlib dependency, backend module, entry point, public `render_png`, result/diagnostic/warning types, canvas, and fallback. The later Phase-3B decision must use public APIs only, an exact object whitelist plus public `RendererBase` collector, the exact eligible trace, explicit style and non-PNG guards, 72-point mapping, and terminal-failure no-fallback rules.
+- Accepted scope: Phase-3A explicitly excludes a Matplotlib dependency, backend module, entry point, public `render_png`, result/diagnostic/warning types, canvas, and fallback. The later Phase-3B decision must use documented public APIs only, an exact object whitelist plus public `RendererBase` collector, the exact eligible trace, explicit style and non-PNG guards, 72-point mapping, and terminal-failure no-fallback rules.
+- Mandatory future boundary: Matplotlib 3.11.1 / backend API 1.1; evaluate
+  exactly that surface and forbid `_Backend`, `_renderer`, `_api`,
+  `_pylab_helpers`, any `matplotlib._*` path, private artist/transform/cache
+  helpers, and undocumented `Axes.axison`.
+- Mandatory future collector trace: exactly one Figure-background `draw_path`
+  plus one Line2D `draw_path`; axes patch, spines, ticks, text, markers, images,
+  collections, mesh/Gouraud, custom artists, and every other renderer callback
+  are excluded and must cause explicit unsupported handling.
 - Constraints: the public Figure/Artist authority and high-level profile roles from ADR 0002 remain; their exact public result, diagnostic, canvas, generation, fallback, and file/path schema is not frozen by API 0003/ADR 0013.
 - Evidence: Phase-3A helper/wheel/runtime evidence first; later loader/entry-point, public API, strict unsupported, hybrid whole-frame Agg, diagnostic, and profile-separated evidence only after Phase-3B is accepted.
 
