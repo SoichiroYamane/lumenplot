@@ -235,6 +235,172 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
 
         self.assert_mutation_rejected(mutate, "concrete frontend/backend code is not allowed")
 
+    def test_facade_extra_source_module_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            (root / "crates/lumenplot/src/extra.rs").write_text("", encoding="utf-8")
+
+        self.assert_mutation_rejected(mutate, "package lumenplot: source inventory mismatch")
+
+    def test_facade_public_module_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("mod error;", "pub mod error;"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "package lumenplot: public module is not allowed")
+
+    def test_facade_root_export_expansion_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8") + "\npub use scene::PlotScene as Scene;\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "package lumenplot: export aliases are not allowed")
+
+    def test_facade_public_method_expansion_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/src/view.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\nimpl AxisRange { pub fn raw(&self) {} }\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot: public method 'raw' on 'AxisRange' is not allowed",
+        )
+
+    def test_facade_non_exhaustive_enum_removal_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/src/error.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "#[non_exhaustive]\npub enum ErrorCode {",
+                    "pub enum ErrorCode {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot: facade enum 'ErrorCode' must remain non-exhaustive",
+        )
+
+    def test_facade_identity_trait_expansion_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/src/scene.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]\npub struct SceneRevision",
+                    "#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord)]\npub struct SceneRevision",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "trait inventory mismatch for 'SceneRevision'")
+
+    def test_facade_snapshot_trait_expansion_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/src/scene.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "#[derive(Clone)]\npub struct SceneSnapshot",
+                    "#[derive(Clone, Debug)]\npub struct SceneSnapshot",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "trait inventory mismatch for 'SceneSnapshot'")
+
+    def test_facade_public_field_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/src/view.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "    inner: EngineAxisRange,",
+                    "    pub inner: EngineAxisRange,",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot: facade type 'AxisRange' exposes a public field",
+        )
+
+    def test_facade_public_signature_leak_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/src/view.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "pub fn min(&self) -> f64 {",
+                    "pub fn min(&self) -> EngineAxisRange {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot: public method 'min' leaks an internal type",
+        )
+
+    def test_facade_default_impl_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/src/view.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\nimpl Default for AxisRange { fn default() -> Self { unreachable!() } }\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "public trait implementation 'Default' for 'AxisRange' is not allowed",
+        )
+
+    def test_facade_unsafe_code_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(path.read_text(encoding="utf-8") + "\nunsafe fn forbidden() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(mutate, "package lumenplot: unsafe code is not allowed")
+
+    def test_facade_serialization_code_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(path.read_text(encoding="utf-8") + "\nfn forbidden() { let _ = serde; }\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot: serialization or wire code is not allowed",
+        )
+
+    def test_facade_runtime_dependency_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    'lumenplot-export = { path = "../lumenplot-export", version = "0.1.0" }',
+                    'lumenplot-runtime = { path = "../lumenplot-runtime", version = "0.1.0" }',
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot: dependency edge 'lumenplot-runtime' is not allowed",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
