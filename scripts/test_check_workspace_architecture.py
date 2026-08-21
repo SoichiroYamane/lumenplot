@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mutation tests for the Phase-0 workspace architecture checker."""
+"""Mutation tests for the Phase-1A workspace architecture checker."""
 
 from __future__ import annotations
 
@@ -149,6 +149,72 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
             path.write_text(path.read_text(encoding="utf-8") + "\nunsafe fn forbidden() {}\n", encoding="utf-8")
 
         self.assert_mutation_rejected(mutate, "unsafe code is not allowed")
+
+    def test_engine_root_module_exposure_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("mod data;", "pub mod data;"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "root module visibility is too broad")
+
+    def test_engine_bridge_must_remain_hidden(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("#[doc(hidden)]\npub mod bridge;", "pub mod bridge;"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "only the hidden bridge may be public")
+
+    def test_engine_bridge_reexport_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8") + "\npub use crate::data::Point;\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "bridge re-export is not allowed")
+
+    def test_engine_bridge_extra_type_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            path.write_text(path.read_text(encoding="utf-8") + "\npub struct RawChunk;\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(mutate, "bridge public type is not allowed RawChunk")
+
+    def test_engine_bridge_raw_method_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\nimpl PlotScene {\n    pub fn raw(&self) -> crate::data::Chunk { unreachable!() }\n}\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "bridge public method 'raw' is not allowed")
+
+    def test_engine_bridge_tuple_field_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(source.replace("pub struct SceneRevision(u64);", "pub struct SceneRevision(pub u64);"), encoding="utf-8")
+
+        self.assert_mutation_rejected(mutate, "bridge tuple field is public")
+
+    def test_engine_concrete_backend_code_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8") + "\nfn forbidden() { let _: wgpu::Thing; }\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "concrete frontend/backend code is not allowed")
 
 
 if __name__ == "__main__":

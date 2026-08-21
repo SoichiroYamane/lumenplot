@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the accepted Phase-0 Cargo workspace boundary.
+"""Check the accepted Phase-1A Cargo workspace boundary.
 
 This checker intentionally uses only the Python standard library.  It validates
 repository structure and negative public-surface guards without compiling or
@@ -28,6 +28,72 @@ EXPECTED_PACKAGE_PATHS = {
     "lumenplot-bench": "crates/lumenplot-bench",
 }
 EXPECTED_WORKSPACE_MEMBERS = list(EXPECTED_PACKAGE_PATHS.values())
+EXPECTED_ENGINE_SOURCE_FILES = {
+    "src/lib.rs",
+    "src/error.rs",
+    "src/bridge.rs",
+    "src/data/mod.rs",
+    "src/data/sample.rs",
+    "src/data/topology.rs",
+    "src/data/chunk.rs",
+    "src/lod/mod.rs",
+    "src/lod/summary.rs",
+    "src/lod/m4.rs",
+    "src/lod/arbitrary.rs",
+    "src/scene/mod.rs",
+    "src/scene/ids.rs",
+    "src/scene/revision.rs",
+    "src/scene/state.rs",
+    "src/scene/transaction.rs",
+    "src/scene/snapshot.rs",
+}
+BRIDGE_TYPES = {
+    "SceneErrorKind",
+    "SceneError",
+    "AxisRange",
+    "AxisScale",
+    "Viewport",
+    "AxisScales",
+    "SeriesTopology",
+    "SeriesData",
+    "PlotScene",
+    "SceneTransaction",
+    "SceneSnapshot",
+    "SceneRevision",
+    "SeriesId",
+    "CommitReceipt",
+}
+BRIDGE_METHODS = {
+    "kind",
+    "message",
+    "new",
+    "min",
+    "max",
+    "from_bounds",
+    "x",
+    "y",
+    "validate",
+    "from_owned_xy",
+    "from_owned_xy_segments",
+    "topology",
+    "source_len",
+    "point_count",
+    "is_empty",
+    "transaction",
+    "snapshot",
+    "revision",
+    "replace_canonical_view",
+    "set_viewport",
+    "set_axis_scales",
+    "add_series",
+    "append_series",
+    "commit",
+    "abort",
+    "canonical_view",
+    "viewport",
+    "axis_scales",
+    "changed",
+}
 EXPECTED_EDGES = {
     "lumenplot": {"lumenplot-engine", "lumenplot-export"},
     "lumenplot-engine": set(),
@@ -48,6 +114,16 @@ PUBLIC_ITEM_RE = re.compile(
     re.MULTILINE,
 )
 PUBLIC_REEXPORT_RE = re.compile(r"^\s*pub\s+use\b", re.MULTILINE)
+PUBLIC_BARE_ITEM_RE = re.compile(
+    r"^\s*pub\s+(?:use|struct|enum|trait|fn|type|const|static|mod|macro|union|extern|impl)\b",
+    re.MULTILINE,
+)
+PUBLIC_SCOPED_RE = re.compile(
+    r"^\s*pub\s*\((?:crate|super|self|in\s+[^)]*)\)\s+",
+    re.MULTILINE,
+)
+PUBLIC_TYPE_RE = re.compile(r"^\s*pub\s+(?:struct|enum)\s+(\w+)\b", re.MULTILINE)
+PUBLIC_FN_RE = re.compile(r"^\s*pub\s+fn\s+(\w+)\b", re.MULTILINE)
 NO_MANGLE_RE = re.compile(r"#\s*\[\s*(?:no_mangle|export_name)\b")
 FORBIDDEN_CODE_PATTERNS = (
     ("unsafe code", re.compile(r"\bunsafe\b")),
@@ -117,38 +193,201 @@ def _expected_dependency_path(package_name: str, dependency_name: str) -> str:
     return Path("..", dependency_path.name).as_posix()
 
 
-def _check_package_source(package_name: str, package_dir: Path, root: Path, errors: list[str]) -> None:
-    source_dir = package_dir / "src"
+def _check_forbidden_code(package_name: str, code: str, errors: list[str]) -> None:
+    for label, pattern in FORBIDDEN_CODE_PATTERNS:
+        if pattern.search(code):
+            errors.append(f"package {package_name}: {label} is not allowed")
+
+
+def _check_stub_source(package_name: str, source_dir: Path, root: Path, errors: list[str]) -> None:
     rust_files = (
-        sorted(path.relative_to(package_dir).as_posix() for path in source_dir.rglob("*.rs"))
+        sorted(path.relative_to(source_dir.parent).as_posix() for path in source_dir.rglob("*.rs"))
         if source_dir.is_dir()
         else []
     )
     if rust_files != ["src/lib.rs"]:
         errors.append(f"package {package_name}: source must contain only src/lib.rs")
         return
-
     source_path = source_dir / "lib.rs"
     try:
         source = source_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         errors.append(f"package {package_name}: cannot read {_logical_path(source_path, root)}")
         return
-
     code = _strip_rust_comments_and_literals(source)
     if code.strip():
         errors.append(f"package {package_name}: source must be documentation-only")
-
     if package_name == "lumenplot" and PUBLIC_REEXPORT_RE.search(code):
         errors.append(f"package {package_name}: internal re-export is not allowed")
     if PUBLIC_ITEM_RE.search(code):
         errors.append(f"package {package_name}: public item is not allowed in Phase-0 stub")
     if NO_MANGLE_RE.search(code):
         errors.append(f"package {package_name}: exported ABI is not allowed")
+    _check_forbidden_code(package_name, code, errors)
 
-    for label, pattern in FORBIDDEN_CODE_PATTERNS:
-        if pattern.search(code):
-            errors.append(f"package {package_name}: {label} is not allowed")
+
+def _check_engine_bridge(code: str, errors: list[str]) -> None:
+    if PUBLIC_REEXPORT_RE.search(code):
+        errors.append("package lumenplot-engine: bridge re-export is not allowed")
+
+    declared_types = set(PUBLIC_TYPE_RE.findall(code))
+    unexpected_types = sorted(declared_types - BRIDGE_TYPES)
+    if unexpected_types:
+        errors.append(
+            "package lumenplot-engine: bridge public type is not allowed "
+            + ",".join(unexpected_types)
+        )
+    missing_types = sorted(BRIDGE_TYPES - declared_types)
+    if missing_types:
+        errors.append(
+            "package lumenplot-engine: bridge type inventory mismatch (missing "
+            + ",".join(missing_types)
+            + ")"
+        )
+
+    for name in PUBLIC_FN_RE.findall(code):
+        if name not in BRIDGE_METHODS:
+            errors.append(f"package lumenplot-engine: bridge public method {name!r} is not allowed")
+
+    for line in code.splitlines():
+        if not re.match(r"^\s*pub\s+", line):
+            continue
+        if re.match(r"^\s*pub\s+(?:struct|enum|fn)\b", line):
+            continue
+        errors.append("package lumenplot-engine: bridge public item is not allowlisted")
+        break
+
+    for match in re.finditer(
+        r"pub\s+(?:struct|enum)\s+(\w+)(?:\s*<[^>{}]*>)?\s*\{(.*?)\}",
+        code,
+        re.DOTALL,
+    ):
+        if re.search(r"\bpub\b", match.group(2)):
+            errors.append(
+                f"package lumenplot-engine: bridge type {match.group(1)!r} exposes a field"
+            )
+    if re.search(r"pub\s+struct\s+\w+\s*\(\s*pub\b", code):
+        errors.append("package lumenplot-engine: bridge tuple field is public")
+
+    enum_variants = {
+        "SceneErrorKind": {
+            "InvalidInput",
+            "UnsupportedCapability",
+            "InvalidState",
+            "SeriesNotFound",
+            "TopologyViolation",
+            "NonFiniteCanonical",
+            "CapacityExceeded",
+            "AllocationFailed",
+            "IdentityExhausted",
+            "RevisionExhausted",
+            "Internal",
+        },
+        "AxisScale": {"Linear", "Log10"},
+        "SeriesTopology": {"MonotonicX", "ArbitraryXY"},
+    }
+    for name, expected in enum_variants.items():
+        match = re.search(
+            rf"pub\s+enum\s+{name}\b[^{{]*\{{(.*?)\}}",
+            code,
+            re.DOTALL,
+        )
+        if match is None:
+            continue
+        actual = set(re.findall(r"^\s*([A-Z][A-Za-z0-9_]*)\s*(?:,|$)", match.group(1), re.MULTILINE))
+        if actual != expected:
+            errors.append(f"package lumenplot-engine: bridge enum {name!r} variant inventory mismatch")
+
+    raw_tokens = (
+        "crate::",
+        "Engine",
+        "SeriesInput",
+        "Topology",
+        "Chunk",
+        "Lod",
+        "SceneState",
+        "DataEpoch",
+        "ChunkRevision",
+        "ComponentRevision",
+        "BTreeMap",
+        "Arc<",
+    )
+    for match in PUBLIC_FN_RE.finditer(code):
+        start = match.start()
+        end = code.find("{", start)
+        signature = code[start:] if end < 0 else code[start:end]
+        if any(
+            (token in signature if token.endswith("<") else re.search(rf"\b{re.escape(token)}\b", signature))
+            for token in raw_tokens
+        ):
+            errors.append(f"package lumenplot-engine: bridge method {match.group(1)!r} leaks an internal type")
+
+
+def _check_engine_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    source_dir = package_dir / "src"
+    rust_files = (
+        {path.relative_to(package_dir).as_posix() for path in source_dir.rglob("*.rs")}
+        if source_dir.is_dir()
+        else set()
+    )
+    if rust_files != EXPECTED_ENGINE_SOURCE_FILES:
+        missing = sorted(EXPECTED_ENGINE_SOURCE_FILES - rust_files)
+        extra = sorted(rust_files - EXPECTED_ENGINE_SOURCE_FILES)
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ",".join(missing))
+        if extra:
+            details.append("extra " + ",".join(extra))
+        errors.append(
+            "package lumenplot-engine: source inventory mismatch"
+            + (" (" + "; ".join(details) + ")" if details else "")
+        )
+        return
+
+    sources: dict[str, str] = {}
+    for relative in sorted(rust_files):
+        path = package_dir / relative
+        try:
+            sources[relative] = _strip_rust_comments_and_literals(
+                path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError):
+            errors.append(f"package lumenplot-engine: cannot read {relative}")
+    if not sources:
+        return
+
+    root_code = sources["src/lib.rs"]
+    for module in ("error", "data", "lod", "scene"):
+        if not re.search(rf"^\s*mod\s+{module}\s*;", root_code, re.MULTILINE):
+            errors.append(f"package lumenplot-engine: private root module {module!r} is missing")
+    hidden_bridge = re.compile(
+        r"#\s*\[\s*doc\s*\(\s*hidden\s*\)\s*\]\s*pub\s+mod\s+bridge\s*;",
+        re.DOTALL,
+    )
+    if hidden_bridge.search(root_code) is None:
+        errors.append("package lumenplot-engine: only the hidden bridge may be public")
+    root_without_bridge = hidden_bridge.sub("", root_code)
+    if re.search(r"^\s*pub\s*(?:\([^)]*\))?\s+mod\b", root_without_bridge, re.MULTILINE):
+        errors.append("package lumenplot-engine: root module visibility is too broad")
+    if PUBLIC_REEXPORT_RE.search(root_without_bridge):
+        errors.append("package lumenplot-engine: root re-export is not allowed")
+    if PUBLIC_BARE_ITEM_RE.search(root_without_bridge):
+        errors.append("package lumenplot-engine: root public item is not allowed")
+
+    for relative, code in sources.items():
+        _check_forbidden_code("lumenplot-engine", code, errors)
+        if relative in {"src/lib.rs", "src/bridge.rs"}:
+            continue
+        if PUBLIC_REEXPORT_RE.search(code) or PUBLIC_BARE_ITEM_RE.search(code):
+            errors.append(f"package lumenplot-engine: public item outside bridge in {relative}")
+    _check_engine_bridge(sources["src/bridge.rs"], errors)
+
+
+def _check_package_source(package_name: str, package_dir: Path, root: Path, errors: list[str]) -> None:
+    if package_name == "lumenplot-engine":
+        _check_engine_source(package_dir, root, errors)
+    else:
+        _check_stub_source(package_name, package_dir / "src", root, errors)
 
 
 def _check_dependencies(
