@@ -16,6 +16,32 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check_workspace_architecture.py"
+BASELINE_PYTHON_MANIFEST = """[package]
+name = "lumenplot-python"
+edition.workspace = true
+version.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+lumenplot = { path = "../lumenplot", version = "0.1.0" }
+"""
+BASELINE_PYTHON_SOURCE = """//! Private Phase-0 documentation stub for the future language bridge edge.
+//!
+//! Binding implementation is deferred until its accepted bridge contract lands.
+"""
+
+
+def reset_python_bridge_to_baseline(root: Path) -> None:
+    manifest = root / "crates/lumenplot-python/Cargo.toml"
+    source = root / "crates/lumenplot-python/src/lib.rs"
+    manifest.write_text(BASELINE_PYTHON_MANIFEST, encoding="utf-8")
+    source.write_text(BASELINE_PYTHON_SOURCE, encoding="utf-8")
 
 
 class WorkspaceArchitectureMutationTests(unittest.TestCase):
@@ -24,6 +50,7 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
         fixture_root = Path(temporary.name)
         shutil.copy2(ROOT / "Cargo.toml", fixture_root / "Cargo.toml")
         shutil.copytree(ROOT / "crates", fixture_root / "crates")
+        reset_python_bridge_to_baseline(fixture_root)
         scripts_dir = fixture_root / "scripts"
         scripts_dir.mkdir()
         shutil.copy2(CHECKER, scripts_dir / CHECKER.name)
@@ -1763,6 +1790,7 @@ class Phase3A2WheelEvidenceMutationTests(unittest.TestCase):
         shutil.copy2(ROOT / "Cargo.toml", root / "Cargo.toml")
         shutil.copy2(ROOT / "Cargo.lock", root / "Cargo.lock")
         shutil.copytree(ROOT / "crates", root / "crates")
+        reset_python_bridge_to_baseline(root)
         scripts = root / "scripts"
         scripts.mkdir()
         shutil.copy2(CHECKER, scripts / CHECKER.name)
@@ -2205,6 +2233,7 @@ jobs:
             (root / "phase3a2-wheel-evidence.json").unlink()
             shutil.copy2(ROOT / "crates/lumenplot-python/Cargo.toml", root / "crates/lumenplot-python/Cargo.toml")
             shutil.copy2(ROOT / "crates/lumenplot-python/src/lib.rs", root / "crates/lumenplot-python/src/lib.rs")
+            reset_python_bridge_to_baseline(root)
             returncode, output = self.run_checker(root)
             self.assertEqual(returncode, 0, output)
             self.assertNotIn("phase3a2 wheel evidence", output)
@@ -2226,6 +2255,7 @@ jobs:
             shutil.rmtree(root / ".github")
             (root / "phase3a2-wheel-evidence.json").unlink()
             shutil.copy2(ROOT / "crates/lumenplot-python/Cargo.toml", root / "crates/lumenplot-python/Cargo.toml")
+            reset_python_bridge_to_baseline(root)
             path = root / "crates/lumenplot-python/Cargo.toml"
             path.write_text(
                 path.read_text(encoding="utf-8")
