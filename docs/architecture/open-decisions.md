@@ -2,7 +2,7 @@
 
 ## Purpose and status
 
-This list contains decisions that must be settled before implementation fan-out or a support claim. It does not reopen accepted architecture decisions. The published requirements and ADR 0002 are intentionally honest before implementation; an open item is a follow-up gate, not permission to invent a public API or to block publication of the pre-alpha baseline.
+This list contains decisions that must be settled before implementation fan-out or a support claim. It does not reopen accepted architecture decisions. The published requirements and ADR 0002 are intentionally honest before implementation; an open item is a follow-up gate, not permission to invent a public API or to block publication of the pre-alpha baseline. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) records the accepted Phase-1 native core/facade envelope and resolves the Phase-1 candidates in O-01, O-02R, O-03, and O-05 without claiming implementation evidence.
 
 Each item should become an ADR, an API decision record, or a reviewed implementation contract. The exact choice must include rationale, affected interfaces, compatibility impact, and verification evidence.
 
@@ -29,31 +29,31 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ### O-01 — Exact facade and crate/module split
 
-- State: Accepted — evidence pending
+- State: Accepted — Phase-1 boundary recorded; evidence pending
 - Decision owner: architecture-authority
 - Needed before: Rust workspace and binding fan-out
-- Record: [ADR 0003 — facade and crate dependency graph](../adr/0003-facade-and-crate-dag.md)
-- Accepted scope: the Option-C public facade, internal crate/module boundaries, visibility, re-export, publication metadata, and dependency graph recorded in ADR 0003.
+- Record: [ADR 0003 — facade and crate dependency graph](../adr/0003-facade-and-crate-dag.md) and [ADR 0010 — Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md)
+- Accepted scope: ADR 0003 fixes the Option-C public facade, internal crate/module boundaries, visibility, re-export, publication metadata, and dependency graph. ADR 0010 fixes the Phase-1A private engine boundary, Phase-1B minimum facade seam, and staged delivery order.
 - Constraints: preserve the one-way DAG; keep concrete frontend/GPU/window types out of core; do not make a candidate crate layout a public API by accident.
 - Evidence: dependency graph review, visibility scan, build matrix, and an ADR recording the final split.
 
 ### O-02 — Public Rust and Python API surface
 
-- State: Accepted — evidence pending
+- State: Accepted — Phase-1 exact surface recorded; evidence pending
 - Decision owner: architecture-authority
 - Needed before: frontend and FFI implementation
-- Record: [API 0001 — native Scene state](api-0001-native-scene-state.md) and [API 0003 — Python, NumPy, and Matplotlib](api-0003-python-numpy-matplotlib.md)
-- Accepted scope: native Scene ownership, candidate Scene transaction/revision signatures, Python bridge boundary, and the separation from viewer/runtime and internal RenderPacket fields recorded in API 0001 and API 0003.
-- Constraints: signatures must not leak internal RenderPacket fields; exact NumPy dependency range remains evidence-gated before manifest integration.
+- Record: [API 0001 — native Scene, view, and owned data](api-0001-native-scene-state.md), [API 0003 — Python, NumPy, and Matplotlib](api-0003-python-numpy-matplotlib.md), and [ADR 0010 — Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md)
+- Accepted scope: ADR 0010 replaces the Phase-1 candidates with the exact opaque view/scale, owned `SeriesData`, `PlotScene`, transaction, snapshot, revision, and receipt observations; API 0003 remains the adapter-side contract.
+- Constraints: signatures must not leak engine chunks, LOD, caches, component revisions, or internal RenderPacket fields; exact NumPy dependency range remains evidence-gated before manifest integration.
 - Evidence: API review, docs build, import/loader smoke, compatibility policy, and negative tests for unsupported values.
 
 ### O-03 — Error and capability taxonomy
 
-- State: Accepted — evidence pending
+- State: Accepted — Phase-1 mapping recorded; evidence pending
 - Decision owner: architecture-authority
 - Needed before: API, adapter, runtime, and fallback implementation
-- Record: [API 0002 — errors, capabilities, and fallback diagnostics](api-0002-errors-capabilities-fallback.md)
-- Accepted scope: stable public category/code tokens, capability/fallback diagnostics, internal `WorkOutcome`, and Rust/Python mapping boundary recorded in API 0002.
+- Record: [API 0002 — errors, capability diagnostics, and fallback contract](api-0002-errors-capabilities-fallback.md) and [ADR 0010 — Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md)
+- Accepted scope: API 0002 records stable public category/code tokens, capability/fallback diagnostics, internal `WorkOutcome`, and Rust/Python mapping. ADR 0010 additionally fixes the unpublished exhaustive Phase-1 `SceneErrorKind` set and its mapping to facade-owned `PublicError`.
 - Constraints: strict mode must be explicit; hybrid fallback must be observable; no silent omission or best-effort degradation.
 - Evidence: error mapping table, Python exception mapping, serialization/diagnostic review, and failure fixtures.
 
@@ -69,12 +69,12 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ### O-05 — Scene ownership, mutation, revision, and history
 
-- State: Accepted — evidence pending
+- State: Accepted — Phase-1 transaction/state boundary recorded; evidence pending
 - Decision owner: architecture-authority
 - Needed before: core state and interaction fan-out
-- Record: [API 0001 — native Scene state](api-0001-native-scene-state.md)
-- Accepted scope: stable semantic IDs, single-writer transactions, revision/no-op rules, canonical view, current viewport, view-only history, Plot/UI State, and export snapshot selection recorded in API 0001.
-- Constraints: native PlotScene authority; Matplotlib Figure/Artist authority in adapter mode; derived adapter Scene is revisioned cache; UI State cannot enter ordinary exports.
+- Record: [API 0001 — native Scene, view, and owned data](api-0001-native-scene-state.md) and [ADR 0010 — Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md)
+- Accepted scope: API 0001 and ADR 0010 fix stable semantic observations, single-writer transactions, revision/no-op and identity-burn rules, canonical/current viewport, owned series data, immutable snapshots, and component invalidation. View-only history remains a later runtime/UI state contract in this slice.
+- Constraints: native PlotScene authority; Matplotlib Figure/Artist authority in adapter mode; derived adapter Scene is revisioned cache; UI State cannot enter ordinary exports; no Scene persistence identity is introduced.
 - Evidence: state-machine/property tests, concurrent worker tests, history tests, export-state fixture, and adapter synchronization review.
 
 ### O-06 — Window, viewer, host loop, and lifecycle semantics
@@ -209,4 +209,4 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ## Decision discipline
 
-O-01 through O-17 are recorded accepted contracts with implementation or environment evidence still pending. O-18 is Deferred/Closed by non-goal. Do not silently promote a reference dependency, candidate API, environment observation, parent research result, or benchmark target into an implementation or support result. If a future decision changes the accepted envelope, supersede or amend ADR 0002 explicitly and update the requirements and traceability registry together.
+O-01 through O-17 are recorded accepted contracts with implementation or environment evidence still pending. ADR 0010 is the accepted Phase-1 native core/facade contract and does not alter the requirements status. O-18 is Deferred/Closed by non-goal. Do not silently promote a reference dependency, candidate API, environment observation, parent research result, or benchmark target into an implementation or support result. If a future decision changes the accepted envelope, supersede or amend ADR 0002 explicitly and update the requirements and traceability registry together.
