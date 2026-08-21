@@ -2,7 +2,7 @@
 
 ## Purpose and status
 
-This list contains decisions that must be settled before implementation fan-out or a support claim. It does not reopen accepted architecture decisions. The published requirements and ADR 0002 are intentionally honest before implementation; an open item is a follow-up gate, not permission to invent a public API or to block publication of the pre-alpha baseline. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) records the accepted Phase-1 native core/facade envelope, and [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) records its accepted Phase-1B namespace and observation amendment; together they resolve the Phase-1 candidates in O-01, O-02R, O-03, and O-05 without claiming implementation evidence.
+This list contains decisions that must be settled before implementation fan-out or a support claim. It does not reopen accepted architecture decisions. The published requirements and ADR 0002 remain intentionally honest about the pre-alpha baseline; an open item is a follow-up gate, not permission to invent a public API or to block publication. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) records the accepted Phase-1 native core/facade envelope, [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) records its accepted Phase-1B namespace and observation amendment, and [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and PNG boundary. The Phase-1 records now have local implementation evidence; the Phase-2 record remains an implementation gate.
 
 Each item should become an ADR, an API decision record, or a reviewed implementation contract. The exact choice must include rationale, affected interfaces, compatibility impact, and verification evidence.
 
@@ -19,6 +19,7 @@ The following are fixed by the accepted architecture and must not be returned to
 - Canonical data is f64; long-lived native state uses Rust-owned immutable sealed chunks; GPU local values are origin-relative f32.
 - MonotonicX uses the dyadic M4/extrema direction; ArbitraryXY topology/correctness/culling remains a v1 model lane and advanced performance is Phase 5.
 - Semantic/layout data is distinct from the immutable internal process-local RenderPacket. RenderPacket is not public, wire, or persistent format.
+- The Phase-2A private line frame and Phase-2B deterministic line/PNG sink are bounded by [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md); this does not expand the public facade or close the full v1 export contract.
 - Runtime/window/surface/GPU lifecycle is main-thread confined; Scene is single-writer; snapshots are immutable; workers are bounded and generation-cancellable; no non-reentrant lock crosses a Python callback; device loss rebuilds from retained CPU data; OOM is explicit.
 - Backend Auto uses capability probing plus static override and no default startup microbenchmark.
 - PNG and PDF are v1 MUST outputs; SVG is a v1 SHOULD and non-blocking; supported vector semantics are retained and raster-only PDF is forbidden.
@@ -29,11 +30,11 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ### O-01 — Exact facade and crate/module split
 
-- State: Accepted — Phase-1 boundary recorded; evidence pending
+- State: Accepted — Phase-1 implementation/local evidence recorded; later evidence pending
 - Decision owner: architecture-authority
 - Needed before: Rust workspace and binding fan-out
-- Record: [ADR 0003 — facade and crate dependency graph](../adr/0003-facade-and-crate-dag.md), [ADR 0010 — Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md), and [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md)
-- Accepted scope: ADR 0003 fixes the Option-C public facade, internal crate/module boundaries, visibility, re-export, publication metadata, and dependency graph. ADR 0010 fixes the Phase-1A private engine boundary, Phase-1B minimum facade seam, and staged delivery order. ADR 0011 fixes the exact Phase-1B crate-root allowlist and private facade modules without changing the DAG.
+- Record: [ADR 0003 — facade and crate dependency graph](../adr/0003-facade-and-crate-dag.md), [ADR 0010 — Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md), [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md), and [ADR 0012 — private line frame and deterministic PNG contract](../adr/0012-private-line-frame-and-png-contract.md)
+- Accepted scope: ADR 0003 fixes the Option-C public facade, internal crate/module boundaries, visibility, re-export, publication metadata, and dependency graph. ADR 0010 fixes the Phase-1A private engine boundary, Phase-1B minimum facade seam, and staged delivery order. ADR 0011 fixes the exact Phase-1B crate-root allowlist and private facade modules without changing the DAG. ADR 0012 fixes the next private line-frame/export order without changing the facade DAG.
 - Constraints: preserve the one-way DAG; keep concrete frontend/GPU/window types out of core; do not make a candidate crate layout a public API by accident.
 - Evidence: dependency graph review, visibility scan, build matrix, and an ADR recording the final split.
 
@@ -132,8 +133,8 @@ The following are fixed by the accepted architecture and must not be returned to
 - State: Accepted — evidence pending
 - Decision owner: architecture-authority
 - Needed before: renderer and export fan-out
-- Record: [ADR 0007 — coordinate, color, text, and export semantics](../adr/0007-coordinate-color-text-export.md)
-- Accepted scope: explicit logical units/inch, top-left DisplayLogical geometry, single PDF transform, checked raster dimensions, deterministic snapping, encoded-sRGB/linear-compositing boundary, ICC labeling, and ordered clip stack recorded in ADR 0007.
+- Record: [ADR 0007 — coordinate, color, text, and export semantics](../adr/0007-coordinate-color-text-export.md) and [ADR 0012 — private line frame and deterministic PNG contract](../adr/0012-private-line-frame-and-png-contract.md)
+- Accepted scope: explicit logical units/inch, top-left DisplayLogical geometry, single PDF transform, checked raster dimensions, deterministic snapping, encoded-sRGB/linear-compositing boundary, ICC labeling, and ordered clip stack recorded in ADR 0007; ADR 0012 bounds the private line-frame, coverage, alpha, and deterministic line/PNG slice.
 - Constraints: canonical f64 and local f32 rules remain fixed; screen/export semantic equivalence does not require byte-identical pixels.
 - Evidence: coordinate/color golden suite, PDF/PNG/SVG structural checks, HiDPI matrix, and explicit tolerance policy.
 
@@ -209,4 +210,4 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ## Decision discipline
 
-O-01 through O-17 are recorded accepted contracts with implementation or environment evidence still pending. ADR 0010 and its narrow ADR 0011 amendment are the accepted Phase-1 native core/facade contract and do not alter the requirements status. O-18 is Deferred/Closed by non-goal. Do not silently promote a reference dependency, candidate API, environment observation, parent research result, or benchmark target into an implementation or support result. If a future decision changes the accepted envelope, supersede or amend ADR 0002 explicitly and update the requirements and traceability registry together.
+O-01 through O-17 are recorded accepted contracts with implementation or environment evidence staged by phase. ADR 0010 and its narrow ADR 0011 amendment are the accepted Phase-1 native core/facade contract; Phase-1A/B implementation and local contract evidence now exist without altering the requirements status. ADR 0012 records the accepted private Phase-2A/2B line-frame and PNG boundary, with implementation and evidence pending. O-18 is Deferred/Closed by non-goal. Do not silently promote a reference dependency, candidate API, environment observation, parent research result, or benchmark target into an implementation or support result. If a future decision changes the accepted envelope, supersede or amend ADR 0002 explicitly and update the requirements and traceability registry together.

@@ -1,6 +1,6 @@
 # API 0001: Native PlotScene, view, and owned-data contract
 
-- Status: **Accepted Phase-1 contract; implementation evidence pending**
+- Status: **Accepted Phase-1 contract; local implementation and contract evidence recorded**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
@@ -258,9 +258,10 @@ identity property tests; direct-versus-index LOD equivalence and bins/ties/
 duplicates/gaps tests; ArbitraryXY culling oracles; transaction state-machine
 and snapshot-sharing tests; identity-burn and component-revision tests;
 exhaustive error mapping/token/privacy tests; and public API/forbidden-export
-inventory tests. These are pending implementation evidence. The [traceability
-registry](../requirements/traceability-v1.0.md) must continue to report the
-product rows as `Not implemented`, `Not measured`, or `environment required`.
+inventory tests. Phase-1 local implementation evidence covers this bounded
+surface; the [traceability registry](../requirements/traceability-v1.0.md) must
+continue to report the broader product rows as `Not implemented`, `Not
+measured`, or `environment required`.
 
 ## Residual risks
 

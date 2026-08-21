@@ -8,7 +8,7 @@
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Open-decision record: [O-01 — Exact facade and crate/module split](../architecture/open-decisions.md#o-01-exact-facade-and-cratemodule-split)
 
-This ADR records an accepted implementation boundary. It does not report that the workspace, crates, bindings, or runtime have been implemented. The current product status remains the pre-alpha status in the [requirements traceability registry](../requirements/traceability-v1.0.md). [ADR 0010](0010-phase1-native-core-facade-contract.md) refines the first-slice order and exact Phase-1 native core/facade envelope without changing this crate DAG.
+This ADR records an accepted implementation boundary. Phase-1A/B workspace implementation and local contract evidence now exist, but the workspace is not a completed product and the bindings, runtime, and later output paths remain pending. The current product status remains the pre-alpha status in the [requirements traceability registry](../requirements/traceability-v1.0.md). [ADR 0010](0010-phase1-native-core-facade-contract.md) refines the first-slice order and exact Phase-1 native core/facade envelope without changing this crate DAG; [ADR 0012](0012-private-line-frame-and-png-contract.md) records the later private line-frame and PNG order without changing the facade DAG.
 
 ## Requirement references
 
@@ -84,8 +84,8 @@ The accepted implementation order is:
 3. Implement Phase-1A first: owned f64 chunks, topology and gap validation, Scene transactions/revisions/snapshots/selective invalidation, the MonotonicX M4 prototype, and property tests. The Phase-1A kernel has no full semantic-frame module, renderer, runtime, or public facade.
 4. After Phase-1A independently passes and lands, implement the minimum Phase-1B Rust facade and its exact visibility/error/API inventory from [ADR 0010](0010-phase1-native-core-facade-contract.md).
 5. In parallel, run the scratch gates for the CPython/NumPy wheel matrix, deterministic PNG/color compositing, and native text/font/PDF consumer behavior.
-6. After the relevant gate is accepted, implement deterministic PNG export from the later shared semantic frame.
-7. Implement the headless Matplotlib strict and explicit-hybrid PNG adapter over the same engine and semantic frame.
+6. After the relevant gate is accepted, implement Phase-2A's private line frame, independently review and merge it, and then implement Phase-2B's deterministic line/PNG sink under [ADR 0012](0012-private-line-frame-and-png-contract.md).
+7. Extend the shared semantic frame for the remaining supported primitives and implement the headless Matplotlib strict and explicit-hybrid PNG adapter over that frame.
 8. Implement the internal packet and one-surface portable wgpu runtime/viewer slice. O-07/O-08 evidence is required before any product, platform, or performance claim.
 
 Old CPU-backend implementation directions remain superseded by ADR 0002. This record does not authorize product implementation beyond the declared order.
@@ -111,7 +111,7 @@ Costs and constraints:
 
 ## Verification and evidence boundary
 
-Required checks are a static dependency DAG review, facade/API inventory, `publish = false` review, and documentation links to the canonical requirements and ADR 0002. None of those checks is product implementation or publication evidence. Current requirement results remain `Not implemented`, `Not measured`, or `environment required` in the [traceability registry](../requirements/traceability-v1.0.md).
+Required checks are a static dependency DAG review, facade/API inventory, `publish = false` review, and documentation links to the canonical requirements and ADR 0002. Phase-1A/B implementation and local contract checks are now recorded, but none of those checks is v1 product, publication, platform, or performance evidence. Current requirement results remain `Not implemented`, `Not measured`, or `environment required` in the [traceability registry](../requirements/traceability-v1.0.md).
 
 ## Residual risks
 
@@ -124,5 +124,6 @@ Required checks are a static dependency DAG review, facade/API inventory, `publi
 - [ADR index](README.md)
 - [ADR 0010 — accepted Phase-1 native core and facade contract](0010-phase1-native-core-facade-contract.md)
 - [Architecture overview](../architecture/overview.md)
+- [ADR 0012 — private line frame and deterministic PNG contract](0012-private-line-frame-and-png-contract.md)
 - [O-01 open-decision entry](../architecture/open-decisions.md#o-01-exact-facade-and-cratemodule-split)
 - [Accepted v1 requirements](../requirements/lumenplot-v1.0.md)

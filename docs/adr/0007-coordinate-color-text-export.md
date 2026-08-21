@@ -8,7 +8,7 @@
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Open-decision records: [O-11 — Coordinate, unit, color, alpha, and ICC policy](../architecture/open-decisions.md#o-11-coordinate-unit-color-alpha-and-icc-policy), [O-12 — Text, font fallback, and reproducibility strictness](../architecture/open-decisions.md#o-12-text-font-fallback-and-reproducibility-strictness)
 
-This ADR records abstract semantic and export boundaries. It does not select a dependency pin, claim a completed text stack, or report PNG/PDF/SVG output evidence.
+This ADR records abstract semantic and export boundaries. [ADR 0012](0012-private-line-frame-and-png-contract.md) now amends it with the accepted private line-frame and line/PNG Phase-2 slice and its exact sink dependencies; neither record claims completed text, full export, or v1 output evidence.
 
 ## Requirement references
 
@@ -70,7 +70,7 @@ Searchable PDF requires valid embedding/subsetting, widths, `ToUnicode`, and `Ac
 
 For the initial Matplotlib PNG slice, documented `TextToPath` supplies one resolved vector outline at the adapter boundary. That is not native font ownership. Native Parley/Fontique/HarfRust/Skrifa choices and PDF writer/subsetter choices require a deterministic font/license/consumer spike before Phase-2 dependency integration.
 
-`tiny-skia` may be considered only as a deterministic CPU PNG export/reference sink after the accepted linear-compositing and color spike. It is not the engine or backend architecture.
+`tiny-skia` is selected by [ADR 0012](0012-private-line-frame-and-png-contract.md) only as a deterministic CPU PNG coverage/reference operation for the bounded Phase-2 line sink, with a custom linear compositor and no final `Pixmap` color sink. It is not the engine or backend architecture. The exact direct dependency choice remains private to Phase-2B and is not a public support or MSRV promise.
 
 A layout digest may identify the internal canonical layout bytes and version for reproducibility. It is non-public and non-persistent; it is not a Scene or RenderPacket identity.
 
@@ -87,12 +87,12 @@ A renderer-local unit or text measurement path would make interactive and export
 - Coordinate and color behavior is testable across sinks without requiring byte-identical pixels.
 - Text can be shared across display and export without renderer remeasurement.
 - Deterministic output requires font bytes and license/provenance evidence.
-- Dependency selection is staged behind real consumer and color-compositing spikes.
+- The bounded Phase-2B line sink has an accepted exact direct dependency choice; later text/PDF/SVG dependency selection remains staged behind real consumer, color, licensing, and reproducibility evidence.
 - PDF remains vector/searchable when evidence supports it and fails or outlines explicitly otherwise.
 
 ## Verification and evidence boundary
 
-Required evidence includes coordinate transform and snapping fixtures, logical/physical/HiDPI matrices, sRGB/linear-compositing and transparency tests, clip-stack tests, shared layout digest tests, font hash/license fixtures, searchable PDF/outline tests, missing-glyph diagnostics, and initial TextToPath PNG fixtures. No output or dependency result is claimed by this ADR.
+Required evidence includes coordinate transform and snapping fixtures, logical/physical/HiDPI matrices, sRGB/linear-compositing and transparency tests, clip-stack tests, shared layout digest tests, font hash/license fixtures, searchable PDF/outline tests, missing-glyph diagnostics, and initial TextToPath PNG fixtures. The private line-frame and line/PNG evidence gates are recorded in [ADR 0012](0012-private-line-frame-and-png-contract.md); no full output, text-stack, or platform result is claimed here.
 
 ## Residual risks
 
@@ -106,6 +106,7 @@ Required evidence includes coordinate transform and snapping fixtures, logical/p
 - [Architecture overview](../architecture/overview.md)
 - [API 0003 — Python, NumPy, and Matplotlib](../architecture/api-0003-python-numpy-matplotlib.md)
 - [ADR 0004 — RenderPacket resource lifecycle](0004-renderpacket-resource-lifecycle.md)
+- [ADR 0012 — private line frame and deterministic PNG contract](0012-private-line-frame-and-png-contract.md)
 - [API 0004 — annotations and accessibility](../architecture/api-0004-annotations-accessibility.md)
 - [O-11 open-decision entry](../architecture/open-decisions.md#o-11-coordinate-unit-color-alpha-and-icc-policy)
 - [O-12 open-decision entry](../architecture/open-decisions.md#o-12-text-font-fallback-and-reproducibility-strictness)

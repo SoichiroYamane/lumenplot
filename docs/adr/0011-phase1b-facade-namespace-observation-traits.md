@@ -1,6 +1,6 @@
 # ADR 0011: Phase-1B facade namespace and observation traits
 
-- Status: **Accepted amendment; implementation evidence pending**
+- Status: **Accepted amendment; Phase-1B implementation and local contract evidence recorded**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
@@ -14,8 +14,10 @@ This record is a narrow accepted amendment to ADR 0010. It removes remaining
 ambiguity about the Phase-1B Rust facade's root namespace, stable token
 observations, and public trait guarantees. It does not change the normative
 requirements, the Phase-1A engine contract, the exact constructors or Scene
-operation signatures, or the implementation/evidence status in the
-[traceability registry](../requirements/traceability-v1.0.md).
+operation signatures, or the broader product implementation/evidence status in
+the [traceability registry](../requirements/traceability-v1.0.md). Phase-1B
+source and local contract evidence now exist; v1 product, platform, support,
+and release evidence remains pending.
 
 ## Requirement references
 
@@ -183,19 +185,19 @@ persistence commitments.
   while token parsing and persistence identity remain explicitly out of scope.
 - Trait-based bounds can rely only on the three listed guarantees; future
   guarantees require an explicit decision rather than an incidental derive.
-- The accepted contract is more precise, but implementation and API-inventory
-  tests still remain necessary before any product or compatibility claim.
+- The accepted contract is more precise, and local implementation/API-inventory
+  evidence now exists; broader product or compatibility claims still require
+  their own evidence.
 
 ## Verification and evidence boundary
 
-This amendment is documentation evidence only. Implementation must add a root
-export inventory, private-module and forbidden-re-export tests, exact token
-observations, exhaustive error-mapping tests, trait-bound checks, and
-`PublicError::source()` redaction checks. The repository architecture checker,
+This amendment records the accepted boundary and the local Phase-1B
+implementation/API-inventory evidence. The repository architecture checker,
 mutation suite, locked Rust checks, and applicable documentation/publication
-scans remain required. None of those requirements is satisfied by this ADR
-alone, and the traceability registry remains `Not implemented`, `Not measured`,
-or `environment required` as applicable.
+scans remain required for continued integration. None of this local evidence
+closes a full product or compatibility claim, and the traceability registry
+remains `Not implemented`, `Not measured`, or `environment required` as
+applicable.
 
 ## Residual risks and follow-up
 
@@ -213,6 +215,7 @@ or `environment required` as applicable.
 - [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - [ADR 0003 — facade and crate dependency graph](0003-facade-and-crate-dag.md)
 - [ADR 0010 — accepted Phase-1 native core and facade contract](0010-phase1-native-core-facade-contract.md)
+- [ADR 0012 — private line frame and deterministic PNG contract](0012-private-line-frame-and-png-contract.md)
 - [API 0001 — native Scene, view, and owned data](../architecture/api-0001-native-scene-state.md)
 - [API 0002 — errors, capabilities, and fallback](../architecture/api-0002-errors-capabilities-fallback.md)
 - [Architecture overview](../architecture/overview.md)

@@ -52,14 +52,17 @@ as equivalent behavior.
 ## Current implementation status
 
 The current source snapshot contains a nine-package, dependency-free Rust
-workspace at version `0.1.0`. `crates/lumenplot` is the sole future facade;
-the other packages are private documentation-only stubs following the accepted
-[facade and crate dependency graph](docs/adr/0003-facade-and-crate-dag.md).
+workspace at version `0.1.0`. Phase-1A implements the native semantic kernel and
+Phase-1B implements the minimum Rust facade, with local contract, visibility,
+and repository-gate evidence. These are pre-alpha implementation slices, not a
+completed v1 product, support matrix, or release. `crates/lumenplot` remains the
+sole facade; the later packages remain private documentation-only stubs
+following the accepted [facade and crate dependency graph](docs/adr/0003-facade-and-crate-dag.md).
 Each package records the dual license, project repository, root README, and
 `publish = false`. The current source contains no Python package,
 first-class Matplotlib adapter, GPU renderer, separate raster package,
-examples, or release packaging. Therefore this baseline does not describe
-those components as implemented or supported.
+examples, or release packaging. Therefore those later components, and the full
+v1 output/runtime behavior, are not described as implemented or supported.
 
 No minimum supported Rust version (MSRV) is committed in this baseline. A local
 edition or CI toolchain is not a public MSRV promise.
