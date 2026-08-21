@@ -51,13 +51,15 @@ as equivalent behavior.
 
 ## Current implementation status
 
-The current source snapshot contains one dependency-free Rust workspace
-package at version `0.1.0`. Its Cargo metadata records the dual license, project
-repository, root README, and `publish = false` for the internal core package.
-The current source contains no Python package, first-class Matplotlib adapter,
-GPU renderer, separate raster package, examples, or release packaging.
-Therefore this baseline does not describe those components as implemented or
-supported.
+The current source snapshot contains a nine-package, dependency-free Rust
+workspace at version `0.1.0`. `crates/lumenplot` is the sole future facade;
+the other packages are private documentation-only stubs following the accepted
+[facade and crate dependency graph](docs/adr/0003-facade-and-crate-dag.md).
+Each package records the dual license, project repository, root README, and
+`publish = false`. The current source contains no Python package,
+first-class Matplotlib adapter, GPU renderer, separate raster package,
+examples, or release packaging. Therefore this baseline does not describe
+those components as implemented or supported.
 
 No minimum supported Rust version (MSRV) is committed in this baseline. A local
 edition or CI toolchain is not a public MSRV promise.

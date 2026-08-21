@@ -24,6 +24,7 @@
             packages = [
               pkgs.cargo
               pkgs.clippy
+              pkgs.python3
               pkgs.rustc
               pkgs.rustfmt
             ];

@@ -112,8 +112,17 @@ jobs:
           components: ${{ steps.rust-toolchain.outputs.components }}
           targets: ${{ steps.rust-toolchain.outputs.targets }}
 
+      - name: Check workspace architecture
+        run: python3 scripts/check_workspace_architecture.py
+
+      - name: Test workspace architecture mutations
+        run: python3 -m unittest scripts/test_check_workspace_architecture.py
+
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Check workspace
+        run: cargo check --locked --workspace --all-targets --all-features
 
       - name: Run workspace tests
         run: cargo test --locked --workspace --all-features

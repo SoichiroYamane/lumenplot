@@ -1,5 +1,5 @@
 [package]
-name = "lumenplot"
+name = "lumenplot-export"
 edition.workspace = true
 version.workspace = true
 publish = false
@@ -9,4 +9,3 @@ readme.workspace = true
 
 [dependencies]
 lumenplot-engine = { path = "../lumenplot-engine", version = "0.1.0" }
-lumenplot-export = { path = "../lumenplot-export", version = "0.1.0" }

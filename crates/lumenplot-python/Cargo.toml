@@ -1,5 +1,5 @@
 [package]
-name = "lumenplot"
+name = "lumenplot-python"
 edition.workspace = true
 version.workspace = true
 publish = false
@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
-lumenplot-engine = { path = "../lumenplot-engine", version = "0.1.0" }
-lumenplot-export = { path = "../lumenplot-export", version = "0.1.0" }
+lumenplot = { path = "../lumenplot", version = "0.1.0" }
