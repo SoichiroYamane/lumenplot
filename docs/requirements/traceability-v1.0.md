@@ -2,7 +2,7 @@
 
 - Status: pre-alpha publication; no product implementation or benchmark completion is claimed.
 - Source of truth: `docs/requirements/lumenplot-v1.0.md` and its Appendix A coverage matrix.
-- This document maps every stable requirement entry to an evidence type and records the current result separately from its target. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) and the updated [API 0001](../architecture/api-0001-native-scene-state.md)/[API 0002](../architecture/api-0002-errors-capabilities-fallback.md) record the accepted Phase-1 native core/facade contract; they do not change any product result below.
+- This document maps every stable requirement entry to an evidence type and records the current result separately from its target. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md), its narrow [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) amendment, and the updated [API 0001](../architecture/api-0001-native-scene-state.md)/[API 0002](../architecture/api-0002-errors-capabilities-fallback.md) record the accepted Phase-1 native core/facade contract; they do not change any product result below.
 
 ## Status rules
 
@@ -39,6 +39,7 @@ requirement registry's `Not implemented`, `Not measured`, or
 | Contract | Record | Current status |
 | --- | --- | --- |
 | Phase-1 native core and minimal facade | [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) | Accepted contract; implementation and architecture evidence pending |
+| Phase-1B facade namespace and observation traits | [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) | Accepted amendment; implementation and architecture evidence pending |
 | Phase-1 Scene, view, and owned data surface | [API 0001](../architecture/api-0001-native-scene-state.md) | Accepted contract; implementation evidence pending |
 | Phase-1 engine error ownership and mapping | [API 0002](../architecture/api-0002-errors-capabilities-fallback.md) | Accepted contract; mapping and failure evidence pending |
 

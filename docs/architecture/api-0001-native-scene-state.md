@@ -7,6 +7,7 @@
 - Scope: O-02R/O-05 Phase-1 native PlotScene, view/scale, owned series input, transactions, snapshots, identities, revisions, and invalidation
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](../adr/0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Governing Phase-1 record: [ADR 0010 — accepted Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md)
+- Facade amendment: [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md)
 - Related error boundary: [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md)
 - Open-decision records: [O-02 — Public Rust and Python API surface](open-decisions.md#o-02-public-rust-and-python-api-surface), [O-05 — Scene ownership, mutation, revision, and history](open-decisions.md#o-05-scene-ownership-mutation-revision-and-history)
 
@@ -15,7 +16,8 @@ native semantic boundary. It does not define a backend, device, window, event
 loop, session, viewer, close operation, renderer resource, Python binding, or
 persistence format. It records an accepted contract before implementation; the
 [traceability registry](../requirements/traceability-v1.0.md) remains the source
-of implementation status.
+of implementation status. The Phase-1B namespace and trait details are narrowed
+by [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md).
 
 ## Requirement references
 
@@ -40,6 +42,25 @@ caches, Scene internals, and component revisions remain private.
 All fields of the facade types are private. The facade returns
 `PublicError`, never engine `SceneError`; engine-to-facade error ownership and
 mapping are defined in [API 0002](api-0002-errors-capabilities-fallback.md).
+
+### Root namespace and visibility
+
+Every intentional Phase-1B product type is exported directly at the `lumenplot`
+crate root:
+
+```rust
+lumenplot::{
+    PlotScene, SceneTransaction, SceneSnapshot, SceneRevision, SeriesId,
+    CommitReceipt, AxisRange, AxisScale, Viewport, AxisScales, SeriesTopology,
+    SeriesData, PublicError, ErrorCode, ErrorCategory,
+}
+```
+
+There are no public Phase-1B submodules. The facade implementation modules are
+private and named `error`, `view`, `series`, and `scene`; `lib.rs` exposes only
+the exact root allowlist. `lumenplot_engine`, its `bridge`, engine errors,
+chunks, segments, LOD/index/selection types, component revisions, and raw state
+are never re-exported or named in public signatures.
 
 ### View and scale observations
 
@@ -111,8 +132,9 @@ The opaque types are `PlotScene`, `SceneTransaction<'_>`, cloneable
 `SceneSnapshot`, `SceneRevision`, `SeriesId`, `CommitReceipt`, `AxisRange`,
 `AxisScale`, `Viewport`, `AxisScales`, `SeriesTopology`, and `SeriesData`, plus
 `PublicError`, `ErrorCode`, and `ErrorCategory`. `SceneRevision` and `SeriesId`
-are comparable, hashable, and debuggable observations with private numeric
-representation and no serde/persistence identity.
+implement exactly `Copy + Clone + Debug + Eq + PartialEq + Hash`; their private
+numeric representation has no public numeric access and no serde/persistence
+identity.
 
 ```rust
 impl PlotScene {
@@ -155,9 +177,14 @@ impl CommitReceipt {
 
 The view, scale, and snapshot accessors are immutable observations; their
 implementation may use value or immutable-reference details without exposing
-storage. `SceneSnapshot` is `Clone + Send + Sync`, owns retained immutable data,
-and cannot expose a mutable Scene borrow. Snapshot clones are intended to be
-O(1) Arc clones internally, but that is not a public performance promise.
+storage. `SceneRevision` and `SeriesId` implement exactly
+`Copy + Clone + Debug + Eq + PartialEq + Hash`; "comparable" means
+equality-comparable and does not promise `Ord`, `PartialOrd`, or numeric access.
+Their private process-local representation is not a persistence or wire
+identity. `SceneSnapshot` is `Clone + Send + Sync` only, owns retained immutable
+data, and cannot expose a mutable Scene borrow. No public performance trait
+claim is made, and no additional public trait guarantee is made for the other
+Phase-1B types in this slice.
 
 All mutating operations that can fail return `Result`. `PlotScene::new` has no
 implicit default; its initial canonical and current view are equal.
@@ -248,6 +275,7 @@ product rows as `Not implemented`, `Not measured`, or `environment required`.
 
 - [ADR index](../adr/README.md)
 - [ADR 0010 — accepted Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md)
+- [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md)
 - [Architecture overview](overview.md)
 - [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md)
 - [API 0003 — Python, NumPy, and Matplotlib](api-0003-python-numpy-matplotlib.md)
