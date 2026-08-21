@@ -245,11 +245,310 @@ impl SeriesData {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub struct LogicalSize {
+    width: f64,
+    height: f64,
+}
+
+impl LogicalSize {
+    pub fn new(width: f64, height: f64) -> Result<Self, SceneError> {
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return Err(SceneError::from(EngineSceneError::new(
+                error::SceneErrorKind::InvalidInput,
+            )));
+        }
+        Ok(Self { width, height })
+    }
+
+    pub fn width(&self) -> f64 {
+        self.width
+    }
+
+    pub fn height(&self) -> f64 {
+        self.height
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub struct LogicalRect {
+    x_min: f64,
+    y_min: f64,
+    x_max: f64,
+    y_max: f64,
+}
+
+impl LogicalRect {
+    pub fn new(x_min: f64, y_min: f64, x_max: f64, y_max: f64) -> Result<Self, SceneError> {
+        if !x_min.is_finite()
+            || !y_min.is_finite()
+            || !x_max.is_finite()
+            || !y_max.is_finite()
+            || x_min >= x_max
+            || y_min >= y_max
+            || !(x_max - x_min).is_finite()
+            || !(y_max - y_min).is_finite()
+        {
+            return Err(SceneError::from(EngineSceneError::new(
+                error::SceneErrorKind::InvalidInput,
+            )));
+        }
+        Ok(Self {
+            x_min,
+            y_min,
+            x_max,
+            y_max,
+        })
+    }
+
+    pub fn x_min(&self) -> f64 {
+        self.x_min
+    }
+
+    pub fn y_min(&self) -> f64 {
+        self.y_min
+    }
+
+    pub fn x_max(&self) -> f64 {
+        self.x_max
+    }
+
+    pub fn y_max(&self) -> f64 {
+        self.y_max
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct SrgbRgba8 {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+}
+
+impl SrgbRgba8 {
+    pub fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
+        if a == 0 {
+            Self {
+                r: 0,
+                g: 0,
+                b: 0,
+                a,
+            }
+        } else {
+            Self { r, g, b, a }
+        }
+    }
+
+    pub fn r(&self) -> u8 {
+        self.r
+    }
+
+    pub fn g(&self) -> u8 {
+        self.g
+    }
+
+    pub fn b(&self) -> u8 {
+        self.b
+    }
+
+    pub fn a(&self) -> u8 {
+        self.a
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub struct LineStyle {
+    color: SrgbRgba8,
+    width: f64,
+}
+
+impl LineStyle {
+    pub fn new(color: SrgbRgba8, width: f64) -> Result<Self, SceneError> {
+        if !width.is_finite() || width <= 0.0 {
+            return Err(SceneError::from(EngineSceneError::new(
+                error::SceneErrorKind::InvalidInput,
+            )));
+        }
+        Ok(Self { color, width })
+    }
+
+    pub fn color(&self) -> SrgbRgba8 {
+        self.color
+    }
+
+    pub fn width(&self) -> f64 {
+        self.width
+    }
+}
+
+pub struct LineFrameSpec {
+    canvas: LogicalSize,
+    plot_rect: LogicalRect,
+    logical_units_per_inch: f64,
+    line_style: LineStyle,
+    background: SrgbRgba8,
+}
+
+impl LineFrameSpec {
+    pub fn new(
+        canvas: LogicalSize,
+        plot_rect: LogicalRect,
+        logical_units_per_inch: f64,
+        line_style: LineStyle,
+        background: SrgbRgba8,
+    ) -> Result<Self, SceneError> {
+        if !logical_units_per_inch.is_finite()
+            || logical_units_per_inch <= 0.0
+            || plot_rect.x_min() < 0.0
+            || plot_rect.y_min() < 0.0
+            || plot_rect.x_max() > canvas.width()
+            || plot_rect.y_max() > canvas.height()
+        {
+            return Err(SceneError::from(EngineSceneError::new(
+                error::SceneErrorKind::InvalidInput,
+            )));
+        }
+        Ok(Self {
+            canvas,
+            plot_rect,
+            logical_units_per_inch,
+            line_style,
+            background,
+        })
+    }
+
+    pub(crate) fn parts(&self) -> (LogicalSize, LogicalRect, f64, LineStyle, SrgbRgba8) {
+        (
+            self.canvas,
+            self.plot_rect,
+            self.logical_units_per_inch,
+            self.line_style,
+            self.background,
+        )
+    }
+}
+
+pub struct LineFrame {
+    revision: SceneRevision,
+    canvas: LogicalSize,
+    plot_rect: LogicalRect,
+    logical_units_per_inch: f64,
+    background: SrgbRgba8,
+    series: Vec<LineSeries>,
+}
+
+impl LineFrame {
+    pub fn revision(&self) -> SceneRevision {
+        self.revision
+    }
+
+    pub fn canvas(&self) -> LogicalSize {
+        self.canvas
+    }
+
+    pub fn plot_rect(&self) -> LogicalRect {
+        self.plot_rect
+    }
+
+    pub fn logical_units_per_inch(&self) -> f64 {
+        self.logical_units_per_inch
+    }
+
+    pub fn background(&self) -> SrgbRgba8 {
+        self.background
+    }
+
+    pub fn series(&self) -> &[LineSeries] {
+        &self.series
+    }
+
+    pub(crate) fn from_parts(
+        revision: SceneRevision,
+        canvas: LogicalSize,
+        plot_rect: LogicalRect,
+        logical_units_per_inch: f64,
+        background: SrgbRgba8,
+        series: Vec<LineSeries>,
+    ) -> Self {
+        Self {
+            revision,
+            canvas,
+            plot_rect,
+            logical_units_per_inch,
+            background,
+            series,
+        }
+    }
+}
+
+pub struct LineSeries {
+    id: SeriesId,
+    style: LineStyle,
+    segments: Vec<LineSegment>,
+}
+
+impl LineSeries {
+    pub fn id(&self) -> SeriesId {
+        self.id
+    }
+
+    pub fn style(&self) -> LineStyle {
+        self.style
+    }
+
+    pub fn segments(&self) -> &[LineSegment] {
+        &self.segments
+    }
+
+    pub(crate) fn from_parts(id: SeriesId, style: LineStyle, segments: Vec<LineSegment>) -> Self {
+        Self {
+            id,
+            style,
+            segments,
+        }
+    }
+}
+
+pub struct LineSegment {
+    points: Vec<LinePoint>,
+}
+
+impl LineSegment {
+    pub fn points(&self) -> &[LinePoint] {
+        &self.points
+    }
+
+    pub(crate) fn from_parts(points: Vec<LinePoint>) -> Self {
+        Self { points }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub struct LinePoint {
+    x: f64,
+    y: f64,
+}
+
+impl LinePoint {
+    pub fn x(&self) -> f64 {
+        self.x
+    }
+
+    pub fn y(&self) -> f64 {
+        self.y
+    }
+
+    pub(crate) fn from_parts(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SceneRevision(u64);
 
 impl SceneRevision {
-    fn from_engine(revision: EngineSceneRevision) -> Self {
+    pub(crate) fn from_engine(revision: EngineSceneRevision) -> Self {
         Self(revision.0)
     }
 }
@@ -258,7 +557,7 @@ impl SceneRevision {
 pub struct SeriesId(u64);
 
 impl SeriesId {
-    fn from_engine(id: EngineSeriesId) -> Self {
+    pub(crate) fn from_engine(id: EngineSeriesId) -> Self {
         Self(id.0)
     }
 }
@@ -380,6 +679,10 @@ impl SceneSnapshot {
         AxisScales {
             inner: self.inner.axis_scales(),
         }
+    }
+
+    pub fn resolve_line_frame(&self, spec: &LineFrameSpec) -> Result<LineFrame, SceneError> {
+        crate::frame::resolve_line_frame(&self.inner, spec).map_err(Into::into)
     }
 }
 

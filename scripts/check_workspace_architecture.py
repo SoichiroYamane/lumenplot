@@ -32,6 +32,7 @@ EXPECTED_ENGINE_SOURCE_FILES = {
     "src/lib.rs",
     "src/error.rs",
     "src/bridge.rs",
+    "src/frame.rs",
     "src/data/mod.rs",
     "src/data/sample.rs",
     "src/data/topology.rs",
@@ -176,6 +177,15 @@ BRIDGE_TYPES = {
     "SceneRevision",
     "SeriesId",
     "CommitReceipt",
+    "LogicalSize",
+    "LogicalRect",
+    "SrgbRgba8",
+    "LineStyle",
+    "LineFrameSpec",
+    "LineFrame",
+    "LineSeries",
+    "LineSegment",
+    "LinePoint",
 }
 BRIDGE_METHODS = {
     "kind",
@@ -207,6 +217,105 @@ BRIDGE_METHODS = {
     "viewport",
     "axis_scales",
     "changed",
+    "width",
+    "height",
+    "x_min",
+    "y_min",
+    "x_max",
+    "y_max",
+    "r",
+    "g",
+    "b",
+    "a",
+    "color",
+    "resolve_line_frame",
+    "canvas",
+    "plot_rect",
+    "logical_units_per_inch",
+    "background",
+    "series",
+    "id",
+    "style",
+    "segments",
+    "points",
+}
+BRIDGE_METHODS_BY_TYPE = {
+    "SceneErrorKind": set(),
+    "SceneError": {"kind", "message"},
+    "AxisRange": {"new", "min", "max"},
+    "AxisScale": set(),
+    "Viewport": {"new", "from_bounds", "x", "y"},
+    "AxisScales": {"new", "x", "y", "validate"},
+    "SeriesTopology": set(),
+    "SeriesData": {
+        "from_owned_xy",
+        "from_owned_xy_segments",
+        "topology",
+        "source_len",
+        "point_count",
+        "is_empty",
+    },
+    "PlotScene": {"new", "transaction", "snapshot", "revision"},
+    "SceneTransaction": {
+        "replace_canonical_view",
+        "set_viewport",
+        "set_axis_scales",
+        "add_series",
+        "append_series",
+        "commit",
+        "abort",
+    },
+    "SceneSnapshot": {
+        "revision",
+        "canonical_view",
+        "viewport",
+        "axis_scales",
+        "resolve_line_frame",
+    },
+    "SceneRevision": set(),
+    "SeriesId": set(),
+    "CommitReceipt": {"revision", "changed"},
+    "LogicalSize": {"new", "width", "height"},
+    "LogicalRect": {"new", "x_min", "y_min", "x_max", "y_max"},
+    "SrgbRgba8": {"new", "r", "g", "b", "a"},
+    "LineStyle": {"new", "color", "width"},
+    "LineFrameSpec": {"new"},
+    "LineFrame": {
+        "revision",
+        "canvas",
+        "plot_rect",
+        "logical_units_per_inch",
+        "background",
+        "series",
+    },
+    "LineSeries": {"id", "style", "segments"},
+    "LineSegment": {"points"},
+    "LinePoint": {"x", "y"},
+}
+BRIDGE_DERIVES = {
+    "SceneErrorKind": {"Clone", "Copy", "Debug", "Eq", "Hash", "Ord", "PartialEq", "PartialOrd"},
+    "SceneError": {"Clone", "Debug", "Eq", "PartialEq"},
+    "AxisRange": {"Clone", "Copy", "Debug", "PartialEq"},
+    "AxisScale": {"Clone", "Copy", "Debug", "Eq", "Hash", "PartialEq"},
+    "Viewport": {"Clone", "Copy", "Debug", "PartialEq"},
+    "AxisScales": {"Clone", "Copy", "Debug", "Eq", "Hash", "PartialEq"},
+    "SeriesTopology": {"Clone", "Copy", "Debug", "Eq", "Hash", "PartialEq"},
+    "SeriesData": set(),
+    "PlotScene": set(),
+    "SceneTransaction": set(),
+    "SceneSnapshot": {"Clone"},
+    "SceneRevision": {"Clone", "Copy", "Debug", "Eq", "Hash", "Ord", "PartialEq", "PartialOrd"},
+    "SeriesId": {"Clone", "Copy", "Debug", "Eq", "Hash", "Ord", "PartialEq", "PartialOrd"},
+    "CommitReceipt": {"Clone", "Copy", "Debug", "Eq", "PartialEq"},
+    "LogicalSize": {"Clone", "Copy", "PartialEq"},
+    "LogicalRect": {"Clone", "Copy", "PartialEq"},
+    "SrgbRgba8": {"Clone", "Copy", "Eq", "PartialEq"},
+    "LineStyle": {"Clone", "Copy", "PartialEq"},
+    "LineFrameSpec": set(),
+    "LineFrame": set(),
+    "LineSeries": set(),
+    "LineSegment": set(),
+    "LinePoint": {"Clone", "Copy", "PartialEq"},
 }
 EXPECTED_EDGES = {
     "lumenplot": {"lumenplot-engine", "lumenplot-export"},
@@ -610,9 +719,39 @@ def _check_engine_bridge(code: str, errors: list[str]) -> None:
             + ")"
         )
 
+    declarations = re.compile(
+        r"(?P<attributes>(?:^\s*#\[[^\n]*\]\s*\n)*)"
+        r"^\s*pub\s+(?P<kind>struct|enum)\s+(?P<name>\w+)\b",
+        re.MULTILINE,
+    )
+    for declaration in declarations.finditer(code):
+        name = declaration.group("name")
+        actual_derives = _facade_derive_traits(declaration.group("attributes"))
+        expected_derives = BRIDGE_DERIVES.get(name, set())
+        if actual_derives != expected_derives:
+            errors.append(f"package lumenplot-engine: bridge trait inventory mismatch for {name!r}")
+
     for name in PUBLIC_FN_RE.findall(code):
         if name not in BRIDGE_METHODS:
             errors.append(f"package lumenplot-engine: bridge public method {name!r} is not allowed")
+
+    method_inventory: dict[str, set[str]] = {}
+    for _, _, implementation_kind, target, body_or_trait in _facade_public_impls(code):
+        if implementation_kind != "inherent" or target not in BRIDGE_METHODS_BY_TYPE:
+            continue
+        body = body_or_trait
+        methods = set(re.findall(r"^\s*pub\s+fn\s+(\w+)\b", body, re.MULTILINE))
+        method_inventory.setdefault(target, set()).update(methods)
+        unexpected = sorted(methods - BRIDGE_METHODS_BY_TYPE[target])
+        for method in unexpected:
+            errors.append(
+                f"package lumenplot-engine: bridge public method {method!r} on {target!r} is not allowed"
+            )
+    for type_name, expected_methods in BRIDGE_METHODS_BY_TYPE.items():
+        if method_inventory.get(type_name, set()) != expected_methods:
+            errors.append(
+                f"package lumenplot-engine: bridge public method inventory mismatch for {type_name!r}"
+            )
 
     for line in code.splitlines():
         if not re.match(r"^\s*pub\s+", line):
@@ -736,7 +875,7 @@ def _check_engine_source(package_dir: Path, root: Path, errors: list[str]) -> No
         return
 
     root_code = sources["src/lib.rs"]
-    for module in ("error", "data", "lod", "scene"):
+    for module in ("error", "frame", "data", "lod", "scene"):
         if not re.search(rf"^\s*mod\s+{module}\s*;", root_code, re.MULTILINE):
             errors.append(f"package lumenplot-engine: private root module {module!r} is missing")
     hidden_bridge = re.compile(
