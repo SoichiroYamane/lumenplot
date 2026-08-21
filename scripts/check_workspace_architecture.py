@@ -298,6 +298,20 @@ def _check_engine_bridge(code: str, errors: list[str]) -> None:
         if actual != expected:
             errors.append(f"package lumenplot-engine: bridge enum {name!r} variant inventory mismatch")
 
+    series_data = re.search(
+        r"(?P<attributes>(?:^\s*#\[[^\n]*\]\s*\n)*)^\s*pub\s+struct\s+SeriesData\b",
+        code,
+        re.MULTILINE,
+    )
+    if series_data is not None and re.search(r"\bDebug\b", series_data.group("attributes")):
+        errors.append("package lumenplot-engine: SeriesData raw formatting is not allowed")
+    if re.search(
+        r"\bimpl(?:\s*<[^>{}]*>)?\s+(?:(?:std|core)::)?(?:fmt::)?"
+        r"(?:Debug|Display|Binary|LowerHex|UpperHex|Octal|Pointer)\s+for\s+SeriesData\b",
+        code,
+    ):
+        errors.append("package lumenplot-engine: SeriesData raw formatting is not allowed")
+
     raw_tokens = (
         "crate::",
         "Engine",

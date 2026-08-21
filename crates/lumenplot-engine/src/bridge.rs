@@ -191,7 +191,6 @@ impl SeriesTopology {
     }
 }
 
-#[derive(Debug)]
 pub struct SeriesData {
     inner: SeriesInput,
 }

@@ -206,6 +206,25 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
 
         self.assert_mutation_rejected(mutate, "bridge tuple field is public")
 
+    def test_series_data_debug_derivation_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace("pub struct SeriesData {", "#[derive(Debug)]\npub struct SeriesData {"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "SeriesData raw formatting is not allowed")
+
+    def test_series_data_formatting_impl_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            with path.open("a", encoding="utf-8") as source:
+                source.write("\nimpl fmt::Display for SeriesData {}\n")
+
+        self.assert_mutation_rejected(mutate, "SeriesData raw formatting is not allowed")
+
     def test_engine_concrete_backend_code_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-engine/src/lib.rs"
