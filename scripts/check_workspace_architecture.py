@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Check the accepted Rust workspace and conditional Phase-3A facade boundary.
+"""Check the accepted Rust workspace and conditional Phase-3A boundaries.
 
 This checker intentionally uses only the Python standard library.  It validates
 repository structure and negative public-surface guards without compiling or
 importing product code.  The hidden Phase-3A facade is absent before
-implementation and, when present, must match its exact owned inventory.
+implementation and, when present, must match its exact owned inventory.  The
+Phase-3A2 wheel/evidence gate is also absent before implementation; it activates
+only when an implementation sentinel appears and then fails closed on every
+missing package, workflow, input, or evidence invariant.
 """
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import json
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -537,6 +542,91 @@ EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES = {
 }
 INHERITED_PACKAGE_FIELDS = ("edition", "version", "license", "repository", "readme")
 DEPENDENCY_TABLE_NAMES = {"dependencies", "dev-dependencies", "build-dependencies"}
+
+PHASE3A2_IMAGE = (
+    "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@"
+    "sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b"
+)
+PHASE3A2_IMAGE_CONFIG_DIGEST = "sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5"
+PHASE3A2_MATURIN_WHEEL_SHA256 = "dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e"
+PHASE3A2_NUMPY_WHEEL_SHA256 = {
+    "cp311": "89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93",
+    "cp312": "90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853",
+    "cp313": "a7830bab239b79cda9c08c2da014761cafb48da6150e1da17ac06283f43b6089",
+    "cp314": "a2c306dea656c12c68f51f4cea133cbe78ca7435eb28c735eac1d3ebe73be6e8",
+}
+PHASE3A2_SCHEMA = "lumenplot.phase3a2-wheel-evidence.v1"
+PHASE3A2_INTERPRETERS = {
+    "3.11": "/opt/python/cp311-cp311/bin/python",
+    "3.12": "/opt/python/cp312-cp312/bin/python",
+    "3.13": "/opt/python/cp313-cp313/bin/python",
+    "3.14": "/opt/python/cp314-cp314/bin/python",
+}
+PHASE3A2_ACTION_PINS = {
+    "actions/checkout": ("11bd71901bbe5b1630ceea73d27597364c9af683", "v4.2.2"),
+    "dtolnay/rust-toolchain": ("032958afbdc797a9164d3bc0b56325c1308924a5", "1.97.1"),
+    "actions/upload-artifact": ("043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "v7.0.1"),
+}
+PHASE3A2_PYTHON_DEPENDENCIES = {
+    "pyo3": {
+        "version": "=0.29.2",
+        "default-features": False,
+        "features": ["macros", "extension-module", "abi3-py311"],
+    },
+    "numpy": {"version": "=0.29.0", "default-features": False},
+}
+PHASE3A2_MANIFEST_KEYS = {
+    "schema",
+    "builder",
+    "checks",
+    "claim_boundary",
+    "runtime_cells",
+    "source",
+    "wheel",
+}
+PHASE3A2_SOURCE_KEYS = {"commit", "cargo_lock_sha256", "distribution", "cargo_version"}
+PHASE3A2_BUILDER_KEYS = {
+    "image",
+    "platform",
+    "config_digest",
+    "glibc",
+    "auditwheel_version",
+    "abi3audit_version",
+    "rust_version",
+    "maturin_version",
+    "maturin_wheel_sha256",
+}
+PHASE3A2_WHEEL_KEYS = {
+    "filename",
+    "sha256",
+    "tag",
+    "cargo_expected_version",
+    "metadata_version",
+    "zip",
+    "metadata",
+    "wheel",
+    "record",
+    "elf",
+    "abi3",
+    "sbom",
+    "sbom_format",
+}
+PHASE3A2_CHECK_KEYS = {
+    "cargo_locked_sources_checksums_licenses",
+    "same_wheel",
+    "metadata_version",
+    "auditwheel",
+    "elf_rpath",
+    "abi3audit",
+    "private_helper_fixtures",
+    "redaction_ownership",
+}
+PHASE3A2_CLAIM_KEYS = {
+    "private_helper_only",
+    "release_artifact",
+    "platform_support_claim",
+    "publication_authorized",
+}
 
 PUBLIC_ITEM_RE = re.compile(
     r"^\s*pub(?:\s*\([^)]*\))?\s+"
@@ -2610,13 +2700,550 @@ def _check_export_source(package_dir: Path, root: Path, errors: list[str]) -> No
         errors.append("package lumenplot-export: public signature leaks a dependency or renderer type")
 
 
-def _check_package_source(package_name: str, package_dir: Path, root: Path, errors: list[str]) -> None:
+def _phase3a2_workflow_paths(root: Path) -> list[Path]:
+    workflow_dir = root / ".github" / "workflows"
+    if not workflow_dir.is_dir():
+        return []
+    return sorted((*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")))
+
+
+def _phase3a2_workflow_candidates(root: Path) -> list[tuple[Path, str]]:
+    candidates: list[tuple[Path, str]] = []
+    signal = re.compile(r"\b(?:auditwheel|manylinux|maturin|wheel)\b", re.IGNORECASE)
+    for path in _phase3a2_workflow_paths(root):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        if signal.search(text):
+            candidates.append((path, text))
+    return candidates
+
+
+def _phase3a2_activation_reasons(root: Path) -> list[str]:
+    reasons: list[str] = []
+    if (root / "pyproject.toml").is_file():
+        reasons.append("root pyproject.toml")
+    if (root / "python" / "lumenplot_mpl").is_dir():
+        reasons.append("python/lumenplot_mpl")
+    if _phase3a2_workflow_candidates(root):
+        reasons.append("Python wheel workflow")
+    evidence_manifest = root / "phase3a2-wheel-evidence.json"
+    if evidence_manifest.exists():
+        reasons.append("phase3a2-wheel-evidence.json")
+
+    bridge_manifest = root / "crates" / "lumenplot-python" / "Cargo.toml"
+    try:
+        with bridge_manifest.open("rb") as source:
+            manifest = tomllib.load(source)
+    except (FileNotFoundError, OSError, tomllib.TOMLDecodeError):
+        manifest = {}
+    dependencies = manifest.get("dependencies", {}) if isinstance(manifest, dict) else {}
+    if isinstance(dependencies, dict) and {"pyo3", "numpy"} & set(dependencies):
+        reasons.append("Python bridge dependency")
+    return reasons
+
+
+def _phase3a2_read_text(path: Path, root: Path, errors: list[str], label: str) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        errors.append(f"phase3a2: missing {label}")
+    except (OSError, UnicodeError):
+        errors.append(f"phase3a2: cannot read {_logical_path(path, root)}")
+    return None
+
+
+def _phase3a2_check_pyproject(root: Path, errors: list[str]) -> None:
+    path = root / "pyproject.toml"
+    try:
+        with path.open("rb") as source:
+            manifest = tomllib.load(source)
+    except FileNotFoundError:
+        errors.append("phase3a2: missing root pyproject.toml")
+        return
+    except (OSError, tomllib.TOMLDecodeError):
+        errors.append("phase3a2: invalid root pyproject.toml")
+        return
+    build_system = manifest.get("build-system")
+    if not isinstance(build_system, dict):
+        errors.append("phase3a2 pyproject: missing [build-system]")
+    else:
+        requires = build_system.get("requires")
+        if not isinstance(requires, list) or "maturin==1.14.1" not in requires:
+            errors.append("phase3a2 pyproject: maturin must be exactly 1.14.1")
+        if build_system.get("build-backend") != "maturin":
+            errors.append("phase3a2 pyproject: build backend must be maturin")
+    project = manifest.get("project")
+    if not isinstance(project, dict):
+        errors.append("phase3a2 pyproject: missing [project]")
+        return
+    if project.get("name") != "lumenplot-mpl":
+        errors.append("phase3a2 pyproject: project name must be lumenplot-mpl")
+    if project.get("requires-python") != ">=3.11,<3.15":
+        errors.append("phase3a2 pyproject: Requires-Python must be >=3.11,<3.15")
+    dependencies = project.get("dependencies", [])
+    if isinstance(dependencies, list) and any("matplotlib" in str(item).lower() for item in dependencies):
+        errors.append("phase3a2 pyproject: Matplotlib dependency is forbidden")
+    if "backend" in str(project).lower() or "matplotlib" in str(project).lower():
+        errors.append("phase3a2 pyproject: public backend/Matplotlib surface is forbidden")
+
+
+def _phase3a2_check_python_package(root: Path, errors: list[str]) -> None:
+    package_dir = root / "python" / "lumenplot_mpl"
+    if not package_dir.is_dir():
+        errors.append("phase3a2: missing Python package directory python/lumenplot_mpl")
+        return
+    required_files = ("__init__.py", "_native.pyi", "py.typed")
+    for relative in required_files:
+        if not (package_dir / relative).is_file():
+            errors.append(f"phase3a2 Python package: missing {relative}")
+    for path in sorted(package_dir.rglob("*")):
+        if not path.is_file() or path.suffix not in {".py", ".pyi"}:
+            continue
+        source = _phase3a2_read_text(path, root, errors, f"Python source {_logical_path(path, root)}")
+        if source is None:
+            continue
+        lowered = source.lower()
+        if "matplotlib" in lowered or re.search(r"\bbackend\b", lowered):
+            errors.append("phase3a2 Python package: Matplotlib/backend surface is forbidden")
+        if re.search(r"\brender_png\b", source):
+            errors.append("phase3a2 Python package: public render_png is forbidden")
+    init_path = package_dir / "__init__.py"
+    native_stub = package_dir / "_native.pyi"
+    if init_path.is_file():
+        init_source = _phase3a2_read_text(init_path, root, errors, "Python package initializer")
+        if init_source is not None and "LumenPlotError" not in init_source:
+            errors.append("phase3a2 Python package: LumenPlotError is missing")
+    if native_stub.is_file():
+        stub_source = _phase3a2_read_text(native_stub, root, errors, "native Python stub")
+        if stub_source is not None and "render_line_png" not in stub_source:
+            errors.append("phase3a2 Python package: render_line_png is missing from _native.pyi")
+
+
+def _check_python_bridge_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    source_dir = package_dir / "src"
+    rust_files = sorted(source_dir.rglob("*.rs")) if source_dir.is_dir() else []
+    if not rust_files:
+        errors.append("phase3a2 Python bridge: missing Rust source")
+        return
+    combined: list[str] = []
+    for path in rust_files:
+        source = _phase3a2_read_text(path, root, errors, f"Rust source {_logical_path(path, root)}")
+        if source is not None:
+            combined.append(_strip_rust_comments_and_literals(source))
+    code = "\n".join(combined)
+    for label, pattern in (
+        ("unsafe code", re.compile(r"\bunsafe\b")),
+        ("serialization or wire code", re.compile(r"\b(?:serde|bincode|postcard|rmp|wire|serialize|deserialize)\b")),
+        ("Matplotlib/backend code", re.compile(r"\b(?:matplotlib|backend|wgpu|winit)\b", re.IGNORECASE)),
+        ("C ABI export", re.compile(r"#\s*\[\s*(?:no_mangle|export_name)\b|extern\s+\"C\"")),
+        ("free-threaded ABI", re.compile(r"\b(?:abi3t|free.threaded|cp\d{3}t)\b", re.IGNORECASE)),
+        ("direct engine/export dependency", re.compile(r"\b(?:lumenplot_engine|lumenplot_export)\b")),
+    ):
+        if pattern.search(code):
+            errors.append(f"phase3a2 Python bridge: {label} is forbidden")
+    if "#[pymodule]" not in code or "render_line_png" not in code:
+        errors.append("phase3a2 Python bridge: private pymodule/render_line_png surface is incomplete")
+
+
+def _phase3a2_check_workflow_actions(text: str, errors: list[str]) -> set[str]:
+    uses_pattern = re.compile(
+        r"^\s*(?:-\s*)?uses:\s*([^@\s#]+)(?:@([^\s#]+))?(?:\s*#\s*(.*))?$",
+        re.MULTILINE,
+    )
+    repositories: set[str] = set()
+    for match in uses_pattern.finditer(text):
+        repository, reference, comment = match.groups()
+        repositories.add(repository)
+        expected = PHASE3A2_ACTION_PINS.get(repository)
+        if expected is None:
+            errors.append(f"phase3a2 workflow: action {repository!r} is not allowed")
+            continue
+        expected_sha, release = expected
+        if reference is None:
+            errors.append(f"phase3a2 workflow: action {repository!r} is not pinned to a full SHA")
+        elif reference != expected_sha:
+            errors.append(f"phase3a2 workflow: action {repository!r} is not pinned to the reviewed SHA")
+        if comment is None or release.lower() not in comment.lower():
+            errors.append(f"phase3a2 workflow: action {repository!r} is missing its release comment")
+        if repository == "actions/upload-artifact" and "if-no-files-found: error" not in text:
+            errors.append("phase3a2 workflow: upload-artifact requires if-no-files-found: error")
+    for required in ("actions/checkout", "dtolnay/rust-toolchain"):
+        if required not in repositories:
+            errors.append(f"phase3a2 workflow: missing pinned action {required}")
+    return repositories
+
+
+def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
+    candidates = _phase3a2_workflow_candidates(root)
+    if not candidates:
+        errors.append("phase3a2: missing Python wheel workflow")
+        return set()
+    text = "\n".join(content for _, content in candidates)
+    repositories = _phase3a2_check_workflow_actions(text, errors)
+    required_fragments = (
+        ("pull_request", "pull_request trigger"),
+        ("push:", "push trigger"),
+        ("main", "main branch trigger"),
+        ("contents: read", "read-only contents permission"),
+        ("docker pull --platform=linux/amd64", "platform-pinned Docker pull"),
+        ("docker image inspect", "image digest inspection"),
+        ("--network=bridge", "networked prefetch container"),
+        ("--network=none", "offline build/test container"),
+        ("--read-only", "read-only container root"),
+        ("--user", "non-root container user"),
+        ("--cap-drop=ALL", "dropped container capabilities"),
+        ("--security-opt=no-new-privileges", "no-new-privileges container"),
+        ("--tmpfs /tmp", "temporary container home"),
+        ("cargo fetch --locked", "locked Cargo prefetch"),
+        ("cargo metadata --locked", "locked Cargo metadata"),
+        ("--locked", "locked build"),
+        ("--offline", "offline build"),
+        ("RUSTUP_TOOLCHAIN=1.89.0", "builder Rust toolchain"),
+        ("rustc --version", "in-container Rust verification"),
+        ("cargo --version", "in-container Cargo verification"),
+        ("maturin==1.14.1", "hash-pinned maturin version"),
+        (PHASE3A2_MATURIN_WHEEL_SHA256, "hash-pinned maturin wheel"),
+        ("--interpreter /opt/python/cp311-cp311/bin/python", "CPython 3.11 builder"),
+        ("--compatibility manylinux_2_28", "manylinux compatibility check"),
+        ("--auditwheel check", "auditwheel check"),
+        ("auditwheel show --json", "auditwheel JSON evidence"),
+        ("unzip -t", "ZIP integrity check"),
+        ("METADATA", "wheel METADATA check"),
+        ("WHEEL", "wheel WHEEL check"),
+        ('unzip -p "$WHEEL" \'*/RECORD\'', "wheel RECORD check"),
+        ("readelf -d", "ELF dependency check"),
+        ("DT_NEEDED", "ELF dependency check"),
+        ("unexpected shared library", "unexpected library rejection"),
+        ("CycloneDX 1.5", "CycloneDX 1.5 SBOM check"),
+        ("sha256sum --check", "pre-matrix wheel hash recheck"),
+        ("INPUT_WHEEL_SHA256", "per-cell input wheel hash"),
+        ('test "$WHEEL_VERSION" = "$CARGO_VERSION"', "Cargo-to-wheel version comparison"),
+        ('test "$INSTALLED_VERSION" = "$CARGO_VERSION"', "Cargo-to-installed version comparison"),
+        ("phase3a2-wheel-evidence.json", "evidence manifest check"),
+        ("cp311-abi3-manylinux_2_28_x86_64", "exact wheel tag"),
+        ("--no-index", "offline pip index"),
+        ("--no-cache-dir", "non-cache pip install"),
+        ("--only-binary=:all:", "binary-only NumPy install"),
+        ("--require-hashes", "hash-required pip install"),
+        ("--find-links=/cache/wheelhouse", "local wheelhouse install"),
+        (PHASE3A2_IMAGE_CONFIG_DIGEST, "image config digest verification"),
+        (":/src:ro", "read-only source mount"),
+    )
+    for fragment, label in required_fragments:
+        if fragment not in text:
+            errors.append(f"phase3a2 workflow: missing {label}")
+    if PHASE3A2_IMAGE not in text:
+        errors.append("phase3a2 workflow: builder image must use the exact tag@digest")
+    if re.search(r"manylinux_2_28_x86_64:latest\b", text):
+        errors.append("phase3a2 workflow: floating manylinux latest tag is forbidden")
+    forbidden = (
+        ("pull_request_target", "pull_request_target is forbidden"),
+        ("${{ secrets.", "repository secrets are forbidden"),
+        ("packages: write", "package write permission is forbidden"),
+        ("--privileged", "privileged containers are forbidden"),
+        ("--network=host", "host networking is forbidden"),
+        ("--find-interpreter", "interpreter discovery is forbidden"),
+        ("auditwheel repair", "auditwheel repair is forbidden"),
+        ("abi3t", "free-threaded abi3 is forbidden"),
+        (re.compile(r"\bcp\d{3}t(?:[-/]|\b)", re.IGNORECASE), "free-threaded CPython paths are forbidden"),
+        ("free-threaded", "free-threaded interpreters are forbidden"),
+        ("pypy", "non-CPython interpreters are forbidden"),
+        ("graalpy", "non-CPython interpreters are forbidden"),
+        ("actions/setup-python", "host setup-python is not the builder"),
+        ("maturin-action", "maturin-action is not the builder"),
+        ("twine upload", "package upload is forbidden"),
+        ("gh release", "release publishing is forbidden"),
+        ("cosign", "signing is forbidden"),
+        ("sigstore", "signing is forbidden"),
+        ("actions/cache", "cross-run cache action is forbidden"),
+        ("restore-keys", "cross-run cache keys are forbidden"),
+        ("cache-hit", "cross-run cache outputs are forbidden"),
+        ('test "$INSTALLED_VERSION" = "$INSTALLED_VERSION"', "self-equality version check is forbidden"),
+    )
+    for fragment, label in forbidden:
+        if (fragment.search(text) if isinstance(fragment, re.Pattern) else fragment.lower() in text.lower()):
+            errors.append(f"phase3a2 workflow: {label}")
+    for interpreter in PHASE3A2_INTERPRETERS.values():
+        if interpreter not in text:
+            errors.append(f"phase3a2 workflow: missing runtime interpreter {interpreter}")
+        if f'{interpreter} -m venv --clear' not in text:
+            errors.append(f"phase3a2 workflow: runtime interpreter {interpreter} lacks fresh venv isolation")
+    for digest in PHASE3A2_NUMPY_WHEEL_SHA256.values():
+        if digest not in text:
+            errors.append("phase3a2 workflow: missing hash-pinned NumPy 2.4.6 runtime wheel")
+    if text.count("docker run") < 2:
+        errors.append("phase3a2 workflow: prefetch and offline containers must be separate")
+    if text.count("maturin build") != 1:
+        errors.append("phase3a2 workflow: exactly one wheel build is required")
+    if text.count("sha256sum --check") < 2:
+        errors.append("phase3a2 workflow: every runtime cell must recheck the input wheel hash")
+    for fragment, label in (
+        ("--read-only", "read-only container root"),
+        ("--cap-drop=ALL", "dropped container capabilities"),
+        ("--security-opt=no-new-privileges", "no-new-privileges container"),
+        ("--tmpfs /tmp", "temporary container home"),
+        ("--user", "non-root container user"),
+    ):
+        if text.count(fragment) < 2:
+            errors.append(f"phase3a2 workflow: every container lacks {label}")
+    for container in text.split("docker run")[1:]:
+        if "maturin build" in container and "--network=none" not in container:
+            errors.append("phase3a2 workflow: wheel build must run with --network=none")
+        if "maturin build" in container and "--network=bridge" in container:
+            errors.append("phase3a2 workflow: networked wheel build is forbidden")
+    if ":/src:rw" in text or "/src:rw" in text:
+        errors.append("phase3a2 workflow: source checkout must be read-only")
+    if re.search(r"--user\s+(?:root|0(?::0)?)(?:\s|$)", text, re.IGNORECASE):
+        errors.append("phase3a2 workflow: container user must not be root")
+    pip_lines = [line for line in text.splitlines() if "pip install" in line]
+    for line in pip_lines:
+        for fragment, label in (
+            ("--no-index", "offline pip index"),
+            ("--no-cache-dir", "non-cache pip install"),
+            ("--only-binary=:all:", "binary-only pip install"),
+            ("--require-hashes", "hash-required pip install"),
+            ("--find-links=/cache/wheelhouse", "local wheelhouse install"),
+        ):
+            if fragment not in line:
+                errors.append(f"phase3a2 workflow: pip command is missing {label}")
+        if "maturin" in line and (
+            "maturin==1.14.1" not in line or f"--hash=sha256:{PHASE3A2_MATURIN_WHEEL_SHA256}" not in line
+        ):
+            errors.append("phase3a2 workflow: maturin pip command is not exact and hash-pinned")
+    if "actions/upload-artifact" in repositories:
+        if "if: github.ref == 'refs/heads/main' && github.event_name == 'push'" not in text:
+            errors.append("phase3a2 workflow: upload-artifact is restricted to trusted main")
+        if "retention-days: 7" not in text:
+            errors.append("phase3a2 workflow: upload-artifact retention must be seven days")
+    return repositories
+
+
+def _phase3a2_check_pinned_inventory(root: Path, repositories: set[str], errors: list[str]) -> None:
+    path = root / "docs" / "security" / "pinned-actions.yml"
+    text = _phase3a2_read_text(path, root, errors, "pinned-actions inventory")
+    if text is None:
+        return
+    for repository in sorted(repositories):
+        expected = PHASE3A2_ACTION_PINS.get(repository)
+        if expected is None:
+            continue
+        expected_sha, release = expected
+        if repository not in text or expected_sha not in text or release not in text:
+            errors.append(f"phase3a2 pinned-actions inventory: missing reviewed {repository} entry")
+
+
+def _phase3a2_exact_mapping(
+    value: Any,
+    expected_keys: set[str],
+    label: str,
+    errors: list[str],
+) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        errors.append(f"phase3a2 evidence: {label} must be an object")
+        return None
+    if set(value) != expected_keys:
+        errors.append(f"phase3a2 evidence: {label} keys are not exact")
+        return None
+    return value
+
+
+def _phase3a2_check_redaction(value: Any, root: Path, errors: list[str], key: str = "manifest") -> None:
+    if isinstance(value, dict):
+        for child_key, child in value.items():
+            if re.search(r"(?:token|password|secret|credential|private[_-]?key|authorization)", child_key, re.IGNORECASE):
+                errors.append(f"phase3a2 evidence: secret-bearing field {key}.{child_key} is forbidden")
+            _phase3a2_check_redaction(child, root, errors, f"{key}.{child_key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _phase3a2_check_redaction(child, root, errors, f"{key}[{index}]")
+    elif isinstance(value, str):
+        forbidden = (str(root.resolve()), "/home/", "/tmp/", "\\Users\\", "GITHUB_TOKEN", "github.token")
+        if any(fragment in value for fragment in forbidden):
+            errors.append("phase3a2 evidence: private path or credential text is not redacted")
+
+
+def _phase3a2_check_evidence_manifest(root: Path, errors: list[str]) -> None:
+    path = root / "phase3a2-wheel-evidence.json"
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        errors.append("phase3a2 evidence: missing phase3a2-wheel-evidence.json")
+        return
+    except OSError:
+        errors.append("phase3a2 evidence: cannot read evidence manifest")
+        return
+    try:
+        text = raw.decode("utf-8")
+        value = json.loads(text)
+    except UnicodeDecodeError:
+        errors.append("phase3a2 evidence: manifest must be UTF-8 JSON")
+        return
+    except json.JSONDecodeError:
+        errors.append("phase3a2 evidence: manifest is not valid JSON")
+        return
+    if "\r" in text:
+        errors.append("phase3a2 evidence: manifest must use LF line endings")
+    try:
+        canonical = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    except (TypeError, ValueError):
+        errors.append("phase3a2 evidence: manifest cannot be canonically serialized")
+    else:
+        if text != canonical:
+            errors.append("phase3a2 evidence: manifest is not canonical sorted two-space JSON")
+    _phase3a2_check_redaction(value, root, errors)
+    manifest = _phase3a2_exact_mapping(value, PHASE3A2_MANIFEST_KEYS, "top-level manifest", errors)
+    if manifest is None:
+        return
+    if manifest["schema"] != PHASE3A2_SCHEMA:
+        errors.append("phase3a2 evidence: schema identifier is not the accepted Phase-3A2 v1 value")
+    source = _phase3a2_exact_mapping(manifest["source"], PHASE3A2_SOURCE_KEYS, "source", errors)
+    builder = _phase3a2_exact_mapping(manifest["builder"], PHASE3A2_BUILDER_KEYS, "builder", errors)
+    wheel = _phase3a2_exact_mapping(manifest["wheel"], PHASE3A2_WHEEL_KEYS, "wheel", errors)
+    checks = _phase3a2_exact_mapping(manifest["checks"], PHASE3A2_CHECK_KEYS, "checks", errors)
+    claims = _phase3a2_exact_mapping(manifest["claim_boundary"], PHASE3A2_CLAIM_KEYS, "claim_boundary", errors)
+    if source is None or builder is None or wheel is None or checks is None or claims is None:
+        return
+
+    if not isinstance(source["commit"], str) or not re.fullmatch(r"[0-9a-f]{40}", source["commit"]):
+        errors.append("phase3a2 evidence: source commit must be a 40-character hex revision")
+    lock_hash = source["cargo_lock_sha256"]
+    if not isinstance(lock_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", lock_hash):
+        errors.append("phase3a2 evidence: Cargo.lock SHA-256 is invalid")
+    else:
+        lock_path = root / "Cargo.lock"
+        try:
+            actual_lock_hash = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+        except OSError:
+            errors.append("phase3a2 evidence: cannot read Cargo.lock for SHA-256 verification")
+        else:
+            if lock_hash != actual_lock_hash:
+                errors.append("phase3a2 evidence: Cargo.lock SHA-256 does not match the checked-in lockfile")
+    if source["distribution"] != "lumenplot-mpl":
+        errors.append("phase3a2 evidence: distribution must be lumenplot-mpl")
+    cargo_version = source["cargo_version"]
+    if not isinstance(cargo_version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", cargo_version):
+        errors.append("phase3a2 evidence: Cargo-derived version is invalid")
+
+    expected_builder = {
+        "image": PHASE3A2_IMAGE,
+        "platform": "linux/amd64",
+        "config_digest": PHASE3A2_IMAGE_CONFIG_DIGEST,
+        "glibc": "2.28",
+        "auditwheel_version": "6.8.0",
+        "abi3audit_version": "0.0.26",
+        "rust_version": "1.89.0",
+        "maturin_version": "1.14.1",
+        "maturin_wheel_sha256": PHASE3A2_MATURIN_WHEEL_SHA256,
+    }
+    for key, expected in expected_builder.items():
+        if builder[key] != expected:
+            errors.append(f"phase3a2 evidence: builder {key} is not the reviewed immutable input")
+
+    expected_filename = f"lumenplot_mpl-{cargo_version}-cp311-abi3-manylinux_2_28_x86_64.whl"
+    if wheel["filename"] != expected_filename:
+        errors.append("phase3a2 evidence: wheel filename/tag is not the exact cp311-abi3 manylinux artifact")
+    if not isinstance(wheel["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", wheel["sha256"]):
+        errors.append("phase3a2 evidence: wheel SHA-256 is invalid")
+    if wheel["tag"] != "cp311-abi3-manylinux_2_28_x86_64":
+        errors.append("phase3a2 evidence: wheel tag is not cp311-abi3-manylinux_2_28_x86_64")
+    for key in ("cargo_expected_version", "metadata_version"):
+        if wheel[key] != cargo_version:
+            errors.append(f"phase3a2 evidence: wheel {key} does not match Cargo version")
+    for key in ("zip", "metadata", "wheel", "record", "elf", "abi3", "sbom"):
+        if wheel[key] is not True:
+            errors.append(f"phase3a2 evidence: wheel {key} check is not true")
+    if wheel["sbom_format"] != "CycloneDX 1.5":
+        errors.append("phase3a2 evidence: SBOM format must be CycloneDX 1.5")
+    for key in PHASE3A2_CHECK_KEYS:
+        if checks[key] is not True:
+            errors.append(f"phase3a2 evidence: required check {key} is not true")
+    expected_claims = {
+        "private_helper_only": True,
+        "release_artifact": False,
+        "platform_support_claim": False,
+        "publication_authorized": False,
+    }
+    for key, expected in expected_claims.items():
+        if claims[key] is not expected:
+            errors.append(f"phase3a2 evidence: claim boundary {key} is incorrect")
+
+    cells = manifest["runtime_cells"]
+    if not isinstance(cells, list) or len(cells) != 4:
+        errors.append("phase3a2 evidence: runtime matrix must contain exactly four GIL cells")
+        return
+    cell_keys = {
+        "python",
+        "interpreter",
+        "numpy_version",
+        "numpy_wheel_sha256",
+        "wheel_sha256",
+        "input_wheel_sha256",
+        "cargo_expected_version",
+        "installed_distribution_version",
+        "result",
+    }
+    seen: set[str] = set()
+    expected_cell_order = list(PHASE3A2_INTERPRETERS)
+    actual_cell_order = [cell.get("python") for cell in cells if isinstance(cell, dict)]
+    if actual_cell_order != expected_cell_order:
+        errors.append("phase3a2 evidence: runtime cells must be ordered 3.11, 3.12, 3.13, 3.14")
+    for cell in cells:
+        if not isinstance(cell, dict) or set(cell) != cell_keys:
+            errors.append("phase3a2 evidence: runtime cell schema is not exact")
+            continue
+        python_version = cell["python"]
+        expected_numpy_key = "cp" + python_version.replace(".", "") if isinstance(python_version, str) else ""
+        if python_version not in PHASE3A2_INTERPRETERS:
+            errors.append("phase3a2 evidence: runtime matrix contains an unsupported interpreter")
+            continue
+        seen.add(python_version)
+        if cell["interpreter"] != PHASE3A2_INTERPRETERS[python_version]:
+            errors.append("phase3a2 evidence: runtime interpreter path is not the reviewed GIL path")
+        if cell["numpy_version"] != "2.4.6" or cell["numpy_wheel_sha256"] != PHASE3A2_NUMPY_WHEEL_SHA256.get(expected_numpy_key):
+            errors.append("phase3a2 evidence: runtime NumPy input is not the exact hash-pinned wheel")
+        if cell["wheel_sha256"] != wheel["sha256"]:
+            errors.append("phase3a2 evidence: runtime cell did not use the identical wheel hash")
+        if cell["input_wheel_sha256"] != wheel["sha256"]:
+            errors.append("phase3a2 evidence: runtime cell did not rehash the input wheel")
+        if cell["cargo_expected_version"] != cargo_version or cell["installed_distribution_version"] != cargo_version:
+            errors.append("phase3a2 evidence: installed distribution version does not match Cargo")
+        if cell["result"] != "pass":
+            errors.append("phase3a2 evidence: runtime matrix cell did not pass")
+    if seen != set(PHASE3A2_INTERPRETERS):
+        errors.append("phase3a2 evidence: runtime matrix is missing one or more CPython 3.11-3.14 cells")
+
+
+def _check_phase3a2(root: Path, errors: list[str]) -> None:
+    """Validate the accepted Phase-3A2 package, workflow, and evidence gate."""
+
+    for relative in ("rust-toolchain", "rust-toolchain.toml"):
+        if (root / relative).exists():
+            errors.append(f"phase3a2: repository {relative} pin is forbidden")
+    _phase3a2_check_pyproject(root, errors)
+    _phase3a2_check_python_package(root, errors)
+    _check_python_bridge_source(root / "crates" / "lumenplot-python", root, errors)
+    repositories = _phase3a2_check_workflow(root, errors)
+    _phase3a2_check_pinned_inventory(root, repositories, errors)
+    _phase3a2_check_evidence_manifest(root, errors)
+
+
+def _check_package_source(
+    package_name: str,
+    package_dir: Path,
+    root: Path,
+    errors: list[str],
+    phase3a2_active: bool = False,
+) -> None:
     if package_name == "lumenplot-engine":
         _check_engine_source(package_dir, root, errors)
     elif package_name == "lumenplot-export":
         _check_export_source(package_dir, root, errors)
     elif package_name == "lumenplot":
         _check_facade_source(package_dir, root, errors)
+    elif package_name == "lumenplot-python" and phase3a2_active:
+        _check_python_bridge_source(package_dir, root, errors)
     else:
         _check_stub_source(package_name, package_dir / "src", root, errors)
 
@@ -2625,11 +3252,15 @@ def _check_dependencies(
     package_name: str,
     manifest: dict[str, Any],
     errors: list[str],
+    phase3a2_active: bool = False,
 ) -> None:
     expected_edges = EXPECTED_EDGES[package_name]
-    expected_external = (
-        EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES if package_name == "lumenplot-export" else {}
-    )
+    if package_name == "lumenplot-export":
+        expected_external = EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES
+    elif package_name == "lumenplot-python" and phase3a2_active:
+        expected_external = PHASE3A2_PYTHON_DEPENDENCIES
+    else:
+        expected_external = {}
     actual_edges: set[str] = set()
     actual_external: set[str] = set()
     for table_path, dependencies in _walk_tables(manifest):
@@ -2705,6 +3336,7 @@ def check_workspace(root: Path) -> list[str]:
 
     root = root.resolve()
     errors: list[str] = []
+    phase3a2_active = bool(_phase3a2_activation_reasons(root))
     root_manifest_path = root / "Cargo.toml"
     root_manifest = _read_toml(root_manifest_path, root, errors)
     if root_manifest is None:
@@ -2786,8 +3418,17 @@ def check_workspace(root: Path) -> list[str]:
         elif isinstance(lib, dict) and "crate-type" in lib:
             errors.append(f"package {package_name}: only the future Python edge may set crate-type")
 
-        _check_dependencies(package_name, manifest, errors)
-        _check_package_source(package_name, manifest_path.parent, root, errors)
+        _check_dependencies(package_name, manifest, errors, phase3a2_active=phase3a2_active)
+        _check_package_source(
+            package_name,
+            manifest_path.parent,
+            root,
+            errors,
+            phase3a2_active=phase3a2_active,
+        )
+
+    if phase3a2_active:
+        _check_phase3a2(root, errors)
 
     return sorted(set(errors))
 
@@ -2807,6 +3448,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
     print("workspace architecture: OK")
+    if _phase3a2_activation_reasons(args.root.resolve()):
+        print("phase3a2 wheel evidence: OK")
     return 0
 
 

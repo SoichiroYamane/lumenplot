@@ -26,6 +26,14 @@ before being passed as action inputs.
 - The Nix job uses the evaluation-only flake check and disables the installer
   diagnostic endpoint. No mutable cache action is used.
 
+The accepted Phase-3A2 contract adds no current workflow or package artifact.
+When its implementation sentinel is introduced, the wheel job must use the
+reviewed manylinux tag and digest, separate bridge/offline Docker networks,
+read-only/non-privileged containers, locked Cargo inputs, hash-required local
+wheel installs, explicit GIL CPython paths, and the CI-local redacted evidence
+manifest described by [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md).
+An optional `actions/upload-artifact` use is evidence retention only, is restricted to a trusted push to `main`, retains for seven days, and must remain pinned and fail when the evidence file is absent; it is not publication.
+
 ## Build-script, native-code, and artifact risks
 
 Cargo compilation can execute build scripts, procedural macros, and native code.

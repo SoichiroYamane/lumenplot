@@ -31,6 +31,8 @@ Every dependency addition or update requires a locked graph and review of compat
 
 The implementation lock choices in [ADR 0008](0008-portable-gpu-and-shaders.md) and other records are not public pins. A dependency candidate, wheel observation, benchmark target, or platform row is not a release result.
 
+The Phase-3A2 private-helper wheel contract in [ADR 0014](0014-phase3a2-pinned-manylinux-wheel-evidence.md) is likewise a CI-local evidence gate, not a publication workflow, support promise, or release artifact. Its optional artifact upload is reviewable evidence retention only; it does not change this record's non-publication boundary.
+
 ### Future rolling support floor and release artifacts
 
 A future release may select a rolling supported floor only after all-target and wheel matrices pass. The release-time supply-chain target is:
@@ -82,6 +84,7 @@ Required current checks include package publication guards, absence of release/s
 - [ADR 0003 — facade and crate DAG](0003-facade-and-crate-dag.md)
 - [ADR 0006 — support and benchmark gates](0006-support-benchmark-native-gates.md)
 - [ADR 0008 — portable GPU and shaders](0008-portable-gpu-and-shaders.md)
+- [ADR 0014 — Phase-3A2 pinned manylinux wheel evidence](0014-phase3a2-pinned-manylinux-wheel-evidence.md)
 - [O-17 open-decision entry](../architecture/open-decisions.md#o-17-dependency-publication-and-supply-chain-policy)
 - [O-18 open-decision entry](../architecture/open-decisions.md#o-18-future-serialization-schema)
 - [Accepted requirements: publication boundary](../requirements/lumenplot-v1.0.md#30-repository-and-distribution-structure)
