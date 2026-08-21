@@ -2,7 +2,7 @@
 
 - Status: pre-alpha publication; no product implementation or benchmark completion is claimed.
 - Source of truth: `docs/requirements/lumenplot-v1.0.md` and its Appendix A coverage matrix.
-- This document maps every stable requirement entry to an evidence type and records the current result separately from its target.
+- This document maps every stable requirement entry to an evidence type and records the current result separately from its target. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) and the updated [API 0001](../architecture/api-0001-native-scene-state.md)/[API 0002](../architecture/api-0002-errors-capabilities-fallback.md) record the accepted Phase-1 native core/facade contract; they do not change any product result below.
 
 ## Status rules
 
@@ -28,6 +28,19 @@
 | `AT-MPL-*` | Matplotlib adapter, profile, text, or package compatibility test. |
 | `AT-RELEASE-*` | Release checklist evidence review. |
 | `AT-REVIEW-*` | Architecture, scope, dependency, UX, phase, or documentation review. |
+
+## Accepted Phase-1 contract records
+
+The following records are accepted architecture/API contracts and documentation
+evidence only. They refine the implementation boundary without changing the
+requirement registry's `Not implemented`, `Not measured`, or
+`environment required` results.
+
+| Contract | Record | Current status |
+| --- | --- | --- |
+| Phase-1 native core and minimal facade | [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) | Accepted contract; implementation and architecture evidence pending |
+| Phase-1 Scene, view, and owned data surface | [API 0001](../architecture/api-0001-native-scene-state.md) | Accepted contract; implementation evidence pending |
+| Phase-1 engine error ownership and mapping | [API 0002](../architecture/api-0002-errors-capabilities-fallback.md) | Accepted contract; mapping and failure evidence pending |
 
 ## Coverage summary
 
@@ -426,15 +439,15 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 
 | Family | Evidence focus | Current boundary |
 | --- | --- | --- |
-| `LP-DATA` | f64 authority, sealed chunk ownership, local-f32 conversion, and residency | Pending implementation and evidence; no completion is claimed. |
+| `LP-DATA` | f64 authority, sealed chunk ownership, local-f32 conversion, and residency | Phase-1 owned-data/chunk contract recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); implementation and evidence pending. |
 | `LP-EXPORT` | PNG/PDF blockers, SVG non-blocking path, state snapshots, and fallback scope | Pending implementation and evidence; no completion is claimed. |
-| `LP-FUNC` | native functional interaction, annotations, viewer, and optional capability scope | Pending implementation and evidence; no completion is claimed. |
-| `LP-LOD` | MonotonicX dyadic extrema and ArbitraryXY correctness/culling | Pending implementation and evidence; no completion is claimed. |
-| `LP-MPL` | loader, profiles, authority, fallback diagnostics, FFI, and separated performance claims | Pending implementation and evidence; no completion is claimed. |
+| `LP-FUNC` | native functional interaction, annotations, viewer, and optional capability scope | Phase-1 view/scale observations are recorded in [API 0001](../architecture/api-0001-native-scene-state.md); implementation and evidence pending. |
+| `LP-LOD` | MonotonicX dyadic extrema and ArbitraryXY correctness/culling | Phase-1 selection contract recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); implementation and evidence pending. |
+| `LP-MPL` | loader, profiles, authority, fallback diagnostics, FFI, and separated performance claims | Phase-1 public error mapping is recorded in [API 0002](../architecture/api-0002-errors-capabilities-fallback.md); adapter implementation and evidence pending. |
 | `LP-PERF` | 10M native gate, workload fixtures, warm-up, segments, quantiles, and manifests | Pending implementation and evidence; no completion is claimed. |
 | `LP-PLAT` | capability selection, main-thread runtime, surfaces, device loss, and platform matrix | Pending implementation and evidence; no completion is claimed. |
-| `LP-PROD` | product independence, shared semantic frame, and core dependency direction | Pending implementation and evidence; no completion is claimed. |
-| `LP-QUAL` | hot path, lifecycle, shaders, dependency gates, repository boundary, and release quality | Pending implementation and evidence; no completion is claimed. |
+| `LP-PROD` | product independence, shared semantic frame, and core dependency direction | Phase-1 native core/facade boundary is recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); implementation and evidence pending. |
+| `LP-QUAL` | hot path, lifecycle, shaders, dependency gates, repository boundary, and release quality | Phase-1 Scene ownership and publication rules are recorded in [API 0001](../architecture/api-0001-native-scene-state.md); implementation and evidence pending. |
 | `LP-REL` | phase placement, release inclusion, and no-claim-before-evidence review | Pending implementation and evidence; no completion is claimed. |
 | `LP-RENDER` | line expansion, width, HiDPI, alpha, clipping, and antialiasing | Pending implementation and evidence; no completion is claimed. |
 | `LP-SEC` | unsafe boundary, runtime shader policy, input validation, provenance, SBOM, fonts, and public docs | Pending implementation and evidence; no completion is claimed. |

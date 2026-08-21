@@ -35,10 +35,10 @@ The adapter does not reverse the dependency direction or create a second authori
 
 ## Public high-level layers
 
-[ADR 0003 — facade and crate DAG](../adr/0003-facade-and-crate-dag.md) records the accepted Option-C facade/crate split; workspace scaffolding, visibility/re-export, `publish = false`, and dependency-direction evidence remain pending. The conceptual layers and their allowed direction are fixed:
+[ADR 0003 — facade and crate DAG](../adr/0003-facade-and-crate-dag.md) records the accepted Option-C facade/crate split, and [ADR 0010 — Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md) records the exact first native core/facade slice. Workspace implementation, visibility/re-export, `publish = false`, and dependency-direction evidence remain pending. The conceptual layers and their allowed direction are fixed:
 
 1. **Frontend and product edges** — native viewer, standalone launch surface, future language frontends, and the Matplotlib adapter.
-2. **Engine facade boundary** — the future public ownership and capability surface. Exact public signatures are a follow-up decision.
+2. **Engine facade boundary** — the public ownership, view/scale, owned-data, transaction, snapshot, and error surface selected for Phase-1B in ADR 0010. Runtime, renderer, Python, and persistence surfaces remain later decisions.
 3. **Core scene and semantic model** — PlotScene, Plot State, UI State boundary, axes, series, Legend, annotations, styles, and backend-neutral semantic meaning.
 4. **Data and LOD** — canonical f64 values, immutable sealed chunks, MonotonicX hierarchy, ArbitraryXY topology/culling model, and revision/generation metadata.
 5. **Shared text and layout** — shaping, glyph IDs and positions, font identity, Legend and axis layout, and output-neutral resolved geometry.
@@ -73,6 +73,13 @@ Forbidden edges:
 ## State and revision flow
 
 Native updates are single-writer transactions. Publication creates an immutable revision. LOD/layout/packet workers receive a generation token and can be cancelled or dropped when stale. Only results matching the current generation may be consumed.
+
+The Phase-1 native slice is deliberately synchronous: Phase-1A owns the
+semantic kernel in `lumenplot-engine`, and Phase-1B adds only the opaque
+`PlotScene` facade after the kernel passes independently. `SceneSnapshot` owns
+immutable retained data and is `Clone + Send + Sync`; no worker, callback,
+runtime, renderer, or full semantic-frame API is part of this slice. Phase-1
+view history remains transient runtime/UI state rather than Scene persistence.
 
 Plot State includes axis ranges, current Plot State viewport, series visibility, line styles, labels, annotations, Legend placement/style, and grid state. UI State includes hover, focus highlight, selection highlight, toolbar, context menus, pointer/crosshair, status surfaces, and drag indicators. Export snapshots use Plot State and exclude UI State.
 
@@ -148,13 +155,13 @@ The event loop, window, surface, and GPU runtime are main-thread confined or own
 
 ## Accepted follow-up contract records
 
-O-01 through O-17 are now accepted contracts recorded in the linked ADR/API documents below. Their implementation, compatibility, platform, and benchmark evidence remains pending; these records do not change the `Not implemented`, `Not measured`, or `environment required` statuses in the [traceability registry](../requirements/traceability-v1.0.md).
+O-01 through O-17 are now accepted contracts recorded in the linked ADR/API documents below. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) resolves the Phase-1 native core/facade boundary and the API 0001/API 0002 candidates without claiming implementation. Their implementation, compatibility, platform, and benchmark evidence remains pending; these records do not change the `Not implemented`, `Not measured`, or `environment required` statuses in the [traceability registry](../requirements/traceability-v1.0.md).
 
 | Decision | Accepted record | Evidence boundary |
 | --- | --- | --- |
-| O-01 | [ADR 0003 — facade and crate DAG](../adr/0003-facade-and-crate-dag.md) | Static DAG, visibility, and publication guards pending |
-| O-02R/O-05 | [API 0001 — native Scene state](api-0001-native-scene-state.md) | Scene, revision, invalidation, and history tests pending |
-| O-03 | [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md) | Error mapping and fallback fixtures pending |
+| O-01 | [ADR 0003 — facade and crate DAG](../adr/0003-facade-and-crate-dag.md) + [ADR 0010 — Phase-1 native core/facade](../adr/0010-phase1-native-core-facade-contract.md) | Static DAG, Phase-1 visibility, and publication guards pending |
+| O-02R/O-05 | [API 0001 — native Scene, view, and owned data](api-0001-native-scene-state.md) + [ADR 0010 — Phase-1 native core/facade](../adr/0010-phase1-native-core-facade-contract.md) | Exact Phase-1 surface recorded; Scene, revision, invalidation, and snapshot tests pending |
+| O-03 | [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md) + [ADR 0010 — Phase-1 native core/facade](../adr/0010-phase1-native-core-facade-contract.md) | Exact Phase-1 mapping recorded; error and fallback fixtures pending |
 | O-04 | [ADR 0004 — RenderPacket resource lifecycle](../adr/0004-renderpacket-resource-lifecycle.md) | Packet and resource-lifetime tests pending |
 | O-06 | [ADR 0005 — runtime, viewer, and host loop](../adr/0005-runtime-viewer-host-loop.md) | Lifecycle and platform matrix pending |
 | O-07/O-08/O-16 | [ADR 0006 — support, benchmark, and native gates](../adr/0006-support-benchmark-native-gates.md) | All target cells and five-block measurements remain environment required |
@@ -177,4 +184,4 @@ The requirements, traceability registry, and ADRs define the contract and eviden
 - a completed Matplotlib fallback implementation;
 - a persistent Scene/project format.
 
-The honest baseline is `Not implemented`, `Not measured`, or `environment required` until an implementation worker supplies reproducible evidence. Accepted follow-up records now define the public signatures, facade/crate visibility, packet boundary, error types, units/colors, host-loop behavior, font strictness, and hardware cells. Future serialization remains the Deferred/Closed O-18 non-goal in [ADR 0009](../adr/0009-version-publication-supply-chain.md) and [open decisions](open-decisions.md#o-18-future-serialization-schema).
+The honest baseline is `Not implemented`, `Not measured`, or `environment required` until an implementation worker supplies reproducible evidence. Accepted follow-up records now define the Phase-1 public signatures and error mapping, facade/crate visibility, packet boundary, units/colors, host-loop behavior, font strictness, and hardware cells. Future serialization remains the Deferred/Closed O-18 non-goal in [ADR 0009](../adr/0009-version-publication-supply-chain.md) and [open decisions](open-decisions.md#o-18-future-serialization-schema).

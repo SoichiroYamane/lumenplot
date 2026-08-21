@@ -1,50 +1,125 @@
-# API 0001: Native PlotScene state and revision contract
+# API 0001: Native PlotScene, view, and owned-data contract
 
-- Status: **Accepted contract; candidate Rust signatures recorded**
+- Status: **Accepted Phase-1 contract; implementation evidence pending**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
-- Scope: O-02R/O-05 native PlotScene, transactions, snapshots, identities, revisions, invalidation, canonical view, and view history
+- Scope: O-02R/O-05 Phase-1 native PlotScene, view/scale, owned series input, transactions, snapshots, identities, revisions, and invalidation
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](../adr/0002-gpu-native-engine-and-matplotlib-adapter.md)
+- Governing Phase-1 record: [ADR 0010 — accepted Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md)
+- Related error boundary: [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md)
 - Open-decision records: [O-02 — Public Rust and Python API surface](open-decisions.md#o-02-public-rust-and-python-api-surface), [O-05 — Scene ownership, mutation, revision, and history](open-decisions.md#o-05-scene-ownership-mutation-revision-and-history)
 
-This record defines semantic native Scene state. It does not define a backend, device, window, event loop, session, viewer, or close operation. It records a contract before implementation; the [traceability registry](../requirements/traceability-v1.0.md) remains the source of implementation status.
+This record defines the exact Phase-1B facade observations and the Phase-1A
+native semantic boundary. It does not define a backend, device, window, event
+loop, session, viewer, close operation, renderer resource, Python binding, or
+persistence format. It records an accepted contract before implementation; the
+[traceability registry](../requirements/traceability-v1.0.md) remains the source
+of implementation status.
 
 ## Requirement references
 
-The state and lifecycle boundary covers `LP-QUAL-014` through `LP-QUAL-020`, `LP-MPL-004`, `LP-MPL-005`, `LP-FUNC-008`, `LP-UX-012`, and `LP-UX-013` in the [requirements](../requirements/lumenplot-v1.0.md#21-plot-state-and-ui-state).
-
-## Context
-
-Native mode needs one semantic authority, atomic single-writer updates, immutable observations, and enough revision identity to invalidate only the derived work that changed. A derived Matplotlib Scene is a revisioned cache under the distinct authority rules in ADR 0002; it is not a second native authority.
+The Phase-1 state, data, LOD, and lifecycle boundary covers `LP-DATA-001`,
+`LP-DATA-006`, `LP-DATA-007`, `LP-LOD-002` through `LP-LOD-006`,
+`LP-MPL-005`, `LP-QUAL-014`, `LP-QUAL-017`, `LP-QUAL-018`, `LP-FUNC-003`,
+`LP-FUNC-004`, `LP-UX-012`, and `LP-UX-013` in the [accepted
+requirements](../requirements/lumenplot-v1.0.md). The exact Phase-1 contract is
+recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md).
 
 ## Decision
 
-### PlotScene boundary and ownership
+### Phase-1 authority and delivery boundary
 
-`PlotScene` is semantic state only. It owns Plot State, canonical data references, scene identities, view state, and the semantic revision model. It has no backend selection, device or window worker, event loop, externally observable close state, or renderer resource ownership. Rust ownership and ordinary `Drop` are sufficient for the core Scene; `EngineSession`, `Viewer`, and FFI handles own close and shutdown outside this API.
+Phase-1A is the synchronous native semantic kernel in `lumenplot-engine`.
+Phase-1B is the minimum intentional facade in `lumenplot`, added only after
+Phase-1A independently passes. The engine remains unpublished, its root modules
+remain private, and it is never re-exported. The only future cross-crate seam is
+the narrow hidden `bridge` wrapper described by ADR 0010; chunks, indexes,
+caches, Scene internals, and component revisions remain private.
 
-Mutation is single-writer through an explicit `SceneTransaction<'_>` borrowing `&mut PlotScene`:
+All fields of the facade types are private. The facade returns
+`PublicError`, never engine `SceneError`; engine-to-facade error ownership and
+mapping are defined in [API 0002](api-0002-errors-capabilities-fallback.md).
 
-- a transaction observes one starting state and stages changes;
-- explicit `commit` validates and publishes atomically;
-- a no-op commit does not change `SceneRevision`;
-- dropping an uncommitted transaction aborts it;
-- publication returns only public revision and changed/no-op information;
-- internal storage, `ChangeSet`, scheduler generations, and invalidation details are not exposed by the receipt.
+### View and scale observations
 
-`SceneSnapshot` is immutable and cloneable. A snapshot retains the owned sealed chunks needed by the state it represents. Workers receive a snapshot or other owned derived input and never obtain a mutable Scene borrow.
+The facade fixes one x/y pair for Phase-1:
 
-### Candidate Rust signatures
+- `AxisRange::new(min: f64, max: f64) -> Result<AxisRange, PublicError>`
+  accepts only finite endpoints with `min < max`; `min()` and `max()` expose
+  the values.
+- `#[non_exhaustive] AxisScale` has `Linear` and `Log10`; Log10 is fixed base
+  10.
+- `Viewport::new(x: AxisRange, y: AxisRange) -> Viewport` constructs an
+  immutable data-coordinate viewport. `Viewport::from_bounds(x_min, x_max,
+  y_min, y_max) -> Result<Viewport, PublicError>` validates both ranges, and
+  `x()`/`y()` expose them.
+- `AxisScales::new(x: AxisScale, y: AxisScale) -> AxisScales` constructs the
+  scale pair. `x()`/`y()` expose the scales and
+  `validate(&Viewport) -> Result<(), PublicError>` rejects nonpositive Log10
+  endpoints.
 
-The following signatures record the accepted shape while leaving representation and ordinary invalid-input details to implementation:
+The values are scientific data coordinates, never pixels, DPI, or display
+logical coordinates. Canonical finite series data is independent of scale.
+Nonpositive coordinates become derived gaps under Log10 selection; canonical
+data is not mutated or silently narrowed. Phase-1 M4 acceleration is linear
+only, while Log10 uses an explicit full-resolution correctness path.
+
+### Owned series input
+
+The opaque immutable `SeriesData` constructors are:
 
 ```rust
-pub struct PlotScene { /* semantic state; no backend or close */ }
-pub struct SceneTransaction<'scene> { /* single-writer staged update */ }
-pub struct SceneSnapshot { /* immutable, cloneable, owned sealed chunks */ }
+SeriesData::from_owned_xy(
+    topology: SeriesTopology,
+    x: Vec<f64>,
+    y: Vec<f64>,
+) -> Result<SeriesData, PublicError>
 
+SeriesData::from_owned_xy_segments(
+    topology: SeriesTopology,
+    x: Vec<f64>,
+    y: Vec<f64>,
+    valid_segments: Vec<std::ops::Range<usize>>,
+) -> Result<SeriesData, PublicError>
+```
+
+`#[non_exhaustive] SeriesTopology` has `MonotonicX` and `ArbitraryXY`. The
+first constructor treats every position as valid. The segmented constructor
+requires equal-length arrays and sorted, strictly separated, nonempty,
+in-bounds ranges. Covered values are finite; uncovered positions are explicit
+gaps, and uncovered payload is ignored. Source identity is the original
+zero-based array index, including gap slots.
+
+Empty arrays and nonempty gap-only arrays are valid. MonotonicX is nondecreasing
+across valid samples even across gaps, with duplicate x allowed. ArbitraryXY
+preserves source order. The observations are `topology()`, `source_len()`,
+`point_count()`, and `is_empty()`; no raw chunk, LOD, cache, or slice accessor
+is public.
+
+Scene add and append consume `SeriesData` and retain no borrowed input. Append
+requires matching topology and preserves MonotonicX across the boundary. An
+empty source-length append is a semantic no-op; a nonempty gap-only append
+changes source identity and data revision. Checked input/allocation arithmetic
+maps internal fallible allocation to `out-of-memory` through API 0002. Native
+NaN-as-gap inference is not part of this API; the Python adapter creates
+segments and rejects infinity.
+
+### Exact Phase-1B facade surface
+
+The opaque types are `PlotScene`, `SceneTransaction<'_>`, cloneable
+`SceneSnapshot`, `SceneRevision`, `SeriesId`, `CommitReceipt`, `AxisRange`,
+`AxisScale`, `Viewport`, `AxisScales`, `SeriesTopology`, and `SeriesData`, plus
+`PublicError`, `ErrorCode`, and `ErrorCategory`. `SceneRevision` and `SeriesId`
+are comparable, hashable, and debuggable observations with private numeric
+representation and no serde/persistence identity.
+
+```rust
 impl PlotScene {
+    pub fn new(
+        canonical_view: Viewport,
+        scales: AxisScales,
+    ) -> Result<Self, PublicError>;
     pub fn transaction(&mut self) -> SceneTransaction<'_>;
     pub fn snapshot(&self) -> SceneSnapshot;
     pub fn revision(&self) -> SceneRevision;
@@ -52,102 +127,132 @@ impl PlotScene {
 
 impl SceneTransaction<'_> {
     pub fn replace_canonical_view(&mut self, view: Viewport)
-        -> Result<(), SceneError>;
-    pub fn commit(self) -> Result<CommitReceipt, SceneError>;
+        -> Result<(), PublicError>;
+    pub fn set_viewport(&mut self, view: Viewport)
+        -> Result<(), PublicError>;
+    pub fn set_axis_scales(&mut self, scales: AxisScales)
+        -> Result<(), PublicError>;
+    pub fn add_series(&mut self, data: SeriesData)
+        -> Result<SeriesId, PublicError>;
+    pub fn append_series(&mut self, id: SeriesId, data: SeriesData)
+        -> Result<(), PublicError>;
+    pub fn commit(self) -> Result<CommitReceipt, PublicError>;
     pub fn abort(self);
 }
 
-pub struct CommitReceipt {
-    pub revision: SceneRevision,
-    pub changed: bool,
+impl SceneSnapshot {
+    pub fn revision(&self) -> SceneRevision;
+    pub fn canonical_view(&self) -> Viewport;
+    pub fn viewport(&self) -> Viewport;
+    pub fn axis_scales(&self) -> AxisScales;
+}
+
+impl CommitReceipt {
+    pub fn revision(&self) -> SceneRevision;
+    pub fn changed(&self) -> bool;
 }
 ```
 
-`Drop` on `SceneTransaction` has the same effect as `abort` when `commit` has not been called. The exact public field visibility of the opaque identity and view types follows the same no-storage-leak rule; the signatures do not imply serialization or backend access.
+The view, scale, and snapshot accessors are immutable observations; their
+implementation may use value or immutable-reference details without exposing
+storage. `SceneSnapshot` is `Clone + Send + Sync`, owns retained immutable data,
+and cannot expose a mutable Scene borrow. Snapshot clones are intended to be
+O(1) Arc clones internally, but that is not a public performance promise.
 
-### Semantic identities and generations
+All mutating operations that can fail return `Result`. `PlotScene::new` has no
+implicit default; its initial canonical and current view are equal.
+`replace_canonical_view` validates against the scales and sets canonical and
+current view. `set_viewport` changes current view only. `set_axis_scales`
+validates both views before an atomic change.
 
-The public semantic identity types are opaque monotonic `u64` values:
+A changed commit increments `SceneRevision` exactly once; an effective no-op
+changes neither revision nor component key. Finite numeric equality treats
+`-0.0 == 0.0`. A validated add allocates a never-reused `SeriesId` before
+staging; abort or later failed commit burns it, while validation failure before
+allocation does not. Empty and gap-only additions still change state. Failed
+operations preserve usable staged edits; failed commit, `Drop`, and `abort`
+leave live state unchanged.
 
-- `SceneId`
-- `SeriesId`
-- `AxisId`
-- `AnnotationId`
+Internal component revisions are `data`, `view`, `style`, `font`, `layout`, and
+`annotation`, initially zero. Phase-1 operations touch only data and view.
+Component, Work, and Device generations remain private and distinct. View
+history, gestures, Home, Previous, and Next are transient runtime/UI state and
+are not part of `PlotScene` or `SceneSnapshot` in this slice; their v1 behavior
+remains a later runtime/interaction implementation contract.
 
-They are scoped to one Scene lifetime and are never reused within that lifetime. A generation is not part of semantic identity, and none of these identities is serialized. `AnnotationId` and annotation behavior are further specified in [API 0004](api-0004-annotations-accessibility.md).
+### Private native representation and selection
 
-The public publication observation is `SceneRevision`. Separate internal dependency and scheduler values are not semantic identities:
+The engine uses private data/sample/topology/chunk, lod/summary/m4/arbitrary,
+scene/ids/revision/state/transaction/snapshot, and error modules. Canonical
+normalized values are finite f64 `Point` values with checked u64 source indexes
+or structural gap spans. Immutable SoA chunks retain ordered segments, gap and
+chunk-cut continuity metadata, topology, bounds, `DataEpoch`, and
+`ChunkRevision`; no numeric sentinel, raw slice, or per-point source array is a
+public contract.
 
-| Value | Role | Public Scene identity? |
-| --- | --- | --- |
-| `SceneRevision` | Published semantic Scene revision | Public observation only |
-| Component revisions | Distinguish data, view, style, font, layout, and annotation dependencies | Internal invalidation inputs |
-| `WorkGeneration` | Derived-work scheduler token used for cancellation and stale-result rejection | Internal |
-| `DeviceGeneration` | Runtime resource generation used after device loss | Runtime-only; never Scene identity |
-
-A device loss therefore never changes `SceneRevision`. A stale derived result cannot replace a newer publication even when its Scene data remains otherwise valid.
-
-### Selective invalidation
-
-Every mutation identifies the semantic dependency keys it affects. Data, view, style, font, layout, and annotation dependencies have distinct internal component revisions. Derived LOD, layout, semantic-frame, and packet work is invalidated only when its dependency key is affected, but every result still carries the source `SceneRevision` and `WorkGeneration` and is rejected if stale.
-
-The selective invalidation model is an optimization and correctness boundary, not a new public storage schema. A public `CommitReceipt` reports only the resulting `SceneRevision` and whether the commit changed state.
-
-### Canonical view and current viewport
-
-The canonical view is a stored baseline, not an autoscale calculation:
-
-- ordinary pan and zoom change the current viewport only;
-- `replace_canonical_view` is an explicit transaction operation that replaces the baseline and clears view history;
-- Home restores the stored canonical view and never implicitly autoscale;
-- a view change that does not alter the effective viewport is a no-op for revision purposes where the transaction otherwise has no change.
-
-### View-only history
-
-Version 1 history contains view history only:
-
-- previous, next, and Home operate on view entries;
-- gesture-end coalescing prevents one drag or wheel gesture from becoming an unbounded sequence of entries;
-- a new view after moving backward truncates the forward tail;
-- replacing the canonical view clears the history;
-- annotation, style, visibility, and other Plot State commits increment `SceneRevision` but are not general Previous/Next undo/redo entries.
-
-The distinction prevents transient UI history and non-view semantic changes from becoming an implicit persistence or general undo model.
-
-### Plot State and UI State
-
-Plot State includes axis ranges and current Plot State viewport, series visibility and styles, grid and labels, Legend placement/style, and annotations. It is the state selected for an ordinary export snapshot. UI State includes hover, selection/focus highlight, toolbar and context surfaces, pointer/crosshair, status surfaces, and drag indicators; it is separate and excluded from ordinary exports.
-
-Native mode gives `PlotScene` authority. Adapter mode gives the Matplotlib Figure/Artist graph authority and uses a revisioned derived Scene snapshot/cache. A live session binding and a frozen snapshot are distinct concepts.
+A direct scanner is the selection oracle. The eager index uses at most 256 valid
+samples per block and a binary factor-of-two summary tree for full blocks;
+partial blocks are scanned. Linear MonotonicX bins are exact query-time
+x-domain bins with deterministic interpolation, inclusive global endpoints,
+deterministic collapsed-boundary merging, duplicate-x boundary ownership, and
+per-segment first/last/min/max source-order selection. Full resolution is used
+for visible points `<= 4 * B`; otherwise M4 is used. Log10 and ArbitraryXY paths
+are correctness-first full-resolution paths as described in ADR 0010. These
+selection rules are private implementation contracts and carry no benchmark
+claim.
 
 ## Alternatives and rationale
 
-A mutable shared Scene or a second long-lived authority beside Figure/Artist would permit races between snapshots, view history, and exports. The single-writer transaction and immutable snapshot contract avoids that ambiguity while keeping the adapter's derived state disposable. General undo/redo was not selected because the accepted v1 history scope is view-only.
+The accepted boundary keeps engine error ownership separate from the facade,
+uses scale-neutral viewports plus Scene-owned scales, and uses owned vector
+input with explicit segments. It rejects a shared error crate or engine error
+re-export, scale-carrying ranges, native NaN-gap inference, public raw data/LOD,
+stride sampling, and an early full semantic frame. A single-writer transaction
+and immutable snapshot avoid a second authority and make failed publication
+atomic.
 
 ## Consequences
 
-- Semantic IDs remain stable across Scene revisions while runtime generations can be replaced independently.
-- Derived work can be cancelled or stale-dropped without changing native semantic state.
-- Snapshot retention makes asynchronous work safe but requires owned sealed chunks and memory accounting.
-- The core API remains independent from concrete runtime and backend objects.
-- Public receipts remain small and do not freeze internal change-set or generation representation.
+- The public surface is intentionally small and opaque while the native engine
+  can evolve its chunks, indexes, caches, and component revisions.
+- Facade callers branch on stable `PublicError` codes and cannot depend on
+  unpublished `SceneError` details.
+- Explicit source identity and gap segments preserve scientific topology and
+  permit deterministic direct-versus-index testing.
+- Snapshot ownership supports later derived work, with memory accounting left to
+  implementation evidence.
+- Phase-1 does not imply a renderer, runtime, Python bridge, persistence format,
+  MSRV, package publication, or performance/support result.
 
 ## Verification and evidence boundary
 
-Implementation must test transaction atomicity, Drop-abort behavior, no-op revision stability, snapshot immutability/cloneability, identity non-reuse, component-key invalidation, stale publication rejection, canonical-view reset, gesture coalescing, forward-tail truncation, and Plot/UI State export separation. These are pending implementation evidence; this document does not claim any test has passed.
+Required implementation evidence includes normalization/topology/chunk/source
+identity property tests; direct-versus-index LOD equivalence and bins/ties/
+duplicates/gaps tests; ArbitraryXY culling oracles; transaction state-machine
+and snapshot-sharing tests; identity-burn and component-revision tests;
+exhaustive error mapping/token/privacy tests; and public API/forbidden-export
+inventory tests. These are pending implementation evidence. The [traceability
+registry](../requirements/traceability-v1.0.md) must continue to report the
+product rows as `Not implemented`, `Not measured`, or `environment required`.
 
 ## Residual risks
 
-- Exact storage and component-key representation may affect memory and scheduling without changing this public semantic contract.
-- Adapter synchronization must preserve Figure/Artist authority and cannot reuse native Scene authority rules without an explicit bridge boundary.
-- A future persistent Scene format is excluded; identity and revision rules here must not be mistaken for serialization commitments.
+- Public accessors and private representation must remain aligned without
+  accidentally exposing raw chunks, LOD, or persistence identity.
+- Log10 derived gaps, duplicate-x boundary ownership, and allocation/exhaustion
+  paths need model and fault-injection evidence.
+- Runtime view history and adapter synchronization must be implemented outside
+  this synchronous core while preserving the authority rules in ADR 0002.
 
 ## Related records
 
 - [ADR index](../adr/README.md)
+- [ADR 0010 — accepted Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md)
 - [Architecture overview](overview.md)
 - [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md)
+- [API 0003 — Python, NumPy, and Matplotlib](api-0003-python-numpy-matplotlib.md)
 - [API 0004 — annotations and accessibility](api-0004-annotations-accessibility.md)
 - [O-02 open-decision entry](open-decisions.md#o-02-public-rust-and-python-api-surface)
 - [O-05 open-decision entry](open-decisions.md#o-05-scene-ownership-mutation-revision-and-history)
+- [Accepted requirements: data model](../requirements/lumenplot-v1.0.md#6-data-model)
 - [Accepted requirements: Plot/UI state](../requirements/lumenplot-v1.0.md#21-plot-state-and-ui-state)

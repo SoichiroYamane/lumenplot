@@ -8,7 +8,7 @@
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Open-decision record: [O-01 — Exact facade and crate/module split](../architecture/open-decisions.md#o-01-exact-facade-and-cratemodule-split)
 
-This ADR records an accepted implementation boundary. It does not report that the workspace, crates, bindings, or runtime have been implemented. The current product status remains the pre-alpha status in the [requirements traceability registry](../requirements/traceability-v1.0.md).
+This ADR records an accepted implementation boundary. It does not report that the workspace, crates, bindings, or runtime have been implemented. The current product status remains the pre-alpha status in the [requirements traceability registry](../requirements/traceability-v1.0.md). [ADR 0010](0010-phase1-native-core-facade-contract.md) refines the first-slice order and exact Phase-1 native core/facade envelope without changing this crate DAG.
 
 ## Requirement references
 
@@ -70,6 +70,7 @@ The engine has no Python feature. No speculative public backend trait is introdu
 - All workspace and Python packages remain non-publishable during the implementation phases. No package publication, MSRV promise, API stability promise, or ABI stability promise is made by this ADR.
 - Cross-crate `pub` is workspace implementation visibility only unless the facade explicitly exposes an item. It must not be treated as public API by inference.
 - The facade must not re-export `lumenplot-render-api`, `RenderPacket`, renderer resource identifiers, runtime objects, or Python/Matplotlib objects.
+- During Phase-1A, `lumenplot-engine` root modules remain private. The only future cross-crate engine seam is the narrow `#[doc(hidden)] pub mod bridge` wrapper selected by [ADR 0010](0010-phase1-native-core-facade-contract.md); raw chunks, LOD indexes, caches, Scene internals, and component revisions never cross it.
 - A documentation/API inventory and a static visibility review are required before any public-surface claim.
 - `publish = false` guards and dependency-direction checks are mandatory for all packages as they are scaffolded.
 - Lower layers must not acquire reverse dependencies on the adapter, Python, Matplotlib, wgpu, a window system, or native GPU concrete types.
@@ -80,11 +81,12 @@ The accepted implementation order is:
 
 1. Record and independently review this contract set.
 2. Scaffold the accepted workspace graph together with dependency, visibility, and non-publication guards.
-3. Implement the native core first: owned f64 chunks, topology and gap validation, Scene transactions/revisions/snapshots/selective invalidation, the MonotonicX M4 prototype, semantic frame, and property tests.
-4. In parallel, run the scratch gates for the CPython/NumPy wheel matrix, deterministic PNG/color compositing, and native text/font/PDF consumer behavior.
-5. After the relevant gate is accepted, implement deterministic PNG export from the native semantic frame.
-6. Implement the headless Matplotlib strict and explicit-hybrid PNG adapter over the same engine and semantic frame.
-7. Implement the internal packet and one-surface portable wgpu runtime/viewer slice. O-07/O-08 evidence is required before any product, platform, or performance claim.
+3. Implement Phase-1A first: owned f64 chunks, topology and gap validation, Scene transactions/revisions/snapshots/selective invalidation, the MonotonicX M4 prototype, and property tests. The Phase-1A kernel has no full semantic-frame module, renderer, runtime, or public facade.
+4. After Phase-1A independently passes and lands, implement the minimum Phase-1B Rust facade and its exact visibility/error/API inventory from [ADR 0010](0010-phase1-native-core-facade-contract.md).
+5. In parallel, run the scratch gates for the CPython/NumPy wheel matrix, deterministic PNG/color compositing, and native text/font/PDF consumer behavior.
+6. After the relevant gate is accepted, implement deterministic PNG export from the later shared semantic frame.
+7. Implement the headless Matplotlib strict and explicit-hybrid PNG adapter over the same engine and semantic frame.
+8. Implement the internal packet and one-surface portable wgpu runtime/viewer slice. O-07/O-08 evidence is required before any product, platform, or performance claim.
 
 Old CPU-backend implementation directions remain superseded by ADR 0002. This record does not authorize product implementation beyond the declared order.
 
@@ -120,6 +122,7 @@ Required checks are a static dependency DAG review, facade/API inventory, `publi
 ## Related records
 
 - [ADR index](README.md)
+- [ADR 0010 — accepted Phase-1 native core and facade contract](0010-phase1-native-core-facade-contract.md)
 - [Architecture overview](../architecture/overview.md)
 - [O-01 open-decision entry](../architecture/open-decisions.md#o-01-exact-facade-and-cratemodule-split)
 - [Accepted v1 requirements](../requirements/lumenplot-v1.0.md)

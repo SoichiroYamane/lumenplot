@@ -15,6 +15,7 @@ The architecture-authority owns architecture decisions; the implementation-worke
 | [0007](0007-coordinate-color-text-export.md) | Accepted — dependency choices staged | Coordinate, color, text, and export semantics | O-11/O-12 semantic and export boundary |
 | [0008](0008-portable-gpu-and-shaders.md) | Accepted — evidence pending | Portable GPU runtime and shader artifacts | O-15 implementation baseline and shader policy |
 | [0009](0009-version-publication-supply-chain.md) | Accepted current policy | Version, publication, and supply-chain policy | O-17 policy and O-18 serialization exclusion |
+| [0010](0010-phase1-native-core-facade-contract.md) | Accepted — implementation evidence pending | Phase-1 native core and minimal facade contract | O-01/O-02/O-03/O-05 exact Phase-1 boundary |
 
 ADR 0002 explicitly supersedes ADR 0001. ADR 0001 remains available as historical context; it must not be used as the current v1 architecture without the replacement contract.
 
@@ -24,12 +25,12 @@ These records are accepted follow-up contracts in `docs/architecture/`. They are
 
 | Record | Status | Scope |
 | --- | --- | --- |
-| [API 0001](../architecture/api-0001-native-scene-state.md) | Accepted — candidate signatures recorded | O-02R/O-05 native Scene state, transactions, revisions, and view history |
-| [API 0002](../architecture/api-0002-errors-capabilities-fallback.md) | Accepted | O-03 errors, capabilities, fallback diagnostics, and FFI mapping |
+| [API 0001](../architecture/api-0001-native-scene-state.md) | Accepted — Phase-1 exact surface recorded; implementation evidence pending | O-02R/O-05 native Scene, view, owned data, transactions, revisions, and snapshots |
+| [API 0002](../architecture/api-0002-errors-capabilities-fallback.md) | Accepted — Phase-1 mapping recorded; implementation evidence pending | O-03 errors, capabilities, fallback diagnostics, and FFI mapping |
 | [API 0003](../architecture/api-0003-python-numpy-matplotlib.md) | Accepted — evidence pending | O-02P/O-09/O-10 Python, NumPy, and headless Matplotlib PNG bridge |
 | [API 0004](../architecture/api-0004-annotations-accessibility.md) | Accepted — evidence pending | O-13/O-14 annotations, interaction history, and accessibility |
 
-O-01 through O-17 are accepted contracts with implementation or environment evidence still pending. [ADR 0009](0009-version-publication-supply-chain.md) records O-18 as Deferred/Closed by the v1 non-goal; it is not an implementation fan-out item.
+O-01 through O-17 are accepted contracts with implementation or environment evidence still pending. [ADR 0010](0010-phase1-native-core-facade-contract.md) records the accepted Phase-1 native core/facade slice and resolves the Phase-1 candidates in API 0001 and API 0002; it does not claim implementation. [ADR 0009](0009-version-publication-supply-chain.md) records O-18 as Deferred/Closed by the v1 non-goal; it is not an implementation fan-out item.
 
 ## Convention
 
