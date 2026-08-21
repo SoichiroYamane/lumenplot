@@ -2419,6 +2419,42 @@ jobs:
             "image config digest comparison",
         )
 
+    def test_each_docker_run_must_use_the_reviewed_image_operand(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace('"$IMAGE" bash', '"$UNPINNED_IMAGE" bash'),
+                encoding="utf-8",
+            ),
+            "every container must use the exact builder image operand",
+        )
+
+    def test_each_docker_run_must_bind_the_reviewed_source(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace('"$PWD:/src:ro"', '"/tmp/unreviewed:/src:ro"'),
+                encoding="utf-8",
+            ),
+            "every container source mount must bind $PWD to /src read-only",
+        )
+
+    def test_each_docker_run_must_bind_the_reviewed_wheelhouse(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace(
+                    '"$PWD/wheelhouse:/cache/wheelhouse:rw"',
+                    '"/tmp/unreviewed-wheelhouse:/cache/wheelhouse:rw"',
+                ),
+                encoding="utf-8",
+            ),
+            "prefetch wheelhouse must bind $PWD/wheelhouse read-write",
+        )
+
     def test_root_container_user_is_rejected(self) -> None:
         self.assert_rejected(
             lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
@@ -2429,6 +2465,72 @@ jobs:
             ),
             "container user must not be root",
         )
+
+    def test_invalid_container_user_forms_are_rejected(self) -> None:
+        for replacement in ("0:1000", "root:root", "not-a-user"):
+            with self.subTest(replacement=replacement):
+                self.assert_rejected(
+                    lambda root, replacement=replacement: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                        (root / ".github/workflows/phase3a2-wheel.yml")
+                        .read_text(encoding="utf-8")
+                        .replace("--user 1000:1000", f"--user {replacement}"),
+                        encoding="utf-8",
+                    ),
+                    "every container must use an explicit numeric non-root user",
+                )
+
+    def test_unreviewed_prefetch_download_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "cargo deny check --all-features",
+                    "cargo deny check --all-features\n            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse evil-package==9.9.9 --hash=sha256:"
+                    + "0" * 64,
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "prefetch download inventory is not exactly reviewed")
+
+    def test_unreviewed_prefetch_network_fetch_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "cargo deny check --all-features",
+                    "cargo deny check --all-features\n            curl https://example.invalid/unreviewed.tar.gz",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "prefetch contains an unreviewed network fetch")
+
+    def test_evidence_manifest_must_remain_untracked(self) -> None:
+        def mutate(root: Path) -> None:
+            subprocess.run(
+                ["git", "add", "phase3a2-wheel-evidence.json"],
+                cwd=root,
+                check=True,
+            )
+
+        self.assert_rejected(mutate, "CI-local evidence manifest must not be tracked")
+
+    def test_extra_private_native_pyfunction_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-python/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "#[pyfunction]\nfn render_line_png()",
+                    "#[pyfunction]\nfn leaked() -> PyResult<Vec<u8>> { Ok(Vec::new()) }\n\n#[pyfunction]\nfn render_line_png()",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "private native export inventory is not exact")
 
     def test_second_permissive_pip_command_is_rejected(self) -> None:
         def mutate(root: Path) -> None:

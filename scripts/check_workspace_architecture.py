@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import json
 import hashlib
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -2791,6 +2792,171 @@ def _phase3a2_docker_invocation(segment: str) -> str:
     return "\n".join(header)
 
 
+def _phase3a2_docker_command_tokens(segment: str) -> list[str]:
+    """Tokenize the Docker command before its embedded shell script."""
+
+    invocation = _phase3a2_docker_invocation(segment).replace("\\\n", " ")
+    prefix_match = re.match(r"(?s)^\s*(.*?)(?:\s+-c(?:\s|$))", invocation)
+    if prefix_match is None:
+        return []
+    try:
+        return shlex.split(prefix_match.group(1), comments=False, posix=True)
+    except ValueError:
+        return []
+
+
+def _phase3a2_docker_image_operand(tokens: list[str]) -> str | None:
+    """Return the image operand from a tokenized ``docker run`` command."""
+
+    if tokens[:2] != ["docker", "run"]:
+        return None
+    options_with_values = {
+        "--cap-drop",
+        "--env",
+        "--mount",
+        "--name",
+        "--network",
+        "--platform",
+        "--security-opt",
+        "--tmpfs",
+        "--user",
+        "--volume",
+        "--workdir",
+        "-e",
+        "-v",
+        "-w",
+    }
+    index = 2
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith("-"):
+            return token
+        if token in options_with_values:
+            index += 2
+        else:
+            index += 1
+    return tokens[index] if index < len(tokens) else None
+
+
+def _phase3a2_docker_option_values(tokens: list[str], option: str) -> list[str]:
+    values: list[str] = []
+    index = 2
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            break
+        if token == option:
+            if index + 1 < len(tokens):
+                values.append(tokens[index + 1])
+            index += 2
+            continue
+        prefix = option + "="
+        if token.startswith(prefix):
+            values.append(token[len(prefix) :])
+        index += 1
+    return values
+
+
+def _phase3a2_docker_mount_values(tokens: list[str]) -> list[str]:
+    mounts: list[str] = []
+    index = 2
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-v", "--volume", "--mount"}:
+            if index + 1 < len(tokens):
+                mounts.append(tokens[index + 1])
+            index += 2
+            continue
+        if token.startswith("--mount="):
+            mounts.append(token.split("=", 1)[1])
+        index += 1
+    return mounts
+
+
+def _phase3a2_mount_matches(
+    mount: str,
+    source: str,
+    destination: str,
+    mode: str,
+) -> bool:
+    if mount == f"{source}:{destination}:{mode}":
+        return True
+    fields = {
+        key: value
+        for key, separator, value in (part.partition("=") for part in mount.split(","))
+        if separator
+    }
+    actual_source = fields.get("source", fields.get("src"))
+    actual_destination = fields.get("destination", fields.get("dst"))
+    if actual_source != source or actual_destination != destination:
+        return False
+    read_only = "readonly" in mount.split(",") or fields.get("ro") == "true"
+    if mode == "ro":
+        return read_only
+    return not read_only
+
+
+def _phase3a2_exact_image_assignment(shell_code: str) -> bool:
+    assignments = re.findall(
+        r"(?m)^\s*IMAGE\s*=\s*(['\"])([^'\"]+)\1\s*$",
+        shell_code,
+    )
+    return len(assignments) == 1 and assignments[0][1] == PHASE3A2_IMAGE
+
+
+def _phase3a2_reassigned_working_directory(shell_code: str) -> bool:
+    return re.search(r"(?m)^\s*PWD\s*=", shell_code) is not None
+
+
+def _phase3a2_valid_container_user(value: str) -> bool:
+    match = re.fullmatch(r"([0-9]+)(?::([0-9]+))?", value)
+    if match is None:
+        return False
+    uid, gid = match.groups()
+    return int(uid) > 0 and (gid is None or int(gid) > 0)
+
+
+def _phase3a2_expected_prefetch_downloads() -> list[str]:
+    downloads = [
+        "python -m pip download --no-deps --only-binary=:all: --require-hashes "
+        f"--dest /cache/wheelhouse maturin==1.14.1 --hash=sha256:{PHASE3A2_MATURIN_WHEEL_SHA256}"
+    ]
+    for version, digest in PHASE3A2_NUMPY_WHEEL_SHA256.items():
+        python_version = version.removeprefix("cp")
+        downloads.append(
+            "python -m pip download --no-deps --only-binary=:all: --require-hashes "
+            "--dest /cache/wheelhouse --platform manylinux_2_28_x86_64 "
+            f"--implementation cp --python-version {python_version} "
+            f"--abi {version} numpy==2.4.6 --hash=sha256:{digest}"
+        )
+    return downloads
+
+
+def _phase3a2_manifest_is_tracked(root: Path) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                "phase3a2-wheel-evidence.json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def _phase3a2_runtime_cell_segments(
     build_segment: str,
 ) -> list[tuple[str, str]]:
@@ -2981,6 +3147,28 @@ def _check_python_bridge_source(package_dir: Path, root: Path, errors: list[str]
     ):
         if pattern.search(code):
             errors.append(f"phase3a2 Python bridge: {label} is forbidden")
+    pyfunction_attributes = re.findall(r"#\s*\[\s*pyfunction\b", code)
+    pyfunction_names = re.findall(
+        r"#\s*\[\s*pyfunction(?:\s*\([^]]*\))?\s*\]\s*"
+        r"(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\b",
+        code,
+    )
+    pymodule_names = re.findall(
+        r"#\s*\[\s*pymodule(?:\s*\([^]]*\))?\s*\]\s*"
+        r"(?:pub\s+)?fn\s+([A-Za-z_]\w*)\b",
+        code,
+    )
+    registered_names = re.findall(
+        r"\bwrap_pyfunction!\s*\(\s*([A-Za-z_]\w*)\s*,",
+        code,
+    )
+    if (
+        len(pyfunction_attributes) != 1
+        or pyfunction_names != ["render_line_png"]
+        or pymodule_names != ["_native"]
+        or registered_names != ["render_line_png"]
+    ):
+        errors.append("phase3a2 Python bridge: private native export inventory is not exact")
     if "#[pymodule]" not in code or "render_line_png" not in code:
         errors.append("phase3a2 Python bridge: private pymodule/render_line_png surface is incomplete")
 
@@ -3078,6 +3266,10 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             errors.append(f"phase3a2 workflow: missing {label}")
     if PHASE3A2_IMAGE not in workflow_code:
         errors.append("phase3a2 workflow: builder image must use the exact tag@digest")
+    if not _phase3a2_exact_image_assignment(shell_code):
+        errors.append("phase3a2 workflow: IMAGE must be assigned the exact reviewed tag@digest")
+    if _phase3a2_reassigned_working_directory(shell_code):
+        errors.append("phase3a2 workflow: working-directory identity must not be reassigned")
     if re.search(r"manylinux_2_28_x86_64:latest\b", workflow_code):
         errors.append("phase3a2 workflow: floating manylinux latest tag is forbidden")
     forbidden = (
@@ -3111,6 +3303,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         errors.append("phase3a2 workflow: prefetch and offline containers must be separate")
     if len(docker_runs) >= 2:
         invocations = [_phase3a2_docker_invocation(segment) for segment in docker_runs]
+        command_tokens = [_phase3a2_docker_command_tokens(segment) for segment in docker_runs]
         for invocation in invocations:
             for fragment, label in (
                 ("--platform=linux/amd64", "platform-pinned Docker run"),
@@ -3124,8 +3317,40 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             ):
                 if fragment not in invocation:
                     errors.append(f"phase3a2 workflow: every container lacks {label}")
+        for tokens in command_tokens:
+            image_operand = _phase3a2_docker_image_operand(tokens)
+            if image_operand not in {PHASE3A2_IMAGE, "$IMAGE"}:
+                errors.append("phase3a2 workflow: every container must use the exact builder image operand")
+            user_values = _phase3a2_docker_option_values(tokens, "--user")
+            if len(user_values) != 1 or not _phase3a2_valid_container_user(user_values[0]):
+                errors.append("phase3a2 workflow: every container must use an explicit numeric non-root user")
+                if len(user_values) == 1 and (
+                    user_values[0].split(":", 1)[0].lower() == "root"
+                    or user_values[0].split(":", 1)[0] == "0"
+                ):
+                    errors.append("phase3a2 workflow: container user must not be root")
         prefetch, build = docker_runs
         prefetch_invocation, build_invocation = invocations
+        prefetch_mounts = _phase3a2_docker_mount_values(command_tokens[0])
+        build_mounts = _phase3a2_docker_mount_values(command_tokens[1])
+        if not any(
+            _phase3a2_mount_matches(mount, "$PWD", "/src", "ro")
+            for mount in prefetch_mounts
+        ) or not any(
+            _phase3a2_mount_matches(mount, "$PWD", "/src", "ro")
+            for mount in build_mounts
+        ):
+            errors.append("phase3a2 workflow: every container source mount must bind $PWD to /src read-only")
+        if not any(
+            _phase3a2_mount_matches(mount, "$PWD/wheelhouse", "/cache/wheelhouse", "rw")
+            for mount in prefetch_mounts
+        ):
+            errors.append("phase3a2 workflow: prefetch wheelhouse must bind $PWD/wheelhouse read-write")
+        if not any(
+            _phase3a2_mount_matches(mount, "$PWD/wheelhouse", "/cache/wheelhouse", "ro")
+            for mount in build_mounts
+        ):
+            errors.append("phase3a2 workflow: build/runtime wheelhouse must bind $PWD/wheelhouse read-only")
         if "--network=bridge" not in prefetch_invocation:
             errors.append("phase3a2 workflow: prefetch container must use --network=bridge")
         if "--network=none" not in build_invocation:
@@ -3144,6 +3369,17 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             errors.append("phase3a2 workflow: locked Cargo metadata is missing from prefetch")
         if "pip download" not in prefetch:
             errors.append("phase3a2 workflow: reviewed inputs are not downloaded into the wheelhouse")
+        prefetch_download_lines = [
+            line.strip() for line in prefetch.splitlines() if "pip download" in line
+        ]
+        if prefetch_download_lines != _phase3a2_expected_prefetch_downloads():
+            errors.append("phase3a2 workflow: prefetch download inventory is not exactly reviewed")
+        forbidden_prefetch_fetch = re.compile(
+            r"(?:^|[;&|]\s*)(?:curl|wget|aria2c|git\s+(?:clone|fetch|pull)|"
+            r"(?:python\s+-m\s+)?pip\s+(?:install|wheel)|cargo\s+(?:add|install|update))\b"
+        )
+        if any(forbidden_prefetch_fetch.search(line.strip()) for line in prefetch.splitlines()):
+            errors.append("phase3a2 workflow: prefetch contains an unreviewed network fetch")
         for digest in PHASE3A2_NUMPY_WHEEL_SHA256.values():
             if digest not in prefetch:
                 errors.append("phase3a2 workflow: missing hash-pinned NumPy 2.4.6 runtime wheel")
@@ -3161,8 +3397,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         errors.append("phase3a2 workflow: ELF dependency check must target the native object")
     if ":/src:rw" in workflow_code or "/src:rw" in workflow_code:
         errors.append("phase3a2 workflow: source checkout must be read-only")
-    if re.search(r"--user\s+(?:root|0(?::0)?)(?:\s|$)", workflow_code, re.IGNORECASE):
-        errors.append("phase3a2 workflow: container user must not be root")
+
     if "docker image inspect --format '{{.Id}}' \"$IMAGE\"" not in shell_code:
         errors.append("phase3a2 workflow: image config digest inspection must be executable")
     if not re.search(
@@ -3291,6 +3526,8 @@ def _phase3a2_check_redaction(value: Any, root: Path, errors: list[str], key: st
 
 def _phase3a2_check_evidence_manifest(root: Path, errors: list[str]) -> None:
     path = root / "phase3a2-wheel-evidence.json"
+    if _phase3a2_manifest_is_tracked(root):
+        errors.append("phase3a2 evidence: CI-local evidence manifest must not be tracked")
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
