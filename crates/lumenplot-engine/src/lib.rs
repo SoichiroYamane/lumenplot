@@ -7,6 +7,7 @@
 
 mod data;
 mod error;
+mod frame;
 mod lod;
 mod scene;
 

@@ -170,6 +170,22 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
 
         self.assert_mutation_rejected(mutate, "only the hidden bridge may be public")
 
+    def test_engine_frame_module_must_remain_private(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("mod frame;", "pub mod frame;"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "root module visibility is too broad")
+
+    def test_engine_frame_source_file_is_required(self) -> None:
+        self.assert_mutation_rejected(
+            lambda root: (root / "crates/lumenplot-engine/src/frame.rs").unlink(),
+            "missing src/frame.rs",
+        )
+
     def test_engine_bridge_reexport_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-engine/src/bridge.rs"
@@ -197,6 +213,105 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
             )
 
         self.assert_mutation_rejected(mutate, "bridge public method 'raw' is not allowed")
+
+    def test_engine_bridge_line_frame_method_inventory_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\nimpl LineFrame { pub fn raw(&self) {} }\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "bridge public method 'raw' on 'LineFrame' is not allowed",
+        )
+
+    def test_engine_bridge_line_frame_public_field_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace("    revision: SceneRevision,", "    pub revision: SceneRevision,", 1),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "bridge type 'LineFrame' exposes a field",
+        )
+
+    def test_engine_bridge_line_frame_trait_inventory_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "pub struct LineFrame {",
+                    "#[derive(Debug)]\npub struct LineFrame {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "bridge trait inventory mismatch for 'LineFrame'",
+        )
+
+    def test_engine_bridge_line_frame_resolver_is_required(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace(
+                    "    pub fn resolve_line_frame(&self, spec: &LineFrameSpec) -> Result<LineFrame, SceneError> {\n        crate::frame::resolve_line_frame(&self.inner, spec).map_err(Into::into)\n    }\n",
+                    "",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "bridge public method inventory mismatch for 'SceneSnapshot'",
+        )
+
+    def test_engine_bridge_render_packet_signature_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace(
+                    "pub fn series(&self) -> &[LineSeries] {",
+                    "pub fn series(&self) -> RenderPacket {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "bridge public signature uses forbidden RenderPacket",
+        )
+
+    def test_engine_bridge_phase2_signature_return_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace(
+                    "pub fn segments(&self) -> &[LineSegment] {",
+                    "pub fn segments(&self) -> &[LinePoint] {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "bridge public method 'segments' on 'LineSeries' has an unexpected signature",
+        )
 
     def test_engine_bridge_tuple_field_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
