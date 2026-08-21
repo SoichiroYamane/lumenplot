@@ -4,7 +4,7 @@ use lumenplot_engine::bridge::{LineFrame, LineSeries};
 use tiny_skia::{FillRule, IntSize, LineCap, LineJoin, Mask, PathBuilder, Stroke, Transform};
 
 use crate::compositor::{pixel_storage_bytes, quantize_round_half_even, rgba_storage_bytes};
-use crate::error::ExportError;
+use crate::error::{ExportError, ExportErrorKind};
 use crate::png::PngSpec;
 
 pub(crate) const MAX_DIMENSION: u32 = 16_384;
@@ -12,6 +12,11 @@ pub(crate) const MAX_PIXELS: usize = 16_777_216;
 pub(crate) const MAX_OUTPUT_BYTES: usize = 67_108_864;
 pub(crate) const MAX_WORK_BYTES: usize = 536_870_912;
 pub(crate) const MAX_PATH_POINTS: usize = 1_000_000;
+
+// tiny-skia 0.12.0's private `painter::is_too_big_for_math`, called by
+// `Mask::fill_path`, rejects bounds outside `SCALAR_MAX * 0.25`. Keep this
+// local precondition aligned with that pinned dependency version.
+const TINY_SKIA_SAFE_PATH_BOUND: f32 = f32::MAX * 0.25;
 
 #[derive(Clone, Copy)]
 struct ClipRect {
@@ -268,8 +273,26 @@ pub(crate) fn rasterize_series(
     let stroked = path
         .stroke(&stroke, 1.0)
         .ok_or_else(ExportError::internal)?;
+    ensure_stroked_path_is_representable(&stroked)?;
     mask.fill_path(&stroked, FillRule::Winding, true, Transform::identity());
     Ok(mask)
+}
+
+fn ensure_stroked_path_is_representable(path: &tiny_skia::Path) -> Result<(), ExportError> {
+    let bounds = path.bounds();
+    let sides = [bounds.left(), bounds.top(), bounds.right(), bounds.bottom()];
+    if sides.iter().all(|side| {
+        side.is_finite()
+            && *side >= -TINY_SKIA_SAFE_PATH_BOUND
+            && *side <= TINY_SKIA_SAFE_PATH_BOUND
+    }) {
+        Ok(())
+    } else {
+        Err(ExportError::new(
+            ExportErrorKind::CapacityExceeded,
+            "stroke geometry exceeds rasterizer limits",
+        ))
+    }
 }
 
 fn zero_mask_data(pixel_count: usize) -> Result<Vec<u8>, ExportError> {
@@ -319,6 +342,35 @@ fn validate_pixel_point(
 mod tests {
     use super::*;
 
+    use lumenplot_engine::bridge::{
+        AxisScale, AxisScales, LineFrameSpec, LineStyle, LogicalRect, LogicalSize, PlotScene,
+        SeriesData, SeriesTopology, SrgbRgba8, Viewport,
+    };
+
+    fn make_frame(style_width: f64) -> lumenplot_engine::bridge::LineFrame {
+        let canvas = LogicalSize::new(4.0, 4.0).expect("canvas");
+        let plot = LogicalRect::new(0.0, 0.0, 4.0, 4.0).expect("plot");
+        let style = LineStyle::new(SrgbRgba8::new(20, 40, 80, 255), style_width).expect("style");
+        let frame_spec =
+            LineFrameSpec::new(canvas, plot, 1.0, style, SrgbRgba8::new(255, 255, 255, 255))
+                .expect("spec");
+        let view = Viewport::from_bounds(0.0, 10.0, 0.0, 10.0).expect("view");
+        let mut scene = PlotScene::new(view, AxisScales::new(AxisScale::Linear, AxisScale::Linear))
+            .expect("scene");
+        let data =
+            SeriesData::from_owned_xy(SeriesTopology::MonotonicX, vec![0.0, 10.0], vec![0.0, 0.0])
+                .expect("data");
+        {
+            let mut transaction = scene.transaction();
+            transaction.add_series(data).expect("series");
+            transaction.commit().expect("commit");
+        }
+        scene
+            .snapshot()
+            .resolve_line_frame(&frame_spec)
+            .expect("frame")
+    }
+
     #[test]
     fn clip_coverage_is_rectangular_and_half_open() {
         let clip = ClipRect {
@@ -346,5 +398,46 @@ mod tests {
         assert_eq!(checked_dimension(1.0, 1.0).expect("dimension"), 1);
         assert_eq!(checked_dimension(1.01, 1.0).expect("dimension"), 2);
         assert!(checked_dimension(16_384.1, 1.0).is_err());
+    }
+
+    #[test]
+    fn stroked_path_preflight_rejects_before_fill_and_normal_width_has_coverage() {
+        let too_large_frame = make_frame(2.0e38);
+        let spec = PngSpec::new(1.0).expect("spec");
+        let plan = RasterPlan::new(&too_large_frame, &spec).expect("plan");
+        let series = too_large_frame.series().first().expect("series");
+        let error = rasterize_series(series, &plan).expect_err("unrepresentable stroke");
+        assert_eq!(error.kind(), ExportErrorKind::CapacityExceeded);
+        assert_eq!(error.message(), "stroke geometry exceeds rasterizer limits");
+
+        let ordinary_frame = make_frame(1.0);
+        let plan = RasterPlan::new(&ordinary_frame, &spec).expect("plan");
+        let series = ordinary_frame.series().first().expect("series");
+        let mask = rasterize_series(series, &plan).expect("ordinary stroke");
+        assert!(mask.data().iter().any(|coverage| *coverage != 0));
+    }
+
+    #[test]
+    fn stroked_bounds_check_includes_half_stroke_expansion() {
+        let centerline = TINY_SKIA_SAFE_PATH_BOUND * 0.75;
+        let stroke_width = TINY_SKIA_SAFE_PATH_BOUND * 0.6;
+        assert!(stroke_width < TINY_SKIA_SAFE_PATH_BOUND);
+
+        let mut path_builder = PathBuilder::new();
+        path_builder.move_to(0.0, centerline);
+        path_builder.line_to(1.0, centerline);
+        let path = path_builder.finish().expect("path");
+        let stroke = Stroke {
+            width: stroke_width,
+            miter_limit: 4.0,
+            line_cap: LineCap::Butt,
+            line_join: LineJoin::Miter,
+            dash: None,
+        };
+        let stroked = path.stroke(&stroke, 1.0).expect("stroked path");
+        assert!(stroked.bounds().bottom() > TINY_SKIA_SAFE_PATH_BOUND);
+
+        let error = ensure_stroked_path_is_representable(&stroked).expect_err("bounds");
+        assert_eq!(error.kind(), ExportErrorKind::CapacityExceeded);
     }
 }

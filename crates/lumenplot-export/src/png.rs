@@ -446,4 +446,22 @@ mod tests {
         assert_eq!(error.kind(), crate::error::ExportErrorKind::Internal);
         assert_eq!(error.to_string(), error.message());
     }
+
+    #[test]
+    fn unrepresentable_stroke_is_rejected_instead_of_background_only_png() {
+        let (_, frame, spec) = make_frame(
+            (2.0, 2.0),
+            (0.0, 0.0, 2.0, 2.0),
+            1.0,
+            (vec![0.0, 10.0], vec![0.0, 0.0]),
+            (SrgbRgba8::new(10, 20, 30, 255), 2.0e38),
+            SrgbRgba8::new(40, 50, 60, 255),
+        );
+        let error = encode_line_frame_png(&frame, &spec).expect_err("stroke limits");
+        assert_eq!(
+            error.kind(),
+            crate::error::ExportErrorKind::CapacityExceeded
+        );
+        assert_eq!(error.message(), "stroke geometry exceeds rasterizer limits");
+    }
 }
