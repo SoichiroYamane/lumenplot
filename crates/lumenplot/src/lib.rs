@@ -60,7 +60,12 @@ pub mod __private {
     }
 
     impl LinePngGeometry {
-        pub fn new(viewport: [f64; 4], canvas: [f64; 2], plot_rect: [f64; 4], logical_units_per_inch: f64) -> Result<Self, BridgeError> {
+        pub fn new(
+            viewport: [f64; 4],
+            canvas: [f64; 2],
+            plot_rect: [f64; 4],
+            logical_units_per_inch: f64,
+        ) -> Result<Self, BridgeError> {
             if !viewport.iter().copied().all(f64::is_finite)
                 || viewport[0] >= viewport[1]
                 || viewport[2] >= viewport[3]
@@ -93,7 +98,11 @@ pub mod __private {
     }
 
     impl LinePngStyle {
-        pub fn new(line_rgba: [u8; 4], line_width: f64, background_rgba: [u8; 4]) -> Result<Self, BridgeError> {
+        pub fn new(
+            line_rgba: [u8; 4],
+            line_width: f64,
+            background_rgba: [u8; 4],
+        ) -> Result<Self, BridgeError> {
             if !line_width.is_finite() || line_width <= 0.0 {
                 return Err(BridgeError::invalid_input());
             }
@@ -106,7 +115,14 @@ pub mod __private {
     }
 
     impl OwnedLinePngRequest {
-        pub fn new(x: Vec<f64>, y: Vec<f64>, valid_segments: Vec<Range<usize>>, geometry: LinePngGeometry, style: LinePngStyle, output_dpi: f64) -> Result<Self, BridgeError> {
+        pub fn new(
+            x: Vec<f64>,
+            y: Vec<f64>,
+            valid_segments: Vec<Range<usize>>,
+            geometry: LinePngGeometry,
+            style: LinePngStyle,
+            output_dpi: f64,
+        ) -> Result<Self, BridgeError> {
             validate_request(&x, &y, &valid_segments, output_dpi)?;
             let mut x = x;
             let mut y = y;
