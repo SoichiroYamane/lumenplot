@@ -112,6 +112,9 @@ jobs:
           components: ${{ steps.rust-toolchain.outputs.components }}
           targets: ${{ steps.rust-toolchain.outputs.targets }}
 
+      - name: Fetch locked Rust dependencies
+        run: cargo fetch --locked
+
       - name: Check workspace architecture
         run: python3 scripts/check_workspace_architecture.py
 
