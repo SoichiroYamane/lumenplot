@@ -5,3 +5,61 @@ version = 4
 [[package]]
 name = "lumenplot"
 version = "0.1.0"
+dependencies = [
+ "lumenplot-engine",
+ "lumenplot-export",
+]
+
+[[package]]
+name = "lumenplot-bench"
+version = "0.1.0"
+dependencies = [
+ "lumenplot",
+]
+
+[[package]]
+name = "lumenplot-engine"
+version = "0.1.0"
+
+[[package]]
+name = "lumenplot-export"
+version = "0.1.0"
+dependencies = [
+ "lumenplot-engine",
+]
+
+[[package]]
+name = "lumenplot-python"
+version = "0.1.0"
+dependencies = [
+ "lumenplot",
+]
+
+[[package]]
+name = "lumenplot-render-api"
+version = "0.1.0"
+dependencies = [
+ "lumenplot-engine",
+]
+
+[[package]]
+name = "lumenplot-render-wgpu"
+version = "0.1.0"
+dependencies = [
+ "lumenplot-render-api",
+]
+
+[[package]]
+name = "lumenplot-runtime"
+version = "0.1.0"
+dependencies = [
+ "lumenplot-render-wgpu",
+]
+
+[[package]]
+name = "lumenplot-viewer"
+version = "0.1.0"
+dependencies = [
+ "lumenplot",
+ "lumenplot-runtime",
+]

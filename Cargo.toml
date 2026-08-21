@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["crates/lumenplot"]
+members = [
+    "crates/lumenplot",
+    "crates/lumenplot-engine",
+    "crates/lumenplot-export",
+    "crates/lumenplot-render-api",
+    "crates/lumenplot-render-wgpu",
+    "crates/lumenplot-runtime",
+    "crates/lumenplot-viewer",
+    "crates/lumenplot-python",
+    "crates/lumenplot-bench",
+]
 
 [workspace.package]
 edition = "2024"
