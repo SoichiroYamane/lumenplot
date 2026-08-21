@@ -1820,22 +1820,20 @@ class LumenPlotError(RuntimeError):
         workflows = root / ".github/workflows"
         workflows.mkdir(parents=True)
         (workflows / "phase3a2-wheel.yml").write_text(self.valid_workflow(), encoding="utf-8")
+        subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.email", "fixture@example.invalid"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.name", "fixture"], cwd=root, check=True)
+        subprocess.run(["git", "add", "."], cwd=root, check=True)
+        subprocess.run(["git", "commit", "--quiet", "-m", "fixture source"], cwd=root, check=True)
+        source_commit = subprocess.check_output(
+            ["git", "rev-parse", "--verify", "HEAD"], cwd=root, text=True
+        ).strip()
         (root / "phase3a2-wheel-evidence.json").write_text(
-            json.dumps(self.valid_manifest(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(self.valid_manifest(source_commit), indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         return temporary
 
     def valid_workflow(self) -> str:
-        hashes = "\n".join(f"# {key} NumPy wheel sha256={value}" for key, value in self.NUMPY_HASHES.items())
-        interpreters = "\n".join(
-            f"            {path} -m venv --clear /tmp/lp-{version}"
-            for version, path in (
-                ("3.11", "/opt/python/cp311-cp311/bin/python"),
-                ("3.12", "/opt/python/cp312-cp312/bin/python"),
-                ("3.13", "/opt/python/cp313-cp313/bin/python"),
-                ("3.14", "/opt/python/cp314-cp314/bin/python"),
-            )
-        )
         return f"""name: Phase-3A2 wheel evidence
 
 on:
@@ -1856,44 +1854,127 @@ jobs:
       - name: Build in pinned manylinux image
         run: |
           IMAGE='{self.IMAGE}'
+          mkdir -p wheelhouse evidence
           docker pull --platform=linux/amd64 "$IMAGE"
-          docker image inspect "$IMAGE" # config digest sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5
-          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp -v "$PWD:/src:ro" "$IMAGE" bash -eu -o pipefail -c '
+          IMAGE_CONFIG_DIGEST="$(docker image inspect --format '{{{{.Id}}}}' "$IMAGE")"
+          test "$IMAGE_CONFIG_DIGEST" = "{self.CONFIG_DIGEST}"
+          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'PREFETCH'
             export RUSTUP_TOOLCHAIN=1.89.0
             rustc --version
             cargo --version
             cargo fetch --locked
-            cargo metadata --locked --format-version 1 > /cache/cargo-metadata.json
-            CARGO_VERSION=0.1.0
+            cargo metadata --locked --format-version 1 > /cache/wheelhouse/cargo-metadata.json
             cargo deny check --all-features
-            python -m pip install --no-index --no-cache-dir --require-hashes --only-binary=:all: --find-links=/cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
-          '
-          docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp -v "$PWD:/src:ro" "$IMAGE" bash -eu -o pipefail -c '
+            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
+            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 311 --abi cp311 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
+            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 312 --abi cp312 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}
+            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp313']}
+            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}
+          PREFETCH
+          )"
+          docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:ro" -v "$PWD/evidence:/evidence:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'BUILD'
+            cd /src
             export RUSTUP_TOOLCHAIN=1.89.0
+            CARGO_VERSION="$(cargo metadata --locked --offline --format-version 1 | python -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "lumenplot-python"))')"
+            SOURCE_COMMIT="$(git rev-parse --verify HEAD)"
+            python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
+            cargo build --release --locked --offline
             maturin build --release --locked --offline --interpreter /opt/python/cp311-cp311/bin/python --compatibility manylinux_2_28
-            WHEEL=dist/lumenplot_mpl-0.1.0-cp311-abi3-manylinux_2_28_x86_64.whl
+            WHEEL="dist/lumenplot_mpl-$CARGO_VERSION-cp311-abi3-manylinux_2_28_x86_64.whl"
+            NATIVE_OBJECT=target/release/liblumenplot_python.so
+            WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             sha256sum "$WHEEL" > "$WHEEL.sha256"
             sha256sum --check "$WHEEL.sha256"
-            INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             unzip -t "$WHEEL"
             unzip -p "$WHEEL" '*/METADATA' | grep '^Version:'
             unzip -p "$WHEEL" '*/WHEEL' | grep 'cp311-abi3-manylinux_2_28_x86_64'
             unzip -p "$WHEEL" '*/RECORD' | python /cache/check-record.py
-            WHEEL_VERSION=0.1.0
+            WHEEL_VERSION="$(unzip -p "$WHEEL" '*/METADATA' | awk -F': ' '$1 == "Version" {{print $2}}')"
             test "$WHEEL_VERSION" = "$CARGO_VERSION"
             auditwheel show --json "$WHEEL"
-            auditwheel check "$WHEEL" --auditwheel check
-            readelf -d "$WHEEL" # DT_NEEDED and RPATH/RUNPATH; reject unexpected shared library
+            auditwheel check "$WHEEL"
+            readelf -d "$NATIVE_OBJECT" | grep -E 'DT_NEEDED|RPATH|RUNPATH'
+            if readelf -d "$NATIVE_OBJECT" | grep -E 'RPATH|RUNPATH'; then printf '%s\\n' 'unexpected shared library' >&2; exit 1; fi
             abi3audit "$WHEEL"
-            # CycloneDX 1.5 SBOM and RECORD/ZIP/metadata checks are written to CI-local evidence.
-{hashes}
-{interpreters}
+            python /cache/check-sbom.py --format 'CycloneDX 1.5' --cargo-metadata /cache/wheelhouse/cargo-metadata.json
+            /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/lp-3.11
+            /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
+            /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
             sha256sum --check "$WHEEL.sha256"
-            INSTALLED_VERSION=0.1.0
+            INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+            test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
+            /tmp/lp-3.11/bin/python - <<'PY'
+            from lumenplot_mpl import _native, LumenPlotError
+            try:
+                _native.render_line_png("invalid-input")
+            except LumenPlotError as error:
+                assert str(error)
+            else:
+                raise AssertionError("invalid-input fixture did not fail")
+            assert _native.render_line_png("helper-success")
+          PY
+            INSTALLED_VERSION="$(/tmp/lp-3.11/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
-            python -m pip install --no-index --no-cache-dir --require-hashes --only-binary=:all: --find-links=/cache/wheelhouse numpy==2.4.6
-            test -f phase3a2-wheel-evidence.json
-          '
+            /opt/python/cp312-cp312/bin/python -m venv --clear /tmp/lp-3.12
+            /tmp/lp-3.12/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}
+            /tmp/lp-3.12/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
+            sha256sum --check "$WHEEL.sha256"
+            INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+            test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
+            /tmp/lp-3.12/bin/python - <<'PY'
+            from lumenplot_mpl import _native, LumenPlotError
+            try:
+                _native.render_line_png("invalid-input")
+            except LumenPlotError as error:
+                assert str(error)
+            else:
+                raise AssertionError("invalid-input fixture did not fail")
+            assert _native.render_line_png("helper-success")
+          PY
+            INSTALLED_VERSION="$(/tmp/lp-3.12/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
+            test "$INSTALLED_VERSION" = "$CARGO_VERSION"
+            /opt/python/cp313-cp313/bin/python -m venv --clear /tmp/lp-3.13
+            /tmp/lp-3.13/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp313']}
+            /tmp/lp-3.13/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
+            sha256sum --check "$WHEEL.sha256"
+            INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+            test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
+            /tmp/lp-3.13/bin/python - <<'PY'
+            from lumenplot_mpl import _native, LumenPlotError
+            try:
+                _native.render_line_png("invalid-input")
+            except LumenPlotError as error:
+                assert str(error)
+            else:
+                raise AssertionError("invalid-input fixture did not fail")
+            assert _native.render_line_png("helper-success")
+          PY
+            INSTALLED_VERSION="$(/tmp/lp-3.13/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
+            test "$INSTALLED_VERSION" = "$CARGO_VERSION"
+            /opt/python/cp314-cp314/bin/python -m venv --clear /tmp/lp-3.14
+            /tmp/lp-3.14/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}
+            /tmp/lp-3.14/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
+            sha256sum --check "$WHEEL.sha256"
+            INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+            test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
+            /tmp/lp-3.14/bin/python - <<'PY'
+            from lumenplot_mpl import _native, LumenPlotError
+            try:
+                _native.render_line_png("invalid-input")
+            except LumenPlotError as error:
+                assert str(error)
+            else:
+                raise AssertionError("invalid-input fixture did not fail")
+            assert _native.render_line_png("helper-success")
+          PY
+            INSTALLED_VERSION="$(/tmp/lp-3.14/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
+            test "$INSTALLED_VERSION" = "$CARGO_VERSION"
+            python /cache/write-phase3a2-manifest.py --source-commit "$SOURCE_COMMIT" --cargo-version "$CARGO_VERSION" --wheel "$WHEEL" > /evidence/phase3a2-wheel-evidence.json
+          BUILD
+          )"
+          mkdir -p evidence
+          test -f evidence/phase3a2-wheel-evidence.json
+          cp evidence/phase3a2-wheel-evidence.json phase3a2-wheel-evidence.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         with:
@@ -1904,7 +1985,7 @@ jobs:
           compression-level: 0
 """
 
-    def valid_manifest(self) -> dict[str, object]:
+    def valid_manifest(self, source_commit: str) -> dict[str, object]:
         wheel_hash = "a" * 64
         cells = []
         for version, interpreter in (
@@ -1957,7 +2038,7 @@ jobs:
             },
             "runtime_cells": cells,
             "source": {
-                "commit": "b" * 40,
+                "commit": source_commit,
                 "cargo_lock_sha256": hashlib.sha256((ROOT / "Cargo.lock").read_bytes()).hexdigest(),
                 "distribution": "lumenplot-mpl",
                 "cargo_version": "0.1.0",
@@ -2003,6 +2084,112 @@ jobs:
             self.assertEqual(returncode, 0, output)
             self.assertIn("workspace architecture: OK", output)
             self.assertIn("phase3a2 wheel evidence: OK", output)
+
+    def test_comment_only_control_mutations_are_rejected(self) -> None:
+        mutations = (
+            ("--network=bridge", "prefetch and offline containers must be separate"),
+            ("--cap-drop=ALL", "missing dropped container capabilities"),
+            ("docker image inspect --format '{{.Id}}' \"$IMAGE\"", "image config digest inspection"),
+            ("maturin build --release --locked --offline", "offline container is missing the wheel build"),
+            ("/opt/python/cp311-cp311/bin/python -m venv --clear", "lacks fresh venv isolation"),
+            ("from lumenplot_mpl import _native", "runtime cell 3.11 lacks private helper import"),
+        )
+        for fragment, expected in mutations:
+            def mutate(root: Path, fragment: str = fragment) -> None:
+                path = root / ".github/workflows/phase3a2-wheel.yml"
+                lines = path.read_text(encoding="utf-8").splitlines()
+                path.write_text(
+                    "\n".join(
+                        f"# disabled control: {line}" if fragment in line else line
+                        for line in lines
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+
+            self.assert_rejected(mutate, expected)
+
+    def test_same_wheel_runtime_install_is_required(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace(
+                    '/tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256',
+                    "# helper wheel install omitted",
+                    1,
+                ),
+                encoding="utf-8",
+            ),
+            "identical helper wheel must be installed in all four cells",
+        )
+
+    def test_manifest_generation_is_required(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                "\n".join(
+                    line
+                    for line in (root / ".github/workflows/phase3a2-wheel.yml")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                    if "write-phase3a2-manifest.py" not in line
+                )
+                + "\n",
+                encoding="utf-8",
+            ),
+            "evidence manifest generation is missing",
+        )
+
+    def test_build_wheelhouse_mount_must_be_read_only(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace(":/cache/wheelhouse:ro", ":/cache/wheelhouse:rw", 1),
+                encoding="utf-8",
+            ),
+            "build/runtime wheelhouse must be read-only",
+        )
+
+    def test_native_object_elf_check_cannot_inspect_wheel_zip(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace(
+                    "readelf -d \"$NATIVE_OBJECT\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
+                    "readelf -d \"$WHEEL\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
+                    1,
+                ),
+                encoding="utf-8",
+            ),
+            "ELF dependency check must target the native object",
+        )
+
+    def test_manifest_source_commit_must_match_checked_out_head(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "phase3a2-wheel-evidence.json"
+            value = json.loads(path.read_text(encoding="utf-8"))
+            value["source"]["commit"] = "0" * 40
+            path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        self.assert_rejected(mutate, "source commit does not match checked-out revision")
+
+    def test_manifest_cargo_version_must_match_workspace_metadata(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "phase3a2-wheel-evidence.json"
+            value = json.loads(path.read_text(encoding="utf-8"))
+            version = "9.9.9"
+            value["source"]["cargo_version"] = version
+            value["wheel"]["filename"] = value["wheel"]["filename"].replace("0.1.0", version)
+            value["wheel"]["cargo_expected_version"] = version
+            value["wheel"]["metadata_version"] = version
+            for cell in value["runtime_cells"]:
+                cell["cargo_expected_version"] = version
+                cell["installed_distribution_version"] = version
+            path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        self.assert_rejected(mutate, "Cargo-derived version does not match workspace metadata")
 
     def test_baseline_fixture_is_inactive(self) -> None:
         with self.fixture() as temporary:
@@ -2109,7 +2296,7 @@ jobs:
             lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
                 (root / ".github/workflows/phase3a2-wheel.yml")
                 .read_text(encoding="utf-8")
-                .replace("# CycloneDX", "auditwheel repair # CycloneDX"),
+                .replace("auditwheel check \"$WHEEL\"", "auditwheel repair \"$WHEEL\""),
                 encoding="utf-8",
             ),
             "auditwheel repair is forbidden",
@@ -2224,12 +2411,12 @@ jobs:
                 (root / ".github/workflows/phase3a2-wheel.yml")
                 .read_text(encoding="utf-8")
                 .replace(
-                    " # config digest sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5",
-                    "",
+                    'test "$IMAGE_CONFIG_DIGEST" = "sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5"',
+                    'test "$IMAGE_CONFIG_DIGEST" = "sha256:' + "0" * 64 + '"',
                 ),
                 encoding="utf-8",
             ),
-            "image config digest verification",
+            "image config digest comparison",
         )
 
     def test_root_container_user_is_rejected(self) -> None:
@@ -2268,7 +2455,11 @@ jobs:
         self.assert_rejected(
             lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
                 (root / ".github/workflows/phase3a2-wheel.yml").read_text(encoding="utf-8")
-                + "\n# maturin build\n",
+                .replace(
+                    "maturin build --release --locked --offline",
+                    "maturin build --release --locked --offline\n            maturin build --release --locked --offline",
+                    1,
+                ),
                 encoding="utf-8",
             ),
             "exactly one wheel build is required",
@@ -2378,7 +2569,11 @@ jobs:
             lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
                 (root / ".github/workflows/phase3a2-wheel.yml")
                 .read_text(encoding="utf-8")
-                .replace("readelf -d", "elf-inspect", 1),
+                .replace(
+                    "readelf -d \"$NATIVE_OBJECT\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
+                    "elf-inspect \"$NATIVE_OBJECT\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
+                    1,
+                ),
                 encoding="utf-8",
             ),
             "ELF dependency check",

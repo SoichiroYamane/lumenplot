@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import json
 import hashlib
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Iterable
@@ -2700,6 +2701,143 @@ def _check_export_source(package_dir: Path, root: Path, errors: list[str]) -> No
         errors.append("package lumenplot-export: public signature leaks a dependency or renderer type")
 
 
+def _phase3a2_workflow_run_blocks(text: str) -> list[str]:
+    """Extract YAML ``run: |`` bodies without treating comments as commands."""
+
+    lines = text.splitlines()
+    blocks: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^(?P<indent>[ \t]*)run:\s*\|\s*$", line)
+        if match is not None:
+            base_indent = len(match.group("indent"))
+            index += 1
+            body: list[str] = []
+            while index < len(lines):
+                candidate = lines[index]
+                if candidate.strip():
+                    candidate_indent = len(candidate) - len(candidate.lstrip(" \t"))
+                    if candidate_indent <= base_indent:
+                        break
+                body.append(candidate)
+                index += 1
+            blocks.append("\n".join(body))
+            continue
+
+        inline = re.match(r"^\s*run:\s*(?P<command>[^|>].*)$", line)
+        if inline is not None and inline.group("command").strip():
+            blocks.append(inline.group("command"))
+        index += 1
+    return blocks
+
+
+def _phase3a2_strip_shell_comments(text: str) -> str:
+    """Remove shell/YAML comments while preserving quoted command text."""
+
+    cleaned: list[str] = []
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            cleaned.append("")
+            continue
+        quote: str | None = None
+        escaped = False
+        end = len(line)
+        for index, character in enumerate(line):
+            if escaped:
+                escaped = False
+                continue
+            if character == "\\" and quote != "'":
+                escaped = True
+                continue
+            if quote is None and character in {"'", '"'}:
+                quote = character
+                continue
+            if quote == character:
+                quote = None
+                continue
+            if character == "#" and quote is None and (
+                index == 0 or line[index - 1].isspace()
+            ):
+                end = index
+                break
+        cleaned.append(line[:end])
+    return "\n".join(cleaned)
+
+
+def _phase3a2_docker_run_segments(shell_code: str) -> list[str]:
+    """Associate each direct Docker invocation with its following script."""
+
+    lines = shell_code.splitlines()
+    starts = [
+        index
+        for index, line in enumerate(lines)
+        if re.match(r"^\s*docker\s+run(?:\s|$)", line)
+    ]
+    return [
+        "\n".join(lines[start : starts[position + 1] if position + 1 < len(starts) else len(lines)])
+        for position, start in enumerate(starts)
+    ]
+
+
+def _phase3a2_docker_invocation(segment: str) -> str:
+    """Return the Docker option header, excluding the embedded shell script."""
+
+    header: list[str] = []
+    for line in segment.splitlines():
+        header.append(line)
+        if re.search(r"(?:^|\s)-c(?:\s|$)", line):
+            break
+    return "\n".join(header)
+
+
+def _phase3a2_runtime_cell_segments(
+    build_segment: str,
+) -> list[tuple[str, str]]:
+    lines = build_segment.splitlines()
+    starts: list[tuple[str, int]] = []
+    for version, interpreter in PHASE3A2_INTERPRETERS.items():
+        pattern = re.compile(rf"^\s*{re.escape(interpreter)}\s+-m\s+venv\s+--clear\b")
+        starts.extend((version, index) for index, line in enumerate(lines) if pattern.search(line))
+    starts.sort(key=lambda item: item[1])
+    return [
+        (
+            version,
+            "\n".join(
+                lines[start : starts[position + 1][1] if position + 1 < len(starts) else len(lines)]
+            ),
+        )
+        for position, (version, start) in enumerate(starts)
+    ]
+
+
+def _phase3a2_checked_out_revision(root: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    revision = result.stdout.strip()
+    return revision if re.fullmatch(r"[0-9a-f]{40}", revision) else None
+
+
+def _phase3a2_workspace_version(root: Path) -> str | None:
+    try:
+        with (root / "Cargo.toml").open("rb") as source:
+            manifest = tomllib.load(source)
+    except (FileNotFoundError, OSError, tomllib.TOMLDecodeError):
+        return None
+    workspace = manifest.get("workspace")
+    package = workspace.get("package") if isinstance(workspace, dict) else None
+    version = package.get("version") if isinstance(package, dict) else None
+    return version if isinstance(version, str) else None
+
+
 def _phase3a2_workflow_paths(root: Path) -> list[Path]:
     workflow_dir = root / ".github" / "workflows"
     if not workflow_dir.is_dir():
@@ -2867,7 +3005,7 @@ def _phase3a2_check_workflow_actions(text: str, errors: list[str]) -> set[str]:
             errors.append(f"phase3a2 workflow: action {repository!r} is not pinned to the reviewed SHA")
         if comment is None or release.lower() not in comment.lower():
             errors.append(f"phase3a2 workflow: action {repository!r} is missing its release comment")
-        if repository == "actions/upload-artifact" and "if-no-files-found: error" not in text:
+        if repository == "actions/upload-artifact" and "if-no-files-found: error" not in _phase3a2_strip_shell_comments(text):
             errors.append("phase3a2 workflow: upload-artifact requires if-no-files-found: error")
     for required in ("actions/checkout", "dtolnay/rust-toolchain"):
         if required not in repositories:
@@ -2881,6 +3019,10 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         errors.append("phase3a2: missing Python wheel workflow")
         return set()
     text = "\n".join(content for _, content in candidates)
+    workflow_code = _phase3a2_strip_shell_comments(text)
+    run_blocks = _phase3a2_workflow_run_blocks(text)
+    shell_code = _phase3a2_strip_shell_comments("\n".join(run_blocks))
+    docker_runs = _phase3a2_docker_run_segments(shell_code)
     repositories = _phase3a2_check_workflow_actions(text, errors)
     required_fragments = (
         ("pull_request", "pull_request trigger"),
@@ -2907,7 +3049,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         (PHASE3A2_MATURIN_WHEEL_SHA256, "hash-pinned maturin wheel"),
         ("--interpreter /opt/python/cp311-cp311/bin/python", "CPython 3.11 builder"),
         ("--compatibility manylinux_2_28", "manylinux compatibility check"),
-        ("--auditwheel check", "auditwheel check"),
+        ("auditwheel check", "auditwheel check"),
         ("auditwheel show --json", "auditwheel JSON evidence"),
         ("unzip -t", "ZIP integrity check"),
         ("METADATA", "wheel METADATA check"),
@@ -2932,11 +3074,11 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         (":/src:ro", "read-only source mount"),
     )
     for fragment, label in required_fragments:
-        if fragment not in text:
+        if fragment not in workflow_code:
             errors.append(f"phase3a2 workflow: missing {label}")
-    if PHASE3A2_IMAGE not in text:
+    if PHASE3A2_IMAGE not in workflow_code:
         errors.append("phase3a2 workflow: builder image must use the exact tag@digest")
-    if re.search(r"manylinux_2_28_x86_64:latest\b", text):
+    if re.search(r"manylinux_2_28_x86_64:latest\b", workflow_code):
         errors.append("phase3a2 workflow: floating manylinux latest tag is forbidden")
     forbidden = (
         ("pull_request_target", "pull_request_target is forbidden"),
@@ -2963,41 +3105,115 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ('test "$INSTALLED_VERSION" = "$INSTALLED_VERSION"', "self-equality version check is forbidden"),
     )
     for fragment, label in forbidden:
-        if (fragment.search(text) if isinstance(fragment, re.Pattern) else fragment.lower() in text.lower()):
+        if (fragment.search(workflow_code) if isinstance(fragment, re.Pattern) else fragment.lower() in workflow_code.lower()):
             errors.append(f"phase3a2 workflow: {label}")
-    for interpreter in PHASE3A2_INTERPRETERS.values():
-        if interpreter not in text:
-            errors.append(f"phase3a2 workflow: missing runtime interpreter {interpreter}")
-        if f'{interpreter} -m venv --clear' not in text:
-            errors.append(f"phase3a2 workflow: runtime interpreter {interpreter} lacks fresh venv isolation")
-    for digest in PHASE3A2_NUMPY_WHEEL_SHA256.values():
-        if digest not in text:
-            errors.append("phase3a2 workflow: missing hash-pinned NumPy 2.4.6 runtime wheel")
-    if text.count("docker run") < 2:
+    if len(docker_runs) != 2:
         errors.append("phase3a2 workflow: prefetch and offline containers must be separate")
-    if text.count("maturin build") != 1:
-        errors.append("phase3a2 workflow: exactly one wheel build is required")
-    if text.count("sha256sum --check") < 2:
-        errors.append("phase3a2 workflow: every runtime cell must recheck the input wheel hash")
-    for fragment, label in (
-        ("--read-only", "read-only container root"),
-        ("--cap-drop=ALL", "dropped container capabilities"),
-        ("--security-opt=no-new-privileges", "no-new-privileges container"),
-        ("--tmpfs /tmp", "temporary container home"),
-        ("--user", "non-root container user"),
-    ):
-        if text.count(fragment) < 2:
-            errors.append(f"phase3a2 workflow: every container lacks {label}")
-    for container in text.split("docker run")[1:]:
-        if "maturin build" in container and "--network=none" not in container:
-            errors.append("phase3a2 workflow: wheel build must run with --network=none")
-        if "maturin build" in container and "--network=bridge" in container:
+    if len(docker_runs) >= 2:
+        invocations = [_phase3a2_docker_invocation(segment) for segment in docker_runs]
+        for invocation in invocations:
+            for fragment, label in (
+                ("--platform=linux/amd64", "platform-pinned Docker run"),
+                ("--read-only", "read-only container root"),
+                ("--user", "non-root container user"),
+                ("--cap-drop=ALL", "dropped container capabilities"),
+                ("--security-opt=no-new-privileges", "no-new-privileges container"),
+                ("--tmpfs /tmp", "temporary container home"),
+                (":/src:ro", "read-only source mount"),
+                (":/cache/wheelhouse:", "job-local wheelhouse mount"),
+            ):
+                if fragment not in invocation:
+                    errors.append(f"phase3a2 workflow: every container lacks {label}")
+        prefetch, build = docker_runs
+        prefetch_invocation, build_invocation = invocations
+        if "--network=bridge" not in prefetch_invocation:
+            errors.append("phase3a2 workflow: prefetch container must use --network=bridge")
+        if "--network=none" not in build_invocation:
+            errors.append("phase3a2 workflow: offline build/test container must use --network=none")
+        if "--network=none" in prefetch_invocation:
+            errors.append("phase3a2 workflow: prefetch container must remain networked")
+        if "--network=bridge" in build_invocation:
             errors.append("phase3a2 workflow: networked wheel build is forbidden")
-    if ":/src:rw" in text or "/src:rw" in text:
+        if ":/cache/wheelhouse:ro" not in build_invocation:
+            errors.append("phase3a2 workflow: build/runtime wheelhouse must be read-only")
+        if ":/cache/wheelhouse:rw" not in prefetch_invocation:
+            errors.append("phase3a2 workflow: prefetch wheelhouse must be writable")
+        if "cargo fetch --locked" not in prefetch:
+            errors.append("phase3a2 workflow: locked Cargo prefetch is missing")
+        if "cargo metadata --locked" not in prefetch:
+            errors.append("phase3a2 workflow: locked Cargo metadata is missing from prefetch")
+        if "pip download" not in prefetch:
+            errors.append("phase3a2 workflow: reviewed inputs are not downloaded into the wheelhouse")
+        for digest in PHASE3A2_NUMPY_WHEEL_SHA256.values():
+            if digest not in prefetch:
+                errors.append("phase3a2 workflow: missing hash-pinned NumPy 2.4.6 runtime wheel")
+        if "maturin build" not in build:
+            errors.append("phase3a2 workflow: offline container is missing the wheel build")
+        if "cargo build --release --locked --offline" not in build:
+            errors.append("phase3a2 workflow: offline Cargo build is missing")
+        if "maturin build" in prefetch:
+            errors.append("phase3a2 workflow: wheel build must not run in the networked prefetch container")
+    if shell_code.count("maturin build") != 1:
+        errors.append("phase3a2 workflow: exactly one wheel build is required")
+    if shell_code.count("sha256sum --check") < 5:
+        errors.append("phase3a2 workflow: every runtime cell must recheck the input wheel hash")
+    if 'readelf -d "$NATIVE_OBJECT" | grep -E \'DT_NEEDED|RPATH|RUNPATH\'' not in shell_code:
+        errors.append("phase3a2 workflow: ELF dependency check must target the native object")
+    if ":/src:rw" in workflow_code or "/src:rw" in workflow_code:
         errors.append("phase3a2 workflow: source checkout must be read-only")
-    if re.search(r"--user\s+(?:root|0(?::0)?)(?:\s|$)", text, re.IGNORECASE):
+    if re.search(r"--user\s+(?:root|0(?::0)?)(?:\s|$)", workflow_code, re.IGNORECASE):
         errors.append("phase3a2 workflow: container user must not be root")
-    pip_lines = [line for line in text.splitlines() if "pip install" in line]
+    if "docker image inspect --format '{{.Id}}' \"$IMAGE\"" not in shell_code:
+        errors.append("phase3a2 workflow: image config digest inspection must be executable")
+    if not re.search(
+        rf'test\s+"\$IMAGE_CONFIG_DIGEST"\s*=\s*"{re.escape(PHASE3A2_IMAGE_CONFIG_DIGEST)}"',
+        shell_code,
+    ):
+        errors.append("phase3a2 workflow: image config digest comparison is missing")
+    if "CARGO_VERSION=\"$(cargo metadata --locked --offline --format-version 1" not in shell_code:
+        errors.append("phase3a2 workflow: Cargo version must be derived from locked Cargo metadata")
+    if "SOURCE_COMMIT=\"$(git rev-parse --verify HEAD)\"" not in shell_code:
+        errors.append("phase3a2 workflow: evidence source commit must be derived from checked-out HEAD")
+    if not re.search(r"phase3a2-manifest\.py.*>\s*(?:/[^\s]*/)?phase3a2-wheel-evidence\.json", shell_code):
+        errors.append("phase3a2 workflow: evidence manifest generation is missing")
+    if "WHEEL=\"" not in shell_code or "$CARGO_VERSION" not in shell_code:
+        errors.append("phase3a2 workflow: wheel filename must be derived from Cargo version")
+
+    runtime_cells = _phase3a2_runtime_cell_segments(docker_runs[1] if len(docker_runs) >= 2 else "")
+    for interpreter in PHASE3A2_INTERPRETERS.values():
+        if interpreter not in workflow_code:
+            errors.append(f"phase3a2 workflow: missing runtime interpreter {interpreter}")
+        elif f"{interpreter} -m venv --clear" not in workflow_code:
+            errors.append(f"phase3a2 workflow: runtime interpreter {interpreter} lacks fresh venv isolation")
+    if [version for version, _ in runtime_cells] != list(PHASE3A2_INTERPRETERS):
+        errors.append("phase3a2 workflow: runtime cells must be explicit and ordered 3.11, 3.12, 3.13, 3.14")
+    for version, interpreter in PHASE3A2_INTERPRETERS.items():
+        matching = [segment for cell_version, segment in runtime_cells if cell_version == version]
+        if not matching:
+            errors.append(f"phase3a2 workflow: missing runtime interpreter {interpreter}")
+            continue
+        cell = matching[0]
+        if f"{interpreter} -m venv --clear" not in cell:
+            errors.append(f"phase3a2 workflow: runtime interpreter {interpreter} lacks fresh venv isolation")
+        numpy_install = f"numpy==2.4.6 --hash=sha256:{PHASE3A2_NUMPY_WHEEL_SHA256['cp' + version.replace('.', '')]}"
+        if numpy_install not in cell:
+            errors.append(f"phase3a2 workflow: runtime cell {version} lacks its exact hash-pinned NumPy wheel")
+        for fragment, label in (
+            ('--find-links=/cache/wheelhouse "$WHEEL"', "identical helper-wheel install"),
+            ("--hash=sha256:$WHEEL_SHA256", "hash-pinned helper-wheel install"),
+            ('from lumenplot_mpl import _native', "private helper import"),
+            ("_native.render_line_png", "private helper fixture execution"),
+            ("invalid-input", "invalid-input helper fixture"),
+            ("helper-success", "successful helper fixture"),
+            ('sha256sum --check "$WHEEL.sha256"', "per-cell input wheel hash"),
+            ('INPUT_WHEEL_SHA256=', "per-cell input wheel rehash"),
+            ('test "$INSTALLED_VERSION" = "$CARGO_VERSION"', "Cargo-to-installed version comparison"),
+        ):
+            if fragment not in cell:
+                errors.append(f"phase3a2 workflow: runtime cell {version} lacks {label}")
+    if shell_code.count('pip install') and shell_code.count('--find-links=/cache/wheelhouse "$WHEEL"') < 4:
+        errors.append("phase3a2 workflow: identical helper wheel must be installed in all four cells")
+    pip_lines = [line for line in workflow_code.splitlines() if "pip install" in line]
     for line in pip_lines:
         for fragment, label in (
             ("--no-index", "offline pip index"),
@@ -3012,10 +3228,19 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             "maturin==1.14.1" not in line or f"--hash=sha256:{PHASE3A2_MATURIN_WHEEL_SHA256}" not in line
         ):
             errors.append("phase3a2 workflow: maturin pip command is not exact and hash-pinned")
+    download_lines = [line for line in shell_code.splitlines() if "pip download" in line]
+    for line in download_lines:
+        for fragment, label in (
+            ("--only-binary=:all:", "binary-only input download"),
+            ("--require-hashes", "hash-required input download"),
+            ("--dest /cache/wheelhouse", "job-local wheelhouse download"),
+        ):
+            if fragment not in line:
+                errors.append(f"phase3a2 workflow: pip download is missing {label}")
     if "actions/upload-artifact" in repositories:
-        if "if: github.ref == 'refs/heads/main' && github.event_name == 'push'" not in text:
+        if "if: github.ref == 'refs/heads/main' && github.event_name == 'push'" not in workflow_code:
             errors.append("phase3a2 workflow: upload-artifact is restricted to trusted main")
-        if "retention-days: 7" not in text:
+        if "retention-days: 7" not in workflow_code:
             errors.append("phase3a2 workflow: upload-artifact retention must be seven days")
     return repositories
 
@@ -3125,6 +3350,17 @@ def _phase3a2_check_evidence_manifest(root: Path, errors: list[str]) -> None:
     cargo_version = source["cargo_version"]
     if not isinstance(cargo_version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", cargo_version):
         errors.append("phase3a2 evidence: Cargo-derived version is invalid")
+    else:
+        expected_version = _phase3a2_workspace_version(root)
+        if expected_version is None:
+            errors.append("phase3a2 evidence: checked-in workspace Cargo version is unavailable")
+        elif cargo_version != expected_version:
+            errors.append("phase3a2 evidence: Cargo-derived version does not match workspace metadata")
+    expected_revision = _phase3a2_checked_out_revision(root)
+    if expected_revision is None:
+        errors.append("phase3a2 evidence: checked-out source revision is unavailable")
+    elif source["commit"] != expected_revision:
+        errors.append("phase3a2 evidence: source commit does not match checked-out revision")
 
     expected_builder = {
         "image": PHASE3A2_IMAGE,
