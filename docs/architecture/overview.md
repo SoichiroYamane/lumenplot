@@ -2,7 +2,7 @@
 
 ## Status
 
-This is the public high-level architecture companion to the accepted pre-alpha requirements and ADR 0002. Phase-1A/B native implementation and local contract evidence now exist; publication, full-v1 product completion, platform, benchmark, support, and compatibility evidence remain open.
+This is the public high-level architecture companion to the accepted pre-alpha requirements and ADR 0002. Phase-1A/B native implementation and local contract evidence now exist, and the bounded Phase-2A/2B line-frame and PNG implementation has local evidence; publication, full-v1 product completion, platform, benchmark, support, and compatibility evidence remain open.
 
 ## Product modes
 
@@ -35,7 +35,7 @@ The adapter does not reverse the dependency direction or create a second authori
 
 ## Public high-level layers
 
-[ADR 0003 — facade and crate DAG](../adr/0003-facade-and-crate-dag.md) records the accepted Option-C facade/crate split, [ADR 0010 — Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md) records the exact first native core/facade slice, and [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md) narrows its root namespace and observation guarantees. Phase-1A/B workspace implementation and local visibility/re-export, `publish = false`, and dependency-direction checks now have local evidence; later layers and product evidence remain pending. [ADR 0012 — private line frame and deterministic PNG contract](../adr/0012-private-line-frame-and-png-contract.md) records the next private Phase-2A/2B line/export boundary. The conceptual layers and their allowed direction are fixed:
+[ADR 0003 — facade and crate DAG](../adr/0003-facade-and-crate-dag.md) records the accepted Option-C facade/crate split, [ADR 0010 — Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md) records the exact first native core/facade slice, and [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md) narrows its root namespace and observation guarantees. Phase-1A/B workspace implementation and local visibility/re-export, `publish = false`, and dependency-direction checks now have local evidence; later layers and product evidence remain pending. [ADR 0012 — private line frame and deterministic PNG contract](../adr/0012-private-line-frame-and-png-contract.md) records the bounded private Phase-2A/2B line/export boundary, whose implementation and local evidence do not expand the facade. [ADR 0013 — hidden line/PNG facade and private Python helper](../adr/0013-hidden-facade-private-python-line-png.md) records the staged Phase-3A owned seam and helper-only package boundary. The conceptual layers and their allowed direction are fixed:
 
 1. **Frontend and product edges** — native viewer, standalone launch surface, future language frontends, and the Matplotlib adapter.
 2. **Engine facade boundary** — the public ownership, view/scale, owned-data, transaction, snapshot, error, root-namespace, token, and trait surface selected for Phase-1B in ADR 0010 as amended by ADR 0011. Runtime, renderer, Python, and persistence surfaces remain later decisions.
@@ -141,6 +141,13 @@ The three profiles are:
 
 Unknown custom Artists/effects never disappear silently. Subtree fallback is reserved for explicitly mapped adapters that preserve generation, z-order, clipping, and compositing. Supported vector primitives remain vector-aware in PDF/SVG; a declared raster fallback records its reason, generation, format, and scope.
 
+Phase-3A is deliberately below the public Matplotlib canvas: it is the exact
+owned `lumenplot::__private` line/PNG seam and private
+`lumenplot_mpl._native.render_line_png` helper only. It has no Matplotlib
+dependency, backend entry point, public result/diagnostic/warning/canvas API,
+or fallback schema. A separate Phase-3B decision must record those public
+surfaces after helper and wheel evidence exists.
+
 ## Text and output flow
 
 ```text
@@ -162,19 +169,19 @@ The event loop, window, surface, and GPU runtime are main-thread confined or own
 
 ## Accepted follow-up contract records
 
-O-01 through O-17 are now accepted contracts recorded in the linked ADR/API documents below. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) resolves the Phase-1 native core/facade boundary and the API 0001/API 0002 candidates, and [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) narrows the Phase-1B namespace, token, and trait observations. Phase-1A/B implementation and local contract evidence now exist; their broader compatibility, platform, benchmark, product, and release evidence remains pending. [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and deterministic line/PNG contract, whose implementation and evidence remain pending. These records do not change the `Not implemented`, `Not measured`, or `environment required` statuses in the [traceability registry](../requirements/traceability-v1.0.md).
+O-01 through O-17 are now accepted contracts recorded in the linked ADR/API documents below. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) resolves the Phase-1 native core/facade boundary and the API 0001/API 0002 candidates, and [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) narrows the Phase-1B namespace, token, and trait observations. Phase-1A/B implementation and local contract evidence now exist; their broader compatibility, platform, benchmark, product, and release evidence remains pending. [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and deterministic line/PNG contract, whose bounded implementation and local evidence remain private and do not close full-v1 export. [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) records the staged Phase-3A hidden facade and private Python helper; helper/package evidence is pending and the public Phase-3B Matplotlib contract remains open. These records do not change the `Not implemented`, `Not measured`, or `environment required` statuses in the [traceability registry](../requirements/traceability-v1.0.md).
 
 | Decision | Accepted record | Evidence boundary |
 | --- | --- | --- |
-| O-01 | [ADR 0003 — facade and crate DAG](../adr/0003-facade-and-crate-dag.md) + [ADR 0010 — Phase-1 native core/facade](../adr/0010-phase1-native-core-facade-contract.md) + [ADR 0011 — Phase-1B namespace and observations](../adr/0011-phase1b-facade-namespace-observation-traits.md) | Local Phase-1 static DAG, visibility/root allowlist, `publish = false`, and dependency-direction guards have implementation/test evidence; broader later-crate/backend/publication and full-v1/release evidence remains pending |
+| O-01 | [ADR 0003 — facade and crate DAG](../adr/0003-facade-and-crate-dag.md) + [ADR 0010 — Phase-1 native core/facade](../adr/0010-phase1-native-core-facade-contract.md) + [ADR 0011 — Phase-1B namespace and observations](../adr/0011-phase1b-facade-namespace-observation-traits.md) + [ADR 0013 — Phase-3A hidden facade](../adr/0013-hidden-facade-private-python-line-png.md) | Local Phase-1 static DAG, visibility/root allowlist, `publish = false`, and dependency-direction guards have implementation/test evidence; Phase-3A hidden inventory is conditional until implementation; broader later-crate/backend/publication and full-v1/release evidence remains pending |
 | O-02R/O-05 | [API 0001 — native Scene, view, and owned data](api-0001-native-scene-state.md) + [ADR 0010 — Phase-1 native core/facade](../adr/0010-phase1-native-core-facade-contract.md) + [ADR 0011 — Phase-1B namespace and observations](../adr/0011-phase1b-facade-namespace-observation-traits.md) | Local Phase-1 Scene transaction/revision/identity/snapshot fixtures exist; shared semantic frame, RenderPacket/resource lifecycle, async/runtime/device generations, and full-v1 lifecycle evidence remain pending |
-| O-03 | [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md) + [ADR 0010 — Phase-1 native core/facade](../adr/0010-phase1-native-core-facade-contract.md) + [ADR 0011 — Phase-1B namespace and observations](../adr/0011-phase1b-facade-namespace-observation-traits.md) | Local Phase-1 error/token/exhaustive engine-to-facade mapping fixtures exist; backend/runtime/Python/fallback capability and full-v1 error matrix evidence remain pending |
+| O-03 | [API 0002 — errors, capabilities, and fallback](api-0002-errors-capabilities-fallback.md) + [ADR 0010 — Phase-1 native core/facade](../adr/0010-phase1-native-core-facade-contract.md) + [ADR 0011 — Phase-1B namespace and observations](../adr/0011-phase1b-facade-namespace-observation-traits.md) + [ADR 0013 — Phase-3A bridge mapping](../adr/0013-hidden-facade-private-python-line-png.md) | Local Phase-1 error/token/exhaustive engine-to-facade mapping fixtures exist; Phase-3A error mapping is recorded but unimplemented; backend/runtime/Python/fallback capability and full-v1 error matrix evidence remain pending |
 | O-04 | [ADR 0004 — RenderPacket resource lifecycle](../adr/0004-renderpacket-resource-lifecycle.md) | Packet and resource-lifetime tests pending |
 | O-06 | [ADR 0005 — runtime, viewer, and host loop](../adr/0005-runtime-viewer-host-loop.md) | Lifecycle and platform matrix pending |
 | O-07/O-08/O-16 | [ADR 0006 — support, benchmark, and native gates](../adr/0006-support-benchmark-native-gates.md) | All target cells and five-block measurements remain environment required |
-| O-02P/O-09/O-10 | [API 0003 — Python, NumPy, and Matplotlib](api-0003-python-numpy-matplotlib.md) | Wheel, import, and headless PNG evidence pending |
+| O-02P/O-09/O-10 | [API 0003 — Phase-3A Python, NumPy, and private helper](api-0003-python-numpy-matplotlib.md) + [ADR 0013 — hidden facade/private Python helper](../adr/0013-hidden-facade-private-python-line-png.md) | Phase-3A helper, wheel, and runtime evidence pending; public Phase-3B Matplotlib canvas/result/fallback contract open |
 | O-11/O-12 | [ADR 0007 — coordinate, color, text, and export](../adr/0007-coordinate-color-text-export.md) | Transform, color, font, and output evidence pending |
-| Phase-2A/2B line frame and PNG | [ADR 0012 — private line frame and deterministic PNG](../adr/0012-private-line-frame-and-png-contract.md) | Private contract recorded; implementation and evidence pending |
+| Phase-2A/2B line frame and PNG | [ADR 0012 — private line frame and deterministic PNG](../adr/0012-private-line-frame-and-png-contract.md) | Bounded private implementation and local evidence recorded; full-v1 export and public adapter evidence pending |
 | O-13/O-14 | [API 0004 — annotations and accessibility](api-0004-annotations-accessibility.md) | Interaction, accessibility, and viewer evidence pending |
 | O-15 | [ADR 0008 — portable GPU and shaders](../adr/0008-portable-gpu-and-shaders.md) | Portable runtime, shader, and loss/OOM evidence pending |
 | O-17/O-18 | [ADR 0009 — version, publication, and supply chain](../adr/0009-version-publication-supply-chain.md) | Policy is accepted; O-18 remains Deferred/Closed and only negative guards are allowed |

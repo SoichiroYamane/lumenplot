@@ -8,7 +8,7 @@
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Open-decision record: [O-01 — Exact facade and crate/module split](../architecture/open-decisions.md#o-01-exact-facade-and-cratemodule-split)
 
-This ADR records an accepted implementation boundary. Phase-1A/B workspace implementation and local contract evidence now exist, but the workspace is not a completed product and the bindings, runtime, and later output paths remain pending. The current product status remains the pre-alpha status in the [requirements traceability registry](../requirements/traceability-v1.0.md). [ADR 0010](0010-phase1-native-core-facade-contract.md) refines the first-slice order and exact Phase-1 native core/facade envelope without changing this crate DAG; [ADR 0012](0012-private-line-frame-and-png-contract.md) records the later private line-frame and PNG order without changing the facade DAG.
+This ADR records an accepted implementation boundary. Phase-1A/B workspace implementation and local contract evidence now exist, and the bounded Phase-2A/2B line-frame and PNG implementation has local evidence, but the workspace is not a completed product and the bindings, runtime, public adapter, and later output paths remain pending. The current product status remains the pre-alpha status in the [requirements traceability registry](../requirements/traceability-v1.0.md). [ADR 0010](0010-phase1-native-core-facade-contract.md) refines the first-slice order and exact Phase-1 native core/facade envelope without changing this crate DAG; [ADR 0012](0012-private-line-frame-and-png-contract.md) records the bounded private line-frame and PNG order; [ADR 0013](0013-hidden-facade-private-python-line-png.md) records the staged hidden Phase-3A facade and private Python helper, all without changing the facade DAG.
 
 ## Requirement references
 
@@ -71,6 +71,7 @@ The engine has no Python feature. No speculative public backend trait is introdu
 - Cross-crate `pub` is workspace implementation visibility only unless the facade explicitly exposes an item. It must not be treated as public API by inference.
 - The facade must not re-export `lumenplot-render-api`, `RenderPacket`, renderer resource identifiers, runtime objects, or Python/Matplotlib objects.
 - During Phase-1A, `lumenplot-engine` root modules remain private. The only future cross-crate engine seam is the narrow `#[doc(hidden)] pub mod bridge` wrapper selected by [ADR 0010](0010-phase1-native-core-facade-contract.md); raw chunks, LOD indexes, caches, Scene internals, and component revisions never cross it.
+- The stable `lumenplot` root remains the exact fifteen-type allowlist recorded by [ADR 0011](0011-phase1b-facade-namespace-observation-traits.md). Phase-3A adds no root re-export: its future `#[doc(hidden)] pub mod __private` is honestly Rust-public implementation visibility, separately inventoried, and carries no product, semver, ABI, or MSRV promise while packages remain `publish = false`.
 - A documentation/API inventory and a static visibility review are required before any public-surface claim.
 - `publish = false` guards and dependency-direction checks are mandatory for all packages as they are scaffolded.
 - Lower layers must not acquire reverse dependencies on the adapter, Python, Matplotlib, wgpu, a window system, or native GPU concrete types.
@@ -84,9 +85,10 @@ The accepted implementation order is:
 3. Implement Phase-1A first: owned f64 chunks, topology and gap validation, Scene transactions/revisions/snapshots/selective invalidation, the MonotonicX M4 prototype, and property tests. The Phase-1A kernel has no full semantic-frame module, renderer, runtime, or public facade.
 4. After Phase-1A independently passes and lands, implement the minimum Phase-1B Rust facade and its exact visibility/error/API inventory from [ADR 0010](0010-phase1-native-core-facade-contract.md).
 5. In parallel, run the scratch gates for the CPython/NumPy wheel matrix, deterministic PNG/color compositing, and native text/font/PDF consumer behavior.
-6. After the relevant gate is accepted, implement Phase-2A's private line frame, independently review and merge it, and then implement Phase-2B's deterministic line/PNG sink under [ADR 0012](0012-private-line-frame-and-png-contract.md).
-7. Extend the shared semantic frame for the remaining supported primitives and implement the headless Matplotlib strict and explicit-hybrid PNG adapter over that frame.
-8. Implement the internal packet and one-surface portable wgpu runtime/viewer slice. O-07/O-08 evidence is required before any product, platform, or performance claim.
+6. After the relevant gate is accepted, implement Phase-2A's private line frame, independently review and merge it, and then implement Phase-2B's deterministic line/PNG sink under [ADR 0012](0012-private-line-frame-and-png-contract.md); its bounded implementation and local evidence do not expand the facade.
+7. Record, review, and integrate [ADR 0013](0013-hidden-facade-private-python-line-png.md), then implement/review/integrate its pure-Rust hidden facade seam and the private Python helper/package evidence in that order.
+8. Only after the Phase-3A helper evidence lands, record a separate Phase-3B public Matplotlib canvas/result/fallback contract and implement the permitted adapter over the accepted semantic frame.
+9. Implement the internal packet and one-surface portable wgpu runtime/viewer slice. O-07/O-08 evidence is required before any product, platform, or performance claim.
 
 Old CPU-backend implementation directions remain superseded by ADR 0002. This record does not authorize product implementation beyond the declared order.
 
@@ -125,5 +127,6 @@ Required checks are a static dependency DAG review, facade/API inventory, `publi
 - [ADR 0010 — accepted Phase-1 native core and facade contract](0010-phase1-native-core-facade-contract.md)
 - [Architecture overview](../architecture/overview.md)
 - [ADR 0012 — private line frame and deterministic PNG contract](0012-private-line-frame-and-png-contract.md)
+- [ADR 0013 — hidden line/PNG facade and private Python helper](0013-hidden-facade-private-python-line-png.md)
 - [O-01 open-decision entry](../architecture/open-decisions.md#o-01-exact-facade-and-cratemodule-split)
 - [Accepted v1 requirements](../requirements/lumenplot-v1.0.md)

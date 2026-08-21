@@ -1,8 +1,8 @@
 # LumenPlot v1.0 requirement traceability
 
-- Status: pre-alpha publication; Phase-1A/B implementation and local contract evidence exist, but no full-v1 product, benchmark, support, or release completion is claimed.
+- Status: pre-alpha publication; Phase-1A/B and bounded Phase-2A/2B implementation/local contract evidence exist, while Phase-3A remains a staged contract and no full-v1 product, benchmark, support, or release completion is claimed.
 - Source of truth: `docs/requirements/lumenplot-v1.0.md` and its Appendix A coverage matrix.
-- This document maps every stable requirement entry to an evidence type and records the current result separately from its target. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md), its narrow [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) amendment, and the updated [API 0001](../architecture/api-0001-native-scene-state.md)/[API 0002](../architecture/api-0002-errors-capabilities-fallback.md) record the accepted Phase-1 native core/facade contract; [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and PNG contract. They do not change any product result below.
+- This document maps every stable requirement entry to an evidence type and records the current result separately from its target. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md), its narrow [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) amendment, and the updated [API 0001](../architecture/api-0001-native-scene-state.md)/[API 0002](../architecture/api-0002-errors-capabilities-fallback.md) record the accepted Phase-1 native core/facade contract; [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and PNG contract; [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) records the staged Phase-3A hidden facade/private helper contract. They do not change any product result below.
 
 ## Status rules
 
@@ -29,13 +29,13 @@
 | `AT-RELEASE-*` | Release checklist evidence review. |
 | `AT-REVIEW-*` | Architecture, scope, dependency, UX, phase, or documentation review. |
 
-## Accepted Phase-1 contract records
+## Accepted bounded contract records
 
-The following records are accepted architecture/API contracts. Phase-1A/B has
-implementation and local contract evidence, while the Phase-2A/2B record below
-is still an implementation boundary. None of these bounded records changes the
-requirement registry's `Not implemented`, `Not measured`, or `environment
-required` results.
+The following records are accepted architecture/API contracts. Phase-1A/B and
+the bounded Phase-2A/2B implementation have local contract evidence; the
+Phase-3A record is staged for helper/package evidence. None of these bounded
+records changes the requirement registry's `Not implemented`, `Not measured`,
+or `environment required` results.
 
 | Contract | Record | Current status |
 | --- | --- | --- |
@@ -43,7 +43,8 @@ required` results.
 | Phase-1B facade namespace and observation traits | [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) | Accepted amendment; Phase-1B implementation and local contract evidence recorded |
 | Phase-1 Scene, view, and owned data surface | [API 0001](../architecture/api-0001-native-scene-state.md) | Accepted contract; Phase-1 local implementation evidence recorded |
 | Phase-1 engine error ownership and mapping | [API 0002](../architecture/api-0002-errors-capabilities-fallback.md) | Accepted contract; Phase-1 mapping/local failure evidence recorded |
-| Phase-2A/2B private line frame and deterministic PNG | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) | Accepted amendment; implementation and evidence pending |
+| Phase-2A/2B private line frame and deterministic PNG | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) | Accepted amendment; bounded implementation and local evidence recorded; full-v1 export pending |
+| Phase-3A hidden facade and private Python helper | [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) | Accepted staged contract; helper/package evidence pending; Phase-3B public Matplotlib contract open |
 
 ## Coverage summary
 
@@ -443,10 +444,10 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | Family | Evidence focus | Current boundary |
 | --- | --- | --- |
 | `LP-DATA` | f64 authority, sealed chunk ownership, local-f32 conversion, and residency | Phase-1 owned-data/chunk implementation and local evidence exist under [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); full v1 local-f32, residency, and scale evidence remains pending. |
-| `LP-EXPORT` | PNG/PDF blockers, SVG non-blocking path, state snapshots, and fallback scope | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the private line/PNG boundary; Phase-2 implementation and full export evidence remain pending. |
+| `LP-EXPORT` | PNG/PDF blockers, SVG non-blocking path, state snapshots, and fallback scope | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the private line/PNG boundary and its bounded implementation/local evidence; full-v1 export, state, vector, and fallback evidence remain pending. |
 | `LP-FUNC` | native functional interaction, annotations, viewer, and optional capability scope | Phase-1 view/scale implementation and local evidence are recorded in [API 0001](../architecture/api-0001-native-scene-state.md); interaction, annotations, viewer, and v1 evidence remain pending. |
 | `LP-LOD` | MonotonicX dyadic extrema and ArbitraryXY correctness/culling | Phase-1 selection implementation and local evidence are recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); v1 correctness/performance evidence remains pending. |
-| `LP-MPL` | loader, profiles, authority, fallback diagnostics, FFI, and separated performance claims | Phase-1 public error mapping is recorded in [API 0002](../architecture/api-0002-errors-capabilities-fallback.md); adapter implementation and evidence pending. |
+| `LP-MPL` | loader, profiles, authority, fallback diagnostics, FFI, and separated performance claims | Phase-1 public error mapping is recorded in [API 0002](../architecture/api-0002-errors-capabilities-fallback.md); [API 0003](../architecture/api-0003-python-numpy-matplotlib.md) and [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) record the staged Phase-3A helper boundary; helper/wheel evidence and the public Phase-3B adapter contract remain pending. |
 | `LP-PERF` | 10M native gate, workload fixtures, warm-up, segments, quantiles, and manifests | Pending implementation and evidence; no completion is claimed. |
 | `LP-PLAT` | capability selection, main-thread runtime, surfaces, device loss, and platform matrix | Pending implementation and evidence; no completion is claimed. |
 | `LP-PROD` | product independence, shared semantic frame, and core dependency direction | Phase-1 native core/facade implementation and local evidence are recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); the shared v1 frame and product evidence remain pending. |
