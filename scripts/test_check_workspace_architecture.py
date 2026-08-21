@@ -129,6 +129,29 @@ pub mod __private {
 
         self.assert_mutation_rejected(mutate, expected)
 
+    def assert_root_insertion_rejected(self, insertion: str, expected: str = "crate-root") -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8") + "\n" + insertion + "\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, expected)
+
+    def wrap_hidden_facade(self, root: Path, opener: str) -> None:
+        path = root / "crates/lumenplot/src/lib.rs"
+        source = path.read_text(encoding="utf-8")
+        marker = "#[doc(hidden)]\npub mod __private {"
+        start = source.index(marker)
+        hidden = source[start:].replace(
+            "use super::{ErrorCategory, ErrorCode};",
+            "use crate::{ErrorCategory, ErrorCode};",
+            1,
+        )
+        path.write_text(source[:start] + opener + "\n" + hidden + "}\n", encoding="utf-8")
+
     def test_valid_hidden_facade_is_conditional_and_passes(self) -> None:
         with self.fixture() as temporary:
             fixture_root = Path(temporary)
@@ -449,6 +472,148 @@ pub mod __private {
         for label, insertion in mutations:
             with self.subTest(label=label):
                 self.assert_hidden_insertion_rejected(insertion)
+
+    def test_hidden_facade_wrapped_at_non_root_scope_is_rejected(self) -> None:
+        for label, opener in (
+            ("outer private module", "mod outer {"),
+            ("outer public module", "pub mod outer {"),
+            ("outer block", "{"),
+        ):
+            with self.subTest(label=label):
+                def mutate(root: Path, opener: str = opener) -> None:
+                    self.add_valid_hidden_facade(root)
+                    self.wrap_hidden_facade(root, opener)
+
+                self.assert_mutation_rejected(mutate, "at crate root")
+
+    def test_nested_hidden_module_declarations_are_rejected_even_with_direct_facade(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\nmod decoy { pub mod __private { } }\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "declared exactly once")
+
+    def test_nested_hidden_module_declarations_inside_non_brace_delimiters_are_rejected(self) -> None:
+        for label, wrapper in (
+            ("parentheses", "const DECOY: () = (#[doc(hidden)] pub mod __private {});"),
+            ("brackets", "const DECOY: &[()] = &[#[doc(hidden)] pub mod __private {}];"),
+        ):
+            with self.subTest(label=label):
+                def mutate(root: Path, wrapper: str = wrapper) -> None:
+                    path = root / "crates/lumenplot/src/lib.rs"
+                    path.write_text(
+                        path.read_text(encoding="utf-8") + "\n" + wrapper + "\n",
+                        encoding="utf-8",
+                    )
+
+                self.assert_mutation_rejected(mutate, "at crate root")
+
+    def test_root_public_inventory_ignores_nested_decoy_exports(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            exports = """pub use error::{ErrorCategory, ErrorCode, PublicError};
+pub use scene::{
+    CommitReceipt, PlotScene, SceneRevision, SceneSnapshot, SceneTransaction, SeriesId,
+};
+pub use series::{SeriesData, SeriesTopology};
+pub use view::{AxisRange, AxisScale, AxisScales, Viewport};"""
+            self.assertIn(exports, source)
+            replacement = "mod decoy {\n" + "\n".join(
+                "    " + line if line else line for line in exports.splitlines()
+            ) + "\n}\n"
+            path.write_text(source.replace(exports, replacement, 1), encoding="utf-8")
+
+        self.assert_mutation_rejected(mutate, "exact root export inventory mismatch")
+
+    def test_root_macro_expansion_matrix_is_rejected(self) -> None:
+        mutations = (
+            ("include outside src", 'include!("../generated.rs");'),
+            ("include inside src", 'include!("generated.rs");'),
+            ("include string", 'const TEXT: &str = include_str!("../generated.txt");'),
+            ("include bytes", 'const BYTES: &[u8] = include_bytes!("../generated.bin");'),
+            ("macro rules wrapper", 'macro_rules! helper { () => { include!("generated.rs"); }; }'),
+            ("macro wrapper invocation", 'helper! { include!("generated.rs"); }'),
+            ("cfg helper", 'cfg!(feature = "private");'),
+            ("path qualified", "crate::helper! { }"),
+            ("raw identifier", "r#helper! [ ]"),
+            ("multiline", "helper!\n{ }"),
+            ("path qualified raw identifier", "crate::r#helper! { }"),
+        )
+        for label, insertion in mutations:
+            with self.subTest(label=label):
+                self.assert_root_insertion_rejected(insertion)
+
+    def test_root_macro_decoys_in_comments_and_literals_are_ignored(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source
+                + r'''
+const TEXT: &str = "} include!(\"outside\"); macro_rules! fake { }";
+const RAW: &str = r###"crate::fake! { pub mod __private {} }"###;
+// include!("outside") macro_rules! fake { }
+/* crate::fake! { pub mod __private {} } */
+''',
+                encoding="utf-8",
+            )
+
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            mutate(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(output, "workspace architecture: OK\n")
+
+    def test_nested_test_and_body_macro_controls_are_allowed(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + """
+
+#[cfg(test)]
+mod tests {
+    macro_rules! local_helper { () => { let _ = 1; }; }
+
+    #[test]
+    fn local_macro_is_below_root_scope() {
+        local_helper!();
+    }
+}
+
+fn body_macro_is_below_root_scope() {
+    let values = vec![1, 2];
+    let _ = matches!(values.first(), Some(_));
+}
+""",
+                encoding="utf-8",
+            )
+
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            mutate(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(output, "workspace architecture: OK\n")
+
+    def test_root_malformed_delimiters_are_rejected_fail_closed(self) -> None:
+        for label, insertion in (
+            ("unclosed root block", "const BROKEN: () = {"),
+            ("unmatched root close", ")"),
+            ("mismatched root delimiters", "helper!([}"),
+        ):
+            with self.subTest(label=label):
+                self.assert_root_insertion_rejected(insertion, "delimiters")
 
     def test_hidden_facade_body_local_macro_controls_are_allowed(self) -> None:
         def mutate(root: Path) -> None:
