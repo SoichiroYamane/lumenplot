@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the accepted Phase-1A Cargo workspace boundary.
+"""Check the accepted Phase-1A/Phase-1B Cargo workspace boundary.
 
 This checker intentionally uses only the Python standard library.  It validates
 repository structure and negative public-surface guards without compiling or
@@ -47,6 +47,120 @@ EXPECTED_ENGINE_SOURCE_FILES = {
     "src/scene/transaction.rs",
     "src/scene/snapshot.rs",
 }
+EXPECTED_FACADE_SOURCE_FILES = {
+    "src/lib.rs",
+    "src/error.rs",
+    "src/view.rs",
+    "src/series.rs",
+    "src/scene.rs",
+}
+FACADE_TYPES = {
+    "PlotScene",
+    "SceneTransaction",
+    "SceneSnapshot",
+    "SceneRevision",
+    "SeriesId",
+    "CommitReceipt",
+    "AxisRange",
+    "AxisScale",
+    "Viewport",
+    "AxisScales",
+    "SeriesTopology",
+    "SeriesData",
+    "PublicError",
+    "ErrorCode",
+    "ErrorCategory",
+}
+FACADE_ROOT_EXPORTS = FACADE_TYPES
+FACADE_NON_EXHAUSTIVE = {"ErrorCode", "ErrorCategory", "AxisScale", "SeriesTopology"}
+FACADE_ENUM_VARIANTS = {
+    "ErrorCode": {
+        "InvalidInput",
+        "UnsupportedCapability",
+        "Closed",
+        "InvalidState",
+        "HostLoopMisuse",
+        "Reentrancy",
+        "BackendUnavailable",
+        "DeviceLost",
+        "RecoveryFailed",
+        "OutOfMemory",
+        "ResourceInvalid",
+        "Internal",
+    },
+    "ErrorCategory": {
+        "Input",
+        "Capability",
+        "Lifecycle",
+        "Host",
+        "Backend",
+        "Resource",
+        "Internal",
+    },
+    "AxisScale": {"Linear", "Log10"},
+    "SeriesTopology": {"MonotonicX", "ArbitraryXY"},
+}
+FACADE_METHODS = {
+    "ErrorCode": {"as_str"},
+    "ErrorCategory": {"as_str"},
+    "PublicError": {"code", "category", "message"},
+    "AxisRange": {"new", "min", "max"},
+    "Viewport": {"new", "from_bounds", "x", "y"},
+    "AxisScales": {"new", "x", "y", "validate"},
+    "SeriesData": {
+        "from_owned_xy",
+        "from_owned_xy_segments",
+        "topology",
+        "source_len",
+        "point_count",
+        "is_empty",
+    },
+    "PlotScene": {"new", "transaction", "snapshot", "revision"},
+    "SceneTransaction": {
+        "replace_canonical_view",
+        "set_viewport",
+        "set_axis_scales",
+        "add_series",
+        "append_series",
+        "commit",
+        "abort",
+    },
+    "SceneSnapshot": {"revision", "canonical_view", "viewport", "axis_scales"},
+    "CommitReceipt": {"revision", "changed"},
+}
+FACADE_DERIVES = {
+    "SceneRevision": {"Copy", "Clone", "Debug", "Eq", "PartialEq", "Hash"},
+    "SeriesId": {"Copy", "Clone", "Debug", "Eq", "PartialEq", "Hash"},
+    "SceneSnapshot": {"Clone"},
+}
+FACADE_TRAIT_IMPLS = {
+    ("PublicError", "Debug"),
+    ("PublicError", "Display"),
+    ("PublicError", "Error"),
+}
+FACADE_RAW_TOKENS = (
+    "lumenplot_engine",
+    "bridge",
+    "Engine",
+    "SceneError",
+    "SceneErrorKind",
+    "SeriesInput",
+    "Topology",
+    "Chunk",
+    "Segment",
+    "Lod",
+    "LOD",
+    "Index",
+    "Selection",
+    "DataEpoch",
+    "ChunkRevision",
+    "ComponentRevision",
+    "SceneState",
+    "RenderPacket",
+    "lumenplot_runtime",
+    "lumenplot_render",
+    "lumenplot_python",
+)
 BRIDGE_TYPES = {
     "SceneErrorKind",
     "SceneError",
@@ -134,6 +248,17 @@ FORBIDDEN_CODE_PATTERNS = (
     (
         "concrete frontend/backend code",
         re.compile(r"\b(?:wgpu|winit|window|surface|device|python|matplotlib|numpy|pyo3)\b", re.I),
+    ),
+)
+FACADE_FORBIDDEN_CODE_PATTERNS = (
+    ("unsafe code", re.compile(r"\bunsafe\b")),
+    (
+        "serialization or wire code",
+        re.compile(r"\b(?:serde|bincode|postcard|rmp|wire|persistence|serialize|deserialize)\b"),
+    ),
+    (
+        "concrete frontend/backend code",
+        re.compile(r"\b(?:wgpu|winit|window|surface|python|matplotlib|numpy|pyo3|runtime)\b", re.I),
     ),
 )
 
@@ -224,6 +349,246 @@ def _check_stub_source(package_name: str, source_dir: Path, root: Path, errors: 
     if NO_MANGLE_RE.search(code):
         errors.append(f"package {package_name}: exported ABI is not allowed")
     _check_forbidden_code(package_name, code, errors)
+
+
+def _find_matching_brace(code: str, opening: int) -> int:
+    depth = 0
+    for position in range(opening, len(code)):
+        if code[position] == "{":
+            depth += 1
+        elif code[position] == "}":
+            depth -= 1
+            if depth == 0:
+                return position
+    return len(code)
+
+
+def _facade_type_declarations(code: str) -> list[tuple[re.Match[str], str, str]]:
+    declaration = re.compile(
+        r"(?P<attributes>(?:^\s*#\[[^\n]*\]\s*\n)*)"
+        r"^\s*pub\s+(?P<kind>struct|enum)\s+(?P<name>\w+)\b",
+        re.MULTILINE,
+    )
+    declarations: list[tuple[re.Match[str], str, str]] = []
+    for match in declaration.finditer(code):
+        opening = code.find("{", match.end())
+        body = "" if opening < 0 else code[opening + 1 : _find_matching_brace(code, opening)]
+        declarations.append((match, match.group("kind"), body))
+    return declarations
+
+
+def _facade_derive_traits(attributes: str) -> set[str]:
+    traits: set[str] = set()
+    for derive in re.findall(r"#\[\s*derive\s*\(([^)]*)\)\s*\]", attributes):
+        traits.update(part.strip().split("::")[-1] for part in derive.split(",") if part.strip())
+    return traits
+
+
+def _facade_public_impls(code: str) -> list[tuple[int, int, str, str | None, str]]:
+    impl_re = re.compile(r"^\s*impl\b", re.MULTILINE)
+    implementations: list[tuple[int, int, str, str | None, str]] = []
+    for match in impl_re.finditer(code):
+        opening = code.find("{", match.end())
+        if opening < 0:
+            continue
+        closing = _find_matching_brace(code, opening)
+        head = code[match.end() : opening].strip()
+        body = code[opening + 1 : closing]
+        trait_match = re.search(r"\bfor\s+([A-Za-z_]\w*)\b", head)
+        if trait_match is not None:
+            target = trait_match.group(1)
+            trait = head[: trait_match.start()].strip().split("::")[-1]
+            trait = trait.split("<", 1)[0].strip()
+            implementations.append((match.start(), closing, "trait", target, trait))
+            continue
+        inherent_head = re.sub(r"^<[^>]*>\s*", "", head)
+        type_match = re.match(r"([A-Za-z_]\w*)\b", inherent_head)
+        target = type_match.group(1) if type_match is not None else ""
+        implementations.append((match.start(), closing, "inherent", target, body))
+    return implementations
+
+
+def _facade_token_pattern(token: str) -> str:
+    if token == "Engine":
+        return r"\bEngine[A-Za-z0-9_]*"
+    if token.endswith("_"):
+        return token
+    return rf"\b{re.escape(token)}\b"
+
+
+def _check_facade_public_surface(sources: dict[str, str], errors: list[str]) -> None:
+    all_code = "\n".join(sources.values())
+    declarations = _facade_type_declarations(all_code)
+    declared_names = [match.group("name") for match, _, _ in declarations]
+    declared_types = set(declared_names)
+    unexpected = sorted(declared_types - FACADE_TYPES)
+    missing = sorted(FACADE_TYPES - declared_types)
+    if unexpected:
+        errors.append("package lumenplot: public type is not allowed " + ",".join(unexpected))
+    if missing:
+        errors.append(
+            "package lumenplot: facade type inventory mismatch (missing " + ",".join(missing) + ")"
+        )
+    duplicates = sorted(name for name in set(declared_names) if declared_names.count(name) > 1)
+    if duplicates:
+        errors.append("package lumenplot: facade type is declared more than once " + ",".join(duplicates))
+
+    for match, kind, body in declarations:
+        name = match.group("name")
+        attributes = match.group("attributes")
+        non_exhaustive = re.search(r"#\[\s*non_exhaustive\s*\]", attributes) is not None
+        if name in FACADE_NON_EXHAUSTIVE and not non_exhaustive:
+            errors.append(f"package lumenplot: facade enum {name!r} must remain non-exhaustive")
+        if name not in FACADE_NON_EXHAUSTIVE and non_exhaustive:
+            errors.append(f"package lumenplot: facade type {name!r} is unexpectedly non-exhaustive")
+
+        actual_derives = _facade_derive_traits(attributes)
+        expected_derives = FACADE_DERIVES.get(name, set())
+        if actual_derives != expected_derives:
+            if name in FACADE_DERIVES:
+                errors.append(f"package lumenplot: trait inventory mismatch for {name!r}")
+            elif actual_derives:
+                errors.append(f"package lumenplot: incidental public traits on {name!r} are not allowed")
+
+        if re.search(r"^\s*pub\s+(?!\()", body, re.MULTILINE):
+            errors.append(f"package lumenplot: facade type {name!r} exposes a public field")
+        if re.search(r"\bpub\s+struct\s+\w+\s*\([^;]*\bpub\b", all_code):
+            errors.append("package lumenplot: facade tuple field is public")
+
+        if kind == "enum":
+            expected_variants = FACADE_ENUM_VARIANTS.get(name)
+            if expected_variants is None:
+                continue
+            actual_variants = set(
+                re.findall(r"^\s*([A-Z][A-Za-z0-9_]*)\s*(?:,|$)", body, re.MULTILINE)
+            )
+            if actual_variants != expected_variants:
+                errors.append(f"package lumenplot: facade enum {name!r} variant inventory mismatch")
+
+    method_inventory: dict[str, set[str]] = {}
+    impl_ranges: list[tuple[int, int]] = []
+    for start, end, implementation_kind, target, body_or_trait in _facade_public_impls(all_code):
+        impl_ranges.append((start, end))
+        if implementation_kind == "trait":
+            if target is None or (target, body_or_trait) not in FACADE_TRAIT_IMPLS:
+                errors.append(
+                    f"package lumenplot: public trait implementation {body_or_trait!r} for {target!r} is not allowed"
+                )
+            continue
+        body = body_or_trait
+        if target not in FACADE_TYPES:
+            errors.append(f"package lumenplot: inherent implementation for {target!r} is not allowed")
+            continue
+        methods = re.findall(r"^\s*pub\s+fn\s+(\w+)\b", body, re.MULTILINE)
+        method_inventory.setdefault(target, set()).update(methods)
+        unexpected_methods = sorted(set(methods) - FACADE_METHODS.get(target, set()))
+        for method in unexpected_methods:
+            errors.append(f"package lumenplot: public method {method!r} on {target!r} is not allowed")
+        for method_match in re.finditer(r"^\s*pub\s+fn\s+(\w+)\b", body, re.MULTILINE):
+            signature_start = method_match.start()
+            opening = body.find("{", signature_start)
+            signature = body[signature_start:] if opening < 0 else body[signature_start:opening]
+            for token in FACADE_RAW_TOKENS:
+                pattern = _facade_token_pattern(token)
+                if re.search(pattern, signature):
+                    errors.append(
+                        f"package lumenplot: public method {method_match.group(1)!r} leaks an internal type"
+                    )
+                    break
+
+    for type_name, expected_methods in FACADE_METHODS.items():
+        actual_methods = method_inventory.get(type_name, set())
+        if actual_methods != expected_methods:
+            errors.append(f"package lumenplot: public method inventory mismatch for {type_name!r}")
+
+    for match in PUBLIC_FN_RE.finditer(all_code):
+        if not any(start <= match.start() <= end for start, end in impl_ranges):
+            errors.append(f"package lumenplot: public free function {match.group(1)!r} is not allowed")
+    non_root_code = "\n".join(
+        code for relative, code in sources.items() if relative != "src/lib.rs"
+    )
+    for line in non_root_code.splitlines():
+        if re.match(r"^\s*pub\s+(?:trait|type|const|static|mod|macro|union|extern|use)\b", line):
+            errors.append("package lumenplot: public item is not allowlisted")
+            break
+
+
+def _check_facade_root(root_code: str, errors: list[str]) -> None:
+    module_names = set(re.findall(r"^\s*mod\s+(\w+)\s*;", root_code, re.MULTILINE))
+    expected_modules = {"error", "view", "series", "scene"}
+    if module_names != expected_modules:
+        errors.append("package lumenplot: private module inventory mismatch")
+    if re.search(r"^\s*pub\s+mod\b", root_code, re.MULTILINE):
+        errors.append("package lumenplot: public module is not allowed")
+    if NO_MANGLE_RE.search(root_code):
+        errors.append("package lumenplot: exported ABI is not allowed")
+
+    exports: list[str] = []
+    for match in re.finditer(r"^\s*pub\s+use\s+(?P<statement>[^;]+);", root_code, re.MULTILINE | re.DOTALL):
+        statement = match.group("statement").strip()
+        if "lumenplot_engine" in statement:
+            errors.append("package lumenplot: internal re-export is not allowed")
+        if re.search(r"\bas\b", statement):
+            errors.append("package lumenplot: export aliases are not allowed")
+        if "{" in statement and statement.endswith("}"):
+            prefix, names = statement.split("{", 1)
+            if not prefix.rstrip().endswith("::"):
+                errors.append("package lumenplot: root export path is not allowlisted")
+            exports.extend(re.findall(r"\b([A-Z][A-Za-z0-9_]*)\b", names))
+        else:
+            name = statement.rsplit("::", 1)[-1].strip()
+            exports.append(name)
+        for token in FACADE_RAW_TOKENS:
+            if re.search(_facade_token_pattern(token), statement):
+                errors.append("package lumenplot: root export leaks an engine or internal type")
+                break
+
+    if set(exports) != FACADE_ROOT_EXPORTS or len(exports) != len(set(exports)):
+        errors.append("package lumenplot: exact root export inventory mismatch")
+
+    root_without_exports = re.sub(r"^\s*pub\s+use\b.*?;", "", root_code, flags=re.MULTILINE | re.DOTALL)
+    if PUBLIC_BARE_ITEM_RE.search(root_without_exports):
+        errors.append("package lumenplot: public item is not allowed")
+
+
+def _check_facade_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    source_dir = package_dir / "src"
+    rust_files = (
+        {path.relative_to(package_dir).as_posix() for path in source_dir.rglob("*.rs")}
+        if source_dir.is_dir()
+        else set()
+    )
+    if rust_files != EXPECTED_FACADE_SOURCE_FILES:
+        missing = sorted(EXPECTED_FACADE_SOURCE_FILES - rust_files)
+        extra = sorted(rust_files - EXPECTED_FACADE_SOURCE_FILES)
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ",".join(missing))
+        if extra:
+            details.append("extra " + ",".join(extra))
+        errors.append(
+            "package lumenplot: source inventory mismatch"
+            + (" (" + "; ".join(details) + ")" if details else "")
+        )
+        return
+
+    sources: dict[str, str] = {}
+    for relative in sorted(rust_files):
+        path = package_dir / relative
+        try:
+            code = _strip_rust_comments_and_literals(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError):
+            errors.append(f"package lumenplot: cannot read {relative}")
+            continue
+        sources[relative] = code
+        for label, pattern in FACADE_FORBIDDEN_CODE_PATTERNS:
+            if pattern.search(code):
+                errors.append(f"package lumenplot: {label} is not allowed")
+
+    if not sources:
+        return
+    _check_facade_root(sources["src/lib.rs"], errors)
+    _check_facade_public_surface(sources, errors)
 
 
 def _check_engine_bridge(code: str, errors: list[str]) -> None:
@@ -400,6 +765,8 @@ def _check_engine_source(package_dir: Path, root: Path, errors: list[str]) -> No
 def _check_package_source(package_name: str, package_dir: Path, root: Path, errors: list[str]) -> None:
     if package_name == "lumenplot-engine":
         _check_engine_source(package_dir, root, errors)
+    elif package_name == "lumenplot":
+        _check_facade_source(package_dir, root, errors)
     else:
         _check_stub_source(package_name, package_dir / "src", root, errors)
 
