@@ -7,6 +7,7 @@
 - Scope: Phase-1A native semantic kernel and Phase-1B minimal Rust facade
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Related boundary record: [ADR 0003 — facade and crate dependency graph](0003-facade-and-crate-dag.md)
+- Amendment: [ADR 0011 — Phase-1B facade namespace and observation traits](0011-phase1b-facade-namespace-observation-traits.md)
 - API records: [API 0001 — native Scene state](../architecture/api-0001-native-scene-state.md), [API 0002 — errors, capabilities, and fallback](../architecture/api-0002-errors-capabilities-fallback.md)
 - Open-decision records: [O-01 — Exact facade and crate/module split](../architecture/open-decisions.md#o-01-exact-facade-and-cratemodule-split), [O-02 — Public Rust and Python API surface](../architecture/open-decisions.md#o-02-public-rust-and-python-api-surface), [O-03 — Error and capability taxonomy](../architecture/open-decisions.md#o-03-error-and-capability-taxonomy), [O-05 — Scene ownership, mutation, revision, and history](../architecture/open-decisions.md#o-05-scene-ownership-mutation-revision-and-history)
 
@@ -14,7 +15,10 @@ This record is the accepted authority for the Phase-1 native core and facade
 slice. It resolves the candidate `SceneError`/`PublicError` and Scene/view/data
 surface recorded in API 0001 and API 0002 for this phase. It does not change the
 normative requirements, claim implementation evidence, or authorize package
-publication.
+publication. [ADR 0011](0011-phase1b-facade-namespace-observation-traits.md)
+is a narrow accepted amendment that fixes the Phase-1B root namespace, stable
+token observations, and exact public trait guarantees; all other decisions in
+this record remain unchanged.
 
 ## Requirement references
 
@@ -132,10 +136,16 @@ code; it is not independently stored and cannot become inconsistent.
 
 `PublicError` has private fields and only the observations `code()`,
 `category()`, and `message()`. Its message is sanitized human text, not a
-stable token. It implements `Display` and `Error`; its public `source()` is
+stable token. It implements `Debug`, `Display`, and `std::error::Error`; its public `source()` is
 always `None`. Internal causes and panic payloads never cross the facade or FFI
 boundary. A caught future FFI panic maps only to `internal`. Caller data errors
 return results rather than panic.
+
+`ErrorCode::as_str(&self) -> &'static str` and
+`ErrorCategory::as_str(&self) -> &'static str` are the sole public stable token
+accessors. No parsing, numeric representation or discriminant, `serde`,
+`FromStr`, or persistence/wire identity is introduced. The exact token tables
+above remain unchanged.
 
 ### 3. Public viewport and scale contract
 
@@ -264,14 +274,17 @@ impl CommitReceipt {
 ```
 
 The accessor return forms are immutable observations; they do not expose mutable
-Scene borrows or internal storage. `SceneRevision` and `SeriesId` are
-comparable, hashable, and debuggable observations with private numeric
-representation. They are not serde, persistence, wire, or cross-process
-identities.
+Scene borrows or internal storage. `SceneRevision` and `SeriesId` implement
+exactly `Copy + Clone + Debug + Eq + PartialEq + Hash`. Their private numeric
+representation has no public numeric access and is not a serde, persistence,
+wire, or cross-process identity. "Comparable" in this contract means
+equality-comparable; it does not promise `Ord` or `PartialOrd`.
 
-`SceneSnapshot` is `Clone + Send + Sync` and owns retained immutable data. Its
-clones are O(1) immutable-state references in the implementation, but this is
-not a public performance promise. No mutable Scene borrow escapes a snapshot.
+`SceneSnapshot` is `Clone + Send + Sync` only and owns retained immutable data.
+It has no public mutable access and this contract makes no performance trait
+claim. No mutable Scene borrow escapes a snapshot. No additional public trait
+guarantee is made for the other Phase-1B types in this slice; implementation-
+internal properties are not stable API.
 There is no public remove, replace-series, readback iterator, axis ID,
 style/layout/annotation, history, worker-generation, semantic-frame,
 `RenderPacket`, backend, callback, serialization, or persistence API in this
@@ -395,7 +408,8 @@ the hidden bridge seam while continuing to reject facade exports, raw
 module/re-export leakage, forbidden dependency directions and concrete types,
 external dependencies, serde/persistence, unsafe code, and package/publication
 drift. Phase-1B extends the checker with the exact facade allowlist and negative
-checks for engine, raw data, chunk, LOD, and packet re-exports. Mutation tests
+checks for engine, raw data, chunk, LOD, and packet re-exports. [ADR 0011](0011-phase1b-facade-namespace-observation-traits.md)
+adds the corresponding token and trait-observation inventory. Mutation tests
 cover both permitted and forbidden cases.
 
 Required future evidence includes:
@@ -472,6 +486,7 @@ artifacts exist.
 - [ADR index](README.md)
 - [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - [ADR 0003 — facade and crate dependency graph](0003-facade-and-crate-dag.md)
+- [ADR 0011 — Phase-1B facade namespace and observation traits](0011-phase1b-facade-namespace-observation-traits.md)
 - [API 0001 — native Scene, view, and owned data](../architecture/api-0001-native-scene-state.md)
 - [API 0002 — errors, capability diagnostics, and fallback](../architecture/api-0002-errors-capabilities-fallback.md)
 - [Architecture overview](../architecture/overview.md)

@@ -7,6 +7,7 @@
 - Scope: O-03 public operation errors, Phase-1 engine-to-facade mapping, capability/fallback diagnostics, internal work outcomes, and Rust/Python mapping
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](../adr/0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Governing Phase-1 record: [ADR 0010 — accepted Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md)
+- Facade amendment: [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md)
 - Open-decision record: [O-03 — Error and capability taxonomy](open-decisions.md#o-03-error-and-capability-taxonomy)
 
 This record separates engine-owned failure, facade-owned public errors,
@@ -81,6 +82,11 @@ tokens are:
 | `Resource` | `resource` |
 | `Internal` | `internal` |
 
+`ErrorCode::as_str(&self) -> &'static str` and
+`ErrorCategory::as_str(&self) -> &'static str` are the sole public stable token
+accessors. No parsing method, numeric representation or discriminant, `serde`,
+`FromStr`, or persistence/wire identity is part of this contract.
+
 Category is derived from `ErrorCode` and is never stored independently. The
 initial code/category ownership is:
 
@@ -124,10 +130,10 @@ The engine owns an unpublished exhaustive `SceneErrorKind` and opaque
 
 The facade owns `PublicError` with private fields and only the observations
 `code()`, `category()`, and `message()`. `message()` is sanitized human text
-and is not a stable token. `PublicError` implements `Display` and `Error`, but
-its public `source()` is always `None`. Engine error types are neither aliased
-nor re-exported. Internal causes and panic payloads are discarded at the
-boundary.
+and is not a stable token. `PublicError` implements `Debug`, `Display`, and
+`std::error::Error`, but its public `source()` is always `None`. Engine error
+types are neither aliased nor re-exported. Internal causes and panic payloads
+are discarded at the boundary.
 
 All Phase-1 facade operations that can fail use `Result<T, PublicError>`,
 including construction, view/scale mutation, series add/append, and commit.
@@ -228,6 +234,7 @@ pending implementation and failure evidence.
 
 - [ADR index](../adr/README.md)
 - [ADR 0010 — accepted Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md)
+- [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md)
 - [Architecture overview](overview.md)
 - [API 0001 — native Scene, view, and owned data](api-0001-native-scene-state.md)
 - [API 0003 — Python, NumPy, and Matplotlib](api-0003-python-numpy-matplotlib.md)
