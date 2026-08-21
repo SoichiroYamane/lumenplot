@@ -56,10 +56,14 @@ sentinels appears:
 - a workflow that contains a Python-wheel/manylinux/maturin/auditwheel path; or
 - a `pyo3` or `numpy` runtime dependency in `crates/lumenplot-python/Cargo.toml`.
 
-Once active, the checker fails closed unless the complete package, direct
-container workflow, exact dependency/input inventory, four-cell same-wheel
-matrix, and CI-local evidence manifest are present. A partial sentinel must
-never leave an apparently passing baseline.
+Once active, the default checker fails closed unless the complete package,
+direct container workflow, exact dependency/input inventory, and four-cell
+same-wheel static contract are present. It does not claim runtime evidence.
+The dedicated Phase-3A2 workflow invokes the explicit
+`--phase3a2-evidence` mode only after generating the CI-local manifest; that
+mode additionally requires and validates the complete four-cell runtime
+evidence. A partial sentinel or missing/invalid explicit evidence must never
+leave an apparently passing gate.
 
 ### 2. Private package boundary
 

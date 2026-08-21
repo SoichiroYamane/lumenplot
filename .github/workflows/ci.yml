@@ -116,10 +116,6 @@ jobs:
         run: cargo fetch --locked
 
       - name: Check workspace architecture
-        # The live Phase-3A2 checker runs after its container produces the
-        # CI-local manifest; this baseline job must not claim a pass
-        # while that required evidence is intentionally absent.
-        if: ${{ !hashFiles('pyproject.toml') }}
         run: python3 scripts/check_workspace_architecture.py
 
       - name: Test workspace architecture mutations

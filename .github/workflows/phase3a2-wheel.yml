@@ -169,5 +169,5 @@ jobs:
         run: |
           set -euo pipefail
           cp "$PWD/evidence/phase3a2-wheel-evidence.json" "$PWD/phase3a2-wheel-evidence.json"
-          python3 scripts/check_workspace_architecture.py
+          python3 scripts/check_workspace_architecture.py --phase3a2-evidence
           python3 -m unittest scripts/test_check_workspace_architecture.py

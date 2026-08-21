@@ -5,9 +5,10 @@ This checker intentionally uses only the Python standard library.  It validates
 repository structure and negative public-surface guards without compiling or
 importing product code.  The hidden Phase-3A facade is absent before
 implementation and, when present, must match its exact owned inventory.  The
-Phase-3A2 wheel/evidence gate is also absent before implementation; it activates
-only when an implementation sentinel appears and then fails closed on every
-missing package, workflow, input, or evidence invariant.
+Phase-3A2 wheel gate is also absent before implementation; it activates only
+when an implementation sentinel appears and then fails closed on every missing
+package, workflow, or static input invariant.  Its CI-local runtime manifest is
+checked only when the explicit evidence mode is requested.
 """
 
 from __future__ import annotations
@@ -3688,8 +3689,13 @@ def _phase3a2_check_evidence_manifest(root: Path, errors: list[str]) -> None:
         errors.append("phase3a2 evidence: runtime matrix is missing one or more CPython 3.11-3.14 cells")
 
 
-def _check_phase3a2(root: Path, errors: list[str]) -> None:
-    """Validate the accepted Phase-3A2 package, workflow, and evidence gate."""
+def _check_phase3a2(
+    root: Path,
+    errors: list[str],
+    *,
+    require_evidence: bool = False,
+) -> None:
+    """Validate the static Phase-3A2 gate and optional runtime evidence."""
 
     for relative in ("rust-toolchain", "rust-toolchain.toml"):
         if (root / relative).exists():
@@ -3699,7 +3705,8 @@ def _check_phase3a2(root: Path, errors: list[str]) -> None:
     _check_python_bridge_source(root / "crates" / "lumenplot-python", root, errors)
     repositories = _phase3a2_check_workflow(root, errors)
     _phase3a2_check_pinned_inventory(root, repositories, errors)
-    _phase3a2_check_evidence_manifest(root, errors)
+    if require_evidence:
+        _phase3a2_check_evidence_manifest(root, errors)
 
 
 def _check_package_source(
@@ -3804,7 +3811,7 @@ def _check_dependencies(
             )
 
 
-def check_workspace(root: Path) -> list[str]:
+def check_workspace(root: Path, *, require_phase3a2_evidence: bool = False) -> list[str]:
     """Return deterministic, public-safe architecture diagnostics for *root*."""
 
     root = root.resolve()
@@ -3900,8 +3907,10 @@ def check_workspace(root: Path) -> list[str]:
             phase3a2_active=phase3a2_active,
         )
 
+    if require_phase3a2_evidence and not phase3a2_active:
+        errors.append("phase3a2 evidence: explicit evidence mode requires an active Phase-3A2 implementation")
     if phase3a2_active:
-        _check_phase3a2(root, errors)
+        _check_phase3a2(root, errors, require_evidence=require_phase3a2_evidence)
 
     return sorted(set(errors))
 
@@ -3914,14 +3923,21 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(__file__).resolve().parents[1],
         help="repository root (defaults to the parent of scripts/)",
     )
+    parser.add_argument(
+        "--phase3a2-evidence",
+        action="store_true",
+        help="require and validate the CI-local Phase-3A2 runtime evidence manifest",
+    )
     args = parser.parse_args(argv)
-    errors = check_workspace(args.root)
+    errors = check_workspace(args.root, require_phase3a2_evidence=args.phase3a2_evidence)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
     print("workspace architecture: OK")
     if _phase3a2_activation_reasons(args.root.resolve()):
+        print("phase3a2 static contract: OK")
+    if args.phase3a2_evidence:
         print("phase3a2 wheel evidence: OK")
     return 0
 

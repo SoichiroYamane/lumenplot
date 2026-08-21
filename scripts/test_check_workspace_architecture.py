@@ -56,9 +56,12 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
         shutil.copy2(CHECKER, scripts_dir / CHECKER.name)
         return temporary
 
-    def run_checker(self, fixture_root: Path) -> tuple[int, str]:
+    def run_checker(self, fixture_root: Path, *, evidence: bool = False) -> tuple[int, str]:
+        command = [sys.executable, str(fixture_root / "scripts" / CHECKER.name), "--root", str(fixture_root)]
+        if evidence:
+            command.append("--phase3a2-evidence")
         result = subprocess.run(
-            [sys.executable, str(fixture_root / "scripts" / CHECKER.name), "--root", str(fixture_root)],
+            command,
             check=False,
             capture_output=True,
             text=True,
@@ -2093,30 +2096,53 @@ jobs:
             },
         }
 
-    def run_checker(self, root: Path) -> tuple[int, str]:
+    def run_checker(self, root: Path, *, evidence: bool = False) -> tuple[int, str]:
+        command = [sys.executable, str(root / "scripts" / CHECKER.name), "--root", str(root)]
+        if evidence:
+            command.append("--phase3a2-evidence")
         result = subprocess.run(
-            [sys.executable, str(root / "scripts" / CHECKER.name), "--root", str(root)],
+            command,
             check=False,
             capture_output=True,
             text=True,
         )
         return result.returncode, result.stdout + result.stderr
 
-    def assert_rejected(self, mutate, expected: str) -> None:
+    def assert_rejected(self, mutate, expected: str, *, evidence: bool = False) -> None:
         with self.fixture() as temporary:
             root = Path(temporary)
             mutate(root)
-            returncode, output = self.run_checker(root)
+            returncode, output = self.run_checker(root, evidence=evidence)
             self.assertNotEqual(returncode, 0, output)
             self.assertIn(expected, output)
             self.assertNotIn(str(root), output)
 
     def test_activated_contract_fixture_passes(self) -> None:
         with self.fixture() as temporary:
-            returncode, output = self.run_checker(Path(temporary))
+            root = Path(temporary)
+            returncode, output = self.run_checker(root)
             self.assertEqual(returncode, 0, output)
-            self.assertIn("workspace architecture: OK", output)
-            self.assertIn("phase3a2 wheel evidence: OK", output)
+            self.assertEqual(
+                output,
+                "workspace architecture: OK\nphase3a2 static contract: OK\n",
+            )
+            returncode, output = self.run_checker(root, evidence=True)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(
+                output,
+                "workspace architecture: OK\nphase3a2 static contract: OK\nphase3a2 wheel evidence: OK\n",
+            )
+
+    def test_static_contract_does_not_require_runtime_manifest(self) -> None:
+        with self.fixture() as temporary:
+            root = Path(temporary)
+            (root / "phase3a2-wheel-evidence.json").unlink()
+            returncode, output = self.run_checker(root)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(
+                output,
+                "workspace architecture: OK\nphase3a2 static contract: OK\n",
+            )
 
     def test_comment_only_control_mutations_are_rejected(self) -> None:
         mutations = (
@@ -2206,7 +2232,7 @@ jobs:
             value["source"]["commit"] = "0" * 40
             path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-        self.assert_rejected(mutate, "source commit does not match checked-out revision")
+        self.assert_rejected(mutate, "source commit does not match checked-out revision", evidence=True)
 
     def test_manifest_cargo_version_must_match_workspace_metadata(self) -> None:
         def mutate(root: Path) -> None:
@@ -2222,7 +2248,7 @@ jobs:
                 cell["installed_distribution_version"] = version
             path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-        self.assert_rejected(mutate, "Cargo-derived version does not match workspace metadata")
+        self.assert_rejected(mutate, "Cargo-derived version does not match workspace metadata", evidence=True)
 
     def test_baseline_fixture_is_inactive(self) -> None:
         with self.fixture() as temporary:
@@ -2551,7 +2577,7 @@ jobs:
                 check=True,
             )
 
-        self.assert_rejected(mutate, "CI-local evidence manifest must not be tracked")
+        self.assert_rejected(mutate, "CI-local evidence manifest must not be tracked", evidence=True)
 
     def test_extra_private_native_pyfunction_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
@@ -2790,6 +2816,7 @@ jobs:
         self.assert_rejected(
             lambda root: (root / "phase3a2-wheel-evidence.json").unlink(),
             "missing phase3a2-wheel-evidence.json",
+            evidence=True,
         )
 
     def test_manifest_schema_is_exact(self) -> None:
@@ -2799,7 +2826,7 @@ jobs:
             del value["claim_boundary"]
             path.write_text(json.dumps(value), encoding="utf-8")
 
-        self.assert_rejected(mutate, "top-level manifest keys are not exact")
+        self.assert_rejected(mutate, "top-level manifest keys are not exact", evidence=True)
 
     def test_manifest_schema_identifier_is_exact(self) -> None:
         def mutate(root: Path) -> None:
@@ -2808,7 +2835,7 @@ jobs:
             value["schema"] = "lumenplot.phase3a2-wheel-evidence.dev"
             path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-        self.assert_rejected(mutate, "schema identifier is not the accepted Phase-3A2 v1 value")
+        self.assert_rejected(mutate, "schema identifier is not the accepted Phase-3A2 v1 value", evidence=True)
 
     def test_runtime_cell_order_is_exact(self) -> None:
         def mutate(root: Path) -> None:
@@ -2817,7 +2844,11 @@ jobs:
             value["runtime_cells"].reverse()
             path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-        self.assert_rejected(mutate, "runtime cells must be ordered 3.11, 3.12, 3.13, 3.14")
+        self.assert_rejected(
+            mutate,
+            "runtime cells must be ordered 3.11, 3.12, 3.13, 3.14",
+            evidence=True,
+        )
 
     def test_manifest_redaction_is_enforced(self) -> None:
         def mutate(root: Path) -> None:
@@ -2826,7 +2857,7 @@ jobs:
             value["source"]["commit"] = "GITHUB_TOKEN"
             path.write_text(json.dumps(value), encoding="utf-8")
 
-        self.assert_rejected(mutate, "private path or credential text is not redacted")
+        self.assert_rejected(mutate, "private path or credential text is not redacted", evidence=True)
 
 
 if __name__ == "__main__":
