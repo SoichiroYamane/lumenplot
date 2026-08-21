@@ -48,6 +48,45 @@ EXPECTED_ENGINE_SOURCE_FILES = {
     "src/scene/transaction.rs",
     "src/scene/snapshot.rs",
 }
+EXPECTED_EXPORT_SOURCE_FILES = {
+    "src/lib.rs",
+    "src/error.rs",
+    "src/raster.rs",
+    "src/compositor.rs",
+    "src/png.rs",
+}
+EXPORT_TYPES = {"ExportErrorKind", "ExportError", "PngSpec"}
+EXPORT_ENUM_VARIANTS = {
+    "ExportErrorKind": {
+        "InvalidInput",
+        "UnsupportedCapability",
+        "CapacityExceeded",
+        "AllocationFailed",
+        "EncodingFailed",
+        "Internal",
+    },
+}
+EXPORT_METHODS = {
+    "ExportError": {"kind", "message"},
+    "PngSpec": {"new"},
+}
+EXPORT_DERIVES = {
+    "ExportErrorKind": {"Clone", "Copy", "Debug", "Eq", "Hash", "PartialEq"},
+    "ExportError": {"Clone", "Eq", "PartialEq"},
+    "PngSpec": set(),
+}
+EXPORT_BRIDGE_EXPORTS = {
+    "ExportError",
+    "ExportErrorKind",
+    "PngSpec",
+    "encode_line_frame_png",
+}
+EXPORT_SIGNATURES = {
+    ("ExportError", "kind"): "pub fn kind(&self) -> ExportErrorKind",
+    ("ExportError", "message"): "pub fn message(&self) -> &str",
+    ("PngSpec", "new"): "pub fn new(output_dpi: f64) -> Result<Self, ExportError>",
+    ("__free__", "encode_line_frame_png"): "pub fn encode_line_frame_png(frame: &lumenplot_engine::bridge::LineFrame, spec: &PngSpec) -> Result<Vec<u8>, ExportError>",
+}
 EXPECTED_FACADE_SOURCE_FILES = {
     "src/lib.rs",
     "src/error.rs",
@@ -379,6 +418,17 @@ EXPECTED_EDGES = {
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
     "lumenplot-python": {"lumenplot"},
     "lumenplot-bench": {"lumenplot"},
+}
+EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES = {
+    "tiny-skia": {
+        "version": "=0.12.0",
+        "default-features": False,
+        "features": ["std"],
+    },
+    "png": {
+        "version": "=0.18.1",
+        "default-features": False,
+    },
 }
 INHERITED_PACKAGE_FIELDS = ("edition", "version", "license", "repository", "readme")
 DEPENDENCY_TABLE_NAMES = {"dependencies", "dev-dependencies", "build-dependencies"}
@@ -976,9 +1026,189 @@ def _check_engine_source(package_dir: Path, root: Path, errors: list[str]) -> No
     _check_engine_bridge(sources["src/bridge.rs"], errors)
 
 
+def _check_export_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    source_dir = package_dir / "src"
+    rust_files = (
+        {path.relative_to(package_dir).as_posix() for path in source_dir.rglob("*.rs")}
+        if source_dir.is_dir()
+        else set()
+    )
+    if rust_files != EXPECTED_EXPORT_SOURCE_FILES:
+        missing = sorted(EXPECTED_EXPORT_SOURCE_FILES - rust_files)
+        extra = sorted(rust_files - EXPECTED_EXPORT_SOURCE_FILES)
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ",".join(missing))
+        if extra:
+            details.append("extra " + ",".join(extra))
+        errors.append(
+            "package lumenplot-export: source inventory mismatch"
+            + (" (" + "; ".join(details) + ")" if details else "")
+        )
+        return
+
+    sources: dict[str, str] = {}
+    for relative in sorted(rust_files):
+        path = package_dir / relative
+        try:
+            sources[relative] = _strip_rust_comments_and_literals(
+                path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError):
+            errors.append(f"package lumenplot-export: cannot read {relative}")
+    if not sources:
+        return
+
+    all_code = "\n".join(sources.values())
+    forbidden = (
+        ("unsafe code", re.compile(r"\bunsafe\b")),
+        (
+            "serialization or wire code",
+            re.compile(r"\b(?:serde|bincode|postcard|rmp|wire|persistence|serialize|deserialize)\b"),
+        ),
+        (
+            "forbidden Pixmap color sink",
+            re.compile(r"\bPixmap(?:Mut|Ref)?\b"),
+        ),
+        ("forbidden RenderPacket boundary", re.compile(r"\bRenderPacket\b")),
+        (
+            "concrete frontend/backend code",
+            re.compile(r"\b(?:wgpu|winit|window|surface|device|python|matplotlib|numpy|pyo3)\b", re.I),
+        ),
+    )
+    for label, pattern in forbidden:
+        if pattern.search(all_code):
+            errors.append(f"package lumenplot-export: {label} is not allowed")
+
+    root_code = sources["src/lib.rs"]
+    module_pattern = re.compile(r"^\s*mod\s+(compositor|error|png|raster)\s*;", re.MULTILINE)
+    if {match.group(1) for match in module_pattern.finditer(root_code)} != {
+        "compositor",
+        "error",
+        "png",
+        "raster",
+    }:
+        errors.append("package lumenplot-export: private module inventory mismatch")
+    hidden_bridge = re.compile(
+        r"#\s*\[\s*doc\s*\(\s*hidden\s*\)\s*\]\s*"
+        r"pub\s+mod\s+bridge\s*\{(?P<body>.*)\}",
+        re.DOTALL,
+    )
+    bridge_matches = list(hidden_bridge.finditer(root_code))
+    if len(bridge_matches) != 1:
+        errors.append("package lumenplot-export: exactly one hidden bridge is required")
+        bridge_body = ""
+    else:
+        bridge_body = bridge_matches[0].group("body")
+    root_without_bridge = hidden_bridge.sub("", root_code)
+    if re.search(r"^\s*pub\s+(?:mod|use|struct|enum|fn|type|const|static|trait)\b", root_without_bridge, re.MULTILINE):
+        errors.append("package lumenplot-export: public item outside hidden bridge is not allowed")
+    bridge_statements = re.findall(r"^\s*pub\s+use\s+([^;]+);", bridge_body, re.MULTILINE)
+    bridge_exports: set[str] = set()
+    for statement in bridge_statements:
+        if "{" in statement and "}" in statement:
+            names = statement.split("{", 1)[1].rsplit("}", 1)[0]
+            bridge_exports.update(name.strip() for name in names.split(",") if name.strip())
+        else:
+            bridge_exports.add(statement.rsplit("::", 1)[-1].strip())
+    if bridge_exports != EXPORT_BRIDGE_EXPORTS:
+        errors.append("package lumenplot-export: exact bridge export inventory mismatch")
+    if re.search(r"^\s*pub\s+(?:mod|use|struct|enum|fn|type|const|static|trait)\b", bridge_body, re.MULTILINE):
+        # The allowlisted bridge surface is made only of re-exports.
+        if not all(re.match(r"^\s*pub\s+use\b", statement) for statement in bridge_body.splitlines() if statement.strip()):
+            errors.append("package lumenplot-export: bridge contains a non-re-exported public item")
+
+    for relative, code in sources.items():
+        if relative == "src/lib.rs":
+            continue
+        if re.search(r"^\s*pub\s+(?:mod|use)\b", code, re.MULTILINE):
+            errors.append(f"package lumenplot-export: public module or re-export outside bridge in {relative}")
+        if re.search(r"^\s*pub\s+(?!\(?(?:struct|enum|fn)\b)", code, re.MULTILINE):
+            errors.append(f"package lumenplot-export: public item outside the exact surface in {relative}")
+
+    declarations = _facade_type_declarations(all_code)
+    declared_names = [match.group("name") for match, _, _ in declarations]
+    if set(declared_names) != EXPORT_TYPES or len(declared_names) != len(set(declared_names)):
+        errors.append("package lumenplot-export: exact public type inventory mismatch")
+    for match, _, body in declarations:
+        name = match.group("name")
+        actual_derives = _facade_derive_traits(match.group("attributes"))
+        if actual_derives != EXPORT_DERIVES.get(name, set()):
+            errors.append(f"package lumenplot-export: trait inventory mismatch for {name!r}")
+        if re.search(r"\bpub\b", body):
+            errors.append(f"package lumenplot-export: type {name!r} exposes a public field")
+
+    for name, expected_variants in EXPORT_ENUM_VARIANTS.items():
+        variant_match = re.search(rf"pub\s+enum\s+{name}\b[^{{]*\{{(.*?)\}}", all_code, re.DOTALL)
+        actual_variants = (
+            set(re.findall(r"^\s*([A-Z][A-Za-z0-9_]*)\s*(?:,|$)", variant_match.group(1), re.MULTILINE))
+            if variant_match is not None
+            else set()
+        )
+        if actual_variants != expected_variants:
+            errors.append(f"package lumenplot-export: enum {name!r} variant inventory mismatch")
+
+    implementations = _facade_public_impls(all_code)
+    method_inventory: dict[str, set[str]] = {}
+    trait_impls: set[tuple[str, str]] = set()
+    impl_ranges: list[tuple[int, int]] = []
+    for start, end, implementation_kind, target, body_or_trait in implementations:
+        impl_ranges.append((start, end))
+        if implementation_kind == "trait":
+            if target in EXPORT_TYPES:
+                trait_impls.add((target, body_or_trait))
+            continue
+        if target not in EXPORT_METHODS:
+            continue
+        body = body_or_trait
+        methods = set(re.findall(r"^\s*pub\s+fn\s+(\w+)\b", body, re.MULTILINE))
+        method_inventory.setdefault(target, set()).update(methods)
+        for method in sorted(methods - EXPORT_METHODS[target]):
+            errors.append(f"package lumenplot-export: public method {method!r} on {target!r} is not allowed")
+        for method_match in re.finditer(r"^\s*pub\s+fn\s+(\w+)\b", body, re.MULTILINE):
+            method = method_match.group(1)
+            expected_signature = EXPORT_SIGNATURES.get((target, method))
+            if expected_signature is None:
+                continue
+            opening = body.find("{", method_match.start())
+            signature = body[method_match.start():] if opening < 0 else body[method_match.start():opening]
+            if _normalize_bridge_signature(signature) != _normalize_bridge_signature(expected_signature):
+                errors.append(f"package lumenplot-export: public method {method!r} on {target!r} has an unexpected signature")
+    for target, expected_methods in EXPORT_METHODS.items():
+        if method_inventory.get(target, set()) != expected_methods:
+            errors.append(f"package lumenplot-export: public method inventory mismatch for {target!r}")
+    if trait_impls != {("ExportError", "Debug"), ("ExportError", "Display"), ("ExportError", "Error")}:
+        errors.append("package lumenplot-export: ExportError trait inventory mismatch")
+
+    public_functions = re.findall(r"^\s*pub\s+fn\s+(\w+)\b", all_code, re.MULTILINE)
+    free_functions = []
+    for match in re.finditer(r"^\s*pub\s+fn\s+(\w+)\b", all_code, re.MULTILINE):
+        if not any(start <= match.start() <= end for start, end in impl_ranges):
+            free_functions.append(match)
+    if set(public_functions) != {"kind", "message", "new", "encode_line_frame_png"}:
+        errors.append("package lumenplot-export: public function inventory mismatch")
+    if len(free_functions) != 1 or free_functions[0].group(1) != "encode_line_frame_png":
+        errors.append("package lumenplot-export: public free function inventory mismatch")
+    else:
+        match = free_functions[0]
+        opening = all_code.find("{", match.start())
+        signature = all_code[match.start():] if opening < 0 else all_code[match.start():opening]
+        expected_signature = EXPORT_SIGNATURES[("__free__", "encode_line_frame_png")]
+        if _normalize_bridge_signature(signature) != _normalize_bridge_signature(expected_signature):
+            errors.append("package lumenplot-export: encode_line_frame_png has an unexpected signature")
+
+    public_signature_code = "\n".join(
+        line for line in all_code.splitlines() if re.match(r"^\s*pub\s+fn\b", line)
+    )
+    if re.search(r"\b(?:tiny_skia|png|Mask|Path|Stroke|Pixmap|RenderPacket)\b", public_signature_code):
+        errors.append("package lumenplot-export: public signature leaks a dependency or renderer type")
+
+
 def _check_package_source(package_name: str, package_dir: Path, root: Path, errors: list[str]) -> None:
     if package_name == "lumenplot-engine":
         _check_engine_source(package_dir, root, errors)
+    elif package_name == "lumenplot-export":
+        _check_export_source(package_dir, root, errors)
     elif package_name == "lumenplot":
         _check_facade_source(package_dir, root, errors)
     else:
@@ -991,7 +1221,11 @@ def _check_dependencies(
     errors: list[str],
 ) -> None:
     expected_edges = EXPECTED_EDGES[package_name]
+    expected_external = (
+        EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES if package_name == "lumenplot-export" else {}
+    )
     actual_edges: set[str] = set()
+    actual_external: set[str] = set()
     for table_path, dependencies in _walk_tables(manifest):
         if not isinstance(dependencies, dict):
             errors.append(f"package {package_name}: dependency table is invalid")
@@ -1003,9 +1237,17 @@ def _check_dependencies(
         for dependency_name in sorted(dependencies):
             specification = dependencies[dependency_name]
             if dependency_name not in EXPECTED_PACKAGE_PATHS:
-                errors.append(
-                    f"package {package_name}: external dependency {dependency_name!r} is not allowed"
-                )
+                expected_specification = expected_external.get(dependency_name)
+                if expected_specification is None:
+                    errors.append(
+                        f"package {package_name}: external dependency {dependency_name!r} is not allowed"
+                    )
+                elif specification != expected_specification:
+                    errors.append(
+                        f"package {package_name}: external dependency {dependency_name!r} has an unexpected specification"
+                    )
+                else:
+                    actual_external.add(dependency_name)
                 continue
             if dependency_name not in expected_edges:
                 errors.append(
@@ -1038,6 +1280,18 @@ def _check_dependencies(
             details.append(f"extra {','.join(extra)}")
         if details:
             errors.append(f"package {package_name}: exact dependency graph mismatch ({'; '.join(details)})")
+    if actual_external != set(expected_external):
+        missing = sorted(set(expected_external) - actual_external)
+        extra = sorted(actual_external - set(expected_external))
+        details = []
+        if missing:
+            details.append(f"missing {','.join(missing)}")
+        if extra:
+            details.append(f"extra {','.join(extra)}")
+        if details:
+            errors.append(
+                f"package {package_name}: exact external dependency inventory mismatch ({'; '.join(details)})"
+            )
 
 
 def check_workspace(root: Path) -> list[str]:

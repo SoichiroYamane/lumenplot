@@ -516,6 +516,123 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
             "package lumenplot: dependency edge 'lumenplot-runtime' is not allowed",
         )
 
+    def test_export_source_inventory_is_exact(self) -> None:
+        self.assert_mutation_rejected(
+            lambda root: (root / "crates/lumenplot-export/src/raster.rs").unlink(),
+            "package lumenplot-export: source inventory mismatch",
+        )
+
+    def test_export_extra_source_module_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            (root / "crates/lumenplot-export/src/extra.rs").write_text("", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-export: source inventory mismatch",
+        )
+
+    def test_export_pixmap_sink_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-export/src/raster.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8") + "\nfn forbidden() { let _ = tiny_skia::Pixmap::new(1, 1); }\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "forbidden Pixmap color sink is not allowed")
+
+    def test_export_bridge_inventory_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-export/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "pub mod bridge {",
+                    "pub mod bridge {\n    pub use crate::png::CappedWriter;",
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-export: exact bridge export inventory mismatch",
+        )
+
+    def test_export_public_method_inventory_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-export/src/png.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8") + "\nimpl PngSpec { pub fn raw(&self) {} }\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-export: public method 'raw' on 'PngSpec' is not allowed",
+        )
+
+    def test_export_dependency_feature_set_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-export/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    'features = ["std"]',
+                    'features = ["std", "png-format"]',
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external dependency 'tiny-skia' has an unexpected specification",
+        )
+
+    def test_export_rejected_dependency_is_not_allowlisted(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-export/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8") + '\nserde = "1"\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external dependency 'serde' is not allowed",
+        )
+
+    def test_export_public_signature_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-export/src/png.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "lumenplot_engine::bridge::LineFrame",
+                    "lumenplot_engine::bridge::SceneSnapshot",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "encode_line_frame_png has an unexpected signature",
+        )
+
+    def test_export_public_field_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-export/src/png.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "    output_dpi: f64,",
+                    "    pub output_dpi: f64,",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-export: type 'PngSpec' exposes a public field",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

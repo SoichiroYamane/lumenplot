@@ -118,6 +118,12 @@ jobs:
       - name: Test workspace architecture mutations
         run: python3 -m unittest scripts/test_check_workspace_architecture.py
 
+      - name: Check Phase-2B dependency graph and evidence
+        run: python3 scripts/check_phase2b_dependencies.py
+
+      - name: Test Phase-2B dependency mutations
+        run: python3 -m unittest scripts/test_check_phase2b_dependencies.py
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

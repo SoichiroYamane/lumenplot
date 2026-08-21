@@ -9,3 +9,5 @@ readme.workspace = true
 
 [dependencies]
 lumenplot-engine = { path = "../lumenplot-engine", version = "0.1.0" }
+tiny-skia = { version = "=0.12.0", default-features = false, features = ["std"] }
+png = { version = "=0.18.1", default-features = false }
