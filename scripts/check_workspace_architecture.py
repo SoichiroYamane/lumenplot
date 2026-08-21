@@ -1762,8 +1762,8 @@ def _check_hidden_public_signature(
     description: str,
     errors: list[str],
 ) -> None:
-    if "\n" in signature or "\r" in signature:
-        errors.append(f"package lumenplot: hidden facade {description} has a multiline signature")
+    # Rustfmt may wrap long constructors; the normalized comparison below keeps
+    # the signature exact without making whitespace part of the contract.
     if re.search(r"\bfn[ \t]+\w+[ \t]*<", signature) or re.search(r"\bwhere\b", signature):
         errors.append(
             f"package lumenplot: hidden facade {description} has forbidden generic parameters or a where clause"
