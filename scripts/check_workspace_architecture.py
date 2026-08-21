@@ -10,6 +10,7 @@ implementation and, when present, must match its exact owned inventory.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import re
 import sys
 from pathlib import Path
@@ -803,43 +804,195 @@ def _hidden_attributes_before(
     return "".join(code[start:end] for start, end in reversed(selected))
 
 
-def _hidden_type_declarations(
+@dataclass(frozen=True)
+class _HiddenRustToken:
+    text: str
+    start: int
+    end: int
+
+
+_HIDDEN_RUST_OPENERS = {"{", "(", "["}
+_HIDDEN_RUST_CLOSERS = {")": "(", "]": "[", "}": "{"}
+_HIDDEN_RUST_MULTI_PUNCTUATION = (
+    "..=",
+    "::",
+    "=>",
+    "->",
+    "==",
+    "!=",
+    "<=",
+    ">=",
+    "&&",
+    "||",
+    "<<",
+    ">>",
+)
+
+
+def _hidden_identifier_end(code: str, start: int) -> int | None:
+    if code.startswith("r#", start):
+        identifier_start = start + 2
+        if identifier_start >= len(code) or not (
+            code[identifier_start].isalpha() or code[identifier_start] == "_"
+        ):
+            return None
+        position = identifier_start + 1
+    elif code[start].isalpha() or code[start] == "_":
+        position = start + 1
+    else:
+        return None
+    while position < len(code) and (code[position].isalnum() or code[position] == "_"):
+        position += 1
+    return position
+
+
+def _hidden_rust_tokens(
     code: str,
     errors: list[str],
-    attribute_spans: list[tuple[int, int]],
-) -> list[tuple[str, str, str, str]]:
-    declaration = re.compile(
-        r"^[ \t]*pub[ \t]+(?P<kind>struct|enum)\b",
-        re.MULTILINE,
-    )
-    declarations: list[tuple[str, str, str, str]] = []
-    for match in declaration.finditer(code):
-        name_match = re.match(r"[ \t]+(?P<name>[A-Za-z_]\w*)", code[match.end() :])
-        if name_match is None:
-            errors.append("package lumenplot: hidden facade type declaration is malformed")
+    delimiter_error: str,
+) -> tuple[list[_HiddenRustToken], dict[int, int], list[int], bool]:
+    """Tokenize stripped Rust and return delimiter/scope evidence."""
+
+    tokens: list[_HiddenRustToken] = []
+    pairs: dict[int, int] = {}
+    curly_depths: list[int] = []
+    stack: list[tuple[str, int]] = []
+    curly_depth = 0
+    malformed = False
+    position = 0
+    while position < len(code):
+        character = code[position]
+        if character.isspace():
+            position += 1
             continue
-        name = name_match.group("name")
-        name_end = match.end() + name_match.end()
-        opening = name_end
-        while opening < len(code) and code[opening] in " \t":
-            opening += 1
-        if opening >= len(code) or code[opening] != "{":
-            errors.append(
-                f"package lumenplot: hidden facade type {name!r} has an unexpected declaration"
-            )
-            body = ""
+
+        identifier_end = _hidden_identifier_end(code, position)
+        if identifier_end is not None:
+            token = _HiddenRustToken(code[position:identifier_end], position, identifier_end)
+            position = identifier_end
+        elif character.isdigit():
+            end = position + 1
+            while end < len(code) and (code[end].isalnum() or code[end] in "_."):
+                end += 1
+            token = _HiddenRustToken(code[position:end], position, end)
+            position = end
         else:
-            closing = _find_matching_brace(code, opening)
-            if closing >= len(code):
-                errors.append(f"package lumenplot: hidden facade type {name!r} body is not closed")
-                body = code[opening + 1 :]
-            else:
-                body = code[opening + 1 : closing]
-        if "\n" in code[match.start() : opening] or "\r" in code[match.start() : opening]:
-            errors.append(f"package lumenplot: hidden facade type {name!r} declaration is multiline")
-        attributes = _hidden_attributes_before(code, attribute_spans, match.start())
-        declarations.append((name, match.group("kind"), body, attributes))
-    return declarations
+            punctuation = next(
+                (
+                    candidate
+                    for candidate in _HIDDEN_RUST_MULTI_PUNCTUATION
+                    if code.startswith(candidate, position)
+                ),
+                None,
+            )
+            if punctuation is None:
+                punctuation = character
+            token = _HiddenRustToken(punctuation, position, position + len(punctuation))
+            position += len(punctuation)
+
+        token_index = len(tokens)
+        tokens.append(token)
+        curly_depths.append(curly_depth)
+        if token.text in _HIDDEN_RUST_OPENERS:
+            stack.append((token.text, token_index))
+            if token.text == "{":
+                curly_depth += 1
+            continue
+        if token.text not in _HIDDEN_RUST_CLOSERS:
+            continue
+
+        expected_opening = _HIDDEN_RUST_CLOSERS[token.text]
+        if not stack or stack[-1][0] != expected_opening:
+            malformed = True
+            continue
+        opening, opening_index = stack.pop()
+        pairs[opening_index] = token_index
+        pairs[token_index] = opening_index
+        if opening == "{":
+            curly_depth -= 1
+
+    if stack:
+        malformed = True
+    if malformed and delimiter_error not in errors:
+        errors.append(delimiter_error)
+    return tokens, pairs, curly_depths, not malformed
+
+
+def _hidden_item_body(
+    tokens: list[_HiddenRustToken],
+    pairs: dict[int, int],
+    curly_depths: list[int],
+    start: int,
+    base_depth: int,
+) -> tuple[int, int] | None:
+    """Find an item body at the item's own brace depth, if it has one."""
+
+    nested_delimiters = 0
+    for index in range(start + 1, len(tokens)):
+        token = tokens[index].text
+        depth = curly_depths[index]
+        if depth < base_depth:
+            return None
+        if token in {"(", "["}:
+            nested_delimiters += 1
+            continue
+        if token in {")", "]"}:
+            nested_delimiters = max(0, nested_delimiters - 1)
+            continue
+        if token == "{" and depth == base_depth and nested_delimiters == 0:
+            closing = pairs.get(index)
+            return None if closing is None else (index, closing)
+        if token == ";" and depth == base_depth and nested_delimiters == 0:
+            return None
+    return None
+
+
+def _hidden_normalize_impl_header(tokens: list[_HiddenRustToken]) -> str:
+    normalized = " ".join(token.text for token in tokens)
+    return re.sub(r"\s*::\s*", "::", normalized)
+
+
+def _hidden_is_identifier(token: str) -> bool:
+    return bool(re.fullmatch(r"(?:r#[A-Za-z_]\w*|[A-Za-z_]\w*)", token))
+
+
+def _hidden_inside_function_body(
+    token_index: int,
+    function_bodies: set[tuple[int, int]],
+) -> bool:
+    return any(opening < token_index < closing for opening, closing in function_bodies)
+
+
+def _check_hidden_scope_expansions(
+    tokens: list[_HiddenRustToken],
+    function_bodies: set[tuple[int, int]],
+    errors: list[str],
+) -> None:
+    """Reject module/item expansion that the lexical checker cannot audit."""
+
+    for index, token in enumerate(tokens):
+        if token.text == "mod" and index + 2 < len(tokens):
+            if _hidden_is_identifier(tokens[index + 1].text) and tokens[index + 2].text in {"{", ";"}:
+                errors.append("package lumenplot: hidden facade nested module declarations are not allowed")
+
+        if token.text == "macro_rules" and index + 1 < len(tokens):
+            if tokens[index + 1].text == "!":
+                errors.append("package lumenplot: hidden facade macro_rules definitions are not allowed")
+
+        if token.text != "!" or index + 1 >= len(tokens):
+            continue
+        if tokens[index + 1].text not in _HIDDEN_RUST_OPENERS:
+            continue
+        if index == 0 or not _hidden_is_identifier(tokens[index - 1].text):
+            continue
+        if not _hidden_inside_function_body(index, function_bodies):
+            errors.append("package lumenplot: hidden facade module-scope macro invocation is not allowed")
+
+
+def _hidden_public_item_error(errors: list[str]) -> None:
+    message = "package lumenplot: hidden facade public item is not allowlisted"
+    if message not in errors:
+        errors.append(message)
 
 
 def _facade_type_declarations(code: str) -> list[tuple[re.Match[str], str, str]]:
@@ -1024,6 +1177,7 @@ def _extract_hidden_facade_module(
         errors.append("package lumenplot: hidden facade module declaration is malformed")
         return None, False, root_code
     if root_code[first] == ";":
+        errors.append("package lumenplot: external hidden facade module is not allowed")
         return None, True, root_code[: declaration.start()] + root_code[first + 1 :]
     if root_code[first] != "{":
         errors.append("package lumenplot: hidden facade module declaration is malformed")
@@ -1054,24 +1208,165 @@ def _check_hidden_public_signature(
         errors.append(f"package lumenplot: hidden facade {description} has an unexpected signature")
 
 
-def _check_hidden_public_item_placement(code: str, errors: list[str]) -> None:
-    for match in re.finditer(r"\bpub\b", code):
-        line_start = code.rfind("\n", 0, match.start()) + 1
-        line_prefix = code[line_start : match.start()]
-        suffix = code[match.end() :]
-        if line_prefix.strip() or re.match(r"[ \t]+(?:struct|enum|fn)\b", suffix) is None:
-            errors.append("package lumenplot: hidden facade public item is not allowlisted")
-            break
-
-
 def _check_hidden_facade(code: str, errors: list[str]) -> None:
-    _check_hidden_public_item_placement(code, errors)
     attribute_spans = _hidden_attribute_spans(code, errors)
     if attribute_spans:
         errors.append("package lumenplot: hidden facade attributes are not allowed")
 
-    declarations = _hidden_type_declarations(code, errors, attribute_spans)
-    declared_names = [name for name, _, _, _ in declarations]
+    tokens, pairs, curly_depths, well_formed = _hidden_rust_tokens(
+        code,
+        errors,
+        "package lumenplot: hidden facade delimiters are malformed",
+    )
+    if not well_formed:
+        return
+
+    function_bodies: set[tuple[int, int]] = set()
+    for index, token in enumerate(tokens):
+        if token.text != "fn":
+            continue
+        body = _hidden_item_body(tokens, pairs, curly_depths, index, curly_depths[index])
+        if body is not None:
+            function_bodies.add(body)
+    _check_hidden_scope_expansions(tokens, function_bodies, errors)
+
+    all_direct_impls: list[tuple[str, int, int]] = []
+    direct_impls: list[tuple[str, int, int]] = []
+    for index, token in enumerate(tokens):
+        if token.text != "impl":
+            continue
+        if curly_depths[index] != 0:
+            errors.append("package lumenplot: hidden facade impl declaration is not allowlisted")
+            continue
+        body = _hidden_item_body(tokens, pairs, curly_depths, index, 0)
+        if body is None:
+            errors.append("package lumenplot: hidden facade impl declaration is malformed")
+            continue
+        opening, closing = body
+        header = _hidden_normalize_impl_header(tokens[index + 1 : opening])
+        all_direct_impls.append((header, opening, closing))
+        if header not in HIDDEN_FACADE_IMPL_HEADERS:
+            errors.append("package lumenplot: hidden facade impl declaration is not allowlisted")
+        else:
+            direct_impls.append((header, opening, closing))
+
+    expected_impl_headers = set(HIDDEN_FACADE_IMPL_HEADERS)
+    actual_impl_headers = [header for header, _, _ in all_direct_impls]
+    if set(actual_impl_headers) != expected_impl_headers:
+        errors.append("package lumenplot: hidden facade impl inventory mismatch")
+    duplicate_impls = sorted(
+        header for header in set(actual_impl_headers) if actual_impl_headers.count(header) > 1
+    )
+    if duplicate_impls:
+        errors.append(
+            "package lumenplot: hidden facade impl is declared more than once "
+            + ",".join(duplicate_impls)
+        )
+
+    type_declarations: list[tuple[str, str, int | None, int | None, int]] = []
+    for index, token in enumerate(tokens):
+        if token.text != "pub" or index + 2 >= len(tokens):
+            continue
+        if tokens[index + 1].text not in {"struct", "enum"}:
+            continue
+        if curly_depths[index] != 0 or not _hidden_is_identifier(tokens[index + 2].text):
+            continue
+        name = tokens[index + 2].text
+        body: tuple[int, int] | None = None
+        if index + 3 < len(tokens) and tokens[index + 3].text == "{":
+            opening = index + 3
+            closing = pairs.get(opening)
+            if closing is not None:
+                body = (opening, closing)
+        if body is None:
+            errors.append(
+                f"package lumenplot: hidden facade type {name!r} has an unexpected declaration"
+            )
+            type_declarations.append((name, tokens[index + 1].text, None, None, index))
+            continue
+        opening, closing = body
+        declaration_gap = code[token.end : tokens[opening].start]
+        if "\n" in declaration_gap or "\r" in declaration_gap:
+            errors.append(
+                f"package lumenplot: hidden facade type {name!r} has an unexpected declaration"
+            )
+            type_declarations.append((name, tokens[index + 1].text, None, None, index))
+            continue
+        attributes = _hidden_attributes_before(code, attribute_spans, token.start)
+        if _facade_derive_traits(attributes):
+            errors.append(
+                f"package lumenplot: hidden facade incidental public traits on {name!r} are not allowed"
+            )
+        type_declarations.append((name, tokens[index + 1].text, opening, closing, index))
+
+    type_body_owners = [
+        (name, opening, closing)
+        for name, _, opening, closing, _ in type_declarations
+        if opening is not None and closing is not None
+    ]
+
+    def type_owner(index: int) -> str | None:
+        for name, opening, closing in type_body_owners:
+            if opening < index < closing and curly_depths[index] == 1:
+                return name
+        return None
+
+    def impl_owner(index: int) -> str | None:
+        for header, opening, closing in all_direct_impls:
+            if opening < index < closing and curly_depths[index] == 1:
+                return header
+        return None
+
+    free_functions: list[tuple[str, int | None, int | None, int]] = []
+    methods_by_impl: dict[str, list[tuple[str, int | None, int | None, int]]] = {}
+    for index, token in enumerate(tokens):
+        if token.text != "pub":
+            continue
+        line_start = code.rfind("\n", 0, token.start) + 1
+        if code[line_start : token.start].strip():
+            _hidden_public_item_error(errors)
+
+        next_token = tokens[index + 1].text if index + 1 < len(tokens) else ""
+        if next_token in {"struct", "enum"}:
+            if any(declaration[-1] == index for declaration in type_declarations):
+                continue
+            owner = type_owner(index)
+            if owner is not None:
+                errors.append(f"package lumenplot: hidden facade type {owner!r} exposes a public field")
+            else:
+                _hidden_public_item_error(errors)
+            continue
+        if next_token != "fn":
+            owner = type_owner(index)
+            if owner is not None:
+                errors.append(f"package lumenplot: hidden facade type {owner!r} exposes a public field")
+            else:
+                _hidden_public_item_error(errors)
+            continue
+        if index + 2 >= len(tokens) or not _hidden_is_identifier(tokens[index + 2].text):
+            _hidden_public_item_error(errors)
+            continue
+        name = tokens[index + 2].text
+        owner = None if curly_depths[index] == 0 else impl_owner(index)
+        if curly_depths[index] != 0 and owner is None:
+            _hidden_public_item_error(errors)
+            continue
+        body = _hidden_item_body(tokens, pairs, curly_depths, index, curly_depths[index])
+        if body is None:
+            errors.append(
+                f"package lumenplot: hidden facade public function {name!r} is malformed"
+            )
+            opening = None
+            closing = None
+        else:
+            opening, closing = body
+        candidate = (name, opening, closing, index)
+        if owner is None:
+            free_functions.append(candidate)
+        else:
+            methods_by_impl.setdefault(owner, []).append(candidate)
+
+    declared_names = [name for name, _, _, _, _ in type_declarations]
     declared_types = set(declared_names)
     unexpected = sorted(declared_types - HIDDEN_FACADE_TYPES)
     missing = sorted(HIDDEN_FACADE_TYPES - declared_types)
@@ -1086,125 +1381,79 @@ def _check_hidden_facade(code: str, errors: list[str]) -> None:
     duplicates = sorted(name for name in set(declared_names) if declared_names.count(name) > 1)
     if duplicates:
         errors.append("package lumenplot: hidden facade type is declared more than once " + ",".join(duplicates))
-
-    for name, kind, body, attributes in declarations:
+    for name, kind, _, _, _ in type_declarations:
         if kind != "struct":
             errors.append(f"package lumenplot: hidden facade type {name!r} must be a struct")
-        actual_derives = _facade_derive_traits(attributes)
-        if actual_derives:
-            errors.append(f"package lumenplot: hidden facade incidental public traits on {name!r} are not allowed")
-        if attributes:
-            errors.append(f"package lumenplot: hidden facade attributes on public type {name!r} are not allowed")
-        if re.search(r"^\s*pub(?:\s*\([^)]*\))?\s+", body, re.MULTILINE):
-            errors.append(f"package lumenplot: hidden facade type {name!r} exposes a public field")
-        if re.search(r"\bpub\s+struct\s+\w+\s*\(\s*pub(?:\s*\([^)]*\))?\b", code):
-            errors.append("package lumenplot: hidden facade tuple field is public")
 
-    method_inventory: dict[str, set[str]] = {}
-    trait_impls: set[tuple[str, str]] = set()
-    impl_ranges: list[tuple[int, int]] = []
-    for implementation in re.finditer(r"^[ \t]*impl\b", code, re.MULTILINE):
-        opening = code.find("{", implementation.end())
-        if opening < 0:
-            errors.append("package lumenplot: hidden facade impl declaration is malformed")
-            continue
-        closing = _find_matching_brace(code, opening)
-        if closing >= len(code):
-            errors.append("package lumenplot: hidden facade impl body is not closed")
-        head = code[implementation.end() : opening]
-        normalized_head = " ".join(head.split())
-        if "\n" in head or "\r" in head or normalized_head not in HIDDEN_FACADE_IMPL_HEADERS:
-            errors.append("package lumenplot: hidden facade impl declaration is not allowlisted")
-
-    for start, end, implementation_kind, target, body_or_trait in _facade_public_impls(code):
-        impl_ranges.append((start, end))
-        if implementation_kind == "trait":
-            if target is None or (target, body_or_trait) not in HIDDEN_FACADE_TRAIT_IMPLS:
-                errors.append(
-                    f"package lumenplot: hidden facade public trait implementation "
-                    f"{body_or_trait!r} for {target!r} is not allowed"
-                )
-            else:
-                trait_impls.add((target, body_or_trait))
-            continue
-
-        body = body_or_trait
-        if target not in HIDDEN_FACADE_TYPES:
-            errors.append(f"package lumenplot: hidden facade inherent implementation for {target!r} is not allowed")
-            continue
-        methods = re.findall(r"^\s*pub\s+fn\s+(\w+)\b", body, re.MULTILINE)
-        method_inventory.setdefault(target, set()).update(methods)
-        for method in sorted(set(methods) - HIDDEN_FACADE_METHODS[target]):
+    expected_impl_methods = {
+        **HIDDEN_FACADE_METHODS,
+        "fmt::Debug for BridgeError": set(),
+        "fmt::Display for BridgeError": set(),
+        "std::error::Error for BridgeError": set(),
+    }
+    for header, _, _ in direct_impls:
+        methods = methods_by_impl.get(header, [])
+        method_names = [name for name, _, _, _ in methods]
+        expected_methods = expected_impl_methods[header]
+        target = header.rsplit(" for ", 1)[-1]
+        for method in sorted(set(method_names) - expected_methods):
             errors.append(
                 f"package lumenplot: hidden facade public method {method!r} on {target!r} is not allowed"
             )
-        for method_match in re.finditer(r"^\s*pub\s+fn\s+(\w+)\b", body, re.MULTILINE):
-            method = method_match.group(1)
-            signature_start = method_match.start()
-            opening = body.find("{", signature_start)
-            signature = body[signature_start:] if opening < 0 else body[signature_start:opening]
-            signature = signature.lstrip(" \t\r\n")
+        duplicate_methods = sorted(
+            method for method in set(method_names) if method_names.count(method) > 1
+        )
+        if duplicate_methods:
+            errors.append(
+                f"package lumenplot: hidden facade public method is declared more than once on {target!r} "
+                + ",".join(duplicate_methods)
+            )
+        if set(method_names) != expected_methods:
+            errors.append(f"package lumenplot: hidden facade public method inventory mismatch for {target!r}")
+        for method, opening, _, index in methods:
             expected_signature = HIDDEN_FACADE_SIGNATURES.get((target, method))
-            if expected_signature is not None:
-                _check_hidden_public_signature(
-                    signature,
-                    expected_signature,
-                    f"public method {method!r} on {target!r}",
-                    errors,
-                )
-            for token in HIDDEN_FACADE_RAW_TOKENS:
-                if re.search(_facade_token_pattern(token), signature):
+            if expected_signature is None or opening is None:
+                continue
+            signature = code[tokens[index].start : tokens[opening].start].lstrip(" \t\r\n")
+            _check_hidden_public_signature(
+                signature,
+                expected_signature,
+                f"public method {method!r} on {target!r}",
+                errors,
+            )
+            for raw_token in HIDDEN_FACADE_RAW_TOKENS:
+                if re.search(_facade_token_pattern(raw_token), signature):
                     errors.append(f"package lumenplot: hidden facade method {method!r} leaks an internal type")
                     break
 
-    for type_name, expected_methods in HIDDEN_FACADE_METHODS.items():
-        if method_inventory.get(type_name, set()) != expected_methods:
-            errors.append(f"package lumenplot: hidden facade public method inventory mismatch for {type_name!r}")
-    if trait_impls != HIDDEN_FACADE_TRAIT_IMPLS:
+    expected_trait_headers = {
+        "fmt::Debug for BridgeError",
+        "fmt::Display for BridgeError",
+        "std::error::Error for BridgeError",
+    }
+    actual_trait_headers = {header for header, _, _ in all_direct_impls if " for " in header}
+    if actual_trait_headers != expected_trait_headers:
         errors.append("package lumenplot: hidden facade trait inventory mismatch for 'BridgeError'")
 
-    public_functions = list(PUBLIC_FN_RE.finditer(code))
-    free_functions = [
-        match
-        for match in public_functions
-        if not any(start <= match.start() <= end for start, end in impl_ranges)
-    ]
-    expected_public_functions = {"new", "code", "category", "message", "render_line_png"}
-    if {match.group(1) for match in public_functions} != expected_public_functions:
+    free_names = [name for name, _, _, _ in free_functions]
+    if set(free_names) != {"render_line_png"}:
         errors.append("package lumenplot: hidden facade public function inventory mismatch")
-    if len(free_functions) != 1 or free_functions[0].group(1) != "render_line_png":
+    if len(free_names) != 1 or free_names[0] != "render_line_png":
         errors.append("package lumenplot: hidden facade public free function inventory mismatch")
     else:
-        match = free_functions[0]
-        opening = code.find("{", match.start())
-        signature = code[match.start():] if opening < 0 else code[match.start():opening]
-        signature = signature.lstrip(" \t\r\n")
-        _check_hidden_public_signature(
-            signature,
-            HIDDEN_FACADE_FREE_SIGNATURE,
-            "render_line_png",
-            errors,
-        )
-        for token in HIDDEN_FACADE_RAW_TOKENS:
-            if re.search(_facade_token_pattern(token), signature):
-                errors.append("package lumenplot: hidden facade render_line_png leaks an internal type")
-                break
-
-    for match in PUBLIC_FN_RE.finditer(code):
-        attributes = _hidden_attributes_before(code, attribute_spans, match.start())
-        if attributes:
-            errors.append(
-                f"package lumenplot: hidden facade attributes on public function "
-                f"{match.group(1)!r} are not allowed"
+        _, opening, _, index = free_functions[0]
+        if opening is not None:
+            signature = code[tokens[index].start : tokens[opening].start].lstrip(" \t\r\n")
+            _check_hidden_public_signature(
+                signature,
+                HIDDEN_FACADE_FREE_SIGNATURE,
+                "render_line_png",
+                errors,
             )
-
-    for line in code.splitlines():
-        if not re.match(r"^[ \t]*pub\b", line):
-            continue
-        if re.match(r"^[ \t]*pub[ \t]+(?:struct|enum|fn)\b", line):
-            continue
-        errors.append("package lumenplot: hidden facade public item is not allowlisted")
-        break
+            for raw_token in HIDDEN_FACADE_RAW_TOKENS:
+                if re.search(_facade_token_pattern(raw_token), signature):
+                    errors.append("package lumenplot: hidden facade render_line_png leaks an internal type")
+                    break
 
 
 def _check_facade_root(root_code: str, errors: list[str]) -> None:
@@ -1260,6 +1509,11 @@ def _check_facade_source(package_dir: Path, root: Path, errors: list[str]) -> No
         return
     if INVALID_RUST_SYNTAX in root_code:
         errors.append("package lumenplot: malformed Rust syntax")
+    _hidden_rust_tokens(
+        root_code,
+        errors,
+        "package lumenplot: Rust delimiters are malformed",
+    )
     expected_source_files = EXPECTED_FACADE_SOURCE_FILES | (
         {HIDDEN_FACADE_SOURCE_FILE} if HIDDEN_FACADE_SOURCE_FILE in rust_files else set()
     )

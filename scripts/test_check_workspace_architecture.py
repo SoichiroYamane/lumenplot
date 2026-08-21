@@ -118,6 +118,17 @@ pub mod __private {
 
         self.assert_mutation_rejected(mutate, expected)
 
+    def assert_hidden_insertion_rejected(self, insertion: str, expected: str = "hidden facade") -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            marker = "pub mod __private {\n"
+            self.assertIn(marker, source)
+            path.write_text(source.replace(marker, marker + insertion + "\n", 1), encoding="utf-8")
+
+        self.assert_mutation_rejected(mutate, expected)
+
     def test_valid_hidden_facade_is_conditional_and_passes(self) -> None:
         with self.fixture() as temporary:
             fixture_root = Path(temporary)
@@ -379,6 +390,115 @@ pub mod __private {
                 else:
                     old = "    pub fn render_line_png("
                 self.assert_hidden_replacement_rejected(old, replacement, "hidden facade attributes")
+
+    def test_hidden_facade_nested_public_items_do_not_satisfy_direct_scope(self) -> None:
+        mutations = (
+            ("nested block", "    { pub struct NestedBlock {} }"),
+            ("private inline module", "    mod nested { pub struct NestedModule {} }"),
+            ("public inline module", "    pub mod nested { pub struct NestedPublicModule {} }"),
+            ("nested method block", "    { pub fn nested<T>() {} }"),
+            ("attribute plus nested item", "    #[doc(hidden)]\n    { pub fn nested() {} }"),
+        )
+        for label, insertion in mutations:
+            with self.subTest(label=label):
+                self.assert_hidden_insertion_rejected(insertion)
+
+    def test_hidden_facade_complete_inventory_nested_in_inline_module_is_rejected(self) -> None:
+        for visibility in ("private", "public"):
+            with self.subTest(visibility=visibility):
+                def mutate(root: Path, visibility: str = visibility) -> None:
+                    self.add_valid_hidden_facade(root)
+                    path = root / "crates/lumenplot/src/lib.rs"
+                    source = path.read_text(encoding="utf-8")
+                    marker = "pub mod __private {\n"
+                    self.assertIn(marker, source)
+                    source = source.replace(marker, marker + f"    {visibility} mod nested {{\n", 1)
+                    self.assertTrue(source.endswith("}\n"))
+                    source = source[:-2] + "    }\n}\n"
+                    path.write_text(source, encoding="utf-8")
+
+                self.assert_mutation_rejected(mutate, "hidden facade")
+
+    def test_hidden_facade_external_module_declaration_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            marker = "#[doc(hidden)]\npub mod __private {"
+            start = source.index(marker)
+            path.write_text(source[:start] + "#[doc(hidden)]\npub mod __private;\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(mutate, "external hidden facade module is not allowed")
+
+    def test_hidden_facade_module_scope_expansions_are_rejected(self) -> None:
+        mutations = (
+            ("external module", "    mod generated;"),
+            ("macro rules", "    macro_rules! helper { () => { pub struct Extra {} }; }"),
+            ("allowlisted expansion", "    helper! { pub struct LinePngGeometry {} }"),
+            ("extra expansion", "    helper! { pub fn leak() {} }"),
+            ("include inside src", '    include!("generated.rs");'),
+            ("include outside src", '    include!("../../outside.rs");'),
+            ("include string", '    include_str!("../outside.txt");'),
+            ("include bytes", '    include_bytes!("../outside.bin");'),
+            ("cfg helper", '    cfg!(feature = "private");'),
+            ("path qualified", "    crate::helper! { }"),
+            ("multiline", "    helper!\n    { }"),
+            ("raw identifier", "    r#helper! [ ]"),
+            ("path qualified raw identifier", "    crate::r#helper! { }"),
+        )
+        for label, insertion in mutations:
+            with self.subTest(label=label):
+                self.assert_hidden_insertion_rejected(insertion)
+
+    def test_hidden_facade_body_local_macro_controls_are_allowed(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_valid_hidden_facade(root)
+            path = root / "crates/lumenplot/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            old = "pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> { unreachable!() }"
+            new = (
+                "pub fn render_line_png(request: OwnedLinePngRequest) -> Result<Vec<u8>, BridgeError> { "
+                "let values = vec![1, 2]; "
+                "let matched = matches!(values.first(), Some(_)); "
+                "let _ = (request, values, matched); "
+                "unreachable!() }"
+            )
+            self.assertIn(old, source)
+            path.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            mutate(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(output, "workspace architecture: OK\n")
+
+    def test_hidden_facade_literals_and_comments_do_not_create_scope_items(self) -> None:
+        insertion = """
+    const ORDINARY: &str = "} include! { pub struct Fake {}";
+    const RAW: &str = r###"#[doc(hidden)] mod fake { helper! { pub fn fake() {} } }"###;
+    // } include_bytes!("outside") pub struct Fake {}
+    /* mod fake { macro_rules! fake { () => {} } } */
+"""
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.add_valid_hidden_facade(fixture_root)
+            path = fixture_root / "crates/lumenplot/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            marker = "pub mod __private {\n"
+            path.write_text(source.replace(marker, marker + insertion, 1), encoding="utf-8")
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(output, "workspace architecture: OK\n")
+
+    def test_hidden_facade_malformed_delimiters_are_rejected(self) -> None:
+        for label, insertion in (
+            ("mismatched", "    helper!([}"),
+            ("unclosed block", "    const BROKEN: () = {"),
+            ("unmatched close", "    )"),
+        ):
+            with self.subTest(label=label):
+                self.assert_hidden_insertion_rejected(insertion, "delimiters")
 
     def test_hidden_facade_public_items_cannot_share_a_line(self) -> None:
         mutations = (
