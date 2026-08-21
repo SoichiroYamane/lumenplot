@@ -292,6 +292,58 @@ BRIDGE_METHODS_BY_TYPE = {
     "LineSegment": {"points"},
     "LinePoint": {"x", "y"},
 }
+BRIDGE_PHASE2_SIGNATURES = {
+    "LogicalSize": {
+        "new": "pub fn new(width: f64, height: f64) -> Result<Self, SceneError>",
+        "width": "pub fn width(&self) -> f64",
+        "height": "pub fn height(&self) -> f64",
+    },
+    "LogicalRect": {
+        "new": "pub fn new(x_min: f64, y_min: f64, x_max: f64, y_max: f64) -> Result<Self, SceneError>",
+        "x_min": "pub fn x_min(&self) -> f64",
+        "y_min": "pub fn y_min(&self) -> f64",
+        "x_max": "pub fn x_max(&self) -> f64",
+        "y_max": "pub fn y_max(&self) -> f64",
+    },
+    "SrgbRgba8": {
+        "new": "pub fn new(r: u8, g: u8, b: u8, a: u8) -> Self",
+        "r": "pub fn r(&self) -> u8",
+        "g": "pub fn g(&self) -> u8",
+        "b": "pub fn b(&self) -> u8",
+        "a": "pub fn a(&self) -> u8",
+    },
+    "LineStyle": {
+        "new": "pub fn new(color: SrgbRgba8, width: f64) -> Result<Self, SceneError>",
+        "color": "pub fn color(&self) -> SrgbRgba8",
+        "width": "pub fn width(&self) -> f64",
+    },
+    "LineFrameSpec": {
+        "new": "pub fn new(canvas: LogicalSize, plot_rect: LogicalRect, logical_units_per_inch: f64, line_style: LineStyle, background: SrgbRgba8) -> Result<Self, SceneError>",
+    },
+    "LineFrame": {
+        "revision": "pub fn revision(&self) -> SceneRevision",
+        "canvas": "pub fn canvas(&self) -> LogicalSize",
+        "plot_rect": "pub fn plot_rect(&self) -> LogicalRect",
+        "logical_units_per_inch": "pub fn logical_units_per_inch(&self) -> f64",
+        "background": "pub fn background(&self) -> SrgbRgba8",
+        "series": "pub fn series(&self) -> &[LineSeries]",
+    },
+    "LineSeries": {
+        "id": "pub fn id(&self) -> SeriesId",
+        "style": "pub fn style(&self) -> LineStyle",
+        "segments": "pub fn segments(&self) -> &[LineSegment]",
+    },
+    "LineSegment": {
+        "points": "pub fn points(&self) -> &[LinePoint]",
+    },
+    "LinePoint": {
+        "x": "pub fn x(&self) -> f64",
+        "y": "pub fn y(&self) -> f64",
+    },
+    "SceneSnapshot": {
+        "resolve_line_frame": "pub fn resolve_line_frame(&self, spec: &LineFrameSpec) -> Result<LineFrame, SceneError>",
+    },
+}
 BRIDGE_DERIVES = {
     "SceneErrorKind": {"Clone", "Copy", "Debug", "Eq", "Hash", "Ord", "PartialEq", "PartialOrd"},
     "SceneError": {"Clone", "Debug", "Eq", "PartialEq"},
@@ -700,9 +752,20 @@ def _check_facade_source(package_dir: Path, root: Path, errors: list[str]) -> No
     _check_facade_public_surface(sources, errors)
 
 
+def _normalize_bridge_signature(signature: str) -> str:
+    """Normalize formatting while preserving the exact public signature."""
+
+    normalized = " ".join(signature.split())
+    normalized = re.sub(r"\s*->\s*", "->", normalized)
+    normalized = re.sub(r"\s*([(),:<>\[\]&])\s*", r"\1", normalized)
+    return normalized.replace(",)", ")")
+
+
 def _check_engine_bridge(code: str, errors: list[str]) -> None:
     if PUBLIC_REEXPORT_RE.search(code):
         errors.append("package lumenplot-engine: bridge re-export is not allowed")
+    if re.search(r"\bRenderPacket\b", code):
+        errors.append("package lumenplot-engine: bridge public signature uses forbidden RenderPacket")
 
     declared_types = set(PUBLIC_TYPE_RE.findall(code))
     unexpected_types = sorted(declared_types - BRIDGE_TYPES)
@@ -747,6 +810,18 @@ def _check_engine_bridge(code: str, errors: list[str]) -> None:
             errors.append(
                 f"package lumenplot-engine: bridge public method {method!r} on {target!r} is not allowed"
             )
+        for method_match in re.finditer(r"^\s*pub\s+fn\s+(\w+)\b", body, re.MULTILINE):
+            method = method_match.group(1)
+            expected_signature = BRIDGE_PHASE2_SIGNATURES.get(target, {}).get(method)
+            if expected_signature is None:
+                continue
+            signature_start = method_match.start()
+            opening = body.find("{", signature_start)
+            signature = body[signature_start:] if opening < 0 else body[signature_start:opening]
+            if _normalize_bridge_signature(signature) != _normalize_bridge_signature(expected_signature):
+                errors.append(
+                    f"package lumenplot-engine: bridge public method {method!r} on {target!r} has an unexpected signature"
+                )
     for type_name, expected_methods in BRIDGE_METHODS_BY_TYPE.items():
         if method_inventory.get(type_name, set()) != expected_methods:
             errors.append(

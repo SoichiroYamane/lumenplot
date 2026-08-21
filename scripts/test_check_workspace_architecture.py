@@ -277,6 +277,42 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
             "bridge public method inventory mismatch for 'SceneSnapshot'",
         )
 
+    def test_engine_bridge_render_packet_signature_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace(
+                    "pub fn series(&self) -> &[LineSeries] {",
+                    "pub fn series(&self) -> RenderPacket {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "bridge public signature uses forbidden RenderPacket",
+        )
+
+    def test_engine_bridge_phase2_signature_return_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace(
+                    "pub fn segments(&self) -> &[LineSegment] {",
+                    "pub fn segments(&self) -> &[LinePoint] {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "bridge public method 'segments' on 'LineSeries' has an unexpected signature",
+        )
+
     def test_engine_bridge_tuple_field_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-engine/src/bridge.rs"
