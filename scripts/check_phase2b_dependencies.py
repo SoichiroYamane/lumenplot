@@ -33,6 +33,12 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "license": "MIT OR Apache-2.0",
         "dependencies": set(),
     },
+    "autocfg": {
+        "version": "1.5.1",
+        "checksum": "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53",
+        "license": "Apache-2.0 OR MIT",
+        "dependencies": set(),
+    },
     "bitflags": {
         "version": "2.13.1",
         "checksum": "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da",
@@ -69,11 +75,29 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "license": "MIT OR Apache-2.0",
         "dependencies": {"crc32fast", "miniz_oxide"},
     },
+    "heck": {
+        "version": "0.5.0",
+        "checksum": "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": set(),
+    },
+    "libc": {
+        "version": "0.2.189",
+        "checksum": "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": set(),
+    },
     "log": {
         "version": "0.4.33",
         "checksum": "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad",
         "license": "MIT OR Apache-2.0",
         "dependencies": set(),
+    },
+    "matrixmultiply": {
+        "version": "0.3.11",
+        "checksum": "3f607c237553f086e7043417a51df26b2eb899d3caff94e6a67592ff992fedc7",
+        "license": "MIT/Apache-2.0",
+        "dependencies": {"autocfg", "rawpointer"},
     },
     "miniz_oxide": {
         "version": "0.8.9",
@@ -81,11 +105,113 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "license": "MIT OR Zlib OR Apache-2.0",
         "dependencies": {"adler2", "simd-adler32"},
     },
+    "ndarray": {
+        "version": "0.17.2",
+        "checksum": "520080814a7a6b4a6e9070823bb24b4531daac8c4627e08ba5de8c5ef2f2752d",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"matrixmultiply", "num-complex", "num-integer", "num-traits", "portable-atomic", "portable-atomic-util", "rawpointer"},
+    },
+    "num-complex": {
+        "version": "0.4.6",
+        "checksum": "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"num-traits"},
+    },
+    "num-integer": {
+        "version": "0.1.47",
+        "checksum": "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"num-traits"},
+    },
+    "num-traits": {
+        "version": "0.2.19",
+        "checksum": "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"autocfg"},
+    },
+    "numpy": {
+        "version": "0.29.0",
+        "checksum": "6a5b15d63a5ff39e378daed0e1340d3a5964703ea9712eb09a0dc66fade996f4",
+        "license": "BSD-2-Clause",
+        "dependencies": {"libc", "ndarray", "num-complex", "num-integer", "num-traits", "pyo3", "pyo3-build-config", "rustc-hash"},
+    },
+    "once_cell": {
+        "version": "1.21.4",
+        "checksum": "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": set(),
+    },
     "png": {
         "version": "0.18.1",
         "checksum": "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61",
         "license": "MIT OR Apache-2.0",
         "dependencies": {"bitflags", "crc32fast", "fdeflate", "flate2", "miniz_oxide"},
+    },
+    "portable-atomic": {
+        "version": "1.15.0",
+        "checksum": "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85",
+        "license": "Apache-2.0 OR MIT",
+        "dependencies": set(),
+    },
+    "portable-atomic-util": {
+        "version": "0.2.7",
+        "checksum": "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618",
+        "license": "Apache-2.0 OR MIT",
+        "dependencies": {"portable-atomic"},
+    },
+    "proc-macro2": {
+        "version": "1.0.107",
+        "checksum": "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"unicode-ident"},
+    },
+    "pyo3": {
+        "version": "0.29.2",
+        "checksum": "4688ddedf473e32662b9b067670129a8afb8c18e351482c70d62ba4a88171e8b",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"libc", "once_cell", "portable-atomic", "pyo3-build-config", "pyo3-ffi", "pyo3-macros"},
+    },
+    "pyo3-build-config": {
+        "version": "0.29.2",
+        "checksum": "f41027e41b4bd03f6e60f9f417fe24a6341a6bb744edd62b6f709f2a52ea30e9",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"target-lexicon"},
+    },
+    "pyo3-ffi": {
+        "version": "0.29.2",
+        "checksum": "e591a95526fead067432c3b3a33fc74770b87b1e04e73671090d9c2055a2b327",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"libc", "pyo3-build-config"},
+    },
+    "pyo3-macros": {
+        "version": "0.29.2",
+        "checksum": "73225868fc1cd84eef2c3c230ddb91273bf1de46aeb8a4248da76d32a0924a1c",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"proc-macro2", "pyo3-macros-backend", "quote", "syn"},
+    },
+    "pyo3-macros-backend": {
+        "version": "0.29.2",
+        "checksum": "571575aa3749fa6216757dd47d2a3e7ef360f329a40f0666a9fbd14889024952",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"heck", "proc-macro2", "quote", "syn"},
+    },
+    "quote": {
+        "version": "1.0.47",
+        "checksum": "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"proc-macro2"},
+    },
+    "rawpointer": {
+        "version": "0.2.1",
+        "checksum": "60a357793950651c4ed0f3f52338f53b2f809f32d83a07f72909fa13e4c6c1e3",
+        "license": "MIT/Apache-2.0",
+        "dependencies": set(),
+    },
+    "rustc-hash": {
+        "version": "2.1.3",
+        "checksum": "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d",
+        "license": "Apache-2.0 OR MIT",
+        "dependencies": set(),
     },
     "simd-adler32": {
         "version": "0.3.10",
@@ -97,6 +223,18 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "version": "0.1.1",
         "checksum": "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731",
         "license": "MIT",
+        "dependencies": set(),
+    },
+    "syn": {
+        "version": "2.0.119",
+        "checksum": "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"proc-macro2", "quote", "unicode-ident"},
+    },
+    "target-lexicon": {
+        "version": "0.13.5",
+        "checksum": "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca",
+        "license": "Apache-2.0 WITH LLVM-exception",
         "dependencies": set(),
     },
     "tiny-skia": {
@@ -111,6 +249,12 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "license": "BSD-3-Clause",
         "dependencies": {"arrayref", "bytemuck", "strict-num"},
     },
+    "unicode-ident": {
+        "version": "1.0.24",
+        "checksum": "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75",
+        "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+        "dependencies": set(),
+    },
 }
 
 EXPECTED_WORKSPACE_DEPENDENCIES = {
@@ -118,7 +262,7 @@ EXPECTED_WORKSPACE_DEPENDENCIES = {
     "lumenplot-bench": {"lumenplot"},
     "lumenplot-engine": set(),
     "lumenplot-export": {"lumenplot-engine", "png", "tiny-skia"},
-    "lumenplot-python": {"lumenplot"},
+    "lumenplot-python": {"lumenplot", "numpy", "pyo3"},
     "lumenplot-render-api": {"lumenplot-engine"},
     "lumenplot-render-wgpu": {"lumenplot-render-api"},
     "lumenplot-runtime": {"lumenplot-render-wgpu"},
@@ -298,7 +442,20 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
                 build_scripts.add(package.get("name"))
                 if Path(str(target.get("src_path", ""))).name != "build.rs":
                     errors.append(f"build script target drift for {package.get('name')}")
-    if build_scripts != {"crc32fast"}:
+    if build_scripts != {
+        "crc32fast",
+        "libc",
+        "matrixmultiply",
+        "num-traits",
+        "numpy",
+        "portable-atomic",
+        "portable-atomic-util",
+        "proc-macro2",
+        "pyo3",
+        "pyo3-ffi",
+        "quote",
+        "target-lexicon",
+    }:
         errors.append("dependency build-script inventory drift")
 
 
