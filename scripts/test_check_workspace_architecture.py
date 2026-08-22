@@ -1894,21 +1894,26 @@ jobs:
           docker pull --platform=linux/amd64 "$IMAGE"
           IMAGE_CONFIG_DIGEST="$(docker image inspect --format '{{{{.Id}}}}' "$IMAGE")"
           test "$IMAGE_CONFIG_DIGEST" = "{self.CONFIG_DIGEST}"
-          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'PREFETCH'
+          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'PREFETCH'
             export RUSTUP_TOOLCHAIN=1.89.0
             rustc --version
             cargo --version
             cargo fetch --locked
             cargo metadata --locked --format-version 1 > /cache/wheelhouse/cargo-metadata.json
-            cargo deny check --all-features
+            cargo install --locked cargo-deny@0.20.2
+            cargo deny check
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 311 --abi cp311 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 312 --abi cp312 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp313']}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}
+            python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0
+            sha256sum /cache/wheelhouse/auditwheel-6.8.0-*.whl > /cache/wheelhouse/auditwheel-sha256.txt
+            python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26
+            sha256sum /cache/wheelhouse/abi3audit-0.0.26-*.whl > /cache/wheelhouse/abi3audit-sha256.txt
           PREFETCH
           )"
-          docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:ro" -v "$PWD/evidence:/evidence:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'BUILD'
+          docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:ro" -v "$PWD/evidence:/evidence:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'BUILD'
             cd /src
             export RUSTUP_TOOLCHAIN=1.89.0
             CARGO_VERSION="$(cargo metadata --locked --offline --format-version 1 | python -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "lumenplot-python"))')"
@@ -1929,8 +1934,13 @@ jobs:
             test "$WHEEL_VERSION" = "$CARGO_VERSION"
             auditwheel show --json "$WHEEL"
             auditwheel check "$WHEEL"
-            readelf -d "$NATIVE_OBJECT" | grep -E 'DT_NEEDED|RPATH|RUNPATH'
-            if readelf -d "$NATIVE_OBJECT" | grep -E 'RPATH|RUNPATH'; then printf '%s\\n' 'unexpected shared library' >&2; exit 1; fi
+            READELF_OUT="$(readelf -d "$NATIVE_OBJECT")"
+            printf '%s\\n' "$READELF_OUT"
+            test -n "$READELF_OUT"
+            test "$(printf '%s\\n' "$READELF_OUT" | grep -cE '\\(NEEDED\)')" -gt 0
+            test "$(printf '%s\\n' "$READELF_OUT" | grep -cE '\\(RPATH\)')" = "0"
+            RUNPATH_VALUE="$(printf '%s\\n' "$READELF_OUT" | sed -n '/(\\(RUNPATH\))/s/.*\\[\\([^]]*\)\].*/\\1/p')"
+            if printf '%s\\n' "$READELF_OUT" | grep -Eq 'libpython|libcuda'; then printf '%s\\n' 'unexpected shared library' >&2; exit 1; fi
             abi3audit "$WHEEL"
             python /cache/check-sbom.py --format 'CycloneDX 1.5' --cargo-metadata /cache/wheelhouse/cargo-metadata.json
             /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/lp-3.11
@@ -1939,16 +1949,7 @@ jobs:
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
-            /tmp/lp-3.11/bin/python - <<'PY'
-            from lumenplot_mpl import _native, LumenPlotError
-            try:
-                _native.render_line_png("invalid-input")
-            except LumenPlotError as error:
-                assert str(error)
-            else:
-                raise AssertionError("invalid-input fixture did not fail")
-            assert _native.render_line_png("helper-success")
-          PY
+            /tmp/lp-3.11/bin/python -c 'from lumenplot_mpl import _native, LumenPlotError; _native.render_line_png("invalid-input"); print("invalid-input"); _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success")'
             INSTALLED_VERSION="$(/tmp/lp-3.11/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp312-cp312/bin/python -m venv --clear /tmp/lp-3.12
@@ -1957,16 +1958,7 @@ jobs:
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
-            /tmp/lp-3.12/bin/python - <<'PY'
-            from lumenplot_mpl import _native, LumenPlotError
-            try:
-                _native.render_line_png("invalid-input")
-            except LumenPlotError as error:
-                assert str(error)
-            else:
-                raise AssertionError("invalid-input fixture did not fail")
-            assert _native.render_line_png("helper-success")
-          PY
+            /tmp/lp-3.12/bin/python -c 'from lumenplot_mpl import _native, LumenPlotError; _native.render_line_png("invalid-input"); print("invalid-input"); _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success")'
             INSTALLED_VERSION="$(/tmp/lp-3.12/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp313-cp313/bin/python -m venv --clear /tmp/lp-3.13
@@ -1975,16 +1967,7 @@ jobs:
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
-            /tmp/lp-3.13/bin/python - <<'PY'
-            from lumenplot_mpl import _native, LumenPlotError
-            try:
-                _native.render_line_png("invalid-input")
-            except LumenPlotError as error:
-                assert str(error)
-            else:
-                raise AssertionError("invalid-input fixture did not fail")
-            assert _native.render_line_png("helper-success")
-          PY
+            /tmp/lp-3.13/bin/python -c 'from lumenplot_mpl import _native, LumenPlotError; _native.render_line_png("invalid-input"); print("invalid-input"); _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success")'
             INSTALLED_VERSION="$(/tmp/lp-3.13/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp314-cp314/bin/python -m venv --clear /tmp/lp-3.14
@@ -1993,19 +1976,16 @@ jobs:
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
-            /tmp/lp-3.14/bin/python - <<'PY'
-            from lumenplot_mpl import _native, LumenPlotError
-            try:
-                _native.render_line_png("invalid-input")
-            except LumenPlotError as error:
-                assert str(error)
-            else:
-                raise AssertionError("invalid-input fixture did not fail")
-            assert _native.render_line_png("helper-success")
-          PY
+            /tmp/lp-3.14/bin/python -c 'from lumenplot_mpl import _native, LumenPlotError; _native.render_line_png("invalid-input"); print("invalid-input"); _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success")'
             INSTALLED_VERSION="$(/tmp/lp-3.14/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
-            python /cache/write-phase3a2-manifest.py --source-commit "$SOURCE_COMMIT" --cargo-version "$CARGO_VERSION" --wheel "$WHEEL" > /evidence/phase3a2-wheel-evidence.json
+            GLIBC_VERSION="$(ldd --version | head -n1 | awk '{{print $NF}}')"
+            UNAME_ARCH="$(uname -m)"
+            MANIFEST_ARGS=(--wheel "$WHEEL" --wheel-sha256 "$WHEEL_SHA256" --cargo-version "$CARGO_VERSION" --cargo-lock-sha256 "$CARGO_LOCK_SHA256" --source-commit "$SOURCE_COMMIT" --sbom /evidence/sbom.json)
+          if [ -f /evidence/observed.json ]; then
+            MANIFEST_ARGS+=(--observed /evidence/observed.json)
+          fi
+            python /src/scripts/phase3a2-manifest.py "${{MANIFEST_ARGS[@]}}" > /evidence/phase3a2-wheel-evidence.json
           BUILD
           )"
           mkdir -p evidence
@@ -2191,7 +2171,7 @@ jobs:
                     for line in (root / ".github/workflows/phase3a2-wheel.yml")
                     .read_text(encoding="utf-8")
                     .splitlines()
-                    if "write-phase3a2-manifest.py" not in line
+                    if "phase3a2-manifest.py" not in line
                 )
                 + "\n",
                 encoding="utf-8",
@@ -2216,8 +2196,8 @@ jobs:
                 (root / ".github/workflows/phase3a2-wheel.yml")
                 .read_text(encoding="utf-8")
                 .replace(
-                    "readelf -d \"$NATIVE_OBJECT\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
-                    "readelf -d \"$WHEEL\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
+                    'readelf -d "$NATIVE_OBJECT"',
+                    'readelf -d "$WHEEL"',
                     1,
                 ),
                 encoding="utf-8",
@@ -2545,8 +2525,8 @@ jobs:
             path = root / ".github/workflows/phase3a2-wheel.yml"
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
-                    "cargo deny check --all-features",
-                    "cargo deny check --all-features\n            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse evil-package==9.9.9 --hash=sha256:"
+                    "cargo install --locked cargo-deny@0.20.2",
+                    "cargo deny check\n            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse evil-package==9.9.9 --hash=sha256:"
                     + "0" * 64,
                     1,
                 ),
@@ -2560,8 +2540,8 @@ jobs:
             path = root / ".github/workflows/phase3a2-wheel.yml"
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
-                    "cargo deny check --all-features",
-                    "cargo deny check --all-features\n            curl https://example.invalid/unreviewed.tar.gz",
+                    "cargo install --locked cargo-deny@0.20.2",
+                    "cargo deny check\n            curl https://example.invalid/unreviewed.tar.gz",
                     1,
                 ),
                 encoding="utf-8",
@@ -2733,8 +2713,8 @@ jobs:
                 (root / ".github/workflows/phase3a2-wheel.yml")
                 .read_text(encoding="utf-8")
                 .replace(
-                    "readelf -d \"$NATIVE_OBJECT\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
-                    "elf-inspect \"$NATIVE_OBJECT\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
+                    'readelf -d "$NATIVE_OBJECT"',
+                    'elf-inspect "$NATIVE_OBJECT"',
                     1,
                 ),
                 encoding="utf-8",

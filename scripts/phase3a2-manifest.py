@@ -39,19 +39,26 @@ INTERPRETERS = {
 WHEEL_TAG = "cp311-abi3-manylinux_2_28_x86_64"
 
 
-def record_entry_names(path: Path) -> set[str]:
-    """Return the exact RECORD-listed file names of a wheel archive."""
+def verified_record_names(path: Path) -> set[str]:
+    """Verify RECORD against the archive in both directions.
+
+    Returns the exact RECORD-listed file names of a wheel archive.  An
+    entry listed without matching archive content, or an archive member
+    that RECORD fails to list, is a failure: neither direction may
+    silently shrink the recorded inventory.
+    """
 
     with zipfile.ZipFile(path) as archive:
         record_names = [name for name in archive.namelist() if name.endswith(".dist-info/RECORD")]
         if len(record_names) != 1:
             raise SystemExit("wheel RECORD inventory is incomplete")
+        record_name = record_names[0]
         names = set()
-        for line in archive.read(record_names[0]).decode("utf-8").splitlines():
+        for line in archive.read(record_name).decode("utf-8").splitlines():
             if not line:
                 continue
             filename, encoded_hash, size = line.split(",", 2)
-            if filename == record_names[0]:
+            if filename == record_name:
                 # The wheel spec requires RECORD to list itself without a
                 # hash or size; every other entry must carry both.
                 continue
@@ -71,6 +78,14 @@ def record_entry_names(path: Path) -> set[str]:
             if digest != encoded or size != str(len(archive.read(filename))):
                 raise SystemExit("wheel RECORD hashes or sizes are invalid")
             names.add(filename)
+        listed = names | {record_name}
+        unlisted = sorted(
+            name for name in archive.namelist() if name not in listed and not name.endswith("/")
+        )
+        if unlisted:
+            raise SystemExit(
+                "wheel contains files that RECORD does not list: " + ", ".join(unlisted)
+            )
         return names
 
 
@@ -105,6 +120,56 @@ def observed_wheel_fields(path: Path) -> dict[str, object]:
     }
 
 
+def observed_builder_fields(path: Path | None) -> dict[str, object]:
+    """Return builder-block fields, preferring observed over pinned values.
+
+    Without an observed-evidence file the historical pinned literals are
+    returned unchanged.  With one, every runtime-observed field must be
+    present and well-formed: the script fails closed rather than emitting
+    a placeholder for evidence the workflow did not record.
+    """
+
+    builder: dict[str, object] = {
+        "abi3audit_version": "0.0.26",
+        "auditwheel_version": "6.8.0",
+        "config_digest": IMAGE_CONFIG_DIGEST,
+        "glibc": "2.28",
+        "image": IMAGE,
+        "maturin_version": "1.14.1",
+        "maturin_wheel_sha256": MATURIN_WHEEL_SHA256,
+        "platform": "linux/amd64",
+        "rust_version": "1.89.0",
+    }
+    if path is None:
+        return builder
+    try:
+        recorded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"cannot parse observed-evidence file {path}: {error}") from error
+    if not isinstance(recorded, dict):
+        raise SystemExit("observed evidence must be a JSON object")
+    for key, label in (
+        ("abi3audit_version", "abi3audit"),
+        ("auditwheel_version", "auditwheel"),
+        ("glibc", "glibc"),
+        ("platform", "platform"),
+        ("rust_version", "Rust"),
+    ):
+        value = recorded.get(key)
+        if not isinstance(value, str) or not value:
+            raise SystemExit(f"observed evidence has no observed {label} value")
+        builder[key] = value
+    entries = recorded.get("elf_runpath")
+    if (
+        not isinstance(entries, list)
+        or not entries
+        or not all(isinstance(item, str) and item for item in entries)
+    ):
+        raise SystemExit("observed evidence has no observed elf_runpath list")
+    builder["elf_runpath"] = entries
+    return builder
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--wheel", type=Path, required=True)
@@ -113,13 +178,24 @@ def main() -> int:
     parser.add_argument("--cargo-lock-sha256", required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--sbom", type=Path, required=True)
+    parser.add_argument(
+        "--observed",
+        type=Path,
+        default=None,
+        help=(
+            "optional JSON file of runtime-observed builder values "
+            "(abi3audit_version, auditwheel_version, glibc, platform, "
+            "rust_version, elf_runpath); when given, every field is "
+            "required and replaces the pinned literal in the manifest"
+        ),
+    )
     args = parser.parse_args()
 
     wheel_digest = hashlib.sha256(args.wheel.read_bytes()).hexdigest()
     if wheel_digest != args.wheel_sha256:
         raise SystemExit("wheel SHA-256 does not match the built artifact")
     observed = observed_wheel_fields(args.wheel)
-    record_entry_names(args.wheel)
+    verified_record_names(args.wheel)
     if observed["metadata_version"] != args.cargo_version:
         raise SystemExit("wheel metadata version does not match Cargo")
     if observed["tag"] != WHEEL_TAG:
@@ -164,17 +240,7 @@ def main() -> int:
             }
         )
     manifest = {
-        "builder": {
-            "abi3audit_version": "0.0.26",
-            "auditwheel_version": "6.8.0",
-            "config_digest": IMAGE_CONFIG_DIGEST,
-            "glibc": "2.28",
-            "image": IMAGE,
-            "maturin_version": "1.14.1",
-            "maturin_wheel_sha256": MATURIN_WHEEL_SHA256,
-            "platform": "linux/amd64",
-            "rust_version": "1.89.0",
-        },
+        "builder": observed_builder_fields(args.observed),
         "checks": {
             "abi3audit": True,
             "auditwheel": True,
