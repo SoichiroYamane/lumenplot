@@ -1900,7 +1900,8 @@ jobs:
             cargo --version
             cargo fetch --locked
             cargo metadata --locked --format-version 1 > /cache/wheelhouse/cargo-metadata.json
-            cargo deny check --all-features
+            cargo install --locked cargo-deny@0.20.2
+            cargo deny check
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 311 --abi cp311 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 312 --abi cp312 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}
@@ -2545,8 +2546,8 @@ jobs:
             path = root / ".github/workflows/phase3a2-wheel.yml"
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
-                    "cargo deny check --all-features",
-                    "cargo deny check --all-features\n            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse evil-package==9.9.9 --hash=sha256:"
+                    "cargo install --locked cargo-deny@0.20.2",
+                    "cargo deny check\n            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse evil-package==9.9.9 --hash=sha256:"
                     + "0" * 64,
                     1,
                 ),
@@ -2560,8 +2561,8 @@ jobs:
             path = root / ".github/workflows/phase3a2-wheel.yml"
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
-                    "cargo deny check --all-features",
-                    "cargo deny check --all-features\n            curl https://example.invalid/unreviewed.tar.gz",
+                    "cargo install --locked cargo-deny@0.20.2",
+                    "cargo deny check\n            curl https://example.invalid/unreviewed.tar.gz",
                     1,
                 ),
                 encoding="utf-8",

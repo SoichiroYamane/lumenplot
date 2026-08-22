@@ -3377,10 +3377,17 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             errors.append("phase3a2 workflow: prefetch download inventory is not exactly reviewed")
         forbidden_prefetch_fetch = re.compile(
             r"(?:^|[;&|]\s*)(?:curl|wget|aria2c|git\s+(?:clone|fetch|pull)|"
-            r"(?:python\s+-m\s+)?pip\s+(?:install|wheel)|cargo\s+(?:add|install|update))\b"
+            r"(?:python\s+-m\s+)?pip\s+(?:install|wheel)|cargo\s+(?:add|update))\b"
         )
         if any(forbidden_prefetch_fetch.search(line.strip()) for line in prefetch.splitlines()):
             errors.append("phase3a2 workflow: prefetch contains an unreviewed network fetch")
+        if "cargo install --locked cargo-deny@0.20.2" not in prefetch:
+            errors.append("phase3a2 workflow: pinned cargo-deny provisioning is missing")
+        if any(
+            "cargo install" in line and "cargo-deny@0.20.2" not in line
+            for line in prefetch.splitlines()
+        ):
+            errors.append("phase3a2 workflow: unreviewed Cargo tool installation is forbidden")
         for digest in PHASE3A2_NUMPY_WHEEL_SHA256.values():
             if digest not in prefetch:
                 errors.append("phase3a2 workflow: missing hash-pinned NumPy 2.4.6 runtime wheel")
