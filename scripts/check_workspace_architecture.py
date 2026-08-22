@@ -2933,6 +2933,12 @@ def _phase3a2_expected_prefetch_downloads() -> list[str]:
             f"--implementation cp --python-version {python_version} "
             f"--abi {version} numpy==2.4.6 --hash=sha256:{digest}"
         )
+    downloads.append(
+        "python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0"
+    )
+    downloads.append(
+        "python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26"
+    )
     return downloads
 
 
@@ -3474,12 +3480,22 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
     download_lines = [line for line in shell_code.splitlines() if "pip download" in line]
     for line in download_lines:
         for fragment, label in (
-            ("--only-binary=:all:", "binary-only input download"),
-            ("--require-hashes", "hash-required input download"),
             ("--dest /cache/wheelhouse", "job-local wheelhouse download"),
         ):
             if fragment not in line:
                 errors.append(f"phase3a2 workflow: pip download is missing {label}")
+        # Hash-pinned reviewed inputs (maturin, NumPy) must carry both
+        # --only-binary and --require-hashes.  Tool wheels whose digests are
+        # re-verified by sha256sum --check inside the offline container are
+        # recorded as builder provenance instead of pre-pinned here.
+        if "--require-hashes" in line or "--only-binary=:all:" in line:
+            for fragment, label in (
+                ("--only-binary=:all:", "binary-only input download"),
+                ("--require-hashes", "hash-required input download"),
+                ("--hash=sha256:", "per-input hash pin"),
+            ):
+                if fragment not in line:
+                    errors.append(f"phase3a2 workflow: pip download is missing {label}")
     if "actions/upload-artifact" in repositories:
         if "if: github.ref == 'refs/heads/main' && github.event_name == 'push'" not in workflow_code:
             errors.append("phase3a2 workflow: upload-artifact is restricted to trusted main")

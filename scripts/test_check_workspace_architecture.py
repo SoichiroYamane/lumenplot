@@ -1907,6 +1907,10 @@ jobs:
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 312 --abi cp312 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp313']}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}
+            python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0
+            sha256sum /cache/wheelhouse/auditwheel-6.8.0-*.whl > /cache/wheelhouse/auditwheel-sha256.txt
+            python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26
+            sha256sum /cache/wheelhouse/abi3audit-0.0.26-*.whl > /cache/wheelhouse/abi3audit-sha256.txt
           PREFETCH
           )"
           docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:ro" -v "$PWD/evidence:/evidence:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'BUILD'
