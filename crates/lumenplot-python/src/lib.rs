@@ -8,9 +8,35 @@ use lumenplot::__private::{
 use numpy::{
     PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods, dtype,
 };
-use pyo3::exceptions::{PyRuntimeError, PyTypeError};
+use pyo3::exceptions::{PyAttributeError, PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyAnyMethods, PyBytes, PyModule, PyModuleMethods};
+use pyo3::types::{PyAny, PyAnyMethods, PyBytes, PyModule, PyModuleMethods, PyType};
+
+/// Exact-type check for built-in NumPy `ndarray` objects.
+///
+/// The comparison is done against the live Python-level `numpy.ndarray`
+/// type object rather than a cached C-API type pointer, so the result
+/// never depends on NumPy import order or C-API initialization state.
+fn is_exact_ndarray(object: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let numpy = PyModule::import(object.py(), "numpy")?;
+    let ndarray_type = numpy.getattr("ndarray")?.cast::<PyType>()?.clone();
+    Ok(std::ptr::eq(
+        object.get_type_ptr(),
+        ndarray_type.as_ptr() as *mut pyo3::ffi::PyTypeObject,
+    ))
+}
+
+/// Data-pointer extraction without unsafe code.
+///
+/// `__array_interface__["data"][0]` is the address of the array's first
+/// stored element. It is read through NumPy's own Python surface, so no
+/// raw pointer arithmetic on the object header is needed here.
+fn data_pointer(object: &Bound<'_, PyAny>) -> PyResult<usize> {
+    let interface = object.getattr("__array_interface__")?;
+    let data = interface.get_item("data")?;
+    let address: usize = data.get_item(0)?.extract()?;
+    Ok(address)
+}
 
 const MAX_POINTS: usize = 1_000_000;
 
@@ -91,44 +117,144 @@ fn dense_span_error(py: Python<'_>) -> PyErr {
         py,
         "invalid-input",
         "input",
-        "x and y must be dense one-dimensional NumPy arrays",
+        "x and y elements must lie inside the array's base allocation",
     )
 }
 
-/// Reject arrays whose elements are not a dense forward run.
+/// Resolve the root allocation that ultimately owns the array data.
 ///
-/// The bridge reads exactly `length * itemsize` bytes from the array data
-/// pointer. Requiring C-contiguous dense layout keeps that byte span exact:
-/// no strided or reversed views, no zero strides, and an overflow-free span
-/// computation independent of what any base object may expose.
-fn ensure_dense_1d<'py>(
+/// NumPy views keep a reference to their owning object in `base`. Walking
+/// that chain reaches either a plain buffer owner (from `frombuffer` and
+/// friends) or an exact `ndarray` whose own data pointer is the storage
+/// anchor. The returned extent is the true byte size of that root
+/// allocation, independent of what any view reports.
+fn resolve_root_extent<'py>(
+    py: Python<'py>,
+    array: &Bound<'py, PyUntypedArray>,
+) -> PyResult<(Bound<'py, PyAny>, usize, usize)> {
+    let mut current: Bound<'py, PyAny> = array.clone().into_any();
+    loop {
+        // Buffer owners such as `memoryview` have no `base` attribute; they
+        // are already the allocation root for their view chains.
+        let Ok(base) = current.getattr("base") else {
+            break;
+        };
+        if base.is_none() {
+            break;
+        }
+        // Only exact ndarray bases can be interpreted as storage anchors;
+        // anything else (writeable flags objects, multi-views onto other
+        // owners) is still walked through its own `base`.
+        if is_exact_ndarray(&base)? {
+            current = base;
+            continue;
+        }
+        if !base.hasattr("nbytes")? {
+            // Non-buffer, non-array owner: stop here; the span check below
+            // will reject reads that escape the reported view anyway because
+            // the extent falls back to zero for unknown roots.
+            break;
+        }
+        current = base;
+    }
+
+    if is_exact_ndarray(&current)? {
+        let itemsize = current
+            .getattr("dtype")?
+            .getattr("itemsize")?
+            .extract::<usize>()?;
+        let size = current.len()?;
+        let extent = itemsize.saturating_mul(size);
+        // The storage anchor is the data pointer of the root array, i.e.
+        // the address of its first stored element.
+        let root_data_ptr = data_pointer(&current)?;
+        return Ok((current, extent, root_data_ptr));
+    }
+
+    let nbytes: Bound<'py, PyAny> = current
+        .getattr("nbytes")
+        .map_err(|_| PyAttributeError::new_err("nbytes"))?;
+    let nbytes_value: isize = nbytes.extract().map_err(|_| dense_span_error(py))?;
+    let extent = if nbytes_value < 0 {
+        0
+    } else {
+        nbytes_value as usize
+    };
+    let root_ptr = current.as_ptr() as usize;
+    Ok((current, extent, root_ptr))
+}
+
+/// Validate that every reachable element address lies inside the root
+/// allocation before any read is performed.
+///
+/// API-0003 accepts safe logical positive, negative, and zero strides and
+/// traverses logical order, so safety comes from bounds validation rather
+/// than stride rejection. The full element-address range is computed from
+/// the view's data pointer and stride; it must fit inside the resolved root
+/// extent. This rejects far-stride views whose logical span escapes the
+/// backing buffer while keeping ordinary reversed, strided-in-bounds, and
+/// broadcast views accepted.
+fn validate_reachable_span<'py>(
     py: Python<'py>,
     array: &Bound<'py, PyUntypedArray>,
     length: usize,
 ) -> PyResult<()> {
-    if !array.is_contiguous() {
+    let (_root, root_extent, root_ptr) = resolve_root_extent(py, array)?;
+    // The address the element traversal actually starts from.
+    let view_ptr = data_pointer(array.as_any())?;
+    if view_ptr == 0 || root_ptr == 0 {
         return Err(dense_span_error(py));
     }
-    if length <= 1 {
+    let itemsize = array.dtype().itemsize();
+    let stride = array.strides()[0];
+
+    // Zero-length arrays never traverse memory. NumPy reports them as
+    // aligned regardless of the data pointer, but Rust slice semantics do
+    // not, so a misaligned pointer is rejected even at length zero.
+    if length == 0 {
+        if view_ptr % std::mem::align_of::<f64>() != 0 {
+            return Err(dense_span_error(py));
+        }
         return Ok(());
     }
-    let stride = array.strides()[0];
-    let itemsize = array.dtype().itemsize();
-    if stride != itemsize as isize {
+
+    // Element addresses relative to the view data pointer:
+    //   lowest = min(0, (length - 1) * stride), highest = max(0, ...)
+    //
+    // Zero strides never move the address, so a zero-stride traversal reads
+    // only the single element under the data pointer instead of claiming a
+    // wide byte span. Any arithmetic overflow cannot describe a real span
+    // and is rejected.
+    let signed_stride = stride;
+    let (first_offset, last_offset) = if length <= 1 || signed_stride == 0 {
+        (Some(0usize), Some(0usize))
+    } else if signed_stride > 0 {
+        let last = (length - 1).checked_mul(signed_stride as usize);
+        (Some(0usize), last)
+    } else {
+        // Negative strides: elements sit below the data pointer. The lowest
+        // address is the first element read; the highest is element 0.
+        let back = (length - 1).checked_mul(signed_stride.unsigned_abs());
+        (back, Some(0usize))
+    };
+    let Some(first_offset) = first_offset else {
         return Err(dense_span_error(py));
+    };
+    let Some(last_offset) = last_offset else {
+        return Err(dense_span_error(py));
+    };
+
+    let low_ok = view_ptr
+        .checked_sub(first_offset)
+        .is_some_and(|addr| addr >= root_ptr);
+    match view_ptr
+        .checked_add(last_offset)
+        .and_then(|addr| addr.checked_add(itemsize))
+        .and_then(|addr| addr.checked_sub(root_ptr))
+    {
+        Some(high_end) if low_ok && high_end <= root_extent => Ok(()),
+        _ => Err(dense_span_error(py)),
     }
-    let span = (length - 1)
-        .checked_mul(itemsize)
-        .and_then(|offset| offset.checked_add(itemsize));
-    if span.is_none() {
-        return Err(lumenplot_error(
-            py,
-            "out-of-memory",
-            "resource",
-            "allocation failed",
-        ));
-    }
-    Ok(())
 }
 
 fn copy_array<'py>(py: Python<'py>, value: &Bound<'py, PyAny>, name: &str) -> PyResult<Vec<f64>> {
@@ -174,7 +300,7 @@ fn copy_array<'py>(py: Python<'py>, value: &Bound<'py, PyAny>, name: &str) -> Py
             "x and y must be aligned NumPy arrays",
         ));
     }
-    ensure_dense_1d(py, array, length)?;
+    validate_reachable_span(py, array, length)?;
 
     let array_dtype = array.dtype();
     let values = if array_dtype.is_equiv_to(&dtype::<f64>(py)) {

@@ -32,22 +32,53 @@ class NativeLinePngTests(unittest.TestCase):
         np.testing.assert_array_equal(x, x_before)
         np.testing.assert_array_equal(y, y_before)
 
-    def test_non_dense_views_are_rejected_with_explicit_diagnostic(self) -> None:
-        # The helper reads one dense forward byte span per array. Strided,
-        # reversed, and broadcast views are rejected instead of being read
-        # through their logical iteration order.
-        cases = (
-            np.arange(4.0, dtype=np.float64)[::-1],
+    def test_supported_strided_views_render_like_dense_copies(self) -> None:
+        # API-0003 accepts safe positive, negative, and zero logical strides
+        # and traverses them in logical order, so reversed, broadcast, and
+        # strided-in-bounds views must render exactly like their dense
+        # contiguous copies.
+        dense_x = np.arange(4.0, dtype=np.float64)
+        y = np.array([0.0, 2.0, 1.0, 3.0], dtype=np.float64)
+        view_cases = (
+            dense_x[::-1],
             np.broadcast_to(np.array([1.0], dtype=np.float64), (4,)),
             np.arange(8.0, dtype=np.float64)[::2],
         )
-        for x in cases:
+        for x in view_cases:
             with self.subTest(strides=x.strides):
-                with self.assertRaises(LumenPlotError) as context:
-                    self.render(x, np.zeros(x.shape[0], dtype=np.float64))
-                self.assertEqual(context.exception.code, "invalid-input")
-                self.assertEqual(context.exception.category, "input")
-                self.assertIn("dense", context.exception.message)
+                rendered = self.render(x, y)
+                self.assertEqual(rendered[:8], b"\x89PNG\r\n\x1a\n")
+                self.assertGreater(len(rendered), 8)
+                dense = self.render(np.ascontiguousarray(x), y)
+                self.assertEqual(rendered, dense)
+
+    def test_out_of_root_bounds_spans_are_rejected_with_sanitized_errors(
+        self,
+    ) -> None:
+        # Reads are bounded by the root allocation: a far-stride view whose
+        # element addresses escape the backing buffer is rejected, and a
+        # malformed zero-length buffer view produces either a sanitized
+        # invalid-input diagnostic or a harmless accept — never a Rust panic
+        # or memory fault.
+        far_stride = np.lib.stride_tricks.as_strided(
+            np.array([1.0], dtype=np.float64),
+            shape=(2,),
+            strides=(10**9,),
+        )
+        with self.assertRaises(LumenPlotError) as context:
+            self.render(far_stride, np.zeros(2, dtype=np.float64))
+        self.assertEqual(context.exception.code, "invalid-input")
+        self.assertEqual(context.exception.category, "input")
+
+        zero_length = np.frombuffer(
+            bytearray(16), dtype=np.float64, count=0, offset=1
+        )
+        try:
+            rendered = self.render(zero_length, zero_length.copy())
+        except LumenPlotError as error:
+            self.assertEqual(error.code, "invalid-input")
+        else:
+            self.assertIsInstance(rendered, bytes)
 
     def test_nan_values_form_gaps_but_infinity_is_rejected(self) -> None:
         result = self.render(
