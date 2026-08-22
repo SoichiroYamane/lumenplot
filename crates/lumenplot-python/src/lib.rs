@@ -164,7 +164,18 @@ fn resolve_root_extent<'py>(
             .getattr("dtype")?
             .getattr("itemsize")?
             .extract::<usize>()?;
-        let size = current.len()?;
+        // The element count of an N-D root allocation is the product of ALL
+        // shape dimensions. `PyUntypedArrayMethods::len` cannot be used here:
+        // `current` is a plain Python object, so `len()` would dispatch to
+        // the Python protocol and report `shape[0]` only — undercounting
+        // every root with more than one dimension and raising a raw
+        // `TypeError` for 0-d roots. The empty product of an empty shape is
+        // 1, which is exactly the element count of a 0-d array.
+        let size: usize = current
+            .getattr("shape")?
+            .extract::<Vec<usize>>()?
+            .into_iter()
+            .product();
         let extent = itemsize.saturating_mul(size);
         // The storage anchor is the data pointer of the root array, i.e.
         // the address of its first stored element.

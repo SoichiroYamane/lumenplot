@@ -95,6 +95,54 @@ class NativeLinePngTests(unittest.TestCase):
                 self.assertEqual(context.exception.code, "invalid-input")
                 self.assertEqual(context.exception.category, "input")
 
+    def test_multidimensional_root_extent_accepts_views(self) -> None:
+        # The root allocation of a view chain ending in an exact N-D ndarray
+        # spans the product of ALL its shape dimensions, not just shape[0]:
+        # column, ravel, and fast-axis row views read elements past
+        # `shape[0]` but inside the full allocation and must render exactly
+        # like their dense contiguous copies instead of being rejected.
+        c_plane = np.arange(8.0, dtype=np.float64).reshape(2, 4).copy()
+        f_plane = np.asfortranarray(c_plane)
+        cases = (
+            ("C-order column view", c_plane[:, 0]),
+            ("C-order ravel view", c_plane.ravel()),
+            ("F-order fast-axis row view", f_plane[0]),
+        )
+        for name, x in cases:
+            with self.subTest(case=name, shape=x.shape, strides=x.strides):
+                y = np.linspace(0.0, 3.0, x.size, dtype=np.float64)
+                rendered = self.render(x, y)
+                self.assertEqual(rendered[:8], b"\x89PNG\r\n\x1a\n")
+                self.assertGreater(len(rendered), 8)
+                self.assertEqual(rendered, self.render(np.ascontiguousarray(x), y))
+
+    def test_zero_dimensional_root_chain_never_leaks_raw_type_errors(self) -> None:
+        # A 0-d root array has an empty shape: its element count is the
+        # empty-product 1, so resolving the root extent must never surface a
+        # raw TypeError from the Rust helper. A fully in-bounds 0-d chain
+        # view may render safely, while an out-of-bounds one fails closed
+        # with a sanitized invalid-input diagnostic.
+        zero_d_base = np.asarray(np.float64(1.0))
+        self.assertEqual(zero_d_base.shape, ())
+        in_bounds = zero_d_base.reshape(1)[:]
+        try:
+            rendered = self.render(in_bounds, np.zeros(1, dtype=np.float64))
+        except LumenPlotError as error:
+            self.assertEqual(error.code, "invalid-input")
+            self.assertEqual(error.category, "input")
+        else:
+            self.assertIsInstance(rendered, bytes)
+
+        out_of_bounds = np.lib.stride_tricks.as_strided(
+            np.asarray(np.float64(1.0)),
+            shape=(2,),
+            strides=(8,),
+        )
+        with self.assertRaises(LumenPlotError) as context:
+            self.render(out_of_bounds, np.zeros(2, dtype=np.float64))
+        self.assertEqual(context.exception.code, "invalid-input")
+        self.assertEqual(context.exception.category, "input")
+
     def test_bytes_backed_views_render_like_dense_copies(self) -> None:
         # The root allocation of a bytes-backed array lives behind a
         # memoryview base, so its data pointer must come from the buffer
