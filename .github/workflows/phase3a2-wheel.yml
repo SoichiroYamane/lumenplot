@@ -53,7 +53,8 @@ jobs:
           curl --proto '=https' --tlsv1.2 --silent --show-error --location \
             https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
             > /tmp/rustup-init
-          sha256sum --check /tmp/rustup-init.sha256
+          # Resolve the digest-listed name against /tmp, not CWD=/src.
+          ( cd /tmp && sha256sum --check /tmp/rustup-init.sha256 )
           # /tmp is mounted noexec, so the bootstrap runs via bash on the file.
           bash /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
           export PATH=/usr/local/cargo/bin:$PATH
