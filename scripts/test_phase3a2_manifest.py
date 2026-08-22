@@ -116,6 +116,7 @@ class ManifestTestCase(unittest.TestCase):
         wheel_sha256: str | None = None,
         cargo_version: str | None = None,
         sbom: Path | None | object = ...,
+        observed: Path | None | object = None,
     ) -> tuple[int, str]:
         argv = [
             "phase3a2-manifest.py",
@@ -132,6 +133,8 @@ class ManifestTestCase(unittest.TestCase):
             "--sbom",
             str(self.write_sbom() if sbom is ... else sbom),
         ]
+        if observed is not None:
+            argv += ["--observed", str(observed)]
         stdout = io.StringIO()
         with (
             unittest.mock.patch.object(sys, "argv", argv),
@@ -144,6 +147,11 @@ class ManifestTestCase(unittest.TestCase):
                     return error.code, stdout.getvalue()
                 return 1, str(error.code)
         return code, stdout.getvalue()
+
+    def write_observed(self, body: dict) -> Path:
+        path = self.root / "observed.json"
+        path.write_text(json.dumps(body), encoding="utf-8")
+        return path
 
 
 class RecordVerificationTests(ManifestTestCase):
@@ -265,6 +273,84 @@ class ManifestEmissionTests(ManifestTestCase):
         code, message = self.run_main(self.builder.path())
         self.assertNotEqual(0, code)
         self.assertIn("RECORD does not list", message)
+
+
+COMPLETE_OBSERVED = {
+    "abi3audit_version": "0.0.27",
+    "auditwheel_version": "6.9.0",
+    "glibc": "2.28",
+    "platform": "linux/amd64",
+    "rust_version": "1.97.0",
+    "elf_runpath": ["$ORIGIN/lumenplot_mpl.libs"],
+}
+
+
+class ObservedBuilderTests(ManifestTestCase):
+    def test_without_observed_file_builder_keeps_pinned_literals(self) -> None:
+        code, output = self.run_main(self.builder.path())
+        self.assertEqual(0, code)
+        builder = json.loads(output)["builder"]
+        self.assertEqual("1.89.0", builder["rust_version"])
+        self.assertNotIn("elf_runpath", builder)
+
+    def test_observed_file_replaces_runtime_literals_and_adds_runpath(self) -> None:
+        code, output = self.run_main(
+            self.builder.path(), observed=self.write_observed(COMPLETE_OBSERVED)
+        )
+        self.assertEqual(0, code)
+        builder = json.loads(output)["builder"]
+        self.assertEqual("1.97.0", builder["rust_version"])
+        self.assertEqual("6.9.0", builder["auditwheel_version"])
+        self.assertEqual(["$ORIGIN/lumenplot_mpl.libs"], builder["elf_runpath"])
+        # Image identity stays pinned; it is verified against the config
+        # digest before any evidence runs, not observed at runtime.
+        self.assertEqual("linux/amd64", builder["platform"])
+
+    def test_missing_observed_field_fails_closed(self) -> None:
+        for field in (
+            "abi3audit_version",
+            "auditwheel_version",
+            "glibc",
+            "platform",
+            "rust_version",
+            "elf_runpath",
+        ):
+            body = {key: value for key, value in COMPLETE_OBSERVED.items() if key != field}
+            code, message = self.run_main(
+                self.builder.path(), observed=self.write_observed(body)
+            )
+            self.assertNotEqual(0, code, field)
+            if field == "elf_runpath":
+                self.assertIn("elf_runpath list", message)
+            else:
+                self.assertIn("no observed", message)
+
+    def test_non_string_observed_value_fails_closed(self) -> None:
+        body = dict(COMPLETE_OBSERVED)
+        body["glibc"] = 2.28
+        code, message = self.run_main(self.builder.path(), observed=self.write_observed(body))
+        self.assertNotEqual(0, code)
+
+    def test_empty_runpath_entry_fails_closed(self) -> None:
+        body = dict(COMPLETE_OBSERVED)
+        body["elf_runpath"] = ["$ORIGIN/libs", ""]
+        code, message = self.run_main(self.builder.path(), observed=self.write_observed(body))
+        self.assertNotEqual(0, code)
+        self.assertIn("elf_runpath list", message)
+
+    def test_unparsable_observed_file_fails_closed(self) -> None:
+        path = self.root / "observed.json"
+        path.write_text("{not json", encoding="utf-8")
+        code, message = self.run_main(self.builder.path(), observed=path)
+        self.assertNotEqual(0, code)
+        self.assertIn("cannot parse observed-evidence file", message)
+
+    def test_non_object_observed_file_fails_closed(self) -> None:
+        path = self.root / "observed.json"
+        path.write_text("[1, 2]", encoding="utf-8")
+        code, message = self.run_main(self.builder.path(), observed=path)
+        self.assertNotEqual(0, code)
+        self.assertIn("JSON object", message)
 
 
 if __name__ == "__main__":

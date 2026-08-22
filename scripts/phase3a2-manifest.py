@@ -120,6 +120,56 @@ def observed_wheel_fields(path: Path) -> dict[str, object]:
     }
 
 
+def observed_builder_fields(path: Path | None) -> dict[str, object]:
+    """Return builder-block fields, preferring observed over pinned values.
+
+    Without an observed-evidence file the historical pinned literals are
+    returned unchanged.  With one, every runtime-observed field must be
+    present and well-formed: the script fails closed rather than emitting
+    a placeholder for evidence the workflow did not record.
+    """
+
+    builder: dict[str, object] = {
+        "abi3audit_version": "0.0.26",
+        "auditwheel_version": "6.8.0",
+        "config_digest": IMAGE_CONFIG_DIGEST,
+        "glibc": "2.28",
+        "image": IMAGE,
+        "maturin_version": "1.14.1",
+        "maturin_wheel_sha256": MATURIN_WHEEL_SHA256,
+        "platform": "linux/amd64",
+        "rust_version": "1.89.0",
+    }
+    if path is None:
+        return builder
+    try:
+        recorded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"cannot parse observed-evidence file {path}: {error}") from error
+    if not isinstance(recorded, dict):
+        raise SystemExit("observed evidence must be a JSON object")
+    for key, label in (
+        ("abi3audit_version", "abi3audit"),
+        ("auditwheel_version", "auditwheel"),
+        ("glibc", "glibc"),
+        ("platform", "platform"),
+        ("rust_version", "Rust"),
+    ):
+        value = recorded.get(key)
+        if not isinstance(value, str) or not value:
+            raise SystemExit(f"observed evidence has no observed {label} value")
+        builder[key] = value
+    entries = recorded.get("elf_runpath")
+    if (
+        not isinstance(entries, list)
+        or not entries
+        or not all(isinstance(item, str) and item for item in entries)
+    ):
+        raise SystemExit("observed evidence has no observed elf_runpath list")
+    builder["elf_runpath"] = entries
+    return builder
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--wheel", type=Path, required=True)
@@ -128,6 +178,17 @@ def main() -> int:
     parser.add_argument("--cargo-lock-sha256", required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--sbom", type=Path, required=True)
+    parser.add_argument(
+        "--observed",
+        type=Path,
+        default=None,
+        help=(
+            "optional JSON file of runtime-observed builder values "
+            "(abi3audit_version, auditwheel_version, glibc, platform, "
+            "rust_version, elf_runpath); when given, every field is "
+            "required and replaces the pinned literal in the manifest"
+        ),
+    )
     args = parser.parse_args()
 
     wheel_digest = hashlib.sha256(args.wheel.read_bytes()).hexdigest()
@@ -179,17 +240,7 @@ def main() -> int:
             }
         )
     manifest = {
-        "builder": {
-            "abi3audit_version": "0.0.26",
-            "auditwheel_version": "6.8.0",
-            "config_digest": IMAGE_CONFIG_DIGEST,
-            "glibc": "2.28",
-            "image": IMAGE,
-            "maturin_version": "1.14.1",
-            "maturin_wheel_sha256": MATURIN_WHEEL_SHA256,
-            "platform": "linux/amd64",
-            "rust_version": "1.89.0",
-        },
+        "builder": observed_builder_fields(args.observed),
         "checks": {
             "abi3audit": True,
             "auditwheel": True,
