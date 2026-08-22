@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Create the CI-local Phase-3A2 same-wheel evidence manifest."""
+"""Create the CI-local Phase-3A2 same-wheel evidence manifest.
+
+Every value emitted by this script is observed from the wheel, the SBOM
+input metadata, or the arguments passed by the workflow that performed the
+checks.  The script fails closed instead of emitting a placeholder when an
+observed value is missing.
+"""
 
 from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import json
 import re
@@ -29,41 +36,73 @@ INTERPRETERS = {
     "3.13": "/opt/python/cp313-cp313/bin/python",
     "3.14": "/opt/python/cp314-cp314/bin/python",
 }
+WHEEL_TAG = "cp311-abi3-manylinux_2_28_x86_64"
 
 
-def record_is_valid(path: Path) -> bool:
+def record_entry_names(path: Path) -> set[str]:
+    """Return the exact RECORD-listed file names of a wheel archive."""
+
     with zipfile.ZipFile(path) as archive:
-        entries = {name: archive.read(name) for name in archive.namelist()}
-        record_names = [name for name in entries if name.endswith(".dist-info/RECORD")]
+        record_names = [name for name in archive.namelist() if name.endswith(".dist-info/RECORD")]
         if len(record_names) != 1:
-            return False
-        for line in entries[record_names[0]].decode("utf-8").splitlines():
-            filename, encoded_hash, size = line.split(",", 2)
-            if not encoded_hash:
+            raise SystemExit("wheel RECORD inventory is incomplete")
+        names = set()
+        for line in archive.read(record_names[0]).decode("utf-8").splitlines():
+            if not line:
                 continue
+            filename, encoded_hash, size = line.split(",", 2)
+            if filename == record_names[0]:
+                # The wheel spec requires RECORD to list itself without a
+                # hash or size; every other entry must carry both.
+                continue
+            if not encoded_hash or not size:
+                raise SystemExit("wheel RECORD entry is missing its hash or size")
             algorithm, encoded = encoded_hash.split("=", 1)
-            if algorithm != "sha256" or filename not in entries:
-                return False
-            digest = base64.urlsafe_b64encode(hashlib.sha256(entries[filename]).digest()).decode("ascii").rstrip("=")
-            if digest != encoded or size != str(len(entries[filename])):
-                return False
-    return True
+            if algorithm != "sha256":
+                raise SystemExit("wheel RECORD entry does not use SHA-256")
+            try:
+                digest = (
+                    base64.urlsafe_b64encode(hashlib.sha256(archive.read(filename)).digest())
+                    .decode("ascii")
+                    .rstrip("=")
+                )
+            except KeyError as error:
+                raise SystemExit(f"wheel RECORD lists a file that is absent: {error}") from error
+            if digest != encoded or size != str(len(archive.read(filename))):
+                raise SystemExit("wheel RECORD hashes or sizes are invalid")
+            names.add(filename)
+        return names
 
 
-def wheel_metadata(path: Path) -> tuple[str, str, bool, bool, bool]:
+def observed_wheel_fields(path: Path) -> dict[str, object]:
+    """Verify the wheel and return only its observed evidence fields."""
+
     with zipfile.ZipFile(path) as archive:
+        bad_member = archive.testzip()
+        if bad_member is not None:
+            raise SystemExit(f"wheel ZIP integrity check failed for {bad_member}")
         metadata_names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
         wheel_names = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
-        record_names = [name for name in archive.namelist() if name.endswith(".dist-info/RECORD")]
-        if len(metadata_names) != 1 or len(wheel_names) != 1 or len(record_names) != 1:
+        native_names = [
+            name
+            for name in archive.namelist()
+            if name.startswith("lumenplot_mpl/") and name.endswith(".so")
+        ]
+        if len(metadata_names) != 1 or len(wheel_names) != 1 or len(native_names) != 1:
             raise SystemExit("wheel metadata inventory is incomplete")
         metadata = archive.read(metadata_names[0]).decode("utf-8")
         wheel = archive.read(wheel_names[0]).decode("utf-8")
+
     version_match = re.search(r"^Version: (.+)$", metadata, re.MULTILINE)
     tag_match = re.search(r"^Tag: (.+)$", wheel, re.MULTILINE)
     if version_match is None or tag_match is None:
         raise SystemExit("wheel metadata is missing Version or Tag")
-    return version_match.group(1), tag_match.group(1), True, True, True
+    return {
+        "metadata_version": version_match.group(1),
+        "tag": tag_match.group(1),
+        "record": True,
+        "zip": True,
+    }
 
 
 def main() -> int:
@@ -79,16 +118,35 @@ def main() -> int:
     wheel_digest = hashlib.sha256(args.wheel.read_bytes()).hexdigest()
     if wheel_digest != args.wheel_sha256:
         raise SystemExit("wheel SHA-256 does not match the built artifact")
-    metadata_version, tag, metadata_ok, wheel_ok, record_metadata_ok = wheel_metadata(args.wheel)
-    if metadata_version != args.cargo_version:
+    observed = observed_wheel_fields(args.wheel)
+    record_entry_names(args.wheel)
+    if observed["metadata_version"] != args.cargo_version:
         raise SystemExit("wheel metadata version does not match Cargo")
-    if tag != "cp311-abi3-manylinux_2_28_x86_64":
+    if observed["tag"] != WHEEL_TAG:
         raise SystemExit("wheel tag does not match the accepted Phase-3A2 tag")
-    if not record_is_valid(args.wheel):
-        raise SystemExit("wheel RECORD hashes or sizes are invalid")
     sbom = json.loads(args.sbom.read_text(encoding="utf-8"))
     if sbom.get("bomFormat") != "CycloneDX" or sbom.get("specVersion") != "1.5":
         raise SystemExit("SBOM is not CycloneDX 1.5")
+    components = sbom.get("components")
+    if not isinstance(components, list) or not components:
+        raise SystemExit("SBOM component inventory is empty")
+    for component in components:
+        if not isinstance(component, dict):
+            raise SystemExit("SBOM component is not an object")
+        for field in ("name", "version", "purl"):
+            value = component.get(field)
+            if not isinstance(value, str) or not value:
+                raise SystemExit(f"SBOM component {field} is missing")
+        if component["purl"] != f"pkg:cargo/{component['name']}@{component['version']}":
+            raise SystemExit("SBOM component purl does not match its name and version")
+        for hash_entry in component.get("hashes") or ():
+            content = hash_entry.get("content") if isinstance(hash_entry, dict) else None
+            if not isinstance(content, str):
+                raise SystemExit("SBOM component hash is malformed")
+            try:
+                binascii.unhexlify(content)
+            except ValueError as error:
+                raise SystemExit("SBOM component hash is not hex-encoded") from error
 
     cells = []
     for version, interpreter in INTERPRETERS.items():
@@ -146,15 +204,15 @@ def main() -> int:
             "cargo_expected_version": args.cargo_version,
             "elf": True,
             "filename": args.wheel.name,
-            "metadata": metadata_ok,
-            "metadata_version": metadata_version,
-            "record": record_metadata_ok,
+            "metadata": True,
+            "metadata_version": observed["metadata_version"],
+            "record": observed["record"],
             "sbom": True,
             "sbom_format": "CycloneDX 1.5",
             "sha256": args.wheel_sha256,
-            "tag": tag,
-            "wheel": wheel_ok,
-            "zip": True,
+            "tag": observed["tag"],
+            "wheel": True,
+            "zip": observed["zip"],
         },
     }
     print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))

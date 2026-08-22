@@ -96,9 +96,7 @@ jobs:
           /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/venv311
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93' > /tmp/numpy311.txt
           /tmp/venv311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy311.txt
-          printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper311.txt
-          printf '%s\n' '--find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256'
-          /tmp/venv311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper311.txt
+          /tmp/venv311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
           sha256sum --check "$WHEEL.sha256"
           INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
           test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
@@ -113,9 +111,7 @@ jobs:
           /opt/python/cp312-cp312/bin/python -m venv --clear /tmp/venv312
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853' > /tmp/numpy312.txt
           /tmp/venv312/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy312.txt
-          printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper312.txt
-          printf '%s\n' '--find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256'
-          /tmp/venv312/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper312.txt
+          /tmp/venv312/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
           sha256sum --check "$WHEEL.sha256"
           INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
           test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
@@ -130,9 +126,7 @@ jobs:
           /opt/python/cp313-cp313/bin/python -m venv --clear /tmp/venv313
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:a7830bab239b79cda9c08c2da014761cafb48da6150e1da17ac06283f43b6089' > /tmp/numpy313.txt
           /tmp/venv313/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy313.txt
-          printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper313.txt
-          printf '%s\n' '--find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256'
-          /tmp/venv313/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper313.txt
+          /tmp/venv313/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
           sha256sum --check "$WHEEL.sha256"
           INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
           test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
@@ -147,9 +141,7 @@ jobs:
           /opt/python/cp314-cp314/bin/python -m venv --clear /tmp/venv314
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:a2c306dea656c12c68f51f4cea133cbe78ca7435eb28c735eac1d3ebe73be6e8' > /tmp/numpy314.txt
           /tmp/venv314/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy314.txt
-          printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper314.txt
-          printf '%s\n' '--find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256'
-          /tmp/venv314/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper314.txt
+          /tmp/venv314/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
           sha256sum --check "$WHEEL.sha256"
           INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
           test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
