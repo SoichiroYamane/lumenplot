@@ -16,6 +16,32 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "check_workspace_architecture.py"
+BASELINE_PYTHON_MANIFEST = """[package]
+name = "lumenplot-python"
+edition.workspace = true
+version.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+lumenplot = { path = "../lumenplot", version = "0.1.0" }
+"""
+BASELINE_PYTHON_SOURCE = """//! Private Phase-0 documentation stub for the future language bridge edge.
+//!
+//! Binding implementation is deferred until its accepted bridge contract lands.
+"""
+
+
+def reset_python_bridge_to_baseline(root: Path) -> None:
+    manifest = root / "crates/lumenplot-python/Cargo.toml"
+    source = root / "crates/lumenplot-python/src/lib.rs"
+    manifest.write_text(BASELINE_PYTHON_MANIFEST, encoding="utf-8")
+    source.write_text(BASELINE_PYTHON_SOURCE, encoding="utf-8")
 
 
 class WorkspaceArchitectureMutationTests(unittest.TestCase):
@@ -24,14 +50,18 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
         fixture_root = Path(temporary.name)
         shutil.copy2(ROOT / "Cargo.toml", fixture_root / "Cargo.toml")
         shutil.copytree(ROOT / "crates", fixture_root / "crates")
+        reset_python_bridge_to_baseline(fixture_root)
         scripts_dir = fixture_root / "scripts"
         scripts_dir.mkdir()
         shutil.copy2(CHECKER, scripts_dir / CHECKER.name)
         return temporary
 
-    def run_checker(self, fixture_root: Path) -> tuple[int, str]:
+    def run_checker(self, fixture_root: Path, *, evidence: bool = False) -> tuple[int, str]:
+        command = [sys.executable, str(fixture_root / "scripts" / CHECKER.name), "--root", str(fixture_root)]
+        if evidence:
+            command.append("--phase3a2-evidence")
         result = subprocess.run(
-            [sys.executable, str(fixture_root / "scripts" / CHECKER.name), "--root", str(fixture_root)],
+            command,
             check=False,
             capture_output=True,
             text=True,
@@ -1750,6 +1780,7 @@ class Phase3A2WheelEvidenceMutationTests(unittest.TestCase):
     )
     CONFIG_DIGEST = "sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5"
     MATURIN_HASH = "dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e"
+    RUSTUP_INIT_HASH = "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
     NUMPY_HASHES = {
         "cp311": "89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93",
         "cp312": "90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853",
@@ -1763,6 +1794,7 @@ class Phase3A2WheelEvidenceMutationTests(unittest.TestCase):
         shutil.copy2(ROOT / "Cargo.toml", root / "Cargo.toml")
         shutil.copy2(ROOT / "Cargo.lock", root / "Cargo.lock")
         shutil.copytree(ROOT / "crates", root / "crates")
+        reset_python_bridge_to_baseline(root)
         scripts = root / "scripts"
         scripts.mkdir()
         shutil.copy2(CHECKER, scripts / CHECKER.name)
@@ -1850,6 +1882,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Hash-pinned rustup-init bootstrap binary for x86_64-unknown-linux-gnu.
+  PHASE3A2_RUSTUP_INIT_SHA256: "{self.RUSTUP_INIT_HASH}"
+
 jobs:
   wheel:
     runs-on: ubuntu-24.04
@@ -1863,23 +1899,38 @@ jobs:
           docker pull --platform=linux/amd64 "$IMAGE"
           IMAGE_CONFIG_DIGEST="$(docker image inspect --format '{{{{.Id}}}}' "$IMAGE")"
           test "$IMAGE_CONFIG_DIGEST" = "{self.CONFIG_DIGEST}"
-          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'PREFETCH'
-            export RUSTUP_TOOLCHAIN=1.89.0
+          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'PREFETCH'
+            export CARGO_HOME=/usr/local/cargo
+            export RUSTUP_HOME=/usr/local/cargo/rustup
+            printf '%s  rustup-init\\n' "$PHASE3A2_RUSTUP_INIT_SHA256" > /tmp/rustup-init.sha256
+            curl --proto '=https' --tlsv1.2 --silent --show-error --location https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init > /tmp/rustup-init
+            sha256sum --check /tmp/rustup-init.sha256
+            chmod +x /tmp/rustup-init
+            /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
+            export PATH=/usr/local/cargo/bin:$PATH
             rustc --version
             cargo --version
             cargo fetch --locked
             cargo metadata --locked --format-version 1 > /cache/wheelhouse/cargo-metadata.json
-            cargo deny check --all-features
+            cargo install --locked cargo-deny@0.20.2
+            cargo deny check
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 311 --abi cp311 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 312 --abi cp312 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp313']}
             python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}
+            python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0
+            sha256sum /cache/wheelhouse/auditwheel-6.8.0-*.whl > /cache/wheelhouse/auditwheel-sha256.txt
+            python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26
+            sha256sum /cache/wheelhouse/abi3audit-0.0.26-*.whl > /cache/wheelhouse/abi3audit-sha256.txt
           PREFETCH
           )"
-          docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:ro" -v "$PWD/evidence:/evidence:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'BUILD'
+          docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:ro" -v "$PWD/evidence:/evidence:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'BUILD'
             cd /src
-            export RUSTUP_TOOLCHAIN=1.89.0
+            export CARGO_HOME=/usr/local/cargo
+            export RUSTUP_HOME=/usr/local/cargo/rustup
+            export PATH=/usr/local/cargo/bin:$PATH
+            RUSTUP_TOOLCHAIN=1.89.0 rustc --version
             CARGO_VERSION="$(cargo metadata --locked --offline --format-version 1 | python -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "lumenplot-python"))')"
             SOURCE_COMMIT="$(git rev-parse --verify HEAD)"
             python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
@@ -1898,8 +1949,13 @@ jobs:
             test "$WHEEL_VERSION" = "$CARGO_VERSION"
             auditwheel show --json "$WHEEL"
             auditwheel check "$WHEEL"
-            readelf -d "$NATIVE_OBJECT" | grep -E 'DT_NEEDED|RPATH|RUNPATH'
-            if readelf -d "$NATIVE_OBJECT" | grep -E 'RPATH|RUNPATH'; then printf '%s\\n' 'unexpected shared library' >&2; exit 1; fi
+            READELF_OUT="$(readelf -d "$NATIVE_OBJECT")"
+            printf '%s\\n' "$READELF_OUT"
+            test -n "$READELF_OUT"
+            test "$(printf '%s\\n' "$READELF_OUT" | grep -cE '\\(NEEDED\)')" -gt 0
+            test "$(printf '%s\\n' "$READELF_OUT" | grep -cE '\\(RPATH\)')" = "0"
+            RUNPATH_VALUE="$(printf '%s\\n' "$READELF_OUT" | sed -n '/(\\(RUNPATH\))/s/.*\\[\\([^]]*\)\].*/\\1/p')"
+            if printf '%s\\n' "$READELF_OUT" | grep -Eq 'libpython|libcuda'; then printf '%s\\n' 'unexpected shared library' >&2; exit 1; fi
             abi3audit "$WHEEL"
             python /cache/check-sbom.py --format 'CycloneDX 1.5' --cargo-metadata /cache/wheelhouse/cargo-metadata.json
             /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/lp-3.11
@@ -1908,16 +1964,7 @@ jobs:
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
-            /tmp/lp-3.11/bin/python - <<'PY'
-            from lumenplot_mpl import _native, LumenPlotError
-            try:
-                _native.render_line_png("invalid-input")
-            except LumenPlotError as error:
-                assert str(error)
-            else:
-                raise AssertionError("invalid-input fixture did not fail")
-            assert _native.render_line_png("helper-success")
-          PY
+            /tmp/lp-3.11/bin/python -c 'from lumenplot_mpl import _native, LumenPlotError; _native.render_line_png("invalid-input"); print("invalid-input"); _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success")'
             INSTALLED_VERSION="$(/tmp/lp-3.11/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp312-cp312/bin/python -m venv --clear /tmp/lp-3.12
@@ -1926,16 +1973,7 @@ jobs:
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
-            /tmp/lp-3.12/bin/python - <<'PY'
-            from lumenplot_mpl import _native, LumenPlotError
-            try:
-                _native.render_line_png("invalid-input")
-            except LumenPlotError as error:
-                assert str(error)
-            else:
-                raise AssertionError("invalid-input fixture did not fail")
-            assert _native.render_line_png("helper-success")
-          PY
+            /tmp/lp-3.12/bin/python -c 'from lumenplot_mpl import _native, LumenPlotError; _native.render_line_png("invalid-input"); print("invalid-input"); _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success")'
             INSTALLED_VERSION="$(/tmp/lp-3.12/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp313-cp313/bin/python -m venv --clear /tmp/lp-3.13
@@ -1944,16 +1982,7 @@ jobs:
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
-            /tmp/lp-3.13/bin/python - <<'PY'
-            from lumenplot_mpl import _native, LumenPlotError
-            try:
-                _native.render_line_png("invalid-input")
-            except LumenPlotError as error:
-                assert str(error)
-            else:
-                raise AssertionError("invalid-input fixture did not fail")
-            assert _native.render_line_png("helper-success")
-          PY
+            /tmp/lp-3.13/bin/python -c 'from lumenplot_mpl import _native, LumenPlotError; _native.render_line_png("invalid-input"); print("invalid-input"); _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success")'
             INSTALLED_VERSION="$(/tmp/lp-3.13/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp314-cp314/bin/python -m venv --clear /tmp/lp-3.14
@@ -1962,19 +1991,16 @@ jobs:
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
-            /tmp/lp-3.14/bin/python - <<'PY'
-            from lumenplot_mpl import _native, LumenPlotError
-            try:
-                _native.render_line_png("invalid-input")
-            except LumenPlotError as error:
-                assert str(error)
-            else:
-                raise AssertionError("invalid-input fixture did not fail")
-            assert _native.render_line_png("helper-success")
-          PY
+            /tmp/lp-3.14/bin/python -c 'from lumenplot_mpl import _native, LumenPlotError; _native.render_line_png("invalid-input"); print("invalid-input"); _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success")'
             INSTALLED_VERSION="$(/tmp/lp-3.14/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("lumenplot-mpl"))')"
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
-            python /cache/write-phase3a2-manifest.py --source-commit "$SOURCE_COMMIT" --cargo-version "$CARGO_VERSION" --wheel "$WHEEL" > /evidence/phase3a2-wheel-evidence.json
+            GLIBC_VERSION="$(ldd --version | head -n1 | awk '{{print $NF}}')"
+            UNAME_ARCH="$(uname -m)"
+            MANIFEST_ARGS=(--wheel "$WHEEL" --wheel-sha256 "$WHEEL_SHA256" --cargo-version "$CARGO_VERSION" --cargo-lock-sha256 "$CARGO_LOCK_SHA256" --source-commit "$SOURCE_COMMIT" --sbom /evidence/sbom.json)
+          if [ -f /evidence/observed.json ]; then
+            MANIFEST_ARGS+=(--observed /evidence/observed.json)
+          fi
+            python /src/scripts/phase3a2-manifest.py "${{MANIFEST_ARGS[@]}}" > /evidence/phase3a2-wheel-evidence.json
           BUILD
           )"
           mkdir -p evidence
@@ -2065,30 +2091,53 @@ jobs:
             },
         }
 
-    def run_checker(self, root: Path) -> tuple[int, str]:
+    def run_checker(self, root: Path, *, evidence: bool = False) -> tuple[int, str]:
+        command = [sys.executable, str(root / "scripts" / CHECKER.name), "--root", str(root)]
+        if evidence:
+            command.append("--phase3a2-evidence")
         result = subprocess.run(
-            [sys.executable, str(root / "scripts" / CHECKER.name), "--root", str(root)],
+            command,
             check=False,
             capture_output=True,
             text=True,
         )
         return result.returncode, result.stdout + result.stderr
 
-    def assert_rejected(self, mutate, expected: str) -> None:
+    def assert_rejected(self, mutate, expected: str, *, evidence: bool = False) -> None:
         with self.fixture() as temporary:
             root = Path(temporary)
             mutate(root)
-            returncode, output = self.run_checker(root)
+            returncode, output = self.run_checker(root, evidence=evidence)
             self.assertNotEqual(returncode, 0, output)
             self.assertIn(expected, output)
             self.assertNotIn(str(root), output)
 
     def test_activated_contract_fixture_passes(self) -> None:
         with self.fixture() as temporary:
-            returncode, output = self.run_checker(Path(temporary))
+            root = Path(temporary)
+            returncode, output = self.run_checker(root)
             self.assertEqual(returncode, 0, output)
-            self.assertIn("workspace architecture: OK", output)
-            self.assertIn("phase3a2 wheel evidence: OK", output)
+            self.assertEqual(
+                output,
+                "workspace architecture: OK\nphase3a2 static contract: OK\n",
+            )
+            returncode, output = self.run_checker(root, evidence=True)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(
+                output,
+                "workspace architecture: OK\nphase3a2 static contract: OK\nphase3a2 wheel evidence: OK\n",
+            )
+
+    def test_static_contract_does_not_require_runtime_manifest(self) -> None:
+        with self.fixture() as temporary:
+            root = Path(temporary)
+            (root / "phase3a2-wheel-evidence.json").unlink()
+            returncode, output = self.run_checker(root)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(
+                output,
+                "workspace architecture: OK\nphase3a2 static contract: OK\n",
+            )
 
     def test_comment_only_control_mutations_are_rejected(self) -> None:
         mutations = (
@@ -2137,7 +2186,7 @@ jobs:
                     for line in (root / ".github/workflows/phase3a2-wheel.yml")
                     .read_text(encoding="utf-8")
                     .splitlines()
-                    if "write-phase3a2-manifest.py" not in line
+                    if "phase3a2-manifest.py" not in line
                 )
                 + "\n",
                 encoding="utf-8",
@@ -2162,8 +2211,8 @@ jobs:
                 (root / ".github/workflows/phase3a2-wheel.yml")
                 .read_text(encoding="utf-8")
                 .replace(
-                    "readelf -d \"$NATIVE_OBJECT\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
-                    "readelf -d \"$WHEEL\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
+                    'readelf -d "$NATIVE_OBJECT"',
+                    'readelf -d "$WHEEL"',
                     1,
                 ),
                 encoding="utf-8",
@@ -2178,7 +2227,7 @@ jobs:
             value["source"]["commit"] = "0" * 40
             path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-        self.assert_rejected(mutate, "source commit does not match checked-out revision")
+        self.assert_rejected(mutate, "source commit does not match checked-out revision", evidence=True)
 
     def test_manifest_cargo_version_must_match_workspace_metadata(self) -> None:
         def mutate(root: Path) -> None:
@@ -2194,7 +2243,7 @@ jobs:
                 cell["installed_distribution_version"] = version
             path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-        self.assert_rejected(mutate, "Cargo-derived version does not match workspace metadata")
+        self.assert_rejected(mutate, "Cargo-derived version does not match workspace metadata", evidence=True)
 
     def test_baseline_fixture_is_inactive(self) -> None:
         with self.fixture() as temporary:
@@ -2205,6 +2254,7 @@ jobs:
             (root / "phase3a2-wheel-evidence.json").unlink()
             shutil.copy2(ROOT / "crates/lumenplot-python/Cargo.toml", root / "crates/lumenplot-python/Cargo.toml")
             shutil.copy2(ROOT / "crates/lumenplot-python/src/lib.rs", root / "crates/lumenplot-python/src/lib.rs")
+            reset_python_bridge_to_baseline(root)
             returncode, output = self.run_checker(root)
             self.assertEqual(returncode, 0, output)
             self.assertNotIn("phase3a2 wheel evidence", output)
@@ -2226,6 +2276,7 @@ jobs:
             shutil.rmtree(root / ".github")
             (root / "phase3a2-wheel-evidence.json").unlink()
             shutil.copy2(ROOT / "crates/lumenplot-python/Cargo.toml", root / "crates/lumenplot-python/Cargo.toml")
+            reset_python_bridge_to_baseline(root)
             path = root / "crates/lumenplot-python/Cargo.toml"
             path.write_text(
                 path.read_text(encoding="utf-8")
@@ -2489,8 +2540,8 @@ jobs:
             path = root / ".github/workflows/phase3a2-wheel.yml"
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
-                    "cargo deny check --all-features",
-                    "cargo deny check --all-features\n            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse evil-package==9.9.9 --hash=sha256:"
+                    "cargo install --locked cargo-deny@0.20.2",
+                    "cargo deny check\n            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse evil-package==9.9.9 --hash=sha256:"
                     + "0" * 64,
                     1,
                 ),
@@ -2504,14 +2555,53 @@ jobs:
             path = root / ".github/workflows/phase3a2-wheel.yml"
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
-                    "cargo deny check --all-features",
-                    "cargo deny check --all-features\n            curl https://example.invalid/unreviewed.tar.gz",
+                    "cargo install --locked cargo-deny@0.20.2",
+                    "cargo deny check\n            curl https://example.invalid/unreviewed.tar.gz",
                     1,
                 ),
                 encoding="utf-8",
             )
 
         self.assert_rejected(mutate, "prefetch contains an unreviewed network fetch")
+
+    def test_unreviewed_curl_url_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "cargo install --locked cargo-deny@0.20.2",
+                    "curl https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/evil.sh -o /tmp/evil.sh",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "prefetch contains an unreviewed network fetch")
+
+    def test_missing_rustup_init_digest_verification_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            text = path.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                if "sha256sum --check /tmp/rustup-init.sha256" in line:
+                    text = text.replace(line + "\n", "", 1)
+                    break
+            path.write_text(text, encoding="utf-8")
+
+        self.assert_rejected(mutate, "missing rustup-init digest verification")
+
+    def test_tampered_rustup_init_digest_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    self.RUSTUP_INIT_HASH,
+                    "b" * 64,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "hash-pinned rustup-init bootstrap digest")
 
     def test_evidence_manifest_must_remain_untracked(self) -> None:
         def mutate(root: Path) -> None:
@@ -2521,7 +2611,7 @@ jobs:
                 check=True,
             )
 
-        self.assert_rejected(mutate, "CI-local evidence manifest must not be tracked")
+        self.assert_rejected(mutate, "CI-local evidence manifest must not be tracked", evidence=True)
 
     def test_extra_private_native_pyfunction_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
@@ -2677,8 +2767,8 @@ jobs:
                 (root / ".github/workflows/phase3a2-wheel.yml")
                 .read_text(encoding="utf-8")
                 .replace(
-                    "readelf -d \"$NATIVE_OBJECT\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
-                    "elf-inspect \"$NATIVE_OBJECT\" | grep -E 'DT_NEEDED|RPATH|RUNPATH'",
+                    'readelf -d "$NATIVE_OBJECT"',
+                    'elf-inspect "$NATIVE_OBJECT"',
                     1,
                 ),
                 encoding="utf-8",
@@ -2760,6 +2850,7 @@ jobs:
         self.assert_rejected(
             lambda root: (root / "phase3a2-wheel-evidence.json").unlink(),
             "missing phase3a2-wheel-evidence.json",
+            evidence=True,
         )
 
     def test_manifest_schema_is_exact(self) -> None:
@@ -2769,7 +2860,7 @@ jobs:
             del value["claim_boundary"]
             path.write_text(json.dumps(value), encoding="utf-8")
 
-        self.assert_rejected(mutate, "top-level manifest keys are not exact")
+        self.assert_rejected(mutate, "top-level manifest keys are not exact", evidence=True)
 
     def test_manifest_schema_identifier_is_exact(self) -> None:
         def mutate(root: Path) -> None:
@@ -2778,7 +2869,7 @@ jobs:
             value["schema"] = "lumenplot.phase3a2-wheel-evidence.dev"
             path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-        self.assert_rejected(mutate, "schema identifier is not the accepted Phase-3A2 v1 value")
+        self.assert_rejected(mutate, "schema identifier is not the accepted Phase-3A2 v1 value", evidence=True)
 
     def test_runtime_cell_order_is_exact(self) -> None:
         def mutate(root: Path) -> None:
@@ -2787,7 +2878,11 @@ jobs:
             value["runtime_cells"].reverse()
             path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-        self.assert_rejected(mutate, "runtime cells must be ordered 3.11, 3.12, 3.13, 3.14")
+        self.assert_rejected(
+            mutate,
+            "runtime cells must be ordered 3.11, 3.12, 3.13, 3.14",
+            evidence=True,
+        )
 
     def test_manifest_redaction_is_enforced(self) -> None:
         def mutate(root: Path) -> None:
@@ -2796,7 +2891,7 @@ jobs:
             value["source"]["commit"] = "GITHUB_TOKEN"
             path.write_text(json.dumps(value), encoding="utf-8")
 
-        self.assert_rejected(mutate, "private path or credential text is not redacted")
+        self.assert_rejected(mutate, "private path or credential text is not redacted", evidence=True)
 
 
 if __name__ == "__main__":

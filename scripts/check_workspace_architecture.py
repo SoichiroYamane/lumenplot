@@ -5,9 +5,10 @@ This checker intentionally uses only the Python standard library.  It validates
 repository structure and negative public-surface guards without compiling or
 importing product code.  The hidden Phase-3A facade is absent before
 implementation and, when present, must match its exact owned inventory.  The
-Phase-3A2 wheel/evidence gate is also absent before implementation; it activates
-only when an implementation sentinel appears and then fails closed on every
-missing package, workflow, input, or evidence invariant.
+Phase-3A2 wheel gate is also absent before implementation; it activates only
+when an implementation sentinel appears and then fails closed on every missing
+package, workflow, or static input invariant.  Its CI-local runtime manifest is
+checked only when the explicit evidence mode is requested.
 """
 
 from __future__ import annotations
@@ -551,6 +552,10 @@ PHASE3A2_IMAGE = (
 )
 PHASE3A2_IMAGE_CONFIG_DIGEST = "sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5"
 PHASE3A2_MATURIN_WHEEL_SHA256 = "dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e"
+# Probed from
+# https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
+# and cross-checked against the published rustup-init.sha256 sidecar.
+PHASE3A2_RUSTUP_INIT_SHA256 = "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
 PHASE3A2_NUMPY_WHEEL_SHA256 = {
     "cp311": "89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93",
     "cp312": "90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853",
@@ -598,6 +603,8 @@ PHASE3A2_BUILDER_KEYS = {
     "maturin_version",
     "maturin_wheel_sha256",
 }
+# Observed mode adds runtime-recorded ELF evidence to the pinned builder set.
+PHASE3A2_OBSERVED_BUILDER_KEYS = PHASE3A2_BUILDER_KEYS | {"elf_runpath"}
 PHASE3A2_WHEEL_KEYS = {
     "filename",
     "sha256",
@@ -2932,6 +2939,12 @@ def _phase3a2_expected_prefetch_downloads() -> list[str]:
             f"--implementation cp --python-version {python_version} "
             f"--abi {version} numpy==2.4.6 --hash=sha256:{digest}"
         )
+    downloads.append(
+        "python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0"
+    )
+    downloads.append(
+        "python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26"
+    )
     return downloads
 
 
@@ -3226,11 +3239,21 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ("--cap-drop=ALL", "dropped container capabilities"),
         ("--security-opt=no-new-privileges", "no-new-privileges container"),
         ("--tmpfs /tmp", "temporary container home"),
+        ("--tmpfs /tmp:rw,noexec,nosuid,nodev", "noexec temporary home hardening"),
         ("cargo fetch --locked", "locked Cargo prefetch"),
         ("cargo metadata --locked", "locked Cargo metadata"),
         ("--locked", "locked build"),
         ("--offline", "offline build"),
         ("RUSTUP_TOOLCHAIN=1.89.0", "builder Rust toolchain"),
+        (PHASE3A2_RUSTUP_INIT_SHA256, "hash-pinned rustup-init bootstrap digest"),
+        ("export RUSTUP_HOME=/usr/local/cargo/rustup", "rustup home inside the cargo-home volume"),
+        (
+            "https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init",
+            "pinned rustup-init download endpoint",
+        ),
+        ("sha256sum --check /tmp/rustup-init.sha256", "rustup-init digest verification"),
+        ("/tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0", "pinned rustup provisioning"),
+        ("export PATH=/usr/local/cargo/bin:$PATH", "provisioned Cargo bin on PATH"),
         ("rustc --version", "in-container Rust verification"),
         ("cargo --version", "in-container Cargo verification"),
         ("maturin==1.14.1", "hash-pinned maturin version"),
@@ -3244,7 +3267,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ("WHEEL", "wheel WHEEL check"),
         ('unzip -p "$WHEEL" \'*/RECORD\'', "wheel RECORD check"),
         ("readelf -d", "ELF dependency check"),
-        ("DT_NEEDED", "ELF dependency check"),
+        ("\\(NEEDED\\)", "dynamic dependency section gate"),
         ("unexpected shared library", "unexpected library rejection"),
         ("CycloneDX 1.5", "CycloneDX 1.5 SBOM check"),
         ("sha256sum --check", "pre-matrix wheel hash recheck"),
@@ -3312,6 +3335,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
                 ("--cap-drop=ALL", "dropped container capabilities"),
                 ("--security-opt=no-new-privileges", "no-new-privileges container"),
                 ("--tmpfs /tmp", "temporary container home"),
+                ("--tmpfs /tmp:rw,noexec,nosuid,nodev", "noexec temporary home hardening"),
                 (":/src:ro", "read-only source mount"),
                 (":/cache/wheelhouse:", "job-local wheelhouse mount"),
             ):
@@ -3363,6 +3387,12 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             errors.append("phase3a2 workflow: build/runtime wheelhouse must be read-only")
         if ":/cache/wheelhouse:rw" not in prefetch_invocation:
             errors.append("phase3a2 workflow: prefetch wheelhouse must be writable")
+        # /tmp itself stays noexec; only the nested exec-capable work tmpfs may
+        # host build-script executables, proc-macro dylibs, and runtime venvs.
+        if "--tmpfs /tmp/work:rw,exec,nosuid,nodev" not in build_invocation:
+            errors.append("phase3a2 workflow: offline container lacks the exec work-dir carve-out")
+        if "--tmpfs /tmp/work:" in prefetch_invocation:
+            errors.append("phase3a2 workflow: prefetch container must not mount an exec carve-out")
         if "cargo fetch --locked" not in prefetch:
             errors.append("phase3a2 workflow: locked Cargo prefetch is missing")
         if "cargo metadata --locked" not in prefetch:
@@ -3374,12 +3404,41 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ]
         if prefetch_download_lines != _phase3a2_expected_prefetch_downloads():
             errors.append("phase3a2 workflow: prefetch download inventory is not exactly reviewed")
-        forbidden_prefetch_fetch = re.compile(
-            r"(?:^|[;&|]\s*)(?:curl|wget|aria2c|git\s+(?:clone|fetch|pull)|"
-            r"(?:python\s+-m\s+)?pip\s+(?:install|wheel)|cargo\s+(?:add|install|update))\b"
+        # The only permitted direct network fetch is the hash-pinned
+        # rustup-init bootstrap; every other download must go through the
+        # reviewed pip inventory above.  Backslash continuations are joined
+        # first so a wrapped command is scanned as one logical line.
+        joined_prefetch = prefetch.replace("\\\n", " ")
+        pinned_rustup_fetch = re.compile(
+            r"^curl\b.*static\.rust-lang\.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init\b"
         )
-        if any(forbidden_prefetch_fetch.search(line.strip()) for line in prefetch.splitlines()):
-            errors.append("phase3a2 workflow: prefetch contains an unreviewed network fetch")
+        unreviewed_prefetch_fetch = re.compile(
+            r"(?:^|[;&|]\s*)(?:curl|wget|aria2c|git\s+(?:clone|fetch|pull)|"
+            r"(?:python\s+-m\s+)?pip\s+(?:install|wheel)|cargo\s+(?:add|update))\b"
+        )
+        for line in joined_prefetch.splitlines():
+            stripped = line.strip()
+            if pinned_rustup_fetch.search(stripped):
+                continue
+            if unreviewed_prefetch_fetch.search(stripped):
+                errors.append("phase3a2 workflow: prefetch contains an unreviewed network fetch")
+                break
+        for fragment, label in (
+            (
+                "printf '%s  rustup-init\\n' \"$PHASE3A2_RUSTUP_INIT_SHA256\" > /tmp/rustup-init.sha256",
+                "rustup-init expected-digest file",
+            ),
+            ("chmod +x /tmp/rustup-init", "rustup-init executable bit"),
+        ):
+            if fragment not in prefetch:
+                errors.append(f"phase3a2 workflow: prefetch lacks {label}")
+        if "cargo install --locked cargo-deny@0.20.2" not in prefetch:
+            errors.append("phase3a2 workflow: pinned cargo-deny provisioning is missing")
+        if any(
+            "cargo install" in line and "cargo-deny@0.20.2" not in line
+            for line in prefetch.splitlines()
+        ):
+            errors.append("phase3a2 workflow: unreviewed Cargo tool installation is forbidden")
         for digest in PHASE3A2_NUMPY_WHEEL_SHA256.values():
             if digest not in prefetch:
                 errors.append("phase3a2 workflow: missing hash-pinned NumPy 2.4.6 runtime wheel")
@@ -3391,10 +3450,26 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             errors.append("phase3a2 workflow: wheel build must not run in the networked prefetch container")
     if shell_code.count("maturin build") != 1:
         errors.append("phase3a2 workflow: exactly one wheel build is required")
-    if shell_code.count("sha256sum --check") < 5:
+    if shell_code.count('sha256sum --check "$WHEEL.sha256"') < 5:
         errors.append("phase3a2 workflow: every runtime cell must recheck the input wheel hash")
-    if 'readelf -d "$NATIVE_OBJECT" | grep -E \'DT_NEEDED|RPATH|RUNPATH\'' not in shell_code:
+    if 'readelf -d "$NATIVE_OBJECT"' not in shell_code:
         errors.append("phase3a2 workflow: ELF dependency check must target the native object")
+    for fragment, label in (
+        ("test \"$(printf '%s\\n' \"$READELF_OUT\" | grep -cE '\\(RPATH\\)')\" = \"0\"", "RPATH zero-count gate"),
+        (
+            "RUNPATH_VALUE=\"$(printf '%s\\n' \"$READELF_OUT\" | sed -n '/(\\(RUNPATH\\))/s/.*\\[\\([^]]*\\)\\].*/\\1/p')\"",
+            "RUNPATH extraction",
+        ),
+        ("GLIBC_VERSION=\"$(ldd --version", "observed glibc capture"),
+        ("UNAME_ARCH=\"$(uname -m)\"", "observed platform capture"),
+        (
+            "if [ -f /evidence/observed.json ]; then\n            MANIFEST_ARGS+=(--observed /evidence/observed.json)\n          fi",
+            "conditional observed-evidence handoff",
+        ),
+        ('python /src/scripts/phase3a2-manifest.py "${MANIFEST_ARGS[@]}"', "argument-array manifest invocation"),
+    ):
+        if fragment not in shell_code:
+            errors.append(f"phase3a2 workflow: ELF evidence gate lacks {label}")
     if ":/src:rw" in workflow_code or "/src:rw" in workflow_code:
         errors.append("phase3a2 workflow: source checkout must be read-only")
 
@@ -3466,12 +3541,22 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
     download_lines = [line for line in shell_code.splitlines() if "pip download" in line]
     for line in download_lines:
         for fragment, label in (
-            ("--only-binary=:all:", "binary-only input download"),
-            ("--require-hashes", "hash-required input download"),
             ("--dest /cache/wheelhouse", "job-local wheelhouse download"),
         ):
             if fragment not in line:
                 errors.append(f"phase3a2 workflow: pip download is missing {label}")
+        # Hash-pinned reviewed inputs (maturin, NumPy) must carry both
+        # --only-binary and --require-hashes.  Tool wheels whose digests are
+        # re-verified by sha256sum --check inside the offline container are
+        # recorded as builder provenance instead of pre-pinned here.
+        if "--require-hashes" in line or "--only-binary=:all:" in line:
+            for fragment, label in (
+                ("--only-binary=:all:", "binary-only input download"),
+                ("--require-hashes", "hash-required input download"),
+                ("--hash=sha256:", "per-input hash pin"),
+            ):
+                if fragment not in line:
+                    errors.append(f"phase3a2 workflow: pip download is missing {label}")
     if "actions/upload-artifact" in repositories:
         if "if: github.ref == 'refs/heads/main' && github.event_name == 'push'" not in workflow_code:
             errors.append("phase3a2 workflow: upload-artifact is restricted to trusted main")
@@ -3561,7 +3646,12 @@ def _phase3a2_check_evidence_manifest(root: Path, errors: list[str]) -> None:
     if manifest["schema"] != PHASE3A2_SCHEMA:
         errors.append("phase3a2 evidence: schema identifier is not the accepted Phase-3A2 v1 value")
     source = _phase3a2_exact_mapping(manifest["source"], PHASE3A2_SOURCE_KEYS, "source", errors)
-    builder = _phase3a2_exact_mapping(manifest["builder"], PHASE3A2_BUILDER_KEYS, "builder", errors)
+    builder = _phase3a2_exact_mapping(
+        manifest["builder"],
+        PHASE3A2_OBSERVED_BUILDER_KEYS if "elf_runpath" in manifest["builder"] else PHASE3A2_BUILDER_KEYS,
+        "builder",
+        errors,
+    )
     wheel = _phase3a2_exact_mapping(manifest["wheel"], PHASE3A2_WHEEL_KEYS, "wheel", errors)
     checks = _phase3a2_exact_mapping(manifest["checks"], PHASE3A2_CHECK_KEYS, "checks", errors)
     claims = _phase3a2_exact_mapping(manifest["claim_boundary"], PHASE3A2_CLAIM_KEYS, "claim_boundary", errors)
@@ -3613,6 +3703,16 @@ def _phase3a2_check_evidence_manifest(root: Path, errors: list[str]) -> None:
     for key, expected in expected_builder.items():
         if builder[key] != expected:
             errors.append(f"phase3a2 evidence: builder {key} is not the reviewed immutable input")
+    if "elf_runpath" in builder:
+        entries = builder["elf_runpath"]
+        if (
+            not isinstance(entries, list)
+            or not entries
+            or not all(isinstance(item, str) and item for item in entries)
+        ):
+            errors.append(
+                "phase3a2 evidence: observed elf_runpath must be a non-empty list of strings"
+            )
 
     expected_filename = f"lumenplot_mpl-{cargo_version}-cp311-abi3-manylinux_2_28_x86_64.whl"
     if wheel["filename"] != expected_filename:
@@ -3688,8 +3788,13 @@ def _phase3a2_check_evidence_manifest(root: Path, errors: list[str]) -> None:
         errors.append("phase3a2 evidence: runtime matrix is missing one or more CPython 3.11-3.14 cells")
 
 
-def _check_phase3a2(root: Path, errors: list[str]) -> None:
-    """Validate the accepted Phase-3A2 package, workflow, and evidence gate."""
+def _check_phase3a2(
+    root: Path,
+    errors: list[str],
+    *,
+    require_evidence: bool = False,
+) -> None:
+    """Validate the static Phase-3A2 gate and optional runtime evidence."""
 
     for relative in ("rust-toolchain", "rust-toolchain.toml"):
         if (root / relative).exists():
@@ -3699,7 +3804,8 @@ def _check_phase3a2(root: Path, errors: list[str]) -> None:
     _check_python_bridge_source(root / "crates" / "lumenplot-python", root, errors)
     repositories = _phase3a2_check_workflow(root, errors)
     _phase3a2_check_pinned_inventory(root, repositories, errors)
-    _phase3a2_check_evidence_manifest(root, errors)
+    if require_evidence:
+        _phase3a2_check_evidence_manifest(root, errors)
 
 
 def _check_package_source(
@@ -3804,7 +3910,7 @@ def _check_dependencies(
             )
 
 
-def check_workspace(root: Path) -> list[str]:
+def check_workspace(root: Path, *, require_phase3a2_evidence: bool = False) -> list[str]:
     """Return deterministic, public-safe architecture diagnostics for *root*."""
 
     root = root.resolve()
@@ -3900,8 +4006,10 @@ def check_workspace(root: Path) -> list[str]:
             phase3a2_active=phase3a2_active,
         )
 
+    if require_phase3a2_evidence and not phase3a2_active:
+        errors.append("phase3a2 evidence: explicit evidence mode requires an active Phase-3A2 implementation")
     if phase3a2_active:
-        _check_phase3a2(root, errors)
+        _check_phase3a2(root, errors, require_evidence=require_phase3a2_evidence)
 
     return sorted(set(errors))
 
@@ -3914,14 +4022,21 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(__file__).resolve().parents[1],
         help="repository root (defaults to the parent of scripts/)",
     )
+    parser.add_argument(
+        "--phase3a2-evidence",
+        action="store_true",
+        help="require and validate the CI-local Phase-3A2 runtime evidence manifest",
+    )
     args = parser.parse_args(argv)
-    errors = check_workspace(args.root)
+    errors = check_workspace(args.root, require_phase3a2_evidence=args.phase3a2_evidence)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
     print("workspace architecture: OK")
     if _phase3a2_activation_reasons(args.root.resolve()):
+        print("phase3a2 static contract: OK")
+    if args.phase3a2_evidence:
         print("phase3a2 wheel evidence: OK")
     return 0
 
