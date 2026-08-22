@@ -36,7 +36,7 @@ jobs:
           IMAGE_CONFIG_DIGEST="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
           test "$IMAGE_CONFIG_DIGEST" = "sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5"
           docker image inspect --format '{{.Id}}' "$IMAGE"
-          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --volume "$PWD:/src:ro" --volume "$PWD/wheelhouse:/cache/wheelhouse:rw" --volume "$PWD/cargo-home:/usr/local/cargo:rw" --volume "$PWD/evidence:/evidence:rw" --workdir /src "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b" /bin/bash -euo pipefail -c 'exec /bin/bash -euo pipefail' <<'PREFETCH'
+          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev -i --volume "$PWD:/src:ro" --volume "$PWD/wheelhouse:/cache/wheelhouse:rw" --volume "$PWD/cargo-home:/usr/local/cargo:rw" --volume "$PWD/evidence:/evidence:rw" --workdir /src "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b" /bin/bash -euo pipefail -c 'exec /bin/bash -euo pipefail' <<'PREFETCH'
           export CARGO_HOME=/usr/local/cargo
           rustup toolchain install 1.89.0 --profile minimal
           rustup default 1.89.0
@@ -62,7 +62,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev --volume "$PWD:/src:ro" --volume "$PWD/wheelhouse:/cache/wheelhouse:ro" --volume "$PWD/cargo-home:/usr/local/cargo:ro" --volume "$PWD/evidence:/evidence:rw" --workdir /src "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b" /bin/bash -euo pipefail -c 'exec /bin/bash -euo pipefail' <<'BUILD'
+          docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev -i --volume "$PWD:/src:ro" --volume "$PWD/wheelhouse:/cache/wheelhouse:ro" --volume "$PWD/cargo-home:/usr/local/cargo:ro" --volume "$PWD/evidence:/evidence:rw" --workdir /src "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b" /bin/bash -euo pipefail -c 'exec /bin/bash -euo pipefail' <<'BUILD'
           export CARGO_HOME=/usr/local/cargo
           export CARGO_TARGET_DIR=/tmp/work/cargo-target
           RUSTUP_TOOLCHAIN=1.89.0 rustc --version
