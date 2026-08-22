@@ -42,11 +42,32 @@ def lockfile_checksums(path: Path) -> dict[tuple[str, str], str]:
     return entries
 
 
+def pyproject_identity(path: Path) -> tuple[str, str]:
+    """Return the root distribution name and version from pyproject.toml."""
+
+    try:
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise SystemExit(f"cannot parse pyproject {path}: {error}") from error
+    project = document.get("project")
+    if not isinstance(project, dict):
+        raise SystemExit("pyproject has no [project] table")
+    name = project.get("name")
+    version = project.get("version")
+    if not isinstance(name, str) or not name:
+        raise SystemExit("pyproject [project] has no name")
+    if not isinstance(version, str) or not version:
+        raise SystemExit("pyproject [project] has no static version")
+    return name, version
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--metadata", type=Path, required=True)
     parser.add_argument("--lockfile", type=Path, required=True)
+    parser.add_argument("--pyproject", type=Path, required=True)
     args = parser.parse_args()
+    root_name, root_version = pyproject_identity(args.pyproject)
     metadata = json.loads(args.metadata.read_text(encoding="utf-8"))
     packages = metadata.get("packages")
     if not isinstance(packages, list) or not packages:
@@ -97,7 +118,7 @@ def main() -> int:
     document = {
         "bomFormat": "CycloneDX",
         "components": components,
-        "metadata": {"component": {"name": "lumenplot-mpl", "version": "0.1.0"}},
+        "metadata": {"component": {"name": root_name, "version": root_version}},
         "specVersion": "1.5",
         "version": 1,
     }

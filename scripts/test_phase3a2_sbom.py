@@ -70,8 +70,27 @@ class SbomTestCase(unittest.TestCase):
         path.write_text(json.dumps({"packages": packages}), encoding="utf-8")
         return path
 
+    def write_pyproject(self, body: str | None = None) -> Path:
+        path = self.root / "pyproject.toml"
+        path.write_text(
+            body
+            or (
+                "[build-system]\n"
+                'requires = ["maturin==1.14.1"]\n'
+                "\n"
+                "[project]\n"
+                'name = "lumenplot-mpl"\n'
+                'version = "0.1.0"\n'
+            ),
+            encoding="utf-8",
+        )
+        return path
+
     def run_main(
-        self, metadata_path: Path | None, lock_path: Path | None
+        self,
+        metadata_path: Path | None,
+        lock_path: Path | None,
+        pyproject_path: Path | None | object = ...,
     ) -> tuple[int, str]:
         """Run main() with explicit arguments; returns (exit-code, output).
 
@@ -83,6 +102,11 @@ class SbomTestCase(unittest.TestCase):
             argv += ["--metadata", str(metadata_path)]
         if lock_path is not None:
             argv += ["--lockfile", str(lock_path)]
+        if pyproject_path is not ...:
+            if pyproject_path is not None:
+                argv += ["--pyproject", str(pyproject_path)]
+        else:
+            argv += ["--pyproject", str(self.write_pyproject())]
         stdout = io.StringIO()
         with (
             unittest.mock.patch.object(sys, "argv", argv),
@@ -203,9 +227,11 @@ class SbomFailClosedTests(SbomTestCase):
         # SystemExit capture and require the exit to propagate.
         metadata = self.write_metadata([])
         lock = self.write_lock("")
+        pyproject = self.write_pyproject()
         for argv in (
-            ["phase3a2-sbom.py", "--lockfile", str(lock)],
-            ["phase3a2-sbom.py", "--metadata", str(metadata)],
+            ["phase3a2-sbom.py", "--lockfile", str(lock), "--pyproject", str(pyproject)],
+            ["phase3a2-sbom.py", "--metadata", str(metadata), "--pyproject", str(pyproject)],
+            ["phase3a2-sbom.py", "--metadata", str(metadata), "--lockfile", str(lock)],
         ):
             with (
                 unittest.mock.patch.object(sys, "argv", argv),
@@ -221,6 +247,59 @@ class SbomFailClosedTests(SbomTestCase):
         code, message = self.run_main(metadata, lock)
         self.assertNotEqual(0, code)
         self.assertIn("no package inventory", message)
+
+
+class PyprojectIdentityTests(SbomTestCase):
+    def test_root_component_reflects_pyproject_identity(self) -> None:
+        metadata = self.write_metadata([registry_package(name="lumenplot", source=None)])
+        lock = self.write_lock("version = 4\n")
+        pyproject = self.write_pyproject()
+        code, output = self.run_main(metadata, lock, pyproject)
+        self.assertEqual(0, code)
+        component = json.loads(output)["metadata"]["component"]
+        self.assertEqual({"name": "lumenplot-mpl", "version": "0.1.0"}, component)
+
+    def test_dynamic_version_marker_is_rejected(self) -> None:
+        metadata = self.write_metadata([registry_package(name="lumenplot", source=None)])
+        lock = self.write_lock("version = 4\n")
+        pyproject = self.write_pyproject(
+            "[build-system]\n"
+            'requires = ["maturin==1.14.1"]\n'
+            "\n"
+            "[project]\n"
+            'name = "lumenplot-mpl"\n'
+            "dynamic = [\"version\"]\n"
+        )
+        code, message = self.run_main(metadata, lock, pyproject)
+        self.assertNotEqual(0, code)
+        self.assertIn("no static version", message)
+
+    def test_missing_project_table_fails(self) -> None:
+        metadata = self.write_metadata([registry_package(name="lumenplot", source=None)])
+        lock = self.write_lock("version = 4\n")
+        pyproject = self.write_pyproject('[build-system]\nrequires = ["maturin==1.14.1"]\n')
+        code, message = self.run_main(metadata, lock, pyproject)
+        self.assertNotEqual(0, code)
+        self.assertIn("no [project] table", message)
+
+    def test_missing_name_or_version_fail(self) -> None:
+        metadata = self.write_metadata([registry_package(name="lumenplot", source=None)])
+        lock = self.write_lock("version = 4\n")
+        for body in (
+            "[project]\nversion = \"0.1.0\"\n",
+            "[project]\nname = \"lumenplot-mpl\"\n",
+        ):
+            pyproject = self.write_pyproject(body)
+            code, message = self.run_main(metadata, lock, pyproject)
+            self.assertNotEqual(0, code)
+
+    def test_unparsable_pyproject_fails(self) -> None:
+        metadata = self.write_metadata([registry_package(name="lumenplot", source=None)])
+        lock = self.write_lock("version = 4\n")
+        pyproject = self.write_pyproject("not [ valid toml {{{{")
+        code, message = self.run_main(metadata, lock, pyproject)
+        self.assertNotEqual(0, code)
+        self.assertIn("cannot parse pyproject", message)
 
 
 if __name__ == "__main__":
