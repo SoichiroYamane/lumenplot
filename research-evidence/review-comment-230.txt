@@ -1,0 +1,25 @@
+comment 230 | task t_a8b289f7 | author luna-worker
+================================================================================
+Fresh independent review of exact HEAD 7032d84e527364a484424a9cfcb4c5a2a46be569 (parent 1c86df1632d0c53a58025804b6527f698bccf061), relative to base 43a76bb24c1e6374329d53844f30fbbfbc4e67a0. Worktree is clean; reviewer made no edits. Verdict: CHANGES_REQUIRED.
+
+Blocking findings:
+
+1. NumPy byte-span/stride validation is unsound. `crates/lumenplot-python/src/lib.rs:124-180` checks dtype, length, alignment, then calls `PyReadonlyArray::as_array()` without validating the reachable byte span. A fresh probe using `np.lib.stride_tricks.as_strided(np.array([1.0]), shape=(2,), strides=(8,))` passed those checks and the built extension subprocess exited -11 (segmentation fault). A zero-length unaligned view (`np.frombuffer(bytearray(16), dtype=np.float64, count=0, offset=1)`) also passes NumPy's `is_aligned()` convention and reaches ndarray's pointer-alignment panic; stderr exposed the registry source path and the process returned a `PanicException`. Reject malformed spans (including zero-length misalignment) before `as_array`, or use a copy path that cannot perform unchecked pointer traversal; keep the panic/error surface sanitized.
+
+2. The direct container is not executable as written. `.github/workflows/phase3a2-wheel.yml:58-70` mounts `/tmp` `noexec` while placing `/tmp/cargo-target`, `/tmp/build-site`, and all venvs there; Rust build scripts/compiler outputs, the maturin runner, and the installed extension need executable mappings. The host `dtolnay/rust-toolchain` action at lines 23-26 does not install a toolchain inside the isolated Docker container. The workflow never provisions or asserts in-container Rust/cargo/cargo-deny versions.
+
+3. The dependency-policy command/input gate cannot pass. The workflow runs `cargo deny check --all-features` (line 45), but the current pinned policy tool `cargo-deny 0.20.2` rejects that option (exit 2). Its valid `cargo deny check` form currently exits 4 because `deny.toml` omits `Apache-2.0 WITH LLVM-exception` and `Unicode-3.0`, both introduced by the PyO3/NumPy graph. Pin/provision the tool in the container, use a valid invocation, and resolve the accepted license policy before claiming locked source/license evidence.
+
+4. Builder tool evidence is inconsistent. The pinned Quay manifest/config digests do match the workflow constants, but a fresh read of the referenced manylinux source's tool requirements reports `auditwheel==6.7.0`, while `scripts/phase3a2-manifest.py:109-119` hard-codes `auditwheel_version: 6.8.0`; the workflow never asserts auditwheel/abi3audit versions. Either install/hash-pin the accepted tools or assert the immutable image's actual versions and make the manifest derive from those checks.
+
+5. The SBOM and wheel-integrity evidence fail closed too weakly. `scripts/phase3a2-sbom.py:17-28` reads `checksum` from `cargo metadata`, but locked registry packages have no such field here: a fresh generation produced 49 components and 0 hashes, while `Cargo.lock` has 40 registry checksums. `scripts/phase3a2-manifest.py:89-91` accepts a minimal checksum-free CycloneDX 1.5 object, and `:34-49` accepts a synthetic wheel whose RECORD omits an archive entry. Derive/validate component hashes from the locked graph, verify licenses/component coverage, and require every non-RECORD wheel entry to have exactly one valid RECORD row.
+
+6. `.github/workflows/phase3a2-wheel.yml:80-87` only prints `DT_NEEDED|RPATH|RUNPATH` and rejects libpython/libcuda; it does not fail on RPATH/RUNPATH or an unapproved dependency set. `phase3a2-manifest.py` then hard-codes `elf_rpath`, `auditwheel`, `abi3audit`, runtime-cell pass results, and other check booleans. Make each security/evidence flag depend on an explicit validated command result; fail closed on any RPATH/RUNPATH and define the allowed ELF dependency set.
+
+7. Package metadata has multiple version literals (`pyproject.toml:7`, SBOM script line 33, and Cargo workspace metadata). Make the wheel/SBOM package version Cargo-derived rather than allowing a future Cargo/PEP-517 version split; preserve the explicit Cargo-vs-METADATA assertion.
+
+Verification performed:
+- PASS: `cargo fmt --all -- --check`; `cargo check --locked --workspace --all-targets --all-features`; `cargo test --locked --workspace --all-features`; `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`; `nix flake check --all-systems --no-build --no-update-lock-file`; `git diff --check`.
+- PASS: `python -m unittest scripts.test_check_workspace_architecture` (162 tests), default architecture checker, `nix run nixpkgs#actionlint` on both workflows, and the six helper fixtures against the built extension.
+- Expected failure: `--phase3a2-evidence` without a generated manifest (manifest is intentionally not present locally).
+- `docker` is unavailable in this environment, so no hosted manylinux runtime claim is made. The actual container workflow must be rerun after the fixes.
