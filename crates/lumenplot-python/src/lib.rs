@@ -150,10 +150,10 @@ fn resolve_root_extent<'py>(
             continue;
         }
         if !base.hasattr("nbytes")? {
-            // Non-buffer, non-array owner: stop here; the span check below
-            // will reject reads that escape the reported view anyway because
-            // the extent falls back to zero for unknown roots.
-            break;
+            // Non-buffer, non-array owner: the true root allocation cannot
+            // be resolved, so fail closed rather than letting the view act
+            // as its own root.
+            return Err(dense_span_error(py));
         }
         current = base;
     }

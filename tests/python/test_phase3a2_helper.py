@@ -80,6 +80,21 @@ class NativeLinePngTests(unittest.TestCase):
         else:
             self.assertIsInstance(rendered, bytes)
 
+        # Views whose base chain reaches an owner with no resolvable
+        # allocation (as_strided over a bare ndarray) have no trustworthy
+        # root extent and must fail closed as invalid input.
+        unknown_root_cases = (
+            np.lib.stride_tricks.as_strided(np.array([1.0]), (2,), (8,)),
+            np.lib.stride_tricks.as_strided(np.arange(4.0), (8,), (8,)),
+            np.lib.stride_tricks.as_strided(np.arange(4.0)[1:], (4,), (8,)),
+        )
+        for x in unknown_root_cases:
+            with self.subTest(shape=x.shape, strides=x.strides):
+                with self.assertRaises(LumenPlotError) as context:
+                    self.render(x, np.zeros(x.shape[0], dtype=np.float64))
+                self.assertEqual(context.exception.code, "invalid-input")
+                self.assertEqual(context.exception.category, "input")
+
     def test_nan_values_form_gaps_but_infinity_is_rejected(self) -> None:
         result = self.render(
             np.array([0.0, np.nan, 2.0]),
