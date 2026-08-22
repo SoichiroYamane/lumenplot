@@ -599,6 +599,8 @@ PHASE3A2_BUILDER_KEYS = {
     "maturin_version",
     "maturin_wheel_sha256",
 }
+# Observed mode adds runtime-recorded ELF evidence to the pinned builder set.
+PHASE3A2_OBSERVED_BUILDER_KEYS = PHASE3A2_BUILDER_KEYS | {"elf_runpath"}
 PHASE3A2_WHEEL_KEYS = {
     "filename",
     "sha256",
@@ -3233,6 +3235,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ("--cap-drop=ALL", "dropped container capabilities"),
         ("--security-opt=no-new-privileges", "no-new-privileges container"),
         ("--tmpfs /tmp", "temporary container home"),
+        ("--tmpfs /tmp:rw,noexec,nosuid,nodev", "noexec temporary home hardening"),
         ("cargo fetch --locked", "locked Cargo prefetch"),
         ("cargo metadata --locked", "locked Cargo metadata"),
         ("--locked", "locked build"),
@@ -3251,7 +3254,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ("WHEEL", "wheel WHEEL check"),
         ('unzip -p "$WHEEL" \'*/RECORD\'', "wheel RECORD check"),
         ("readelf -d", "ELF dependency check"),
-        ("DT_NEEDED", "ELF dependency check"),
+        ("\\(NEEDED\\)", "dynamic dependency section gate"),
         ("unexpected shared library", "unexpected library rejection"),
         ("CycloneDX 1.5", "CycloneDX 1.5 SBOM check"),
         ("sha256sum --check", "pre-matrix wheel hash recheck"),
@@ -3319,6 +3322,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
                 ("--cap-drop=ALL", "dropped container capabilities"),
                 ("--security-opt=no-new-privileges", "no-new-privileges container"),
                 ("--tmpfs /tmp", "temporary container home"),
+                ("--tmpfs /tmp:rw,noexec,nosuid,nodev", "noexec temporary home hardening"),
                 (":/src:ro", "read-only source mount"),
                 (":/cache/wheelhouse:", "job-local wheelhouse mount"),
             ):
@@ -3370,6 +3374,12 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             errors.append("phase3a2 workflow: build/runtime wheelhouse must be read-only")
         if ":/cache/wheelhouse:rw" not in prefetch_invocation:
             errors.append("phase3a2 workflow: prefetch wheelhouse must be writable")
+        # /tmp itself stays noexec; only the nested exec-capable work tmpfs may
+        # host build-script executables, proc-macro dylibs, and runtime venvs.
+        if "--tmpfs /tmp/work:rw,exec,nosuid,nodev" not in build_invocation:
+            errors.append("phase3a2 workflow: offline container lacks the exec work-dir carve-out")
+        if "--tmpfs /tmp/work:" in prefetch_invocation:
+            errors.append("phase3a2 workflow: prefetch container must not mount an exec carve-out")
         if "cargo fetch --locked" not in prefetch:
             errors.append("phase3a2 workflow: locked Cargo prefetch is missing")
         if "cargo metadata --locked" not in prefetch:
@@ -3407,8 +3417,24 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         errors.append("phase3a2 workflow: exactly one wheel build is required")
     if shell_code.count("sha256sum --check") < 5:
         errors.append("phase3a2 workflow: every runtime cell must recheck the input wheel hash")
-    if 'readelf -d "$NATIVE_OBJECT" | grep -E \'DT_NEEDED|RPATH|RUNPATH\'' not in shell_code:
+    if 'readelf -d "$NATIVE_OBJECT"' not in shell_code:
         errors.append("phase3a2 workflow: ELF dependency check must target the native object")
+    for fragment, label in (
+        ("test \"$(printf '%s\\n' \"$READELF_OUT\" | grep -cE '\\(RPATH\\)')\" = \"0\"", "RPATH zero-count gate"),
+        (
+            "RUNPATH_VALUE=\"$(printf '%s\\n' \"$READELF_OUT\" | sed -n '/(\\(RUNPATH\\))/s/.*\\[\\([^]]*\\)\\].*/\\1/p')\"",
+            "RUNPATH extraction",
+        ),
+        ("GLIBC_VERSION=\"$(ldd --version", "observed glibc capture"),
+        ("UNAME_ARCH=\"$(uname -m)\"", "observed platform capture"),
+        (
+            "if [ -f /evidence/observed.json ]; then\n            MANIFEST_ARGS+=(--observed /evidence/observed.json)\n          fi",
+            "conditional observed-evidence handoff",
+        ),
+        ('python /src/scripts/phase3a2-manifest.py "${MANIFEST_ARGS[@]}"', "argument-array manifest invocation"),
+    ):
+        if fragment not in shell_code:
+            errors.append(f"phase3a2 workflow: ELF evidence gate lacks {label}")
     if ":/src:rw" in workflow_code or "/src:rw" in workflow_code:
         errors.append("phase3a2 workflow: source checkout must be read-only")
 
@@ -3585,7 +3611,12 @@ def _phase3a2_check_evidence_manifest(root: Path, errors: list[str]) -> None:
     if manifest["schema"] != PHASE3A2_SCHEMA:
         errors.append("phase3a2 evidence: schema identifier is not the accepted Phase-3A2 v1 value")
     source = _phase3a2_exact_mapping(manifest["source"], PHASE3A2_SOURCE_KEYS, "source", errors)
-    builder = _phase3a2_exact_mapping(manifest["builder"], PHASE3A2_BUILDER_KEYS, "builder", errors)
+    builder = _phase3a2_exact_mapping(
+        manifest["builder"],
+        PHASE3A2_OBSERVED_BUILDER_KEYS if "elf_runpath" in manifest["builder"] else PHASE3A2_BUILDER_KEYS,
+        "builder",
+        errors,
+    )
     wheel = _phase3a2_exact_mapping(manifest["wheel"], PHASE3A2_WHEEL_KEYS, "wheel", errors)
     checks = _phase3a2_exact_mapping(manifest["checks"], PHASE3A2_CHECK_KEYS, "checks", errors)
     claims = _phase3a2_exact_mapping(manifest["claim_boundary"], PHASE3A2_CLAIM_KEYS, "claim_boundary", errors)
@@ -3637,6 +3668,16 @@ def _phase3a2_check_evidence_manifest(root: Path, errors: list[str]) -> None:
     for key, expected in expected_builder.items():
         if builder[key] != expected:
             errors.append(f"phase3a2 evidence: builder {key} is not the reviewed immutable input")
+    if "elf_runpath" in builder:
+        entries = builder["elf_runpath"]
+        if (
+            not isinstance(entries, list)
+            or not entries
+            or not all(isinstance(item, str) and item for item in entries)
+        ):
+            errors.append(
+                "phase3a2 evidence: observed elf_runpath must be a non-empty list of strings"
+            )
 
     expected_filename = f"lumenplot_mpl-{cargo_version}-cp311-abi3-manylinux_2_28_x86_64.whl"
     if wheel["filename"] != expected_filename:
