@@ -86,7 +86,7 @@ jobs:
           auditwheel check "$WHEEL"
           abi3audit "$WHEEL"
           cargo metadata --locked --offline --format-version 1 > /evidence/cargo-metadata.json
-          python /src/scripts/phase3a2-sbom.py --metadata /evidence/cargo-metadata.json > /evidence/sbom.json
+          python /src/scripts/phase3a2-sbom.py --metadata /evidence/cargo-metadata.json --lockfile /src/Cargo.lock --pyproject /src/pyproject.toml > /evidence/sbom.json
           SBOM_FORMAT="CycloneDX 1.5"
           test "$SBOM_FORMAT" = "CycloneDX 1.5"
           WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
