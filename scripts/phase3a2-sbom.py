@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Emit the bounded CycloneDX input set used by Phase-3A2 evidence.
 
-The document records exactly what the locked Cargo metadata reports.  A
-registry-sourced package without a checksum, or any package without a
-license expression, is a failure: the script never silently drops
+The document records exactly what the locked Cargo metadata reports,
+cross-checked against the committed Cargo.lock.  A registry-sourced package
+without a lockfile checksum entry, with a lockfile checksum that is not a
+64-character lowercase hexadecimal digest, or whose metadata checksum
+disagrees with the lockfile is a failure, as is any package without a
+license expression: the script never silently drops or substitutes
 integrity or licensing fields from the recorded inventory.
 """
 
@@ -11,36 +14,81 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import tomllib
 from pathlib import Path
+
+CHECKSUM_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
+def lockfile_checksums(path: Path) -> dict[tuple[str, str], str]:
+    """Index the SHA-256 checksums recorded in a Cargo.lock document."""
+
+    try:
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise SystemExit(f"cannot parse Cargo.lock {path}: {error}") from error
+    entries: dict[tuple[str, str], str] = {}
+    for package in document.get("package") or ():
+        if not isinstance(package, dict):
+            raise SystemExit("Cargo.lock contains a malformed package entry")
+        name = package.get("name")
+        version = package.get("version")
+        if not isinstance(name, str) or not isinstance(version, str):
+            raise SystemExit("Cargo.lock contains a package entry without name or version")
+        checksum = package.get("checksum")
+        if isinstance(checksum, str):
+            entries[(name, version)] = checksum
+    return entries
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--metadata", type=Path, required=True)
+    parser.add_argument("--lockfile", type=Path, required=True)
     args = parser.parse_args()
     metadata = json.loads(args.metadata.read_text(encoding="utf-8"))
     packages = metadata.get("packages")
     if not isinstance(packages, list) or not packages:
         raise SystemExit("cargo metadata contains no package inventory")
+    locks = lockfile_checksums(args.lockfile)
     components = []
     for package in sorted(packages, key=lambda item: (item["name"], item["version"])):
-        checksum = package.get("checksum")
+        name = package["name"]
+        version = package["version"]
         sourced = package.get("source") is not None
-        if sourced and not isinstance(checksum, str):
-            raise SystemExit(
-                f"cargo metadata has no checksum for registry package {package['name']}"
-            )
+        checksum = None
+        if sourced:
+            recorded = locks.get((name, version))
+            if recorded is None:
+                raise SystemExit(
+                    f"Cargo.lock has no checksum entry for registry package {name}"
+                )
+            if CHECKSUM_PATTERN.fullmatch(recorded) is None:
+                raise SystemExit(
+                    f"Cargo.lock checksum for registry package {name} is not a "
+                    "64-character lowercase hexadecimal digest"
+                )
+            declared = package.get("checksum")
+            if isinstance(declared, str) and declared != recorded:
+                raise SystemExit(
+                    f"cargo metadata checksum for registry package {name} does not "
+                    "match Cargo.lock"
+                )
+            checksum = recorded
         license_id = package.get("license") or package.get("license_file")
         if not isinstance(license_id, str) or not license_id:
-            raise SystemExit(f"cargo metadata has no license for package {package['name']}")
+            raise SystemExit(f"cargo metadata has no license for package {name}")
         component = {
-            "bom-ref": f"pkg:cargo/{package['name']}@{package['version']}",
-            "name": package["name"],
-            "purl": f"pkg:cargo/{package['name']}@{package['version']}",
+            "bom-ref": f"pkg:cargo/{name}@{version}",
+            "name": name,
+            "purl": f"pkg:cargo/{name}@{version}",
             "type": "library",
-            "version": package["version"],
+            "version": version,
         }
-        if isinstance(checksum, str):
+        if checksum is not None:
+            # Only lockfile-verified digests are recorded; workspace members
+            # carry no integrity claim.
             component["hashes"] = [{"alg": "SHA-256", "content": checksum}]
         # A single SPDX identifier is itself a valid SPDX expression, so every
         # entry uses the deterministic `expression` form.
