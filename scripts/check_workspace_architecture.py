@@ -3383,6 +3383,14 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             errors.append("phase3a2 workflow: prefetch container must remain networked")
         if "--network=bridge" in build_invocation:
             errors.append("phase3a2 workflow: networked wheel build is forbidden")
+        # Docker does not export host job-level environment into containers,
+        # so the workflow-level pinned rustup-init digest must be forwarded
+        # explicitly to the networked prefetch container that consumes it;
+        # the offline build/test container has no bootstrap input to forward.
+        if "-e PHASE3A2_RUSTUP_INIT_SHA256" not in prefetch_invocation:
+            errors.append("phase3a2 workflow: prefetch container must forward the pinned rustup-init digest")
+        if "-e PHASE3A2_RUSTUP_INIT_SHA256" in build_invocation:
+            errors.append("phase3a2 workflow: offline build/test container must not forward the rustup-init digest")
         if ":/cache/wheelhouse:ro" not in build_invocation:
             errors.append("phase3a2 workflow: build/runtime wheelhouse must be read-only")
         if ":/cache/wheelhouse:rw" not in prefetch_invocation:

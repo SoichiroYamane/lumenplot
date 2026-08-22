@@ -1899,7 +1899,7 @@ jobs:
           docker pull --platform=linux/amd64 "$IMAGE"
           IMAGE_CONFIG_DIGEST="$(docker image inspect --format '{{{{.Id}}}}' "$IMAGE")"
           test "$IMAGE_CONFIG_DIGEST" = "{self.CONFIG_DIGEST}"
-          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'PREFETCH'
+          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges -e PHASE3A2_RUSTUP_INIT_SHA256 --tmpfs /tmp:rw,noexec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'PREFETCH'
             export CARGO_HOME=/usr/local/cargo
             export RUSTUP_HOME=/usr/local/cargo/rustup
             printf '%s  rustup-init\\n' "$PHASE3A2_RUSTUP_INIT_SHA256" > /tmp/rustup-init.sha256
@@ -2344,6 +2344,33 @@ jobs:
                 encoding="utf-8",
             ),
             "missing offline build/test container",
+        )
+
+    def test_prefetch_container_must_forward_rustup_init_digest(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace("-e PHASE3A2_RUSTUP_INIT_SHA256 --tmpfs", "--tmpfs"),
+                encoding="utf-8",
+            ),
+            "prefetch container must forward the pinned rustup-init digest",
+        )
+
+    def test_offline_container_must_not_forward_rustup_init_digest(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace(
+                    "--security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev"
+                    " --tmpfs /tmp/work",
+                    "--security-opt=no-new-privileges -e PHASE3A2_RUSTUP_INIT_SHA256"
+                    " --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work",
+                ),
+                encoding="utf-8",
+            ),
+            "offline build/test container must not forward the rustup-init digest",
         )
 
     def test_auditwheel_repair_is_rejected(self) -> None:
