@@ -1780,6 +1780,7 @@ class Phase3A2WheelEvidenceMutationTests(unittest.TestCase):
     )
     CONFIG_DIGEST = "sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5"
     MATURIN_HASH = "dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e"
+    RUSTUP_INIT_HASH = "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
     NUMPY_HASHES = {
         "cp311": "89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93",
         "cp312": "90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853",
@@ -1881,6 +1882,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Hash-pinned rustup-init bootstrap binary for x86_64-unknown-linux-gnu.
+  PHASE3A2_RUSTUP_INIT_SHA256: "{self.RUSTUP_INIT_HASH}"
+
 jobs:
   wheel:
     runs-on: ubuntu-24.04
@@ -1895,7 +1900,14 @@ jobs:
           IMAGE_CONFIG_DIGEST="$(docker image inspect --format '{{{{.Id}}}}' "$IMAGE")"
           test "$IMAGE_CONFIG_DIGEST" = "{self.CONFIG_DIGEST}"
           docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'PREFETCH'
-            export RUSTUP_TOOLCHAIN=1.89.0
+            export CARGO_HOME=/usr/local/cargo
+            export RUSTUP_HOME=/usr/local/cargo/rustup
+            printf '%s  rustup-init\\n' "$PHASE3A2_RUSTUP_INIT_SHA256" > /tmp/rustup-init.sha256
+            curl --proto '=https' --tlsv1.2 --silent --show-error --location https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init > /tmp/rustup-init
+            sha256sum --check /tmp/rustup-init.sha256
+            chmod +x /tmp/rustup-init
+            /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
+            export PATH=/usr/local/cargo/bin:$PATH
             rustc --version
             cargo --version
             cargo fetch --locked
@@ -1915,7 +1927,10 @@ jobs:
           )"
           docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:ro" -v "$PWD/evidence:/evidence:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'BUILD'
             cd /src
-            export RUSTUP_TOOLCHAIN=1.89.0
+            export CARGO_HOME=/usr/local/cargo
+            export RUSTUP_HOME=/usr/local/cargo/rustup
+            export PATH=/usr/local/cargo/bin:$PATH
+            RUSTUP_TOOLCHAIN=1.89.0 rustc --version
             CARGO_VERSION="$(cargo metadata --locked --offline --format-version 1 | python -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "lumenplot-python"))')"
             SOURCE_COMMIT="$(git rev-parse --verify HEAD)"
             python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
@@ -2548,6 +2563,45 @@ jobs:
             )
 
         self.assert_rejected(mutate, "prefetch contains an unreviewed network fetch")
+
+    def test_unreviewed_curl_url_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "cargo install --locked cargo-deny@0.20.2",
+                    "curl https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/evil.sh -o /tmp/evil.sh",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "prefetch contains an unreviewed network fetch")
+
+    def test_missing_rustup_init_digest_verification_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            text = path.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                if "sha256sum --check /tmp/rustup-init.sha256" in line:
+                    text = text.replace(line + "\n", "", 1)
+                    break
+            path.write_text(text, encoding="utf-8")
+
+        self.assert_rejected(mutate, "missing rustup-init digest verification")
+
+    def test_tampered_rustup_init_digest_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    self.RUSTUP_INIT_HASH,
+                    "b" * 64,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "hash-pinned rustup-init bootstrap digest")
 
     def test_evidence_manifest_must_remain_untracked(self) -> None:
         def mutate(root: Path) -> None:

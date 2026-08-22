@@ -11,6 +11,14 @@ on:
 permissions:
   contents: read
 
+env:
+  # Hash-pinned rustup-init bootstrap binary for x86_64-unknown-linux-gnu.
+  # Digest probed from
+  # https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
+  # and cross-checked against the published rustup-init.sha256 sidecar;
+  # re-probe both before any bump.
+  PHASE3A2_RUSTUP_INIT_SHA256: "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+
 jobs:
   phase3a2-wheel:
     name: Phase-3A2 manylinux wheel evidence
@@ -38,10 +46,19 @@ jobs:
           docker image inspect --format '{{.Id}}' "$IMAGE"
           docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev -i --volume "$PWD:/src:ro" --volume "$PWD/wheelhouse:/cache/wheelhouse:rw" --volume "$PWD/cargo-home:/usr/local/cargo:rw" --volume "$PWD/evidence:/evidence:rw" --workdir /src "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b" /bin/bash -euo pipefail -c 'exec /bin/bash -euo pipefail' <<'PREFETCH'
           export CARGO_HOME=/usr/local/cargo
-          rustup toolchain install 1.89.0 --profile minimal
-          rustup default 1.89.0
-          RUSTUP_TOOLCHAIN=1.89.0 rustc --version
-          RUSTUP_TOOLCHAIN=1.89.0 cargo --version
+          export RUSTUP_HOME=/usr/local/cargo/rustup
+          # Hash-pinned rustup bootstrap: the pinned manylinux image does not
+          # ship rustup, so provision it from the recorded rustup-init digest.
+          printf '%s  rustup-init\n' "$PHASE3A2_RUSTUP_INIT_SHA256" > /tmp/rustup-init.sha256
+          curl --proto '=https' --tlsv1.2 --silent --show-error --location \
+            https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
+            > /tmp/rustup-init
+          sha256sum --check /tmp/rustup-init.sha256
+          chmod +x /tmp/rustup-init
+          /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
+          export PATH=/usr/local/cargo/bin:$PATH
+          rustc --version
+          cargo --version
           cargo install --locked cargo-deny@0.20.2
           cargo fetch --locked
           cargo metadata --locked --format-version 1 > /evidence/prefetch-metadata.json
@@ -64,7 +81,9 @@ jobs:
           set -euo pipefail
           docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev -i --volume "$PWD:/src:ro" --volume "$PWD/wheelhouse:/cache/wheelhouse:ro" --volume "$PWD/cargo-home:/usr/local/cargo:ro" --volume "$PWD/evidence:/evidence:rw" --workdir /src "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b" /bin/bash -euo pipefail -c 'exec /bin/bash -euo pipefail' <<'BUILD'
           export CARGO_HOME=/usr/local/cargo
+          export RUSTUP_HOME=/usr/local/cargo/rustup
           export CARGO_TARGET_DIR=/tmp/work/cargo-target
+          export PATH=/usr/local/cargo/bin:$PATH
           RUSTUP_TOOLCHAIN=1.89.0 rustc --version
           RUSTUP_TOOLCHAIN=1.89.0 cargo --version
           sha256sum --check /cache/wheelhouse/auditwheel-sha256.txt

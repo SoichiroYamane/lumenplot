@@ -552,6 +552,10 @@ PHASE3A2_IMAGE = (
 )
 PHASE3A2_IMAGE_CONFIG_DIGEST = "sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5"
 PHASE3A2_MATURIN_WHEEL_SHA256 = "dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e"
+# Probed from
+# https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
+# and cross-checked against the published rustup-init.sha256 sidecar.
+PHASE3A2_RUSTUP_INIT_SHA256 = "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
 PHASE3A2_NUMPY_WHEEL_SHA256 = {
     "cp311": "89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93",
     "cp312": "90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853",
@@ -3241,6 +3245,15 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ("--locked", "locked build"),
         ("--offline", "offline build"),
         ("RUSTUP_TOOLCHAIN=1.89.0", "builder Rust toolchain"),
+        (PHASE3A2_RUSTUP_INIT_SHA256, "hash-pinned rustup-init bootstrap digest"),
+        ("export RUSTUP_HOME=/usr/local/cargo/rustup", "rustup home inside the cargo-home volume"),
+        (
+            "https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init",
+            "pinned rustup-init download endpoint",
+        ),
+        ("sha256sum --check /tmp/rustup-init.sha256", "rustup-init digest verification"),
+        ("/tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0", "pinned rustup provisioning"),
+        ("export PATH=/usr/local/cargo/bin:$PATH", "provisioned Cargo bin on PATH"),
         ("rustc --version", "in-container Rust verification"),
         ("cargo --version", "in-container Cargo verification"),
         ("maturin==1.14.1", "hash-pinned maturin version"),
@@ -3391,12 +3404,34 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ]
         if prefetch_download_lines != _phase3a2_expected_prefetch_downloads():
             errors.append("phase3a2 workflow: prefetch download inventory is not exactly reviewed")
-        forbidden_prefetch_fetch = re.compile(
+        # The only permitted direct network fetch is the hash-pinned
+        # rustup-init bootstrap; every other download must go through the
+        # reviewed pip inventory above.  Backslash continuations are joined
+        # first so a wrapped command is scanned as one logical line.
+        joined_prefetch = prefetch.replace("\\\n", " ")
+        pinned_rustup_fetch = re.compile(
+            r"^curl\b.*static\.rust-lang\.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init\b"
+        )
+        unreviewed_prefetch_fetch = re.compile(
             r"(?:^|[;&|]\s*)(?:curl|wget|aria2c|git\s+(?:clone|fetch|pull)|"
             r"(?:python\s+-m\s+)?pip\s+(?:install|wheel)|cargo\s+(?:add|update))\b"
         )
-        if any(forbidden_prefetch_fetch.search(line.strip()) for line in prefetch.splitlines()):
-            errors.append("phase3a2 workflow: prefetch contains an unreviewed network fetch")
+        for line in joined_prefetch.splitlines():
+            stripped = line.strip()
+            if pinned_rustup_fetch.search(stripped):
+                continue
+            if unreviewed_prefetch_fetch.search(stripped):
+                errors.append("phase3a2 workflow: prefetch contains an unreviewed network fetch")
+                break
+        for fragment, label in (
+            (
+                "printf '%s  rustup-init\\n' \"$PHASE3A2_RUSTUP_INIT_SHA256\" > /tmp/rustup-init.sha256",
+                "rustup-init expected-digest file",
+            ),
+            ("chmod +x /tmp/rustup-init", "rustup-init executable bit"),
+        ):
+            if fragment not in prefetch:
+                errors.append(f"phase3a2 workflow: prefetch lacks {label}")
         if "cargo install --locked cargo-deny@0.20.2" not in prefetch:
             errors.append("phase3a2 workflow: pinned cargo-deny provisioning is missing")
         if any(
@@ -3415,7 +3450,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             errors.append("phase3a2 workflow: wheel build must not run in the networked prefetch container")
     if shell_code.count("maturin build") != 1:
         errors.append("phase3a2 workflow: exactly one wheel build is required")
-    if shell_code.count("sha256sum --check") < 5:
+    if shell_code.count('sha256sum --check "$WHEEL.sha256"') < 5:
         errors.append("phase3a2 workflow: every runtime cell must recheck the input wheel hash")
     if 'readelf -d "$NATIVE_OBJECT"' not in shell_code:
         errors.append("phase3a2 workflow: ELF dependency check must target the native object")
