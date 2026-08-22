@@ -86,6 +86,51 @@ fn extract_rgba<'py>(value: &Bound<'py, PyAny>, name: &str) -> PyResult<[u8; 4]>
     ])
 }
 
+fn dense_span_error(py: Python<'_>) -> PyErr {
+    lumenplot_error(
+        py,
+        "invalid-input",
+        "input",
+        "x and y must be dense one-dimensional NumPy arrays",
+    )
+}
+
+/// Reject arrays whose elements are not a dense forward run.
+///
+/// The bridge reads exactly `length * itemsize` bytes from the array data
+/// pointer. Requiring C-contiguous dense layout keeps that byte span exact:
+/// no strided or reversed views, no zero strides, and an overflow-free span
+/// computation independent of what any base object may expose.
+fn ensure_dense_1d<'py>(
+    py: Python<'py>,
+    array: &Bound<'py, PyUntypedArray>,
+    length: usize,
+) -> PyResult<()> {
+    if !array.is_contiguous() {
+        return Err(dense_span_error(py));
+    }
+    if length <= 1 {
+        return Ok(());
+    }
+    let stride = array.strides()[0];
+    let itemsize = array.dtype().itemsize();
+    if stride != itemsize as isize {
+        return Err(dense_span_error(py));
+    }
+    let span = (length - 1)
+        .checked_mul(itemsize)
+        .and_then(|offset| offset.checked_add(itemsize));
+    if span.is_none() {
+        return Err(lumenplot_error(
+            py,
+            "out-of-memory",
+            "resource",
+            "allocation failed",
+        ));
+    }
+    Ok(())
+}
+
 fn copy_array<'py>(py: Python<'py>, value: &Bound<'py, PyAny>, name: &str) -> PyResult<Vec<f64>> {
     if !value.is_exact_instance_of::<PyUntypedArray>() {
         return Err(lumenplot_error(
@@ -129,6 +174,7 @@ fn copy_array<'py>(py: Python<'py>, value: &Bound<'py, PyAny>, name: &str) -> Py
             "x and y must be aligned NumPy arrays",
         ));
     }
+    ensure_dense_1d(py, array, length)?;
 
     let array_dtype = array.dtype();
     let values = if array_dtype.is_equiv_to(&dtype::<f64>(py)) {

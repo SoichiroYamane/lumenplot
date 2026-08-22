@@ -32,19 +32,22 @@ class NativeLinePngTests(unittest.TestCase):
         np.testing.assert_array_equal(x, x_before)
         np.testing.assert_array_equal(y, y_before)
 
-        for x, y in (
-            (
-                np.array([0.0, 1.0, 2.0], dtype=np.float64),
-                np.array([0.0, 2.0, 1.0], dtype=np.float64),
-            ),
-            (
-                np.arange(4.0, dtype=np.float32)[::-1],
-                np.broadcast_to(np.array([1.0], dtype=np.float32), (4,)),
-            ),
-        ):
-            result = self.render(x, y)
-            self.assertEqual(result[:8], b"\x89PNG\r\n\x1a\n")
-            self.assertGreater(len(result), 8)
+    def test_non_dense_views_are_rejected_with_explicit_diagnostic(self) -> None:
+        # The helper reads one dense forward byte span per array. Strided,
+        # reversed, and broadcast views are rejected instead of being read
+        # through their logical iteration order.
+        cases = (
+            np.arange(4.0, dtype=np.float64)[::-1],
+            np.broadcast_to(np.array([1.0], dtype=np.float64), (4,)),
+            np.arange(8.0, dtype=np.float64)[::2],
+        )
+        for x in cases:
+            with self.subTest(strides=x.strides):
+                with self.assertRaises(LumenPlotError) as context:
+                    self.render(x, np.zeros(x.shape[0], dtype=np.float64))
+                self.assertEqual(context.exception.code, "invalid-input")
+                self.assertEqual(context.exception.category, "input")
+                self.assertIn("dense", context.exception.message)
 
     def test_nan_values_form_gaps_but_infinity_is_rejected(self) -> None:
         result = self.render(
