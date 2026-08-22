@@ -38,6 +38,8 @@ jobs:
           docker image inspect --format '{{.Id}}' "$IMAGE"
           docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --volume "$PWD:/src:ro" --volume "$PWD/wheelhouse:/cache/wheelhouse:rw" --volume "$PWD/cargo-home:/usr/local/cargo:rw" --volume "$PWD/evidence:/evidence:rw" --workdir /src "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b" /bin/bash -euo pipefail -c 'exec /bin/bash -euo pipefail' <<'PREFETCH'
           export CARGO_HOME=/usr/local/cargo
+          rustup toolchain install 1.89.0 --profile minimal
+          rustup default 1.89.0
           RUSTUP_TOOLCHAIN=1.89.0 rustc --version
           RUSTUP_TOOLCHAIN=1.89.0 cargo --version
           cargo install --locked cargo-deny@0.20.2
@@ -49,6 +51,10 @@ jobs:
           python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 312 --abi cp312 numpy==2.4.6 --hash=sha256:90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853
           python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 numpy==2.4.6 --hash=sha256:a7830bab239b79cda9c08c2da014761cafb48da6150e1da17ac06283f43b6089
           python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 numpy==2.4.6 --hash=sha256:a2c306dea656c12c68f51f4cea133cbe78ca7435eb28c735eac1d3ebe73be6e8
+          python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0
+          sha256sum /cache/wheelhouse/auditwheel-6.8.0-*.whl > /cache/wheelhouse/auditwheel-sha256.txt
+          python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26
+          sha256sum /cache/wheelhouse/abi3audit-0.0.26-*.whl > /cache/wheelhouse/abi3audit-sha256.txt
           test -s /cache/wheelhouse/maturin-1.14.1-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.musllinux_1_1_x86_64.whl
           PREFETCH
 
@@ -61,11 +67,25 @@ jobs:
           export CARGO_TARGET_DIR=/tmp/cargo-target
           RUSTUP_TOOLCHAIN=1.89.0 rustc --version
           RUSTUP_TOOLCHAIN=1.89.0 cargo --version
+          sha256sum --check /cache/wheelhouse/auditwheel-sha256.txt
+          sha256sum --check /cache/wheelhouse/abi3audit-sha256.txt
+          printf '%s\n' 'maturin==1.14.1 --hash=sha256:dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e' > /tmp/build-requirements.txt
+          AUDITWHEEL_SHA256="$(awk '{print $1}' /cache/wheelhouse/auditwheel-sha256.txt)"
+          ABI3AUDIT_SHA256="$(awk '{print $1}' /cache/wheelhouse/abi3audit-sha256.txt)"
+          printf '%s\n%s\n' "auditwheel==6.8.0 --hash=sha256:$AUDITWHEEL_SHA256" "abi3audit==0.0.26 --hash=sha256:$ABI3AUDIT_SHA256" >> /tmp/build-requirements.txt
+          /opt/python/cp311-cp311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --no-deps --find-links=/cache/wheelhouse -r /tmp/build-requirements.txt --target=/tmp/build-site
+          export PATH=/tmp/build-site/bin:$PATH
+          rustup toolchain list | grep -q '^1.89.0'
+          AUDITWHEEL_VERSION="$(auditwheel --version | sed 's/^auditwheel, version //')"
+          ABI3AUDIT_VERSION="$(abi3audit --version)"
+          RUST_VERSION_OBSERVED="$($HOME/.cargo/bin/rustc --version | awk '{print $2}')"
+          test -n "$AUDITWHEEL_VERSION" && test -n "$ABI3AUDIT_VERSION" && test -n "$RUST_VERSION_OBSERVED"
+          test "$AUDITWHEEL_VERSION" = "6.8.0"
+          test "$ABI3AUDIT_VERSION" = "0.0.26"
+          test "$RUST_VERSION_OBSERVED" = "1.89.0"
           CARGO_VERSION="$(cargo metadata --locked --offline --format-version 1 --no-deps | python -c 'import json,sys; print(next(item["version"] for item in json.load(sys.stdin)["packages"] if item["name"] == "lumenplot"))')"
           SOURCE_COMMIT="$(git rev-parse --verify HEAD)"
           CARGO_LOCK_SHA256="$(sha256sum Cargo.lock | cut -d' ' -f1)"
-          printf '%s\n' 'maturin==1.14.1 --hash=sha256:dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e' > /tmp/build-requirements.txt
-          /opt/python/cp311-cp311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/build-requirements.txt --target=/tmp/build-site
           export PYTHONPATH=/tmp/build-site
           cargo build --release --locked --offline -p lumenplot-python
           CARGO_VERSION="$CARGO_VERSION" PYTHONPATH=/tmp/build-site /opt/python/cp311-cp311/bin/python -m maturin build --release --locked --offline --interpreter /opt/python/cp311-cp311/bin/python --compatibility manylinux_2_28 --out /evidence/dist
