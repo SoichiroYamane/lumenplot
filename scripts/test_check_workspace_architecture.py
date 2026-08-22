@@ -1900,11 +1900,15 @@ jobs:
           IMAGE_CONFIG_DIGEST="$(docker image inspect --format '{{{{.Id}}}}' "$IMAGE")"
           test "$IMAGE_CONFIG_DIGEST" = "{self.CONFIG_DIGEST}"
           docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges -e PHASE3A2_RUSTUP_INIT_SHA256 --tmpfs /tmp:rw,noexec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'PREFETCH'
+            printf '%s\\n' "prefetch-inner-shell: heredoc reached container shell, cwd=$(pwd)"
             export CARGO_HOME=/usr/local/cargo
             export RUSTUP_HOME=/usr/local/cargo/rustup
             printf '%s  rustup-init\\n' "$PHASE3A2_RUSTUP_INIT_SHA256" > /tmp/rustup-init.sha256
             curl --proto '=https' --tlsv1.2 --silent --show-error --location https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init > /tmp/rustup-init
-            sha256sum --check /tmp/rustup-init.sha256
+            printf '%s\\n' "prefetch-inner-shell: digest file staged, cwd=$(pwd)"
+            # The checksum file lists the bare name `rustup-init`, so the check
+            # must resolve it against /tmp; the workdir is read-only /src.
+            ( cd /tmp && sha256sum --check /tmp/rustup-init.sha256 )
             bash /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
             export PATH=/usr/local/cargo/bin:$PATH
             rustc --version
@@ -2609,12 +2613,25 @@ jobs:
             path = root / ".github/workflows/phase3a2-wheel.yml"
             text = path.read_text(encoding="utf-8")
             for line in text.splitlines():
-                if "sha256sum --check /tmp/rustup-init.sha256" in line:
+                if "( cd /tmp && sha256sum --check /tmp/rustup-init.sha256 )" in line:
                     text = text.replace(line + "\n", "", 1)
                     break
             path.write_text(text, encoding="utf-8")
 
         self.assert_rejected(mutate, "missing rustup-init digest verification")
+
+    def test_unguarded_rustup_init_digest_check_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "( cd /tmp && sha256sum --check /tmp/rustup-init.sha256 )",
+                    "sha256sum --check /tmp/rustup-init.sha256",
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "rustup-init digest verification")
 
     def test_tampered_rustup_init_digest_is_rejected(self) -> None:
         def mutate(root: Path) -> None:

@@ -3251,7 +3251,9 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             "https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init",
             "pinned rustup-init download endpoint",
         ),
-        ("sha256sum --check /tmp/rustup-init.sha256", "rustup-init digest verification"),
+        # The checkfile lists the bare name `rustup-init`, so the guarded
+        # subshell must resolve it against /tmp; the workdir is read-only /src.
+        ("( cd /tmp && sha256sum --check /tmp/rustup-init.sha256 )", "rustup-init digest verification"),
         ("bash /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0", "pinned rustup provisioning"),
         ("export PATH=/usr/local/cargo/bin:$PATH", "provisioned Cargo bin on PATH"),
         ("rustc --version", "in-container Rust verification"),
