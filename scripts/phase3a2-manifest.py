@@ -39,19 +39,26 @@ INTERPRETERS = {
 WHEEL_TAG = "cp311-abi3-manylinux_2_28_x86_64"
 
 
-def record_entry_names(path: Path) -> set[str]:
-    """Return the exact RECORD-listed file names of a wheel archive."""
+def verified_record_names(path: Path) -> set[str]:
+    """Verify RECORD against the archive in both directions.
+
+    Returns the exact RECORD-listed file names of a wheel archive.  An
+    entry listed without matching archive content, or an archive member
+    that RECORD fails to list, is a failure: neither direction may
+    silently shrink the recorded inventory.
+    """
 
     with zipfile.ZipFile(path) as archive:
         record_names = [name for name in archive.namelist() if name.endswith(".dist-info/RECORD")]
         if len(record_names) != 1:
             raise SystemExit("wheel RECORD inventory is incomplete")
+        record_name = record_names[0]
         names = set()
-        for line in archive.read(record_names[0]).decode("utf-8").splitlines():
+        for line in archive.read(record_name).decode("utf-8").splitlines():
             if not line:
                 continue
             filename, encoded_hash, size = line.split(",", 2)
-            if filename == record_names[0]:
+            if filename == record_name:
                 # The wheel spec requires RECORD to list itself without a
                 # hash or size; every other entry must carry both.
                 continue
@@ -71,6 +78,14 @@ def record_entry_names(path: Path) -> set[str]:
             if digest != encoded or size != str(len(archive.read(filename))):
                 raise SystemExit("wheel RECORD hashes or sizes are invalid")
             names.add(filename)
+        listed = names | {record_name}
+        unlisted = sorted(
+            name for name in archive.namelist() if name not in listed and not name.endswith("/")
+        )
+        if unlisted:
+            raise SystemExit(
+                "wheel contains files that RECORD does not list: " + ", ".join(unlisted)
+            )
         return names
 
 
@@ -119,7 +134,7 @@ def main() -> int:
     if wheel_digest != args.wheel_sha256:
         raise SystemExit("wheel SHA-256 does not match the built artifact")
     observed = observed_wheel_fields(args.wheel)
-    record_entry_names(args.wheel)
+    verified_record_names(args.wheel)
     if observed["metadata_version"] != args.cargo_version:
         raise SystemExit("wheel metadata version does not match Cargo")
     if observed["tag"] != WHEEL_TAG:
