@@ -54,8 +54,8 @@ jobs:
             https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
             > /tmp/rustup-init
           sha256sum --check /tmp/rustup-init.sha256
-          chmod +x /tmp/rustup-init
-          /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
+          # /tmp is mounted noexec, so the bootstrap runs via bash on the file.
+          bash /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
           export PATH=/usr/local/cargo/bin:$PATH
           rustc --version
           cargo --version
@@ -93,11 +93,11 @@ jobs:
           ABI3AUDIT_SHA256="$(awk '{print $1}' /cache/wheelhouse/abi3audit-sha256.txt)"
           printf '%s\n%s\n' "auditwheel==6.8.0 --hash=sha256:$AUDITWHEEL_SHA256" "abi3audit==0.0.26 --hash=sha256:$ABI3AUDIT_SHA256" >> /tmp/build-requirements.txt
           /opt/python/cp311-cp311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --no-deps --find-links=/cache/wheelhouse -r /tmp/build-requirements.txt --target=/tmp/work/build-site
-          export PATH=/tmp/work/build-site/bin:$PATH
+          export PATH=/tmp/work/build-site/bin:/usr/local/cargo/bin:$PATH
           rustup toolchain list | grep -q '^1.89.0'
           AUDITWHEEL_VERSION="$(auditwheel --version | sed 's/^auditwheel, version //')"
           ABI3AUDIT_VERSION="$(abi3audit --version)"
-          RUST_VERSION_OBSERVED="$($HOME/.cargo/bin/rustc --version | awk '{print $2}')"
+          RUST_VERSION_OBSERVED="$(RUSTUP_TOOLCHAIN=1.89.0 rustc --version | awk '{print $2}')"
           test -n "$AUDITWHEEL_VERSION" && test -n "$ABI3AUDIT_VERSION" && test -n "$RUST_VERSION_OBSERVED"
           test "$AUDITWHEEL_VERSION" = "6.8.0"
           test "$ABI3AUDIT_VERSION" = "0.0.26"

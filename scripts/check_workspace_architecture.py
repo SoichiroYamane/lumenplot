@@ -3252,7 +3252,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             "pinned rustup-init download endpoint",
         ),
         ("sha256sum --check /tmp/rustup-init.sha256", "rustup-init digest verification"),
-        ("/tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0", "pinned rustup provisioning"),
+        ("bash /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0", "pinned rustup provisioning"),
         ("export PATH=/usr/local/cargo/bin:$PATH", "provisioned Cargo bin on PATH"),
         ("rustc --version", "in-container Rust verification"),
         ("cargo --version", "in-container Cargo verification"),
@@ -3428,7 +3428,9 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
                 "printf '%s  rustup-init\\n' \"$PHASE3A2_RUSTUP_INIT_SHA256\" > /tmp/rustup-init.sha256",
                 "rustup-init expected-digest file",
             ),
-            ("chmod +x /tmp/rustup-init", "rustup-init executable bit"),
+            # /tmp stays noexec, so the verified bootstrap must be interpreted
+            # by bash instead of executed directly.
+            ("bash /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0", "pinned rustup provisioning"),
         ):
             if fragment not in prefetch:
                 errors.append(f"phase3a2 workflow: prefetch lacks {label}")

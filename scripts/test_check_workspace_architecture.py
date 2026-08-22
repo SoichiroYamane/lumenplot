@@ -1905,8 +1905,7 @@ jobs:
             printf '%s  rustup-init\\n' "$PHASE3A2_RUSTUP_INIT_SHA256" > /tmp/rustup-init.sha256
             curl --proto '=https' --tlsv1.2 --silent --show-error --location https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init > /tmp/rustup-init
             sha256sum --check /tmp/rustup-init.sha256
-            chmod +x /tmp/rustup-init
-            /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
+            bash /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
             export PATH=/usr/local/cargo/bin:$PATH
             rustc --version
             cargo --version
