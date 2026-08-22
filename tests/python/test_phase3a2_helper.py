@@ -95,6 +95,32 @@ class NativeLinePngTests(unittest.TestCase):
                 self.assertEqual(context.exception.code, "invalid-input")
                 self.assertEqual(context.exception.category, "input")
 
+    def test_bytes_backed_views_render_like_dense_copies(self) -> None:
+        # The root allocation of a bytes-backed array lives behind a
+        # memoryview base, so its data pointer must come from the buffer
+        # protocol rather than the owner object's address; both fixture
+        # families must render identically to their dense copies.
+        frombuffer_x = np.frombuffer(
+            bytearray(64), dtype=np.float64, count=8  # type: ignore[call-overload]
+        )
+        dense_frombuffer_x = np.array(frombuffer_x, dtype=np.float64)
+        y = np.linspace(0.0, 3.0, 8)
+
+        cast_x = np.frombuffer(
+            memoryview(bytearray(64)).cast("d"), dtype=np.float64  # type: ignore[arg-type]
+        )
+
+        for x, dense in (
+            (frombuffer_x, dense_frombuffer_x),
+            (cast_x, dense_frombuffer_x),
+        ):
+            with self.subTest(source=type(x.base).__name__):
+                self.assertIs(type(x.base), memoryview)
+                rendered = self.render(x, y)
+                self.assertEqual(rendered[:8], b"\x89PNG\r\n\x1a\n")
+                self.assertGreater(len(rendered), 8)
+                self.assertEqual(rendered, self.render(dense, y))
+
     def test_nan_values_form_gaps_but_infinity_is_rejected(self) -> None:
         result = self.render(
             np.array([0.0, np.nan, 2.0]),

@@ -8,7 +8,8 @@ use lumenplot::__private::{
 use numpy::{
     PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods, dtype,
 };
-use pyo3::exceptions::{PyAttributeError, PyRuntimeError, PyTypeError};
+use pyo3::buffer::PyUntypedBuffer;
+use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyAnyMethods, PyBytes, PyModule, PyModuleMethods, PyType};
 
@@ -171,16 +172,17 @@ fn resolve_root_extent<'py>(
         return Ok((current, extent, root_data_ptr));
     }
 
-    let nbytes: Bound<'py, PyAny> = current
-        .getattr("nbytes")
-        .map_err(|_| PyAttributeError::new_err("nbytes"))?;
-    let nbytes_value: isize = nbytes.extract().map_err(|_| dense_span_error(py))?;
-    let extent = if nbytes_value < 0 {
-        0
-    } else {
-        nbytes_value as usize
-    };
-    let root_ptr = current.as_ptr() as usize;
+    // Non-ndarray buffer owners (e.g. the `memoryview` left behind by
+    // `np.frombuffer`) hold their storage outside the object header, so
+    // `as_ptr()` would report the PyObject address rather than the data
+    // address. The buffer protocol exposes the true data pointer and byte
+    // length of the root allocation.
+    let buffer = PyUntypedBuffer::get(&current).map_err(|_| dense_span_error(py))?;
+    let extent = buffer.len_bytes();
+    if extent == 0 {
+        return Err(dense_span_error(py));
+    }
+    let root_ptr = buffer.buf_ptr() as usize;
     Ok((current, extent, root_ptr))
 }
 
