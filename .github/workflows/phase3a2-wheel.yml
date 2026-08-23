@@ -1,0 +1,349 @@
+name: Phase-3A2 private wheel evidence
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  # Hash-pinned rustup-init bootstrap binary for x86_64-unknown-linux-gnu.
+  # Digest probed from
+  # https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
+  # and cross-checked against the published rustup-init.sha256 sidecar;
+  # re-probe both before any bump.
+  PHASE3A2_RUSTUP_INIT_SHA256: "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+
+jobs:
+  phase3a2-wheel:
+    name: Phase-3A2 manylinux wheel evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Resolve Rust toolchain for evidence metadata
+        uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
+        with:
+          toolchain: 1.89.0
+
+      - name: Prefetch reviewed inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b"
+          mkdir -p "$PWD/wheelhouse" "$PWD/cargo-home" "$PWD/evidence"
+          chmod 0777 "$PWD/wheelhouse" "$PWD/cargo-home" "$PWD/evidence"
+          docker pull --platform=linux/amd64 "$IMAGE"
+          IMAGE_CONFIG_DIGEST="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
+          test "$IMAGE_CONFIG_DIGEST" = "sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5"
+          docker image inspect --format '{{.Id}}' "$IMAGE"
+          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges -e PHASE3A2_RUSTUP_INIT_SHA256 --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev -i --volume "$PWD:/src:ro" --volume "$PWD/wheelhouse:/cache/wheelhouse:rw" --volume "$PWD/cargo-home:/usr/local/cargo:rw" --volume "$PWD/evidence:/evidence:rw" --workdir /src "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b" /bin/bash -euo pipefail -c 'exec /bin/bash -euo pipefail' <<'PREFETCH'
+          # Visibility diagnostic: if this line is absent from CI logs, the
+          # heredoc stdin never reached the container shell; if present, the
+          # inner shell is executing (discriminates transport vs script bugs).
+          printf '%s\n' "prefetch-inner-shell: heredoc reached container shell, cwd=$(pwd)"
+          export CARGO_HOME=/usr/local/cargo
+          export RUSTUP_HOME=/usr/local/cargo/rustup
+          # /tmp stays noexec: cargo's default per-install staging target lives
+          # under $TMPDIR, where build-script binaries cannot be executed.
+          export CARGO_TARGET_DIR=/tmp/work/cargo-target
+          # Hash-pinned rustup bootstrap: the pinned manylinux image does not
+          # ship rustup, so provision it from the recorded rustup-init digest.
+          printf '%s  rustup-init\n' "$PHASE3A2_RUSTUP_INIT_SHA256" > /tmp/rustup-init.sha256
+          curl --proto '=https' --tlsv1.2 --silent --show-error --location \
+            https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
+            > /tmp/work/rustup-init
+          # Resolve the digest-listed name against the staging directory, not CWD=/src.
+          ( cd /tmp/work && sha256sum --check /tmp/rustup-init.sha256 )
+          # curl redirection creates the file mode 0644; direct execve needs the
+          # executable bit set before the bootstrap can start.
+          chmod +x /tmp/work/rustup-init
+          # /tmp stays noexec; only the exec-mounted work tmpfs may run binaries.
+          /tmp/work/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
+          export PATH=/usr/local/cargo/bin:$PATH
+          rustc --version
+          cargo --version
+          cargo install --locked cargo-deny@0.20.2
+          cargo fetch --locked
+          cargo metadata --locked --format-version 1 > /evidence/prefetch-metadata.json
+          cargo deny check
+          # pip's `--hash` is a requirements-file-only option: no pip release
+          # registers it as a CLI flag, so each reviewed input carries its pin
+          # in a one-line requirements file consumed with --require-hashes.
+          printf '%s\n' 'maturin==1.14.1 --hash=sha256:dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e' > /tmp/wheelhouse-maturin.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse -r /tmp/wheelhouse-maturin.txt
+          printf '%s\n' 'numpy==2.4.6 --hash=sha256:89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93' > /tmp/wheelhouse-numpy311.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 311 --abi cp311 -r /tmp/wheelhouse-numpy311.txt
+          printf '%s\n' 'numpy==2.4.6 --hash=sha256:90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853' > /tmp/wheelhouse-numpy312.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 312 --abi cp312 -r /tmp/wheelhouse-numpy312.txt
+          printf '%s\n' 'numpy==2.4.6 --hash=sha256:a7830bab239b79cda9c08c2da014761cafb48da6150e1da17ac06283f43b6089' > /tmp/wheelhouse-numpy313.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 -r /tmp/wheelhouse-numpy313.txt
+          printf '%s\n' 'numpy==2.4.6 --hash=sha256:a2c306dea656c12c68f51f4cea133cbe78ca7435eb28c735eac1d3ebe73be6e8' > /tmp/wheelhouse-numpy314.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 -r /tmp/wheelhouse-numpy314.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0
+          sha256sum /cache/wheelhouse/auditwheel-6.8.0-*.whl > /cache/wheelhouse/auditwheel-sha256.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26
+          sha256sum /cache/wheelhouse/abi3audit-0.0.26-*.whl > /cache/wheelhouse/abi3audit-sha256.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse packaging==26.3
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pyelftools==0.33
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse abi3info==2025.11.29
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse kaitaistruct==0.11
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pefile==2024.8.26
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse requests==2.34.2
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse charset-normalizer==3.5.1
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse requests-cache==1.3.3
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse url-normalize==1.4.3
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse attrs==26.1.0
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse cattrs==24.1.2
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse urllib3==2.7.0
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse certifi==2026.7.22
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse idna==3.19
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse six==1.17.0
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse rich==15.0.0
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse markdown-it-py==4.2.0
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pygments==2.21.0
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse mdurl==0.1.2
+          # Transitive dependencies of auditwheel 6.8.0 and abi3audit 0.0.26,
+          # each hash-pinned from its PyPI release page (cp311 manylinux or
+          # py3/py2.py3 wheels). The build container installs them with
+          # --require-hashes so the offline build never resolves unpinned code.
+          printf '%s\n' "5c1659851e6ae6163a41306044726b5a7425694c923c5e9188fde9c6918ae106  auditwheel-6.8.0-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "b94b774984e50ec03481c1dda88c48079f6baec870b263bf7f5e7415feb8802d  abi3audit-0.0.26-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c  packaging-26.3-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "f215ad5f47d3f1373a21496a6c9e0707c622840d0622f23ff7ce08678b020036  pyelftools-0.33-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "75343a1d3eb662db4e20fe057fcd7bfc5b66e25aa6abf9cf5e90f70014151ebe  abi3info-2025.11.29-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "5c6ce79177b4e193a577ecd359e26516d1d6d000a0bffd6e1010f2a46a62a561  kaitaistruct-0.11-py2.py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f  pefile-2024.8.26-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0  requests-2.34.2-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "c7b742bf31c88566b4bb6335a7f393bb322e580b6bb98df7bd0c25e6e3519ce8  charset_normalizer-3.5.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "c8df20ff874ebfc026959e3874e6c12bd6724934cdb10925915908453d4b17e4  requests_cache-1.3.3-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "ec3c301f04e5bb676d333a7fa162fa977ad2ca04b7e652bfc9fac4e405728eed  url_normalize-1.4.3-py2.py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309  attrs-26.1.0-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897  urllib3-2.7.0-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775  certifi-2026.7.22-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "815e7be7a7806d54abb586dc943addc79e8b2ee16915059658cbeff4b1b43bf4  idna-3.19-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274  six-1.17.0-py2.py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "67c7495b760168d931a10233f979b28dc04daf853b30752246f4f8471c6d68d0  cattrs-24.1.2-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+
+          printf '%s\n' "33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb  rich-15.0.0-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a  markdown_it_py-4.2.0-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9  pygments-2.21.0-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8  mdurl-0.1.2-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          test -s /cache/wheelhouse/maturin-1.14.1-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.musllinux_1_1_x86_64.whl
+          PREFETCH
+
+      - name: Build and exercise one wheel in isolated container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev -i --volume "$PWD:/src:ro" --volume "$PWD/wheelhouse:/cache/wheelhouse:ro" --volume "$PWD/cargo-home:/usr/local/cargo:ro" --volume "$PWD/evidence:/evidence:rw" --workdir /src "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b" /bin/bash -euo pipefail -c 'exec /bin/bash -euo pipefail' <<'BUILD'
+          export CARGO_HOME=/usr/local/cargo
+          export RUSTUP_HOME=/usr/local/cargo/rustup
+          export CARGO_TARGET_DIR=/tmp/work/cargo-target
+          export PATH=/usr/local/cargo/bin:$PATH
+          RUSTUP_TOOLCHAIN=1.89.0 rustc --version
+          RUSTUP_TOOLCHAIN=1.89.0 cargo --version
+          # Tool-wheel inventory: the two pinned audit tools plus every
+          # transitive dependency, each digest recorded in prefetch.
+          # Filenames resolve against /cache/wheelhouse, not cwd=/src.
+          ( cd /cache/wheelhouse && sha256sum --check tool-deps.sha256 )
+          sha256sum --check /cache/wheelhouse/auditwheel-sha256.txt
+          sha256sum --check /cache/wheelhouse/abi3audit-sha256.txt
+          printf '%s\n' 'maturin==1.14.1 --hash=sha256:dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e' > /tmp/build-requirements.txt
+          AUDITWHEEL_SHA256="$(awk '{print $1}' /cache/wheelhouse/auditwheel-sha256.txt)"
+          ABI3AUDIT_SHA256="$(awk '{print $1}' /cache/wheelhouse/abi3audit-sha256.txt)"
+          printf '%s\n%s\n' "auditwheel==6.8.0 --hash=sha256:$AUDITWHEEL_SHA256" "abi3audit==0.0.26 --hash=sha256:$ABI3AUDIT_SHA256" >> /tmp/build-requirements.txt
+          printf '%s\n' 'auditwheel==6.8.0 --hash=sha256:5c1659851e6ae6163a41306044726b5a7425694c923c5e9188fde9c6918ae106' >> /tmp/build-requirements.txt
+          printf '%s\n' 'abi3audit==0.0.26 --hash=sha256:b94b774984e50ec03481c1dda88c48079f6baec870b263bf7f5e7415feb8802d' >> /tmp/build-requirements.txt
+          printf '%s\n' 'packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c' >> /tmp/build-requirements.txt
+          printf '%s\n' 'pyelftools==0.33 --hash=sha256:f215ad5f47d3f1373a21496a6c9e0707c622840d0622f23ff7ce08678b020036' >> /tmp/build-requirements.txt
+          printf '%s\n' 'abi3info==2025.11.29 --hash=sha256:75343a1d3eb662db4e20fe057fcd7bfc5b66e25aa6abf9cf5e90f70014151ebe' >> /tmp/build-requirements.txt
+          printf '%s\n' 'kaitaistruct==0.11 --hash=sha256:5c6ce79177b4e193a577ecd359e26516d1d6d000a0bffd6e1010f2a46a62a561' >> /tmp/build-requirements.txt
+          printf '%s\n' 'pefile==2024.8.26 --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f' >> /tmp/build-requirements.txt
+          printf '%s\n' 'requests==2.34.2 --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0' >> /tmp/build-requirements.txt
+          printf '%s\n' 'charset-normalizer==3.5.1 --hash=sha256:c7b742bf31c88566b4bb6335a7f393bb322e580b6bb98df7bd0c25e6e3519ce8' >> /tmp/build-requirements.txt
+          printf '%s\n' 'requests-cache==1.3.3 --hash=sha256:c8df20ff874ebfc026959e3874e6c12bd6724934cdb10925915908453d4b17e4' >> /tmp/build-requirements.txt
+          printf '%s\n' 'url-normalize==1.4.3 --hash=sha256:ec3c301f04e5bb676d333a7fa162fa977ad2ca04b7e652bfc9fac4e405728eed' >> /tmp/build-requirements.txt
+          printf '%s\n' 'attrs==26.1.0 --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309' >> /tmp/build-requirements.txt
+          printf '%s\n' 'urllib3==2.7.0 --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897' >> /tmp/build-requirements.txt
+          printf '%s\n' 'certifi==2026.7.22 --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775' >> /tmp/build-requirements.txt
+          printf '%s\n' 'idna==3.19 --hash=sha256:815e7be7a7806d54abb586dc943addc79e8b2ee16915059658cbeff4b1b43bf4' >> /tmp/build-requirements.txt
+          printf '%s\n' 'six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274' >> /tmp/build-requirements.txt
+          printf '%s\n' 'cattrs==24.1.2 --hash=sha256:67c7495b760168d931a10233f979b28dc04daf853b30752246f4f8471c6d68d0' >> /tmp/build-requirements.txt
+          printf '%s\n' 'rich==15.0.0 --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb' >> /tmp/build-requirements.txt
+          printf '%s\n' 'markdown-it-py==4.2.0 --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a' >> /tmp/build-requirements.txt
+          printf '%s\n' 'pygments==2.21.0 --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9' >> /tmp/build-requirements.txt
+          printf '%s\n' 'mdurl==0.1.2 --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8' >> /tmp/build-requirements.txt
+          /opt/python/cp311-cp311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --no-deps --find-links=/cache/wheelhouse -r /tmp/build-requirements.txt --target=/tmp/work/build-site
+          # pip --target installs live outside the interpreter's default sys.path,
+          # so both PATH and PYTHONPATH must point at the target directory before
+          # the first console-script invocation.
+          export PATH=/tmp/work/build-site/bin:/usr/local/cargo/bin:$PATH
+          export PYTHONPATH=/tmp/work/build-site
+          echo "probe: toolchain list"
+          rustup toolchain list | grep -q '^1.89.0'
+          echo "probe: auditwheel version"
+          AUDITWHEEL_VERSION="$(/opt/python/cp311-cp311/bin/python -c 'import importlib.metadata as m; print(m.version("auditwheel"))')"
+          echo "probe: abi3audit version"
+          ABI3AUDIT_VERSION="$(/opt/python/cp311-cp311/bin/python -c 'import importlib.metadata as m; print(m.version("abi3audit"))')"
+          echo "probe: rust version"
+          RUST_VERSION_OBSERVED="$(RUSTUP_TOOLCHAIN=1.89.0 rustc --version | awk '{print $2}')"
+          echo "probe: versions asserted"
+          test -n "$AUDITWHEEL_VERSION" && test -n "$ABI3AUDIT_VERSION" && test -n "$RUST_VERSION_OBSERVED"
+          test "$AUDITWHEEL_VERSION" = "6.8.0"
+          test "$ABI3AUDIT_VERSION" = "0.0.26"
+          test "$RUST_VERSION_OBSERVED" = "1.89.0"
+          CARGO_VERSION="$(cargo metadata --locked --offline --format-version 1 --no-deps | /opt/python/cp311-cp311/bin/python -c 'import json,sys; print(next(item["version"] for item in json.load(sys.stdin)["packages"] if item["name"] == "lumenplot"))')"
+          # The bind-mounted checkout is owned by the runner UID, not the
+          # container's non-root user, so git needs an explicit safe.directory.
+          # HOME is read-only in this container; keep the config on the
+          # exec-mounted work tmpfs instead.
+          export GIT_CONFIG_GLOBAL=/tmp/work/gitconfig
+          git config --global --add safe.directory /src
+          SOURCE_COMMIT="$(git rev-parse --verify HEAD)"
+          CARGO_LOCK_SHA256="$(sha256sum Cargo.lock | cut -d' ' -f1)"
+          cargo build --release --locked --offline -p lumenplot-python
+          CARGO_VERSION="$CARGO_VERSION" PYTHONPATH=/tmp/work/build-site /tmp/work/build-site/bin/maturin build --release --locked --offline --interpreter /opt/python/cp311-cp311/bin/python --compatibility manylinux_2_28 --out /evidence/dist
+          WHEEL="/evidence/dist/lumenplot_mpl-${CARGO_VERSION}-cp311-abi3-manylinux_2_28_x86_64.whl"
+          WHEEL_VERSION="$(unzip -p "$WHEEL" '*/METADATA' | awk -F': ' '$1 == "Version" {print $2}')"
+          test "$WHEEL_VERSION" = "$CARGO_VERSION"
+          unzip -t "$WHEEL"
+          unzip -p "$WHEEL" '*/METADATA' | grep -q "Version: $CARGO_VERSION"
+          unzip -p "$WHEEL" '*/WHEEL' | grep -q 'Tag: cp311-abi3-manylinux_2_28_x86_64'
+          unzip -p "$WHEEL" '*/RECORD' > /tmp/RECORD
+          NATIVE_OBJECT=/tmp/native.so
+          unzip -p "$WHEEL" 'lumenplot_mpl/*.so' > "$NATIVE_OBJECT"
+          READELF_OUT="$(readelf -d "$NATIVE_OBJECT")"
+          printf '%s\n' "$READELF_OUT"
+          test -n "$READELF_OUT"
+          test "$(printf '%s\n' "$READELF_OUT" | grep -cE '\(NEEDED\)')" -gt 0
+          test "$(printf '%s\n' "$READELF_OUT" | grep -cE '\(RPATH\)')" = "0"
+          RUNPATH_VALUE="$(printf '%s\n' "$READELF_OUT" | sed -n '/(\(RUNPATH\))/s/.*\[\([^]]*\)\].*/\1/p')"
+          if printf '%s\n' "$READELF_OUT" | grep -Eq 'libpython|libcuda'; then
+            printf '%s\n' 'unexpected shared library'
+            exit 1
+          fi
+          GLIBC_VERSION="$(ldd --version | sed -n '1s/^.* \([0-9][0-9.]*\)$/\1/p')"
+          test -n "$GLIBC_VERSION"
+          UNAME_ARCH="$(uname -m)"
+          case "$UNAME_ARCH" in
+            x86_64) PLATFORM_OBSERVED="linux/amd64" ;;
+            *) exit 1 ;;
+          esac
+          if [ -n "$RUNPATH_VALUE" ]; then
+            ELF_RUNPATH_JSON="$(printf '%s' "$RUNPATH_VALUE" | /opt/python/cp311-cp311/bin/python -c 'import json,sys; entries=sys.stdin.read().split(":"); sys.exit(2) if any(not entry for entry in entries) else print(json.dumps(entries))')"
+            test -n "$ELF_RUNPATH_JSON"
+            /opt/python/cp311-cp311/bin/python -c 'import json,sys; json.dump({"abi3audit_version": sys.argv[1], "auditwheel_version": sys.argv[2], "glibc": sys.argv[3], "platform": sys.argv[4], "rust_version": sys.argv[5], "elf_runpath": json.loads(sys.argv[6])}, sys.stdout, indent=2)' "$ABI3AUDIT_VERSION" "$AUDITWHEEL_VERSION" "$GLIBC_VERSION" "$PLATFORM_OBSERVED" "$RUST_VERSION_OBSERVED" "$ELF_RUNPATH_JSON" > /evidence/observed.json
+          fi
+          auditwheel show --json "$WHEEL" > /evidence/auditwheel.json
+          # auditwheel 6.x removed the deprecated `check` subcommand; the
+          # manylinux_2_28 compliance is asserted from the `show --json`
+          # report's overall_tag (schema: version/wheel/pure/overall_tag/
+          # sym_tag/versioned_symbols/external_libs/policy_upgrades).
+          /opt/python/cp311-cp311/bin/python -c 'import json,sys; d=json.load(open("/evidence/auditwheel.json")); tag=d.get("overall_tag",""); assert "manylinux_2_28" in tag, d'
+          abi3audit "$WHEEL"
+          cargo metadata --locked --offline --format-version 1 > /evidence/cargo-metadata.json
+          /opt/python/cp311-cp311/bin/python /src/scripts/phase3a2-sbom.py --metadata /evidence/cargo-metadata.json --lockfile /src/Cargo.lock --pyproject /src/pyproject.toml > /evidence/sbom.json
+          SBOM_FORMAT="CycloneDX 1.5"
+          test "$SBOM_FORMAT" = "CycloneDX 1.5"
+          WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+          printf '%s  %s\n' "$WHEEL_SHA256" "$WHEEL" > "$WHEEL.sha256"
+          sha256sum --check "$WHEEL.sha256"
+
+          /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/work/venv311
+          printf '%s\n' 'numpy==2.4.6 --hash=sha256:89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93' > /tmp/numpy311.txt
+          /tmp/work/venv311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy311.txt
+          # pip's --hash option only exists inside requirements files, so the
+          # helper wheel carries its recomputed pin through the same channel.
+          printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel311.txt
+          /tmp/work/venv311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel311.txt
+          sha256sum --check "$WHEEL.sha256"
+          INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+          test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
+          /tmp/work/venv311/bin/python -m unittest discover -s /src/tests/python
+          /tmp/work/venv311/bin/python -c 'from lumenplot_mpl import _native; import numpy as np; _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success"); print("invalid-input")'
+          /tmp/work/venv311/bin/python -c 'import importlib.metadata as metadata; print(metadata.version("lumenplot-mpl"))' > /tmp/installed-version311
+          IFS= read -r INSTALLED_VERSION < /tmp/installed-version311
+          test "$INSTALLED_VERSION" = "$CARGO_VERSION"
+          printf '%s\n' 'helper-success'
+          printf '%s\n' 'invalid-input'
+
+          /opt/python/cp312-cp312/bin/python -m venv --clear /tmp/work/venv312
+          printf '%s\n' 'numpy==2.4.6 --hash=sha256:90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853' > /tmp/numpy312.txt
+          /tmp/work/venv312/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy312.txt
+          # pip's --hash option only exists inside requirements files, so the
+          # helper wheel carries its recomputed pin through the same channel.
+          printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel312.txt
+          /tmp/work/venv312/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel312.txt
+          sha256sum --check "$WHEEL.sha256"
+          INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+          test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
+          /tmp/work/venv312/bin/python -m unittest discover -s /src/tests/python
+          /tmp/work/venv312/bin/python -c 'from lumenplot_mpl import _native; import numpy as np; _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success"); print("invalid-input")'
+          /tmp/work/venv312/bin/python -c 'import importlib.metadata as metadata; print(metadata.version("lumenplot-mpl"))' > /tmp/installed-version312
+          IFS= read -r INSTALLED_VERSION < /tmp/installed-version312
+          test "$INSTALLED_VERSION" = "$CARGO_VERSION"
+          printf '%s\n' 'helper-success'
+          printf '%s\n' 'invalid-input'
+
+          /opt/python/cp313-cp313/bin/python -m venv --clear /tmp/work/venv313
+          printf '%s\n' 'numpy==2.4.6 --hash=sha256:a7830bab239b79cda9c08c2da014761cafb48da6150e1da17ac06283f43b6089' > /tmp/numpy313.txt
+          /tmp/work/venv313/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy313.txt
+          # pip's --hash option only exists inside requirements files, so the
+          # helper wheel carries its recomputed pin through the same channel.
+          printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel313.txt
+          /tmp/work/venv313/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel313.txt
+          sha256sum --check "$WHEEL.sha256"
+          INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+          test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
+          /tmp/work/venv313/bin/python -m unittest discover -s /src/tests/python
+          /tmp/work/venv313/bin/python -c 'from lumenplot_mpl import _native; import numpy as np; _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success"); print("invalid-input")'
+          /tmp/work/venv313/bin/python -c 'import importlib.metadata as metadata; print(metadata.version("lumenplot-mpl"))' > /tmp/installed-version313
+          IFS= read -r INSTALLED_VERSION < /tmp/installed-version313
+          test "$INSTALLED_VERSION" = "$CARGO_VERSION"
+          printf '%s\n' 'helper-success'
+          printf '%s\n' 'invalid-input'
+
+          /opt/python/cp314-cp314/bin/python -m venv --clear /tmp/work/venv314
+          printf '%s\n' 'numpy==2.4.6 --hash=sha256:a2c306dea656c12c68f51f4cea133cbe78ca7435eb28c735eac1d3ebe73be6e8' > /tmp/numpy314.txt
+          /tmp/work/venv314/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy314.txt
+          # pip's --hash option only exists inside requirements files, so the
+          # helper wheel carries its recomputed pin through the same channel.
+          printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel314.txt
+          /tmp/work/venv314/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel314.txt
+          sha256sum --check "$WHEEL.sha256"
+          INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+          test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
+          /tmp/work/venv314/bin/python -m unittest discover -s /src/tests/python
+          /tmp/work/venv314/bin/python -c 'from lumenplot_mpl import _native; import numpy as np; _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success"); print("invalid-input")'
+          /tmp/work/venv314/bin/python -c 'import importlib.metadata as metadata; print(metadata.version("lumenplot-mpl"))' > /tmp/installed-version314
+          IFS= read -r INSTALLED_VERSION < /tmp/installed-version314
+          test "$INSTALLED_VERSION" = "$CARGO_VERSION"
+          MANIFEST_ARGS=(--wheel "$WHEEL" --wheel-sha256 "$WHEEL_SHA256" --cargo-version "$CARGO_VERSION" --cargo-lock-sha256 "$CARGO_LOCK_SHA256" --source-commit "$SOURCE_COMMIT" --sbom /evidence/sbom.json)
+          if [ -f /evidence/observed.json ]; then
+            MANIFEST_ARGS+=(--observed /evidence/observed.json)
+          fi
+          printf '%s\n' 'helper-success'
+          printf '%s\n' 'invalid-input'
+
+          /opt/python/cp311-cp311/bin/python /src/scripts/phase3a2-manifest.py "${MANIFEST_ARGS[@]}" > /evidence/phase3a2-wheel-evidence.json
+          BUILD
+
+      - name: Check generated architecture and evidence manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$PWD/evidence/phase3a2-wheel-evidence.json" "$PWD/phase3a2-wheel-evidence.json"
+          # The mutation-test harness builds an external-consumer crate with
+          # CARGO_NET_OFFLINE=true, which resolves against the host cargo
+          # registry cache; warm it the same way ci.yml does before the run.
+          cargo fetch --locked
+          python3 scripts/check_workspace_architecture.py --phase3a2-evidence
+          python3 -m unittest scripts/test_check_workspace_architecture.py
