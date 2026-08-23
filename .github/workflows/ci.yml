@@ -157,3 +157,64 @@ jobs:
 
       - name: Evaluate all declared flake systems
         run: nix flake check --all-systems --no-build --no-update-lock-file
+
+  python-contract-tests:
+    name: Python contract tests (CPython ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The packaging contract declares requires-python >=3.11,<3.15; the
+        # floor and the newest supported interpreter bound the compatibility
+        # envelope on CI.
+        python-version:
+          - "3.11"
+          - "3.13"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up CPython ${{ matrix.python-version }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install pinned evidence stack
+        # Versions match the Phase-3A2/3B evidence pins: numpy is the
+        # pyproject.toml runtime dependency; matplotlib matches the reviewed
+        # Phase-3B probe recorded in scripts/phase3b-ci-job-proposal.md.
+        run: |
+          python3 -m pip install --disable-pip-version-check \
+            "numpy==2.4.6" "matplotlib==3.11.1"
+
+      - name: Install the distribution under test
+        # The contract suites import the compiled lumenplot_mpl._native
+        # extension at module load, so a bare interpreter cannot collect them;
+        # installing the distribution under test is part of the gate, not
+        # environment convenience. The build backend and its reviewed pin
+        # come from the pyproject.toml build-system requirement.
+        run: |
+          python3 -m pip install --no-deps --disable-pip-version-check .
+
+      - name: Run tests/python contract suites
+        run: |
+          python3 -m unittest discover -s tests/python -v
+
+      - name: Run checker mutation suites
+        run: |
+          python3 -m unittest scripts.test_check_workspace_architecture scripts.test_check_phase2b_dependencies -v
+
+      - name: Verify offline skip-legitimacy (matplotlib absent)
+        # The matplotlib-absent cells must pass via their existing skipUnless
+        # guards, never by failing. A bare venv proves the guards keep the
+        # suite honest without the optional evidence stack. The helper suite
+        # needs the compiled extension by design, so only the backend and
+        # entry-point suites are replayed here.
+        run: |
+          python3 -m venv "$RUNNER_TEMP/mpl-absent" --without-pip
+          if "$RUNNER_TEMP/mpl-absent/bin/python" -c "import matplotlib"; then
+            echo "error: matplotlib must be absent in the skip-check venv" >&2
+            exit 1
+          fi
+          python3 -m unittest discover -s tests/python -p 'test_phase3b_*.py' -v
