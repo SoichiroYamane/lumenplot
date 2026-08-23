@@ -3596,7 +3596,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             "if [ -f /evidence/observed.json ]; then\n            MANIFEST_ARGS+=(--observed /evidence/observed.json)\n          fi",
             "conditional observed-evidence handoff",
         ),
-        ('python /src/scripts/phase3a2-manifest.py "${MANIFEST_ARGS[@]}"', "argument-array manifest invocation"),
+        ('/opt/python/cp311-cp311/bin/python /src/scripts/phase3a2-manifest.py "${MANIFEST_ARGS[@]}"', "argument-array manifest invocation"),
     ):
         if fragment not in shell_code:
             errors.append(f"phase3a2 workflow: ELF evidence gate lacks {label}")

@@ -2048,7 +2048,7 @@ jobs:
           if [ -f /evidence/observed.json ]; then
             MANIFEST_ARGS+=(--observed /evidence/observed.json)
           fi
-            python /src/scripts/phase3a2-manifest.py "${{MANIFEST_ARGS[@]}}" > /evidence/phase3a2-wheel-evidence.json
+            /opt/python/cp311-cp311/bin/python /src/scripts/phase3a2-manifest.py "${{MANIFEST_ARGS[@]}}" > /evidence/phase3a2-wheel-evidence.json
           BUILD
           )"
           mkdir -p evidence
@@ -2967,7 +2967,7 @@ jobs:
                 (root / ".github/workflows/phase3a2-wheel.yml")
                 .read_text(encoding="utf-8")
                 .replace(
-                    'assert any("manylinux_2_28" in t for t in tags), tags',
+                    'assert "manylinux_2_28" in tag',
                     'pass',
                 ),
                 encoding="utf-8",

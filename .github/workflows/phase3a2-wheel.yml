@@ -250,7 +250,7 @@ jobs:
           /opt/python/cp311-cp311/bin/python -c 'import json,sys; d=json.load(open("/evidence/auditwheel.json")); tag=d.get("overall_tag",""); assert "manylinux_2_28" in tag, d'
           abi3audit "$WHEEL"
           cargo metadata --locked --offline --format-version 1 > /evidence/cargo-metadata.json
-          python /src/scripts/phase3a2-sbom.py --metadata /evidence/cargo-metadata.json --lockfile /src/Cargo.lock --pyproject /src/pyproject.toml > /evidence/sbom.json
+          /opt/python/cp311-cp311/bin/python /src/scripts/phase3a2-sbom.py --metadata /evidence/cargo-metadata.json --lockfile /src/Cargo.lock --pyproject /src/pyproject.toml > /evidence/sbom.json
           SBOM_FORMAT="CycloneDX 1.5"
           test "$SBOM_FORMAT" = "CycloneDX 1.5"
           WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
@@ -333,7 +333,7 @@ jobs:
           printf '%s\n' 'helper-success'
           printf '%s\n' 'invalid-input'
 
-          python /src/scripts/phase3a2-manifest.py "${MANIFEST_ARGS[@]}" > /evidence/phase3a2-wheel-evidence.json
+          /opt/python/cp311-cp311/bin/python /src/scripts/phase3a2-manifest.py "${MANIFEST_ARGS[@]}" > /evidence/phase3a2-wheel-evidence.json
           BUILD
 
       - name: Check generated architecture and evidence manifest
