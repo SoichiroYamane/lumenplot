@@ -51,6 +51,9 @@ jobs:
           printf '%s\n' "prefetch-inner-shell: heredoc reached container shell, cwd=$(pwd)"
           export CARGO_HOME=/usr/local/cargo
           export RUSTUP_HOME=/usr/local/cargo/rustup
+          # /tmp stays noexec: cargo's default per-install staging target lives
+          # under $TMPDIR, where build-script binaries cannot be executed.
+          export CARGO_TARGET_DIR=/tmp/work/cargo-target
           # Hash-pinned rustup bootstrap: the pinned manylinux image does not
           # ship rustup, so provision it from the recorded rustup-init digest.
           printf '%s  rustup-init\n' "$PHASE3A2_RUSTUP_INIT_SHA256" > /tmp/rustup-init.sha256

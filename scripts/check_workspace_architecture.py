@@ -3421,6 +3421,18 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             errors.append("phase3a2 workflow: offline build/test container must mount an exec-capable work tmpfs")
         if len(prefetch_work_tmpfs) != 1 or "exec" not in prefetch_work_tmpfs[0]:
             errors.append("phase3a2 workflow: prefetch container must mount an exec-capable work tmpfs for rustup-init")
+        # cargo install stages its per-install build tree under $TMPDIR by
+        # default, and /tmp is mounted noexec, so build-script binaries fail
+        # with EACCES mid-compile. The target dir must live on the exec-capable
+        # work tmpfs like it already does in the offline build container.
+        # Scoped to the prefetch segment because both container scripts carry
+        # this export; a workflow-level match would pass vacuously off the
+        # offline leg.
+        if "export CARGO_TARGET_DIR=/tmp/work/cargo-target" not in prefetch:
+            errors.append(
+                "phase3a2 workflow: prefetch script must point CARGO_TARGET_DIR "
+                "at the exec-capable work tmpfs"
+            )
         if "cargo fetch --locked" not in prefetch:
             errors.append("phase3a2 workflow: locked Cargo prefetch is missing")
         if "cargo metadata --locked" not in prefetch:

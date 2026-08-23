@@ -1903,6 +1903,9 @@ jobs:
             printf '%s\\n' "prefetch-inner-shell: heredoc reached container shell, cwd=$(pwd)"
             export CARGO_HOME=/usr/local/cargo
             export RUSTUP_HOME=/usr/local/cargo/rustup
+            # /tmp stays noexec: cargo's default per-install staging target lives
+            # under $TMPDIR, where build-script binaries cannot be executed.
+            export CARGO_TARGET_DIR=/tmp/work/cargo-target
             printf '%s  rustup-init\\n' "$PHASE3A2_RUSTUP_INIT_SHA256" > /tmp/rustup-init.sha256
             curl --proto '=https' --tlsv1.2 --silent --show-error --location https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init > /tmp/work/rustup-init
             printf '%s\\n' "prefetch-inner-shell: digest file staged, cwd=$(pwd)"
@@ -2425,6 +2428,17 @@ jobs:
                 encoding="utf-8",
             ),
             "rustup-init executable-bit provisioning",
+        )
+
+    def test_prefetch_missing_cargo_target_dir_export_is_rejected(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace("export CARGO_TARGET_DIR=/tmp/work/cargo-target", "", 1),
+                encoding="utf-8",
+            ),
+            "prefetch script must point CARGO_TARGET_DIR at the exec-capable work tmpfs",
         )
 
     def test_auditwheel_repair_is_rejected(self) -> None:
