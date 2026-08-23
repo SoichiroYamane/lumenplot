@@ -13,7 +13,10 @@ Covers the card-mandated behaviors for ``lumenplot_mpl.backend``:
   ``render_png`` when a diagnostic-recording stub is used, while native
   unavailability raises explicitly (never silently falls back);
 - ``last_diagnostics`` population, atomic replacement, generation monotonicity;
-- hybrid mode raises ``NotImplementedError``.
+- hybrid mode: strict-native-first ordering, one structured whole-frame Agg
+  fallback diagnostic on ``unsupported-capability`` failures, explicit
+  propagation of ``backend-unavailable``/internal failures, DPI parity with
+  Agg, canvas restoration, publication atomicity, and generation spending.
 
 The native seam is always exercised through ``lumenplot_mpl._native``; tests
 stub that module attribute so this suite runs before lane L1 lands. A skip-
@@ -406,12 +409,12 @@ class TestDiagnosticsAndLifecycle(unittest.TestCase):
         with self.assertRaises(AttributeError):
             diagnostic.generation = 9  # type: ignore[misc]
 
-    def test_mode_contract(self):
+    def test_invalid_mode_rejected(self):
         fig = figure.Figure(figsize=(1, 1))
-        with self.assertRaises(NotImplementedError):
-            backend_mod.FigureCanvasLumenPlot(fig, mode="hybrid")
         with self.assertRaises(ValueError):
             backend_mod.FigureCanvasLumenPlot(fig, mode="turbo")
+        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        self.assertEqual(canvas.mode, "strict")
 
 
 # ---------------------------------------------------------------------------
@@ -519,6 +522,229 @@ class TestNativeSeamPresence(unittest.TestCase):
         fig, canvas = _eligible_canvas()
         result = canvas.render_png()
         self.assertTrue(result.png_bytes[:8] == b"\x89PNG\r\n\x1a\n")
+
+
+# ---------------------------------------------------------------------------
+# Hybrid mode: whole-frame Agg fallback (ADR 0015 §12 step 3, API 0005 §3)
+# ---------------------------------------------------------------------------
+
+
+def _hybrid_canvas_with(build, figsize=(2.0, 1.0), dpi=100):
+    """Build a hybrid-mode canvas whose figure carries ``build(ax)`` content."""
+    fig = figure.Figure(figsize=figsize, dpi=dpi)
+    canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="hybrid")
+    ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+    build(ax)
+    return fig, canvas
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestHybridFallback(unittest.TestCase):
+    """Hybrid mode falls back only on stable unsupported-capability."""
+
+    def setUp(self):
+        self._patcher = _install_stub_native()
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def test_unsupported_content_falls_back_with_one_diagnostic(self):
+        def build(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+        result = canvas.render_png()
+        self.assertIsInstance(result, backend_mod.LumenPlotPngResult)
+        magic_ok = result.png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+        self.assertTrue(magic_ok)
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        self.assertEqual(len(result.diagnostics), 1)
+        diagnostic = result.diagnostics[0]
+        self.assertIsInstance(
+            diagnostic, backend_mod.LumenPlotFallbackDiagnostic
+        )
+        self.assertEqual(diagnostic.kind, "unsupported-capability")
+        self.assertEqual(diagnostic.scope, "whole-frame")
+        self.assertEqual(diagnostic.representation, "raster")
+        self.assertEqual(diagnostic.output_format, "png")
+        self.assertEqual(diagnostic.fallback_type, "matplotlib-agg")
+        self.assertEqual(diagnostic.generation, 1)
+        self.assertEqual(canvas.last_diagnostics, result.diagnostics)
+
+    def test_fallback_diagnostic_records_type_context(self):
+        # A whitelisted-type style violation records its type context
+        # (markers on a Line2D), which flows into diagnostic ``type``.
+        def build(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 1], [0, 1], marker="o"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+        result = canvas.render_png()
+        self.assertEqual(len(result.diagnostics), 1)
+        self.assertEqual(result.diagnostics[0].type, "Line2D")
+
+    def test_traversal_crash_still_falls_back_with_diagnostic(self):
+        # Even a stage-two traversal crash (title text reaches
+        # RendererBase.draw_text, which has no base implementation) is a
+        # stable unsupported-capability event, so hybrid still degrades
+        # visibly instead of raising.
+        def build(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 1], [0, 1]))
+            ax.set_title("hybrid title")
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+        result = canvas.render_png()
+        magic_ok = result.png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+        self.assertTrue(magic_ok)
+        self.assertEqual(len(result.diagnostics), 1)
+        self.assertEqual(
+            result.diagnostics[0].kind, "unsupported-capability"
+        )
+
+    def test_eligible_content_still_renders_natively_first(self):
+        def build(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 10], [0, 5], color="red"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+        result = canvas.render_png()
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        # Native success: no fallback diagnostics were published.
+        self.assertEqual(result.diagnostics, ())
+        self.assertIsNotNone(_StubNativeModule.last_spec)
+
+    def test_missing_native_seam_still_raises_backend_unavailable(self):
+        class Missing:
+            def __getattr__(self, name):
+                raise AttributeError(name)
+
+        import lumenplot_mpl.backend as real_backend
+
+        # Content must be strictly eligible so the strict attempt reaches
+        # the native seam; otherwise preflight fails first with
+        # unsupported-capability and never observes the missing seam.
+        def build(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 10], [0, 5], color="red"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        with unittest.mock.patch.object(
+            real_backend, "_native", lambda: Missing()
+        ):
+            fig, canvas = _hybrid_canvas_with(build)
+            with self.assertRaises(
+                backend_mod.LumenPlotUnsupportedError
+            ) as ctx:
+                canvas.render_png()
+            self.assertEqual(ctx.exception.code, "backend-unavailable")
+
+    def test_internal_native_failure_is_never_a_visual_fallback(self):
+        class Exploding:
+            @staticmethod
+            def render_frame_png(spec):  # noqa: N802 - mirrors native name
+                raise RuntimeError("engine panic redacted")
+
+        import lumenplot_mpl.backend as real_backend
+
+        def build(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 10], [0, 5], color="red"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        with unittest.mock.patch.object(
+            real_backend, "_native", lambda: Exploding()
+        ):
+            fig, canvas = _hybrid_canvas_with(build)
+            with self.assertRaises(
+                backend_mod.LumenPlotUnsupportedError
+            ) as ctx:
+                canvas.render_png()
+            self.assertEqual(ctx.exception.code, "internal")
+
+    def test_failed_fallback_attempt_publishes_nothing(self):
+        def build(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+
+        original_import = __import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name.endswith("backend_agg"):
+                raise ImportError("agg unavailable")
+            return original_import(name, *args, **kwargs)
+
+        builtins = __import__("builtins")
+        with unittest.mock.patch.object(
+            builtins, "__import__", guarded_import
+        ):
+            with self.assertRaises(ImportError):
+                canvas.render_png()
+        self.assertEqual(canvas.last_diagnostics, ())
+
+    def test_fallback_restores_canvas_and_dpi_matches_agg(self):
+        def build(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle=":"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build, figsize=(2.0, 1.0), dpi=100)
+
+        # Independent reference figure: identical content rendered by stock
+        # Agg at the same effective DPI must produce the same pixel size.
+        reference_fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        ref_ax = reference_fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ref_ax.add_line(Line2D([0, 1], [0, 1], linestyle=":"))
+        ref_ax.set_xlim(0, 10)
+        ref_ax.set_ylim(0, 5)
+        baseline = io.BytesIO()
+        reference_fig.savefig(baseline, format="png", dpi=150.0)
+        reference = _ihdr_dimensions(baseline.getvalue())
+
+        result = canvas.render_png(dpi=150.0)
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), reference)
+        # The temporary Agg canvas is restored even after success.
+        self.assertIs(canvas.figure, fig)
+        self.assertIs(fig.canvas, canvas)
+
+    def test_print_figure_uses_fallback_in_hybrid_mode(self):
+        def build(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+        buffer = io.BytesIO()
+        self.assertIsNone(fig.savefig(buffer, format="png"))
+        data = buffer.getvalue()
+        magic_ok = data[:8] == b"\x89PNG\r\n\x1a\n"
+        self.assertTrue(magic_ok)
+        self.assertEqual(_ihdr_dimensions(data), (200, 100))
+
+    def test_generation_spent_once_per_hybrid_attempt(self):
+        def build(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+        first = canvas._generation
+        result = canvas.render_png()
+        second = canvas._generation
+        self.assertEqual(first + 1, second)
+        self.assertEqual(result.diagnostics[0].generation, second)
 
 
 if __name__ == "__main__":  # pragma: no cover
