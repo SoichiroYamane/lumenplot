@@ -210,7 +210,7 @@ jobs:
           SOURCE_COMMIT="$(git rev-parse --verify HEAD)"
           CARGO_LOCK_SHA256="$(sha256sum Cargo.lock | cut -d' ' -f1)"
           cargo build --release --locked --offline -p lumenplot-python
-          CARGO_VERSION="$CARGO_VERSION" PYTHONPATH=/tmp/work/build-site /opt/python/cp311-cp311/bin/python -m maturin build --release --locked --offline --interpreter /opt/python/cp311-cp311/bin/python --compatibility manylinux_2_28 --out /evidence/dist
+          CARGO_VERSION="$CARGO_VERSION" PYTHONPATH=/tmp/work/build-site /tmp/work/build-site/bin/maturin build --release --locked --offline --interpreter /opt/python/cp311-cp311/bin/python --compatibility manylinux_2_28 --out /evidence/dist
           WHEEL="/evidence/dist/lumenplot_mpl-${CARGO_VERSION}-cp311-abi3-manylinux_2_28_x86_64.whl"
           WHEEL_VERSION="$(unzip -p "$WHEEL" '*/METADATA' | awk -F': ' '$1 == "Version" {print $2}')"
           test "$WHEEL_VERSION" = "$CARGO_VERSION"
