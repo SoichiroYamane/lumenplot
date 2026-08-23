@@ -1,8 +1,8 @@
 # Phase-3A2 wheel and same-wheel evidence contract
 
-Status: accepted implementation contract; package/workflow/runtime same-wheel
-evidence recorded from the pinned-builder CI run (manifest retained as CI-local
-artifact).
+Status: accepted implementation contract. Phase-3A2 helper/package/builder
+same-wheel evidence is recorded (CI-local manifest; GIL CPython 3.11–3.14).
+No support, platform, or public-backend claim is added by this record.
 
 This record is the operational companion to [ADR 0014 — pinned manylinux wheel
 evidence](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md). It is a
