@@ -2930,18 +2930,24 @@ def _phase3a2_expected_prefetch_downloads() -> list[str]:
     # The pinned manylinux image ships versioned interpreters only and has no
     # bare `python` on PATH, so every prefetch download names the reviewed
     # CPython 3.11 interpreter explicitly.
+    #
+    # pip's `--hash` is a requirements-file-only option: no pip release
+    # registers it as a CLI flag, so each hash-pinned input is staged through
+    # a one-line requirements file and consumed with --require-hashes.  The
+    # printf staging lines are asserted separately below; this inventory
+    # covers exactly the download commands themselves.  Digests are unchanged.
     interpreter = PHASE3A2_INTERPRETERS["3.11"]
     downloads = [
         f"{interpreter} -m pip download --no-deps --only-binary=:all: --require-hashes "
-        f"--dest /cache/wheelhouse maturin==1.14.1 --hash=sha256:{PHASE3A2_MATURIN_WHEEL_SHA256}"
+        "--dest /cache/wheelhouse -r /tmp/wheelhouse-maturin.txt",
     ]
-    for version, digest in PHASE3A2_NUMPY_WHEEL_SHA256.items():
+    for version in PHASE3A2_NUMPY_WHEEL_SHA256:
         python_version = version.removeprefix("cp")
         downloads.append(
             f"{interpreter} -m pip download --no-deps --only-binary=:all: --require-hashes "
             "--dest /cache/wheelhouse --platform manylinux_2_28_x86_64 "
             f"--implementation cp --python-version {python_version} "
-            f"--abi {version} numpy==2.4.6 --hash=sha256:{digest}"
+            f"--abi {version} -r /tmp/wheelhouse-numpy{python_version}.txt"
         )
     downloads.append(
         f"{interpreter} -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0"
@@ -3498,6 +3504,21 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         for digest in PHASE3A2_NUMPY_WHEEL_SHA256.values():
             if digest not in prefetch:
                 errors.append("phase3a2 workflow: missing hash-pinned NumPy 2.4.6 runtime wheel")
+        # pip's --hash is a requirements-file-only option, so the reviewed
+        # digests must be staged into one-line requirements files before the
+        # download commands consume them; assert each exact staging line.
+        staging_lines = (
+            f"printf '%s\\n' 'maturin==1.14.1 --hash=sha256:{PHASE3A2_MATURIN_WHEEL_SHA256}' > /tmp/wheelhouse-maturin.txt",
+            *(
+                f"printf '%s\\n' 'numpy==2.4.6 --hash=sha256:{digest}' > /tmp/wheelhouse-numpy{version.removeprefix('cp')}.txt"
+                for version, digest in PHASE3A2_NUMPY_WHEEL_SHA256.items()
+            ),
+        )
+        if any(staging_line not in prefetch for staging_line in staging_lines):
+            errors.append(
+                "phase3a2 workflow: prefetch lacks an exact requirements-file hash pin "
+                "for a reviewed wheelhouse input"
+            )
         if "maturin build" not in build:
             errors.append("phase3a2 workflow: offline container is missing the wheel build")
         if "cargo build --release --locked --offline" not in build:
@@ -3565,7 +3586,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         if numpy_install not in cell:
             errors.append(f"phase3a2 workflow: runtime cell {version} lacks its exact hash-pinned NumPy wheel")
         for fragment, label in (
-            ('--find-links=/cache/wheelhouse "$WHEEL"', "identical helper-wheel install"),
+            ('-r /tmp/helper-wheel', "identical helper-wheel install"),
             ("--hash=sha256:$WHEEL_SHA256", "hash-pinned helper-wheel install"),
             ('from lumenplot_mpl import _native', "private helper import"),
             ("_native.render_line_png", "private helper fixture execution"),
@@ -3577,7 +3598,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ):
             if fragment not in cell:
                 errors.append(f"phase3a2 workflow: runtime cell {version} lacks {label}")
-    if shell_code.count('pip install') and shell_code.count('--find-links=/cache/wheelhouse "$WHEEL"') < 4:
+    if shell_code.count('pip install') and shell_code.count('-r /tmp/helper-wheel') < 4:
         errors.append("phase3a2 workflow: identical helper wheel must be installed in all four cells")
     pip_lines = [line for line in workflow_code.splitlines() if "pip install" in line]
     for line in pip_lines:
@@ -3591,7 +3612,8 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             if fragment not in line:
                 errors.append(f"phase3a2 workflow: pip command is missing {label}")
         if "maturin" in line and (
-            "maturin==1.14.1" not in line or f"--hash=sha256:{PHASE3A2_MATURIN_WHEEL_SHA256}" not in line
+            "maturin==1.14.1" not in line
+            or f"--hash=sha256:{PHASE3A2_MATURIN_WHEEL_SHA256}" not in shell_code
         ):
             errors.append("phase3a2 workflow: maturin pip command is not exact and hash-pinned")
     download_lines = [line for line in shell_code.splitlines() if "pip download" in line]
@@ -3602,14 +3624,17 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             if fragment not in line:
                 errors.append(f"phase3a2 workflow: pip download is missing {label}")
         # Hash-pinned reviewed inputs (maturin, NumPy) must carry both
-        # --only-binary and --require-hashes.  Tool wheels whose digests are
-        # re-verified by sha256sum --check inside the offline container are
-        # recorded as builder provenance instead of pre-pinned here.
+        # --only-binary and --require-hashes, and their digest travels through
+        # a one-line requirements file because pip's `--hash` is a
+        # requirements-file-only option (no CLI flag exists on any release).
+        # Tool wheels whose digests are re-verified by sha256sum --check
+        # inside the offline container are recorded as builder provenance
+        # instead of pre-pinned here.
         if "--require-hashes" in line or "--only-binary=:all:" in line:
             for fragment, label in (
                 ("--only-binary=:all:", "binary-only input download"),
                 ("--require-hashes", "hash-required input download"),
-                ("--hash=sha256:", "per-input hash pin"),
+                ("-r /tmp/wheelhouse-", "requirements-file input hash pin"),
             ):
                 if fragment not in line:
                     errors.append(f"phase3a2 workflow: pip download is missing {label}")

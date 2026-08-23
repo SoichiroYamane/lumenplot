@@ -1926,11 +1926,19 @@ jobs:
             cargo metadata --locked --format-version 1 > /cache/wheelhouse/cargo-metadata.json
             cargo install --locked cargo-deny@0.20.2
             cargo deny check
-            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
-            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 311 --abi cp311 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
-            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 312 --abi cp312 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}
-            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp313']}
-            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}
+            # pip's `--hash` is a requirements-file-only option: no pip release
+            # registers it as a CLI flag, so each reviewed input carries its pin
+            # in a one-line requirements file consumed with --require-hashes.
+            printf '%s\\n' 'maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}' > /tmp/wheelhouse-maturin.txt
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse -r /tmp/wheelhouse-maturin.txt
+            printf '%s\\n' 'numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}' > /tmp/wheelhouse-numpy311.txt
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 311 --abi cp311 -r /tmp/wheelhouse-numpy311.txt
+            printf '%s\\n' 'numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}' > /tmp/wheelhouse-numpy312.txt
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 312 --abi cp312 -r /tmp/wheelhouse-numpy312.txt
+            printf '%s\\n' 'numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp313']}' > /tmp/wheelhouse-numpy313.txt
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 -r /tmp/wheelhouse-numpy313.txt
+            printf '%s\\n' 'numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}' > /tmp/wheelhouse-numpy314.txt
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 -r /tmp/wheelhouse-numpy314.txt
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0
             sha256sum /cache/wheelhouse/auditwheel-6.8.0-*.whl > /cache/wheelhouse/auditwheel-sha256.txt
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26
@@ -1972,7 +1980,9 @@ jobs:
             python /cache/check-sbom.py --format 'CycloneDX 1.5' --cargo-metadata /cache/wheelhouse/cargo-metadata.json
             /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/lp-3.11
             /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
-            /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
+            # pip's --hash only exists inside requirements files.
+            printf '%s\\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel311.txt
+            /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel311.txt
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
@@ -1981,7 +1991,9 @@ jobs:
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp312-cp312/bin/python -m venv --clear /tmp/lp-3.12
             /tmp/lp-3.12/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}
-            /tmp/lp-3.12/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
+            # pip's --hash only exists inside requirements files.
+            printf '%s\\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel312.txt
+            /tmp/lp-3.12/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel312.txt
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
@@ -1990,7 +2002,9 @@ jobs:
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp313-cp313/bin/python -m venv --clear /tmp/lp-3.13
             /tmp/lp-3.13/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp313']}
-            /tmp/lp-3.13/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
+            # pip's --hash only exists inside requirements files.
+            printf '%s\\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel313.txt
+            /tmp/lp-3.13/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel313.txt
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
@@ -1999,7 +2013,9 @@ jobs:
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp314-cp314/bin/python -m venv --clear /tmp/lp-3.14
             /tmp/lp-3.14/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}
-            /tmp/lp-3.14/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256
+            # pip's --hash only exists inside requirements files.
+            printf '%s\\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel314.txt
+            /tmp/lp-3.14/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel314.txt
             sha256sum --check "$WHEEL.sha256"
             INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
             test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
@@ -2181,7 +2197,7 @@ jobs:
                 (root / ".github/workflows/phase3a2-wheel.yml")
                 .read_text(encoding="utf-8")
                 .replace(
-                    '/tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse "$WHEEL" --hash=sha256:$WHEEL_SHA256',
+                    '/tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel311.txt',
                     "# helper wheel install omitted",
                     1,
                 ),
@@ -2656,6 +2672,23 @@ jobs:
             )
 
         self.assert_rejected(mutate, "prefetch must not invoke a bare python interpreter")
+
+    def test_missing_requirements_file_hash_staging_is_rejected(self) -> None:
+        # pip's --hash is a requirements-file-only option, so removing the
+        # printf staging line drops the digest pin from the workflow entirely.
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            text = path.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                if "/tmp/wheelhouse-maturin.txt" in line and "printf" in line:
+                    text = text.replace(line + "\n", "", 1)
+                    break
+            path.write_text(text, encoding="utf-8")
+
+        self.assert_rejected(
+            mutate,
+            "prefetch lacks an exact requirements-file hash pin for a reviewed wheelhouse input",
+        )
 
     def test_unreviewed_prefetch_network_fetch_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
