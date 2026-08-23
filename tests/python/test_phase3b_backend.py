@@ -475,6 +475,75 @@ class TestStrictUnsupported(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Fixed style surface: Butt cap + Miter join only (ADR 0015 §5)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestFixedStyleSurface(unittest.TestCase):
+    """Effective cap/join styles outside Butt/Miter are rejected, never
+    approximated, and nothing reaches the native seam."""
+
+    def setUp(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_explicit_butt_miter_accepted_and_carried_into_spec(self):
+        fig, canvas = _eligible_canvas(
+            line_kwargs={"solid_capstyle": "butt",
+                         "solid_joinstyle": "miter"})
+        canvas.render_png()
+        command = _StubNativeModule.last_spec["commands"][0]
+        self.assertEqual(command["cap"], "butt")
+        self.assertEqual(command["join"], "miter")
+        del fig
+
+    def _render_with_styles(self, cap=None, join=None):
+        """Eligible figure whose line carries the given effective styles."""
+        kwargs = {}
+        if cap is not None:
+            kwargs["solid_capstyle"] = cap
+        if join is not None:
+            kwargs["solid_joinstyle"] = join
+        fig, canvas = _eligible_canvas()
+        ax = fig.get_axes()[0]
+        line = ax.lines[0]
+        if cap is not None:
+            line.set_solid_capstyle(cap)
+        if join is not None:
+            line.set_solid_joinstyle(join)
+        del kwargs
+        return fig, canvas
+
+    def _assert_rejected(self, cap, join):
+        fig, canvas = self._render_with_styles(cap, join)
+        before = _StubNativeModule.last_spec
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+            canvas.render_png()
+        self.assertEqual(ctx.exception.code, "unsupported-capability")
+        # Nothing was published to the native seam.
+        self.assertIs(_StubNativeModule.last_spec, before)
+        del fig
+
+    def test_matplotlib_defaults_rejected(self):
+        # Current Matplotlib defaults are projecting/round (ADR 0015 §5).
+        self._assert_rejected("projecting", "round")
+
+    def test_round_cap_rejected(self):
+        self._assert_rejected("round", "miter")
+
+    def test_projecting_cap_rejected(self):
+        self._assert_rejected("projecting", "miter")
+
+    def test_round_join_rejected(self):
+        self._assert_rejected("butt", "round")
+
+    def test_bevel_join_rejected(self):
+        self._assert_rejected("butt", "bevel")
+
+
+# ---------------------------------------------------------------------------
 # Diagnostics publication and lifecycle
 # ---------------------------------------------------------------------------
 
