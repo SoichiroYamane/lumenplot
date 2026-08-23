@@ -603,6 +603,235 @@ class TestFileOutputGuards(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Rectangular clipping (API 0005 §6 hazard 3)
+# ---------------------------------------------------------------------------
+
+
+def _decode_rgba8(png_bytes: bytes) -> tuple[int, int, list[bytes]]:
+    """Decode an RGBA8 PNG produced by the native seam (stdlib only).
+
+    Returns ``(width, height, rows)`` where each row is ``width * 4``
+    decoded bytes. Supports the encoder's filter set including Paeth.
+    """
+    import zlib
+
+    assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n", "PNG magic missing"
+    pos = 8
+    idat = b""
+    width = height = bit_depth = color_type = None
+    while pos < len(png_bytes):
+        length = struct.unpack(">I", png_bytes[pos:pos + 4])[0]
+        chunk_type = png_bytes[pos + 4:pos + 8]
+        data = png_bytes[pos + 8:pos + 8 + length]
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type = struct.unpack(
+                ">IIBB", data[:10]
+            )
+            assert bit_depth == 8 and color_type == 6, (
+                "expected 8-bit RGBA"
+            )
+        elif chunk_type == b"IDAT":
+            idat += data
+        pos += 12 + length
+    assert width is not None and height is not None
+
+    raw = zlib.decompress(idat)
+    stride = width * 4 + 1
+
+    def paeth(a: int, b: int, c: int) -> int:
+        p = a + b - c
+        pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+        if pa <= pb and pa <= pc:
+            return a
+        if pb <= pc:
+            return b
+        return c
+
+    rows: list[bytes] = []
+    previous = bytearray(width * 4)
+    for y in range(height):
+        filt = raw[y * stride]
+        line = bytearray(raw[y * stride + 1:(y + 1) * stride])
+        for x in range(width * 4):
+            left = line[x - 4] if x >= 4 else 0
+            up = previous[x]
+            upper_left = previous[x - 4] if x >= 4 else 0
+            if filt == 1:
+                line[x] = (line[x] + left) & 0xFF
+            elif filt == 2:
+                line[x] = (line[x] + up) & 0xFF
+            elif filt == 3:
+                line[x] = (line[x] + (left + up) // 2) & 0xFF
+            elif filt == 4:
+                line[x] = (line[x] + paeth(left, up, upper_left)) & 0xFF
+        rows.append(bytes(line))
+        previous = line
+    return width, height, rows
+
+
+def _is_red(pixel: bytes) -> bool:
+    """A strongly red stroke pixel (tolerant of antialiasing edges)."""
+    r, g, b = pixel[0], pixel[1], pixel[2]
+    return bool(r >= 200 and g < 100 and b < 100)
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestRectangularClipping(unittest.TestCase):
+    """The validated axes rectangle clips the stroke on all four edges."""
+
+    def _install_spec_stub(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _clipped_canvas(self):
+        """Two eligible strokes together leave through all four edges.
+
+        A single straight segment can cross a convex rectangle's boundary
+        at most twice, so four-edge evidence needs two lines: one nearly
+        horizontal leaving left+right, one steep leaving top+bottom.
+        """
+        fig, canvas = _eligible_canvas(
+            figsize=(1.0, 0.5),
+            dpi=100,
+            line_kwargs={"color": (1.0, 0.0, 0.0, 1.0)},
+        )
+        ax = fig.get_axes()[0]
+        ax.lines[0].remove()
+        common = dict(
+            color=(1.0, 0.0, 0.0, 1.0),
+            linewidth=2.0,
+            solid_capstyle="butt",
+            solid_joinstyle="miter",
+        )
+        # Nearly horizontal: leaves through the left and right edges.
+        ax.add_line(Line2D([-50.0, 50.0], [2.5, 2.5], **common))
+        # Steep: leaves through the top and bottom edges.
+        ax.add_line(Line2D([5.0, 6.0], [-50.0, 50.0], **common))
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        return fig, canvas, ax
+
+    def test_clip_rect_carries_axes_rectangle(self):
+        """Request carries the four-sided clip in top-left pixel space."""
+        self._install_spec_stub()
+        fig, canvas, ax = self._clipped_canvas()
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        bbox = ax.get_window_extent()
+        commands = spec["commands"]
+        self.assertEqual(len(commands), 2)
+        expected_clip = [
+            bbox.x0,
+            50 - (bbox.y0 + bbox.height),
+            bbox.width,
+            bbox.height,
+        ]
+        for command in commands:
+            self.assertEqual(command["clip_rect"], expected_clip)
+        del fig
+
+    def test_stroke_clipped_on_all_four_edges(self):
+        """Raster evidence: red ink exists at all four clip edges and
+        nowhere outside them (real seam; skipped before lane L1)."""
+        try:
+            from lumenplot_mpl import _native
+        except (ImportError, AttributeError):
+            self.skipTest("native seam not built in this environment")
+        if not hasattr(_native, "render_frame_png"):
+            self.skipTest("render_frame_png not present yet")
+
+        fig, canvas, ax = self._clipped_canvas()
+        result = canvas.render_png()
+        del fig, canvas, ax
+        width, height, rows = _decode_rgba8(result.png_bytes)
+
+        bbox_x0, bbox_x1 = 10.0, 90.0
+        bbox_y0, bbox_y1 = 5.0, 45.0  # top-left row space
+        import numpy as np
+
+        def pixel(x, y):
+            offset = x * 4
+            return rows[y][offset:offset + 4]
+
+        def opaque_red(x, y):
+            return _is_red(pixel(x, y))
+
+        red_mask = np.zeros((height, width), dtype=bool)
+        for y in range(height):
+            for x in range(width):
+                red_mask[y, x] = opaque_red(x, y)
+
+        columns = np.flatnonzero(red_mask.any(axis=0))
+        rows_with_ink = np.flatnonzero(red_mask.any(axis=1))
+        # Left edge: ink touches the first clipped column...
+        self.assertTrue(columns.size and int(columns[0]) == int(bbox_x0),
+                        f"first ink column {columns[:5]}")
+        # Right edge likewise.
+        self.assertTrue(int(columns[-1]) == int(bbox_x1) - 1,
+                        f"last ink column {columns[-5:]}")
+        # Top edge.
+        self.assertTrue(rows_with_ink.size
+                        and int(rows_with_ink[0]) == int(bbox_y0),
+                        f"first ink row {rows_with_ink[:5]}")
+        # Bottom edge.
+        self.assertTrue(int(rows_with_ink[-1]) == int(bbox_y1) - 1,
+                        f"last ink row {rows_with_ink[-5:]}")
+        # And nothing outside the clip rectangle at all.
+        outside = red_mask.copy()
+        outside[int(bbox_y0):int(bbox_y1), int(bbox_x0):int(bbox_x1)] = False
+        self.assertFalse(outside.any(), "stroke ink found outside clip rect")
+
+    def test_vertices_follow_public_affine_outside_clip(self):
+        """Emitted geometry stays the plain public affine mapping even for
+        the off-canvas part of the segment; four-edge trimming is the
+        native rasterizer's job via clip_rect (ADR 0015 §6)."""
+        self._install_spec_stub()
+        fig, canvas, ax = self._clipped_canvas()
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        import numpy as np
+
+        bbox = ax.get_window_extent()
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        def pxx(x):
+            return bbox.x0 + (x - xlim[0]) / (xlim[1] - xlim[0]) * bbox.width
+
+        def pxy(y):
+            return bbox.y0 + (y - ylim[0]) / (ylim[1] - ylim[0]) * bbox.height
+
+        expected = [
+            # Nearly horizontal stroke, left+right ends.
+            [pxx(-50.0), pxy(2.5)],
+            [pxx(50.0), pxy(2.5)],
+        ]
+        np.testing.assert_allclose(
+            np.asarray(spec["commands"][0]["vertices"]),
+            np.asarray(expected),
+            rtol=0,
+            atol=1e-9,
+        )
+        expected = [
+            # Steep stroke, bottom+top ends. Vertices stay bottom-left
+            # display-pixel points per ADR 0015 §6; the native rasterizer
+            # maps them into its top-left logical space itself.
+            [pxx(5.0), pxy(-50.0)],
+            [pxx(6.0), pxy(50.0)],
+        ]
+        np.testing.assert_allclose(
+            np.asarray(spec["commands"][1]["vertices"]),
+            np.asarray(expected),
+            rtol=0,
+            atol=1e-9,
+        )
+        del fig
+
+
+# ---------------------------------------------------------------------------
 # Native seam availability
 # ---------------------------------------------------------------------------
 
