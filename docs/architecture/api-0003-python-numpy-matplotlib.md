@@ -1,6 +1,8 @@
 # API 0003: Phase-3A Python, NumPy, and private line/PNG helper
 
-- Status: **Accepted staged Phase-3A contract; Phase-3A2 builder/evidence contract recorded; helper/package evidence pending; Phase-3B public Matplotlib contract open**
+- Status: **Accepted staged Phase-3A contract; Phase-3A2 helper/package/builder
+same-wheel evidence recorded (CI-local manifest; GIL 3.11–3.14 four-cell);
+Phase-3B public Matplotlib contract open**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker

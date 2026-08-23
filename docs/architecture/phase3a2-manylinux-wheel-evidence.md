@@ -1,7 +1,8 @@
 # Phase-3A2 wheel and same-wheel evidence contract
 
-Status: accepted implementation contract; package, workflow, and runtime evidence
-pending.
+Status: accepted implementation contract; package/workflow/runtime same-wheel
+evidence recorded from the pinned-builder CI run (manifest retained as CI-local
+artifact).
 
 This record is the operational companion to [ADR 0014 — pinned manylinux wheel
 evidence](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md). It is a
