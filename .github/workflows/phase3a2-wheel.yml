@@ -59,6 +59,9 @@ jobs:
             > /tmp/work/rustup-init
           # Resolve the digest-listed name against the staging directory, not CWD=/src.
           ( cd /tmp/work && sha256sum --check /tmp/rustup-init.sha256 )
+          # curl redirection creates the file mode 0644; direct execve needs the
+          # executable bit set before the bootstrap can start.
+          chmod +x /tmp/work/rustup-init
           # /tmp stays noexec; only the exec-mounted work tmpfs may run binaries.
           /tmp/work/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
           export PATH=/usr/local/cargo/bin:$PATH

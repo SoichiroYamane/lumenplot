@@ -3255,6 +3255,9 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         # subshell must resolve it against the exec-capable /tmp/work staging
         # directory; the workdir is read-only /src.
         ("( cd /tmp/work && sha256sum --check /tmp/rustup-init.sha256 )", "rustup-init digest verification"),
+        # curl redirection stages the bootstrap mode 0644; the executable bit
+        # must be set before direct execve can start it.
+        ("chmod +x /tmp/work/rustup-init", "rustup-init executable-bit provisioning"),
         # /tmp itself stays noexec; the verified ELF bootstrap is executed
         # directly from the exec-mounted work tmpfs instead of being
         # misinterpreted by bash.
@@ -3453,6 +3456,9 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
                 "printf '%s  rustup-init\\n' \"$PHASE3A2_RUSTUP_INIT_SHA256\" > /tmp/rustup-init.sha256",
                 "rustup-init expected-digest file",
             ),
+            # curl redirection stages the bootstrap mode 0644; the executable
+            # bit must be set before direct execve can start it.
+            ("chmod +x /tmp/work/rustup-init", "rustup-init executable-bit provisioning"),
             # /tmp stays noexec; the verified bootstrap must be executed
             # directly from the exec-mounted /tmp/work tmpfs.
             ("/tmp/work/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0", "pinned rustup provisioning"),

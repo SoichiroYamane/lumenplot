@@ -1910,6 +1910,9 @@ jobs:
             # must resolve it against the exec-capable staging directory; the
             # workdir is read-only /src.
             ( cd /tmp/work && sha256sum --check /tmp/rustup-init.sha256 )
+            # curl redirection creates the file mode 0644; direct execve needs the
+            # executable bit set before the bootstrap can start.
+            chmod +x /tmp/work/rustup-init
             # /tmp stays noexec; the verified ELF bootstrap is executed directly
             # from the exec-mounted work tmpfs.
             /tmp/work/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
@@ -2411,6 +2414,17 @@ jobs:
                 encoding="utf-8",
             ),
             "pinned rustup provisioning",
+        )
+
+    def test_missing_rustup_init_chmod_is_rejected(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace("chmod +x /tmp/work/rustup-init\n", "", 1),
+                encoding="utf-8",
+            ),
+            "rustup-init executable-bit provisioning",
         )
 
     def test_auditwheel_repair_is_rejected(self) -> None:
