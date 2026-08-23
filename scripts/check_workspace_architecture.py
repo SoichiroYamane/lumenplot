@@ -3688,6 +3688,14 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ("GLIBC_VERSION=\"$(ldd --version", "observed glibc capture"),
         ("UNAME_ARCH=\"$(uname -m)\"", "observed platform capture"),
         (
+            "/opt/python/cp311-cp311/bin/python /src/scripts/test_phase3b_wheel_evidence.py --workflow-evidence \"$WHEEL\" --observed /evidence/observed.json",
+            "Phase-3B offline packaging evidence probe",
+        ),
+        (
+            "> /evidence/phase3b-packaging.json",
+            "Phase-3B packaging evidence artifact emission",
+        ),
+        (
             "if [ -f /evidence/observed.json ]; then\n            MANIFEST_ARGS+=(--observed /evidence/observed.json)\n          fi",
             "conditional observed-evidence handoff",
         ),

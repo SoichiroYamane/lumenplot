@@ -1,4 +1,6 @@
-"""Phase-3B wheel-evidence probe (propose-only; changes no CI workflow).
+"""Phase-3B wheel-evidence probe (two modes).
+
+``--probe`` (convenience/local evidence)
 
 Pipeline (all steps are real executions, results reported verbatim):
 
@@ -26,6 +28,22 @@ Network is needed only for the pinned maturin (and optional matplotlib)
 download; without network or a Rust toolchain the probe records why it
 stopped. This script produces convenience evidence only; it is not an
 acceptance-grade artifact until reviewed with its CI job proposal.
+
+``--workflow-evidence WHEEL --observed PATH`` (offline CI evidence mode)
+
+Runs inside the already-audited offline Phase-3A2 build container after the
+wheel has been built, hash-verified, auditwheel-checked and abi3audit-ed.
+It performs no network access, no Rust toolchain work, and no wheel build:
+it re-digests the exact wheel file, installs that wheel into a throwaway
+``--no-deps`` virtualenv, reads the ``matplotlib.backend`` entry-point
+registry from the installed distribution metadata, runs the entry-point
+discovery suite (tests/python/test_phase3b_entrypoint.py) with its own
+skip-clean gating, and folds every result into the observed-evidence JSON
+under the ``phase3b_packaging`` key. The backend module itself is owned by
+sibling lane t_e60a8ed3 and the pyproject entry point by t_bb3a2b34; until
+each lands the evidence records honest ``backend-absent`` /
+``entry-point-undeclared`` statuses instead of pretending success.
+
 """
 
 from __future__ import annotations
@@ -73,6 +91,9 @@ FORBIDDEN_BACKEND_EXPORTS = (
 STATUS_IMPLEMENTED = "implemented"
 STATUS_BACKEND_ABSENT = "backend-absent"
 STATUS_BLOCKED = "blocked"
+# The pyproject [project.entry-points] table is owned by t_bb3a2b34; until
+# it lands the offline evidence records this status instead of failing.
+STATUS_ENTRY_POINT_UNDECLARED = "entry-point-undeclared"
 
 
 class ProbeBlocked(Exception):
@@ -330,6 +351,133 @@ def run_helper_tests(run_python: Path) -> dict[str, object]:
     }
 
 
+def run_workflow_evidence(wheel: Path, observed_path: Path) -> dict[str, object]:
+    """Offline CI evidence pass over an already-verified wheel.
+
+    No network, no Rust toolchain, no wheel build. The wheel is re-digested
+    from the exact file the workflow already hash-checked; the entry-point
+    registry is read from installed metadata in a throwaway ``--no-deps``
+    venv; the entry-point discovery suite runs with its own skip-clean
+    gating so every sibling-lane gap is recorded honestly instead of
+    failing the offline lane before its owners land.
+    """
+    if not wheel.is_file():
+        raise ProbeBlocked(f"wheel not found: {wheel}")
+    wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+    with tempfile.TemporaryDirectory(prefix="phase3b-wf-") as tmp:
+        venv_dir = Path(tmp) / "venv"
+        evidence_python = make_venv(venv_dir)
+        # --no-deps on purpose: numpy/matplotlib availability is probed and
+        # reported separately; the offline cell has no wheelhouse for them.
+        run(
+            [
+                str(evidence_python),
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                "--no-index",
+                str(wheel),
+            ]
+        )
+        version = run(
+            [
+                str(evidence_python),
+                "-c",
+                "import importlib.metadata as m; print(m.version('lumenplot-mpl'))",
+            ]
+        ).stdout.strip()
+
+        registry = json.loads(
+            run(
+                [
+                    str(evidence_python),
+                    "-c",
+                    "import json,importlib.metadata as m;"
+                    "print(json.dumps("
+                    "[[ep.name, ep.value] for ep in "
+                    "m.entry_points(group='matplotlib.backend')]))",
+                ]
+            ).stdout
+        )
+        matches = [value for name, value in registry if name == EXPECTED_ENTRY_POINT_NAME]
+        entry_point_declared = bool(matches)
+
+        matplotlib_ready = ensure_matplotlib(evidence_python)
+        suite_result = run(
+            [
+                str(evidence_python),
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                str(REPO_ROOT / "tests" / "python"),
+            ],
+            check=False,
+            cwd=str(REPO_ROOT),
+        )
+        suite_tail = "\n".join(suite_result.stderr.strip().splitlines()[-3:])
+        backend_importable = _backend_module_importable(evidence_python)
+
+    if not entry_point_declared:
+        packaging_status = STATUS_ENTRY_POINT_UNDECLARED
+    elif not backend_importable:
+        packaging_status = STATUS_BACKEND_ABSENT
+    else:
+        packaging_status = STATUS_IMPLEMENTED
+
+    return {
+        "mode": "workflow-offline",
+        "wheel_filename": wheel.name,
+        "wheel_sha256": wheel_sha256,
+        "distribution_version": version,
+        "entry_point_declared": entry_point_declared,
+        "matplotlib_backend_entry_points": {
+            name: value for name, value in registry
+        },
+        "backend_module_importable": backend_importable,
+        "matplotlib_available_for_probes": matplotlib_ready,
+        "entrypoint_suite_exit_code": suite_result.returncode,
+        "entrypoint_suite_summary": suite_tail,
+        "surface_status": packaging_status,
+        "note": (
+            "offline Phase-3A2 build-container evidence; entry-point discovery "
+            "activates fully once the pyproject table (t_bb3a2b34) lands"
+        ),
+    }
+
+
+def _backend_module_importable(evidence_python: Path) -> bool:
+    probe = run(
+        [str(evidence_python), "-c", "import lumenplot_mpl.backend"],
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+def merge_observed_evidence(
+    observed_path: Path,
+    phase3b_packaging: dict[str, object],
+) -> dict[str, object]:
+    """Fold ``phase3b_packaging`` into the runtime observed-evidence JSON.
+
+    The Phase-3A2 manifest script reads this same file for its builder
+    fields, so the merge must preserve them untouched.
+    """
+    try:
+        observed = json.loads(observed_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        observed = {}
+    if not isinstance(observed, dict):
+        raise ProbeBlocked(f"{observed_path} is not a JSON object")
+    observed["phase3b_packaging"] = phase3b_packaging
+    observed_path.write_text(
+        json.dumps(observed, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return observed
+
+
 def run_probe(workdir: Path) -> dict[str, object]:
     """Execute the full pipeline; every failure mode is recorded, not faked."""
     workdir.mkdir(parents=True, exist_ok=True)
@@ -405,7 +553,35 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--probe", action="store_true", help="run the full probe")
     parser.add_argument("--workdir", type=Path, default=None)
+    parser.add_argument(
+        "--workflow-evidence",
+        type=Path,
+        default=None,
+        metavar="WHEEL",
+        help=(
+            "offline CI mode: digest + install the already-verified wheel, "
+            "probe entry-point discovery, merge into --observed JSON"
+        ),
+    )
+    parser.add_argument(
+        "--observed",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="observed-evidence JSON updated by --workflow-evidence",
+    )
     args = parser.parse_args(argv)
+    if args.workflow_evidence is not None:
+        if args.observed is None:
+            parser.error("--workflow-evidence requires --observed PATH")
+        try:
+            packaging = run_workflow_evidence(args.workflow_evidence, args.observed)
+        except ProbeBlocked as error:
+            print(json.dumps({"status": "blocked", "reason": str(error)}, indent=2))
+            return 1
+        observed = merge_observed_evidence(args.observed, packaging)
+        print(json.dumps(observed.get("phase3b_packaging"), indent=2))
+        return 0
     if not args.probe:
         parser.print_help()
         return 2

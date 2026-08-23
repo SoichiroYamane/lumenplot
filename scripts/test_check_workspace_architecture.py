@@ -2013,6 +2013,7 @@ jobs:
             RUNPATH_VALUE="$(printf '%s\\n' "$READELF_OUT" | sed -n '/(\\(RUNPATH\))/s/.*\\[\\([^]]*\)\].*/\\1/p')"
             if printf '%s\\n' "$READELF_OUT" | grep -Eq 'libpython|libcuda'; then printf '%s\\n' 'unexpected shared library' >&2; exit 1; fi
             abi3audit "$WHEEL"
+            /opt/python/cp311-cp311/bin/python /src/scripts/test_phase3b_wheel_evidence.py --workflow-evidence "$WHEEL" --observed /evidence/observed.json > /evidence/phase3b-packaging.json
             python /cache/check-sbom.py --format 'CycloneDX 1.5' --cargo-metadata /cache/wheelhouse/cargo-metadata.json
             /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/lp-3.11
             /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
@@ -2989,6 +2990,50 @@ jobs:
                 encoding="utf-8",
             ),
             'manylinux_2_28 tag assertion from auditwheel JSON',
+        )
+
+    def test_missing_phase3b_packaging_probe_is_rejected(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                "\n".join(
+                    line
+                    for line in (root / ".github/workflows/phase3a2-wheel.yml")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                    if "test_phase3b_wheel_evidence.py --workflow-evidence" not in line
+                )
+                + "\n",
+                encoding="utf-8",
+            ),
+            "Phase-3B offline packaging evidence probe",
+        )
+
+    def test_phase3b_packaging_artifact_emission_is_required(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace(
+                    "> /evidence/phase3b-packaging.json",
+                    "> /dev/null",
+                ),
+                encoding="utf-8",
+            ),
+            "Phase-3B packaging evidence artifact emission",
+        )
+
+    def test_phase3b_probe_must_target_the_observed_evidence_file(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace(
+                    "--observed /evidence/observed.json > /evidence/phase3b-packaging.json",
+                    "--observed /tmp/packaging.json > /evidence/phase3b-packaging.json",
+                ),
+                encoding="utf-8",
+            ),
+            "Phase-3B offline packaging evidence probe",
         )
 
     def test_missing_elf_check_is_rejected(self) -> None:
