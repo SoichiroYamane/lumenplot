@@ -242,9 +242,10 @@ used, it is non-release evidence storage only, runs for a trusted push to `main`
 - **Uploading every build output:** rejected by default because this is a
   private evidence contract, not a release pipeline. Optional upload remains
   fail-closed and retention-bounded.
-- **Opening the public Matplotlib backend now:** rejected because API 0003 and
-  ADR 0013 deliberately leave Phase-3B authority, fallback, and compatibility
-  decisions open.
+- **Opening the public Matplotlib backend now:** rejected because the Phase-3B
+  authority, fallback, and compatibility decisions are now recorded in
+  ADR 0015/API 0005, and this record predates that contract without
+  authorizing any backend work.
 
 ## Consequences
 

@@ -7,7 +7,10 @@ This record is the operational companion to [ADR 0014 — pinned manylinux wheel
 evidence](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md). It is a
 private helper boundary, not a Matplotlib backend or a release workflow. The
 public v1 adapter, Matplotlib Artist authority, fallback profiles, and
-Phase-3B compatibility matrix remain open under [API 0003](api-0003-python-numpy-matplotlib.md).
+Phase-3B compatibility matrix are governed by the accepted
+[ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) +
+[API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md) contract;
+their implementation and public-backend evidence remain pending.
 
 ## Claim boundary
 

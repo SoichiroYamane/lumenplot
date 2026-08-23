@@ -1,6 +1,6 @@
 # API 0003: Phase-3A Python, NumPy, and private line/PNG helper
 
-- Status: **Accepted staged Phase-3A contract; Phase-3A2 builder/evidence contract recorded; helper/package evidence pending; Phase-3B public Matplotlib contract open**
+- Status: **Accepted staged Phase-3A contract; Phase-3A2 builder/evidence contract recorded; helper/package evidence pending; Phase-3B public Matplotlib contract accepted in ADR 0015/API 0005 — implementation and public-backend evidence pending**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
@@ -15,9 +15,11 @@
 This record narrows API 0003 to the first implementable, owned Phase-3A
 vertical slice. It records no Python product source, package artifact, wheel,
 Matplotlib dependency, backend entry point, or support result. The broad v1
-Matplotlib requirements remain normative, but the public Phase-3B result,
-diagnostic, warning, canvas, fallback, profile, generation, and file/path
-schemas are deliberately open until the private helper produces real evidence.
+Matplotlib requirements remain normative, but the Phase-3B public
+result, diagnostic, warning, canvas, fallback, profile, generation, and file/path
+schemas are recorded in [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md)
+and [API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md); their
+implementation and public-backend evidence remain pending until the private helper produces real evidence.
 
 ## Requirement references
 
@@ -44,8 +46,8 @@ by its own accepted evidence contract:
 
 Phase-3A is helper-only. It has no `backend.py`, no Matplotlib import or
 dependency, no `matplotlib.backend` entry point, no public `render_png`, no
-result/diagnostic/warning types, and no public canvas. A separate accepted
-Phase-3B record is required before any of those surfaces are implemented.
+result/diagnostic/warning types, and no public canvas. The accepted [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md)/[API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md)
+contract governs those surfaces; none of them is implemented in this record.
 
 ## Decision
 
@@ -207,11 +209,12 @@ CI-local `phase3a2-wheel-evidence.json` schema. This record remains a contract
 only: no wheel, package, workflow, or runtime result is claimed until that
 evidence is generated and reviewed.
 
-## Phase-3B boundary remains open
+## Phase-3B boundary: accepted contract, evidence pending
 
-The public-backend research supplies mandatory inputs to a later decision; it
-does not authorize Phase-3B implementation or freeze a public schema. That
-decision must at minimum preserve:
+The public-backend research supplies mandatory inputs to the accepted
+[ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) contract;
+acceptance of that record does not authorize implementation. The Phase-3B
+contract preserves at minimum:
 
 - evaluate exactly Matplotlib 3.11.1 with backend API 1.1; this is a future
   Phase-3B evidence target, not a Phase-3A dependency or support result;
@@ -236,7 +239,9 @@ decision must at minimum preserve:
   callbacks.
 
 The public result, diagnostic, warning, canvas, fallback, profile, generation,
-and file/path schemas require that separate accepted contract. No provisional
+and file/path schemas are recorded by the accepted [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md)
+contract and its companion surface record [API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md).
+No provisional
 `PngResult`, `FallbackDiagnostic`, `LumenPlotFallbackWarning`, `render_png`, or
 canvas property schema is adopted here.
 
@@ -270,6 +275,7 @@ gates close.
 - [ADR 0003 — facade and crate dependency graph](../adr/0003-facade-and-crate-dag.md)
 - [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md)
 - [ADR 0014 — Phase-3A2 pinned manylinux wheel evidence](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md)
+- [ADR 0015 — Phase-3B public Matplotlib adapter contract](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) and [API 0005 — Phase-3B public backend surface](api-0005-phase3b-public-matplotlib-backend-surface.md)
 - [Phase-3A2 wheel and same-wheel evidence contract](phase3a2-manylinux-wheel-evidence.md)
 - [ADR 0012 — private line frame and deterministic PNG contract](../adr/0012-private-line-frame-and-png-contract.md)
 - [ADR 0013 — hidden line/PNG facade and private Python helper](../adr/0013-hidden-facade-private-python-line-png.md)

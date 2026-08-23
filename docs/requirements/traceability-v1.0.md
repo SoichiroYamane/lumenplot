@@ -44,7 +44,7 @@ or `environment required` results.
 | Phase-1 Scene, view, and owned data surface | [API 0001](../architecture/api-0001-native-scene-state.md) | Accepted contract; Phase-1 local implementation evidence recorded |
 | Phase-1 engine error ownership and mapping | [API 0002](../architecture/api-0002-errors-capabilities-fallback.md) | Accepted contract; Phase-1 mapping/local failure evidence recorded |
 | Phase-2A/2B private line frame and deterministic PNG | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) | Accepted amendment; bounded implementation and local evidence recorded; full-v1 export pending |
-| Phase-3A hidden facade and private Python helper | [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) + [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) | Accepted staged contract; Phase-3A2 builder/same-wheel evidence contract recorded; helper/package/wheel evidence pending; Phase-3B public Matplotlib contract open |
+| Phase-3A hidden facade and private Python helper | [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) + [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) | Accepted staged contract; Phase-3A2 builder/same-wheel evidence contract recorded; helper/package/wheel evidence pending; Phase-3B public Matplotlib contract accepted in ADR 0015/API 0005 with implementation and public-backend evidence pending |
 
 ## Coverage summary
 
