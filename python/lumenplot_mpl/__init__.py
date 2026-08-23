@@ -1,4 +1,4 @@
-"""Private Phase-3A helper package."""
+"""Private Phase-3A helper package; hosts the Phase-3B backend module."""
 
 
 class LumenPlotError(RuntimeError):
