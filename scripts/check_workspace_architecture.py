@@ -2970,6 +2970,9 @@ def _phase3a2_expected_prefetch_downloads() -> list[str]:
         "url-normalize==1.4.3",
         "attrs==26.1.0",
         "cattrs==24.1.2",
+        "urllib3==2.7.0",
+        "certifi==2026.7.22",
+        "idna==3.19",
         "rich==15.0.0",
         "markdown-it-py==4.2.0",
         "pygments==2.21.0",
@@ -3696,6 +3699,7 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
                 "markdown-it-py==4.2.0", "pygments==2.21.0", "mdurl==0.1.2",
                 "requests-cache==1.3.3", "url-normalize==1.4.3",
                 "attrs==26.1.0", "cattrs==24.1.2",
+                "urllib3==2.7.0", "certifi==2026.7.22", "idna==3.19",
             )
             if not any(pkg + " " in line or pkg == line.rstrip().split()[-1]
                        for pkg in allowed):
