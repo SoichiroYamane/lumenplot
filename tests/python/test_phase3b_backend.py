@@ -832,6 +832,97 @@ class TestRectangularClipping(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Geometry edge cases: fractional axes placement, duplicate points
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestGeometryEdgeCases(unittest.TestCase):
+    def setUp(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _oracle(self, ax):
+        """Public-API affine expectation helpers for one axes."""
+        bbox = ax.get_window_extent()
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        def pxx(x):
+            return bbox.x0 + (x - xlim[0]) / (xlim[1] - xlim[0]) * bbox.width
+
+        def pxy(y):
+            return bbox.y0 + (y - ylim[0]) / (ylim[1] - ylim[0]) * bbox.height
+
+        return bbox, pxx, pxy
+
+    def test_fractional_axes_position_maps_exactly(self):
+        """Axes placed at fractional figure coordinates produce an exact
+        pixel-space clip rectangle and vertices (API 0005 §5)."""
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        ax = fig.get_axes()[0]
+        ax.set_position([0.13, 0.17, 0.61, 0.47])
+        result = canvas.render_png()
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        import numpy as np
+
+        bbox, pxx, pxy = self._oracle(ax)
+        height_px = 100
+        command = spec["commands"][0]
+        self.assertEqual(
+            command["clip_rect"],
+            [
+                bbox.x0,
+                height_px - (bbox.y0 + bbox.height),
+                bbox.width,
+                bbox.height,
+            ],
+        )
+        np.testing.assert_allclose(
+            np.asarray(command["vertices"]),
+            np.asarray([[pxx(0.0), pxy(0.0)], [pxx(10.0), pxy(5.0)]]),
+            rtol=0,
+        )
+        del fig
+
+    def test_duplicate_points_pass_through_without_dedup(self):
+        """A leading duplicate data point stays a zero-length segment in
+        the emitted request; the adapter neither drops nor reconnects."""
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        ax = fig.get_axes()[0]
+        ax.lines[0].remove()
+        ax.add_line(Line2D([3.0, 3.0, 7.0], [1.0, 1.0, 4.0],
+                           color=(0.0, 0.0, 1.0, 1.0), linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        import numpy as np
+
+        bbox, pxx, pxy = self._oracle(ax)
+        vertices = spec["commands"][0]["vertices"]
+        self.assertEqual(len(vertices), 3)
+        expected_first = [pxx(3.0), pxy(1.0)]
+        np.testing.assert_allclose(
+            np.asarray(vertices[:2]),
+            np.asarray([expected_first, expected_first]),
+            rtol=0,
+        )
+        # The real segment still spans to the final distinct point.
+        np.testing.assert_allclose(
+            np.asarray(vertices[2]),
+            np.asarray([pxx(7.0), pxy(4.0)]),
+            rtol=0,
+        )
+        del fig
+
+
+# ---------------------------------------------------------------------------
 # Native seam availability
 # ---------------------------------------------------------------------------
 
