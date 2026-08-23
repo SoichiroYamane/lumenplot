@@ -3684,7 +3684,8 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             allowed = (
                 "packaging==26.3", "pyelftools==0.33", "abi3info==2025.11.29",
                 "kaitaistruct==0.11", "pefile==2024.8.26", "requests==2.34.2",
-                "charset-normalizer==3.5.1",
+                "charset-normalizer==3.5.1", "rich==15.0.0",
+                "markdown-it-py==4.2.0", "pygments==2.21.0", "mdurl==0.1.2",
             )
             if not any(pkg + " " in line or pkg == line.rstrip().split()[-1]
                        for pkg in allowed):
