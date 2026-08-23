@@ -1293,7 +1293,12 @@ class TestHybridFallback(unittest.TestCase):
 
         def build(ax):
             ax.axison = False
-            ax.add_line(Line2D([0, 10], [0, 5], color="red"))
+            # ADR-0015 section 5 fixed-style surface, set explicitly so the
+            # strict attempt reaches the exploding seam instead of failing
+            # unsupported-capability at preflight.
+            ax.add_line(Line2D([0, 10], [0, 5], color="red",
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
             ax.set_xlim(0, 10)
             ax.set_ylim(0, 5)
 
