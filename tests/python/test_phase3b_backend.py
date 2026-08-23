@@ -747,5 +747,157 @@ class TestHybridFallback(unittest.TestCase):
         self.assertEqual(result.diagnostics[0].generation, second)
 
 
+# ---------------------------------------------------------------------------
+# Hybrid terminal-failure edges (ADR-0015 §7/§9): seam validation capacity,
+# I/O failure ordering, stale-attempt publication suppression.
+# ---------------------------------------------------------------------------
+
+
+class _ValueErrorNativeModule(types.SimpleNamespace):
+    """Stub seam mirroring the real contract: validation -> bare ValueError.
+
+    The frozen Rust seam (``FrameError::Validation``) raises ValueError for
+    spec-validation failures including the per-path point budget; this stub
+    reproduces that surface so the adapter's code mapping can be tested
+    without a built extension module.
+    """
+
+    @staticmethod
+    def render_frame_png(spec):  # noqa: N802 - mirrors native name
+        raise ValueError("path has too many vertices")
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestHybridTerminalFailures(unittest.TestCase):
+    """Capacity/I-O/stale failures stay terminal in both modes."""
+
+    def _strict_eligible_hybrid_canvas(self):
+        def build(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 10], [0, 5], color="red"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        return _hybrid_canvas_with(build)
+
+    def _install(self, module):
+        import lumenplot_mpl.backend as real_backend
+
+        patcher = unittest.mock.patch.object(
+            real_backend, "_native", lambda: module
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_seam_validation_failure_is_terminal_in_hybrid_mode(self):
+        # A seam ValueError is a Rust-side spec-validation/capacity failure
+        # (ADR-0015 §9): it must propagate as an explicit error and never be
+        # converted into a whole-frame Agg fallback.
+        self._install(_ValueErrorNativeModule())
+        fig, canvas = self._strict_eligible_hybrid_canvas()
+        with self.assertRaises(
+            backend_mod.LumenPlotUnsupportedError
+        ) as ctx:
+            canvas.render_png()
+        self.assertEqual(ctx.exception.code, "internal")
+        self.assertIn("too many vertices", str(ctx.exception))
+        # No fallback ran and nothing was published.
+        self.assertEqual(canvas.last_diagnostics, ())
+        self.assertIs(canvas.figure, fig)
+        self.assertIs(fig.canvas, canvas)
+
+    def test_seam_validation_failure_is_terminal_in_strict_mode(self):
+        # Same event through the strict path: identical terminal outcome.
+        self._install(_ValueErrorNativeModule())
+        fig, canvas = _eligible_canvas()
+        with self.assertRaises(
+            backend_mod.LumenPlotUnsupportedError
+        ) as ctx:
+            canvas.render_png()
+        self.assertEqual(ctx.exception.code, "internal")
+        self.assertEqual(canvas.last_diagnostics, ())
+        del fig
+
+    def test_no_fallback_after_io_failure_in_hybrid_mode(self):
+        # The fallback publishes bytes only after Agg completes into the
+        # in-memory buffer; a target I/O failure happens strictly after the
+        # render call returns, so no second render may run. ADR-0015 §7:
+        # OSError propagates unchanged and Agg is never invoked again after
+        # the failure.
+        agg_calls = []
+        real_savefig = figure.Figure.savefig
+
+        def spy_savefig(self_fig, *args, **kwargs):
+            agg_calls.append("savefig")
+            return real_savefig(self_fig, *args, **kwargs)
+
+        class FailingTarget:
+            @staticmethod
+            def write(data):
+                raise OSError("disk full")
+
+        def build(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+        with unittest.mock.patch.object(
+            figure.Figure, "savefig", spy_savefig
+        ):
+            # One attempt: strict fails unsupported, hybrid falls back, Agg
+            # renders once into memory, then the target write raises.
+            with self.assertRaises(OSError):
+                canvas.print_png(FailingTarget())
+        # Exactly one Agg invocation total: the capability fallback itself;
+        # the failed publish triggered no second render.
+        self.assertEqual(agg_calls.count("savefig"), 1)
+        # Failed attempt cleared diagnostics; no stale fallback state.
+        self.assertEqual(canvas.last_diagnostics, ())
+        del fig
+
+    def test_stale_attempt_does_not_overwrite_newer_publication_under_hybrid(
+        self,
+    ):
+        # ADR-0015 §9: a stale attempt must not overwrite a newer published
+        # result; failed attempts clear previously published diagnostics so
+        # stale fallback state is never reported. Sequence on ONE canvas:
+        #   1. hybrid fallback success -> publishes diagnostic (gen 1)
+        #   2. forced failed fallback  -> clears published diagnostics
+        #   3. hybrid fallback success -> republishes fresh (gen 3)
+        # Each published diagnostic names its own attempt's generation.
+        def dashed(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(dashed)
+        first = canvas.render_png()
+        self.assertEqual(len(first.diagnostics), 1)
+        self.assertEqual(first.diagnostics[0].generation, 1)
+
+        original_import = __import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name.endswith("backend_agg"):
+                raise ImportError("agg unavailable")
+            return original_import(name, *args, **kwargs)
+
+        builtins = __import__("builtins")
+        with unittest.mock.patch.object(
+            builtins, "__import__", guarded_import
+        ):
+            with self.assertRaises(ImportError):
+                canvas.render_png()
+        # The failed middle attempt left nothing published.
+        self.assertEqual(canvas.last_diagnostics, ())
+
+        third = canvas.render_png()
+        self.assertEqual(len(third.diagnostics), 1)
+        self.assertEqual(third.diagnostics[0].generation, 3)
+        self.assertEqual(canvas.last_diagnostics, third.diagnostics)
+        del fig
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

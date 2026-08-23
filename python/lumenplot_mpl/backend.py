@@ -638,7 +638,15 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         """
         result = self._render(dpi=dpi, **kwargs)
         if target is not None:
-            self._write_target(target, result.png_bytes)
+            try:
+                self._write_target(target, result.png_bytes)
+            except BaseException:
+                # The render succeeded but publication failed. ADR-0015 §9:
+                # a failed attempt must not leave previously published
+                # diagnostics behind, so stale fallback state is never
+                # reported.
+                self._last_diagnostics = ()
+                raise
         return result
 
     # -- Matplotlib-compatible output methods -----------------------------
@@ -681,7 +689,15 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         del facecolor, edgecolor
         result = self._render(dpi=dpi)
         if filename_or_obj is not None:
-            self._write_target(filename_or_obj, result.png_bytes)
+            try:
+                self._write_target(filename_or_obj, result.png_bytes)
+            except BaseException:
+                # The render succeeded but publication failed (e.g. an
+                # OSError from the target). ADR-0015 §9: a failed attempt
+                # must not leave previously published diagnostics behind,
+                # so stale fallback state is never reported.
+                self._last_diagnostics = ()
+                raise
 
     def print_figure(self, filename, dpi=None, facecolor=None, edgecolor=None,
                      orientation="portrait", format=None, *,
@@ -848,8 +864,16 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
             try:
                 data = render_frame_png(spec)
             except ValueError as error:
+                # The frozen seam contract (crates/lumenplot-python
+                # ``FrameError``) raises bare ValueError only for Rust-side
+                # spec-validation failures, which include capacity budgets
+                # (e.g. the per-path point cap). ADR-0015 §9 makes capacity
+                # and overflow terminal: this must NOT carry the default
+                # unsupported-capability token, or hybrid mode would convert
+                # it into a whole-frame Agg fallback.
                 raise LumenPlotUnsupportedError(
                     f"native seam rejected the frame spec: {error}",
+                    code="internal",
                     generation=generation,
                 ) from error
             except RuntimeError as error:
