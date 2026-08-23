@@ -1415,7 +1415,12 @@ class TestHybridTerminalFailures(unittest.TestCase):
     def _strict_eligible_hybrid_canvas(self):
         def build(ax):
             ax.axison = False
-            ax.add_line(Line2D([0, 10], [0, 5], color="red"))
+            # ADR-0015 section 5 fixed-style surface, set explicitly so the
+            # strict attempt reaches the stubbed seam instead of failing
+            # unsupported-capability at preflight.
+            ax.add_line(Line2D([0, 10], [0, 5], color="red",
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
             ax.set_xlim(0, 10)
             ax.set_ylim(0, 5)
 
