@@ -491,6 +491,9 @@ class TestFileOutputGuards(unittest.TestCase):
 
 
 class TestNativeSeamPresence(unittest.TestCase):
+    @unittest.skipUnless(
+        MATPLOTLIB_PRESENT, "backend import itself needs matplotlib"
+    )
     def test_missing_seam_raises_backend_unavailable_not_silent(self):
         """Without the native module, strict mode must fail explicitly."""
 
