@@ -97,14 +97,24 @@ def _install_stub_native():
 
 
 def _eligible_canvas(figsize=(2.0, 1.0), dpi=100, line_kwargs=None):
-    """Build a strict-eligible figure: one axes (axison off), one line."""
+    """Build a strict-eligible figure: one axes (axison off), one line.
+
+    Strict fixtures set the fixed style surface explicitly (ADR 0015 §5):
+    Matplotlib defaults to projecting caps and round joins, which strict
+    mode rejects rather than approximates.
+    """
     if not MATPLOTLIB_PRESENT:
         raise unittest.SkipTest("matplotlib not in this offline cell")
     fig = figure.Figure(figsize=figsize, dpi=dpi)
     canvas = _load_backend().FigureCanvasLumenPlot(fig)
     ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
     ax.axison = False
-    kwargs = {"color": "red", "linewidth": 2.0}
+    kwargs = {
+        "color": "red",
+        "linewidth": 2.0,
+        "solid_capstyle": "butt",
+        "solid_joinstyle": "miter",
+    }
     kwargs.update(line_kwargs or {})
     ax.add_line(Line2D([0.0, 10.0], [0.0, 5.0], **kwargs))
     ax.set_xlim(0.0, 10.0)
@@ -279,7 +289,8 @@ class TestStructuralParity(unittest.TestCase):
         ax = fig.get_axes()[0]
         ax.lines[0].remove()
         ax.add_line(Line2D([0, 5, float("nan"), 10], [0, 2.5, 1.0, 5.0],
-                           color="red", linewidth=2.0))
+                           color="red", linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
         result = canvas.render_png()
         spec = _StubNativeModule.last_spec
         assert spec is not None
