@@ -2955,6 +2955,22 @@ def _phase3a2_expected_prefetch_downloads() -> list[str]:
     downloads.append(
         f"{interpreter} -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26"
     )
+    # Transitive tool dependencies, each downloaded unpinned here and then
+    # digest-recorded into tool-deps.sha256 (asserted below); the offline
+    # build container installs them via a hash-pinned requirements file.
+    for package in (
+        "packaging==26.3",
+        "pyelftools==0.33",
+        "abi3info==2025.11.29",
+        "kaitaistruct==0.11",
+        "pefile==2024.8.26",
+        "requests==2.34.2",
+        "charset-normalizer==3.5.1",
+    ):
+        downloads.append(
+            f"{interpreter} -m pip download --no-deps --only-binary=:all: "
+            f"--dest /cache/wheelhouse {package}"
+        )
     return downloads
 
 
@@ -3654,8 +3670,8 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         # requirements-file-only option (no CLI flag exists on any release).
         # Tool wheels whose digests are re-verified by sha256sum --check
         # inside the offline container are recorded as builder provenance
-        # instead of pre-pinned here.
-        if "--require-hashes" in line or "--only-binary=:all:" in line:
+        # instead of pre-pinned here; they still must be binary-only.
+        if "--require-hashes" in line:
             for fragment, label in (
                 ("--only-binary=:all:", "binary-only input download"),
                 ("--require-hashes", "hash-required input download"),
@@ -3663,6 +3679,20 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             ):
                 if fragment not in line:
                     errors.append(f"phase3a2 workflow: pip download is missing {label}")
+        elif "--only-binary=:all:" in line and "auditwheel==" not in line \
+                and "abi3audit==" not in line and "-r /tmp/" not in line:
+            allowed = (
+                "packaging==26.3", "pyelftools==0.33", "abi3info==2025.11.29",
+                "kaitaistruct==0.11", "pefile==2024.8.26", "requests==2.34.2",
+                "charset-normalizer==3.5.1",
+            )
+            if not any(pkg + " " in line or pkg == line.rstrip().split()[-1]
+                       for pkg in allowed):
+                errors.append(
+                    "phase3a2 workflow: tool-wheel download must be a reviewed "
+                    "transitive dependency pin, an auditwheel/abi3audit pin, "
+                    "or a --require-hashes input"
+                )
     if "actions/upload-artifact" in repositories:
         if "if: github.ref == 'refs/heads/main' && github.event_name == 'push'" not in workflow_code:
             errors.append("phase3a2 workflow: upload-artifact is restricted to trusted main")

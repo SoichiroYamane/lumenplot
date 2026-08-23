@@ -1943,6 +1943,13 @@ jobs:
             sha256sum /cache/wheelhouse/auditwheel-6.8.0-*.whl > /cache/wheelhouse/auditwheel-sha256.txt
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26
             sha256sum /cache/wheelhouse/abi3audit-0.0.26-*.whl > /cache/wheelhouse/abi3audit-sha256.txt
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse packaging==26.3
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pyelftools==0.33
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse abi3info==2025.11.29
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse kaitaistruct==0.11
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pefile==2024.8.26
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse requests==2.34.2
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse charset-normalizer==3.5.1
           PREFETCH
           )"
           docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:ro" -v "$PWD/evidence:/evidence:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'BUILD'
