@@ -28,12 +28,19 @@ import sys
 import types
 import unittest.mock
 
-import matplotlib
+import unittest
 
-matplotlib.use("module://matplotlib.backends.backend_agg")  # baseline only
+try:
+    import matplotlib
+except ModuleNotFoundError:  # offline cells: matplotlib evidence is a later slice
+    matplotlib = None
+else:
+    matplotlib.use("module://matplotlib.backends.backend_agg")  # baseline only
 
-from matplotlib import figure  # noqa: E402
-from matplotlib.lines import Line2D  # noqa: E402
+    from matplotlib import figure  # noqa: E402
+    from matplotlib.lines import Line2D  # noqa: E402
+
+MATPLOTLIB_PRESENT = matplotlib is not None
 
 import lumenplot_mpl.backend as backend_mod  # noqa: E402
 
@@ -150,6 +157,7 @@ class TestModuleSurface(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestRenderPng(unittest.TestCase):
     def setUp(self):
         self._patcher = _install_stub_native()
@@ -212,6 +220,7 @@ class TestRenderPng(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestStructuralParity(unittest.TestCase):
     def setUp(self):
         self._patcher = _install_stub_native()
@@ -261,6 +270,7 @@ class TestStructuralParity(unittest.TestCase):
         del fig
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestStrictUnsupported(unittest.TestCase):
     """Strict mode: unsupported features must NOT silently render."""
 
@@ -334,6 +344,7 @@ class TestStrictUnsupported(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestDiagnosticsAndLifecycle(unittest.TestCase):
     def setUp(self):
         self._patcher = _install_stub_native()
@@ -390,6 +401,7 @@ class TestDiagnosticsAndLifecycle(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestFileOutputGuards(unittest.TestCase):
     def setUp(self):
         self._patcher = _install_stub_native()
