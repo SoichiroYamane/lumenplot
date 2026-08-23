@@ -3123,7 +3123,6 @@ PHASE3A2_PHASE3B_PACKAGE_FILES = frozenset({"backend.py", "__init__.py"})
 PHASE3A2_PHASE3B_MATPLOTLIB_FORBIDDEN_SHAPES = (
     re.compile(r"^\s*import matplotlib\.pyplot\b"),
     re.compile(r"^\s*from matplotlib import\b"),
-    re.compile(r"^\s*import matplotlib\.pyplot\s+as\b"),
 )
 
 

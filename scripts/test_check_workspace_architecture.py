@@ -3425,6 +3425,24 @@ class Phase3bStaticAllowanceMutationTests(unittest.TestCase):
 
         self.assert_rejected(mutate, "Matplotlib/backend surface is forbidden")
 
+    def test_active_fixture_keeps_matplotlib_forbidden_in_native_stub(self) -> None:
+        """The file-scoping rule holds while active.
+
+        ``_native.pyi`` is not one of the two phase3b-owned package files,
+        so it keeps today's rules byte-for-byte even when the allowance is
+        active (manager option-(b) scope rule, negative control ii).
+        """
+
+        def mutate(root: Path) -> None:
+            self.activate(root)
+            path = root / "python/lumenplot_mpl/_native.pyi"
+            path.write_text(
+                path.read_text(encoding="utf-8") + "\n# adapter note: see matplotlib docs\n",
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "Matplotlib/backend surface is forbidden")
+
     def test_active_fixture_keeps_bare_public_render_png_forbidden(self) -> None:
         def mutate(root: Path) -> None:
             self.activate(root)
