@@ -1240,7 +1240,9 @@ class TestHybridFallback(unittest.TestCase):
     def test_eligible_content_still_renders_natively_first(self):
         def build(ax):
             ax.axison = False
-            ax.add_line(Line2D([0, 10], [0, 5], color="red"))
+            ax.add_line(Line2D([0, 10], [0, 5], color="red",
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
             ax.set_xlim(0, 10)
             ax.set_ylim(0, 5)
 
