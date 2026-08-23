@@ -22,8 +22,17 @@ Implements the accepted public surface contract recorded in
   module.
 
 Mode policy: the constructor kwarg ``mode`` selects ``"strict"`` (default)
-or ``"hybrid"``. Hybrid mode is a later slice per ADR-0015 ordered delivery;
-constructing a hybrid canvas raises ``NotImplementedError``.
+or ``"hybrid"`` (ADR 0015 §12 ordered delivery). Strict mode renders only
+the whitelisted eligible trace and raises
+:class:`LumenPlotUnsupportedError` before any target write otherwise.
+Hybrid mode first attempts exactly the strict native path and, only when
+that raises the stable ``unsupported-capability`` failure, succeeds with a
+whole-frame Agg fallback: stock public ``FigureCanvasAgg`` PNG output plus
+one structured :class:`LumenPlotFallbackDiagnostic` (reason, type,
+generation, output format, raster/vector scope per API 0002). Missing
+native infrastructure (``backend-unavailable``) and internal engine
+failures are never converted into a visual fallback; nothing degrades
+silently.
 
 The native seam is the private extension module ``lumenplot_mpl._native``.
 This slice consumes the frozen ``render_line_png`` signature from Phase-3A
@@ -596,11 +605,6 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
             raise ValueError(
                 f"mode must be 'strict' or 'hybrid', got {mode!r}"
             )
-        if mode == "hybrid":
-            raise NotImplementedError(
-                "hybrid mode is a later slice per ADR-0015 ordered delivery; "
-                "only strict mode exists in this build"
-            )
         self._mode = mode
         self._generation = 0
         self._last_diagnostics: tuple = ()
@@ -608,7 +612,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
 
     @property
     def mode(self) -> str:
-        """Selected profile mode: ``'strict'`` in this slice."""
+        """Selected profile mode: ``'strict'`` or ``'hybrid'``."""
         return self._mode
 
     @property
@@ -634,7 +638,15 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         """
         result = self._render(dpi=dpi, **kwargs)
         if target is not None:
-            self._write_target(target, result.png_bytes)
+            try:
+                self._write_target(target, result.png_bytes)
+            except BaseException:
+                # The render succeeded but publication failed. ADR-0015 §9:
+                # a failed attempt must not leave previously published
+                # diagnostics behind, so stale fallback state is never
+                # reported.
+                self._last_diagnostics = ()
+                raise
         return result
 
     # -- Matplotlib-compatible output methods -----------------------------
@@ -677,7 +689,15 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         del facecolor, edgecolor
         result = self._render(dpi=dpi)
         if filename_or_obj is not None:
-            self._write_target(filename_or_obj, result.png_bytes)
+            try:
+                self._write_target(filename_or_obj, result.png_bytes)
+            except BaseException:
+                # The render succeeded but publication failed (e.g. an
+                # OSError from the target). ADR-0015 §9: a failed attempt
+                # must not leave previously published diagnostics behind,
+                # so stale fallback state is never reported.
+                self._last_diagnostics = ()
+                raise
 
     def print_figure(self, filename, dpi=None, facecolor=None, edgecolor=None,
                      orientation="portrait", format=None, *,
@@ -756,10 +776,38 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
 
     def _render(self, *, dpi: float | str | None = None,
                 **kwargs: Any) -> LumenPlotPngResult:
-        """Run preflight, build the spec, call the native seam once."""
+        """Run preflight, build the spec, call the native seam once.
+
+        In hybrid mode a stable ``unsupported-capability`` failure of the
+        strict path is replaced by the whole-frame Agg fallback result; the
+        generation counter is spent exactly once for the whole attempt so
+        the diagnostic names the same attempt as the output. Any other
+        failure (missing native seam, internal errors) propagates in both
+        modes.
+        """
         generation = self._generation + 1
         self._generation = generation
         self._last_diagnostics = ()
+
+        try:
+            return self._render_strict(generation=generation, dpi=dpi,
+                                       **kwargs)
+        except LumenPlotUnsupportedError as error:
+            if error.code != _UNSUPPORTED_TOKEN or self._mode != "hybrid":
+                raise
+            reason = str(error)
+            type_context = error.type_context
+            return self._render_hybrid_fallback(
+                generation=generation,
+                dpi=self._resolve_dpi(dpi),
+                reason=reason,
+                type_context=type_context,
+            )
+
+    def _render_strict(self, *, generation: int,
+                       dpi: float | str | None = None,
+                       **kwargs: Any) -> LumenPlotPngResult:
+        """Run one strict native attempt at an already-spent generation."""
 
         output_dpi = self._resolve_dpi(dpi)
         figure = self.figure
@@ -816,8 +864,16 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
             try:
                 data = render_frame_png(spec)
             except ValueError as error:
+                # The frozen seam contract (crates/lumenplot-python
+                # ``FrameError``) raises bare ValueError only for Rust-side
+                # spec-validation failures, which include capacity budgets
+                # (e.g. the per-path point cap). ADR-0015 §9 makes capacity
+                # and overflow terminal: this must NOT carry the default
+                # unsupported-capability token, or hybrid mode would convert
+                # it into a whole-frame Agg fallback.
                 raise LumenPlotUnsupportedError(
                     f"native seam rejected the frame spec: {error}",
+                    code="internal",
                     generation=generation,
                 ) from error
             except RuntimeError as error:
@@ -842,6 +898,46 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
             code="backend-unavailable",
             generation=generation,
         )
+
+    def _render_hybrid_fallback(
+        self,
+        *,
+        generation: int,
+        dpi: float,
+        reason: str,
+        type_context: str | None,
+    ) -> LumenPlotPngResult:
+        """Produce the whole-frame Agg fallback result (API 0002/0005).
+
+        Renders the complete frame through stock public ``FigureCanvasAgg``
+        PNG output at the requested effective DPI, then restores any
+        temporary canvas state even on failure. Success publishes exactly
+        one structured diagnostic describing reason, type context,
+        generation, output format, and raster/vector scope; a failed
+        fallback attempt publishes nothing.
+        """
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        buffer = io.BytesIO()
+        previous_canvas = self.figure.canvas
+        try:
+            FigureCanvasAgg(self.figure)
+            self.figure.savefig(buffer, format="png", dpi=dpi)
+        finally:
+            previous_canvas.figure = self.figure
+            self.figure.canvas = previous_canvas
+        png_bytes = buffer.getvalue()
+        diagnostic = LumenPlotFallbackDiagnostic(
+            kind=_UNSUPPORTED_TOKEN,
+            type=type_context,
+            generation=generation,
+            output_format="png",
+            scope="whole-frame",
+            representation="raster",
+            fallback_type="matplotlib-agg",
+        )
+        self._last_diagnostics = (diagnostic,)
+        return LumenPlotPngResult(png_bytes, self._last_diagnostics)
 
     def _write_target(self, target: Any, data: bytes) -> None:
         """Write finished bytes to path-like or binary file-like targets.
