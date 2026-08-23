@@ -187,8 +187,11 @@ jobs:
           # the first console-script invocation.
           export PATH=/tmp/work/build-site/bin:/usr/local/cargo/bin:$PATH
           export PYTHONPATH=/tmp/work/build-site
+          echo "probe: toolchain list"
           rustup toolchain list | grep -q '^1.89.0'
+          echo "probe: auditwheel version"
           AUDITWHEEL_VERSION="$(auditwheel --version | sed 's/^auditwheel, version //')"
+          echo "probe: abi3audit version"
           ABI3AUDIT_VERSION="$(abi3audit --version)"
           RUST_VERSION_OBSERVED="$(RUSTUP_TOOLCHAIN=1.89.0 rustc --version | awk '{print $2}')"
           test -n "$AUDITWHEEL_VERSION" && test -n "$ABI3AUDIT_VERSION" && test -n "$RUST_VERSION_OBSERVED"
