@@ -88,14 +88,18 @@ class _StubNativeModule(types.SimpleNamespace):
 
 
 def _install_stub_native():
-    patcher = unittest.mock.patch.object(
-        backend_mod, "_native", lambda: _StubNativeModule
+    # Resolve through the lazy proxy to the real module object before patching,
+    # so the render path (which reads the module global) sees the stub.
+    real = backend_mod if isinstance(backend_mod, types.ModuleType) else (
+        __import__("lumenplot_mpl.backend", fromlist=["_native"])
     )
-    return patcher
+    return unittest.mock.patch.object(real, "_native", lambda: _StubNativeModule)
 
 
 def _eligible_canvas(figsize=(2.0, 1.0), dpi=100, line_kwargs=None):
     """Build a strict-eligible figure: one axes (axison off), one line."""
+    if not MATPLOTLIB_PRESENT:
+        raise unittest.SkipTest("matplotlib not in this offline cell")
     fig = figure.Figure(figsize=figsize, dpi=dpi)
     canvas = _load_backend().FigureCanvasLumenPlot(fig)
     ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
@@ -494,7 +498,8 @@ class TestNativeSeamPresence(unittest.TestCase):
             def __getattr__(self, name):
                 raise AttributeError(name)
 
-        with unittest.mock.patch.object(backend_mod, "_native", lambda: Missing()):
+        import lumenplot_mpl.backend as _real_backend
+        with unittest.mock.patch.object(_real_backend, "_native", lambda: Missing()):
             fig, canvas = _eligible_canvas()
             with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
                 canvas.render_png()
