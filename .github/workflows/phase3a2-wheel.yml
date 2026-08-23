@@ -255,7 +255,9 @@ jobs:
           # metadata, and run the entry-point discovery suite with its own
           # skip-clean gating. Records honest entry-point-undeclared /
           # backend-absent statuses until sibling lanes land; never fakes.
-          /opt/python/cp311-cp311/bin/python /src/scripts/test_phase3b_wheel_evidence.py --workflow-evidence "$WHEEL" --observed /evidence/observed.json > /evidence/phase3b-packaging.json
+          # TMPDIR points at the exec tmpfs: the probe's scratch venv copies
+          # its interpreter ELF, which cannot execute from the noexec /tmp.
+          TMPDIR=/tmp/work /opt/python/cp311-cp311/bin/python /src/scripts/test_phase3b_wheel_evidence.py --workflow-evidence "$WHEEL" --observed /evidence/observed.json > /evidence/phase3b-packaging.json
           test -s /evidence/phase3b-packaging.json
           cargo metadata --locked --offline --format-version 1 > /evidence/cargo-metadata.json
           /opt/python/cp311-cp311/bin/python /src/scripts/phase3a2-sbom.py --metadata /evidence/cargo-metadata.json --lockfile /src/Cargo.lock --pyproject /src/pyproject.toml > /evidence/sbom.json

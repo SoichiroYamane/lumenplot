@@ -3688,8 +3688,12 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ("GLIBC_VERSION=\"$(ldd --version", "observed glibc capture"),
         ("UNAME_ARCH=\"$(uname -m)\"", "observed platform capture"),
         (
-            "/opt/python/cp311-cp311/bin/python /src/scripts/test_phase3b_wheel_evidence.py --workflow-evidence \"$WHEEL\" --observed /evidence/observed.json",
+            "TMPDIR=/tmp/work /opt/python/cp311-cp311/bin/python /src/scripts/test_phase3b_wheel_evidence.py --workflow-evidence \"$WHEEL\" --observed /evidence/observed.json",
             "Phase-3B offline packaging evidence probe",
+        ),
+        (
+            "TMPDIR=/tmp/work",
+            "Phase-3B probe exec-tmpfs scratch pin (noexec /tmp)",
         ),
         (
             "> /evidence/phase3b-packaging.json",

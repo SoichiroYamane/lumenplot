@@ -2013,7 +2013,7 @@ jobs:
             RUNPATH_VALUE="$(printf '%s\\n' "$READELF_OUT" | sed -n '/(\\(RUNPATH\))/s/.*\\[\\([^]]*\)\].*/\\1/p')"
             if printf '%s\\n' "$READELF_OUT" | grep -Eq 'libpython|libcuda'; then printf '%s\\n' 'unexpected shared library' >&2; exit 1; fi
             abi3audit "$WHEEL"
-            /opt/python/cp311-cp311/bin/python /src/scripts/test_phase3b_wheel_evidence.py --workflow-evidence "$WHEEL" --observed /evidence/observed.json > /evidence/phase3b-packaging.json
+            TMPDIR=/tmp/work /opt/python/cp311-cp311/bin/python /src/scripts/test_phase3b_wheel_evidence.py --workflow-evidence "$WHEEL" --observed /evidence/observed.json > /evidence/phase3b-packaging.json
             python /cache/check-sbom.py --format 'CycloneDX 1.5' --cargo-metadata /cache/wheelhouse/cargo-metadata.json
             /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/lp-3.11
             /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
@@ -3034,6 +3034,26 @@ jobs:
                 encoding="utf-8",
             ),
             "Phase-3B offline packaging evidence probe",
+        )
+
+    def test_phase3b_probe_must_pin_the_exec_tmpfs_scratch_dir(self) -> None:
+        # The offline cell mounts /tmp noexec and stages every executable
+        # artifact under the exec tmpfs /tmp/work; the probe's scratch venv
+        # copies its interpreter ELF, so dropping the TMPDIR pin must be a
+        # checker rejection, not a silent CI failure at venv creation.
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace(
+                    "TMPDIR=/tmp/work /opt/python/cp311-cp311/bin/python"
+                    " /src/scripts/test_phase3b_wheel_evidence.py",
+                    "/opt/python/cp311-cp311/bin/python"
+                    " /src/scripts/test_phase3b_wheel_evidence.py",
+                ),
+                encoding="utf-8",
+            ),
+            "Phase-3B probe exec-tmpfs scratch pin (noexec /tmp)",
         )
 
     def test_missing_elf_check_is_rejected(self) -> None:

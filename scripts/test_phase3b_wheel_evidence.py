@@ -159,6 +159,50 @@ def make_venv(path: Path) -> Path:
     return path / "bin" / "python"
 
 
+def _workflow_scratch_dir() -> tempfile.TemporaryDirectory:
+    """A scratch directory whose children are executable in the offline cell.
+
+    The accepted Phase-3A2 container mounts ``/tmp`` ``noexec`` and stages
+    every executable artifact under the exec tmpfs ``/tmp/work`` (the
+    workflow heredoc documents this for cargo's build-script staging).
+    ``venv.EnvBuilder`` without ``symlinks=True`` copies the interpreter ELF
+    into the venv, so a venv under bare ``/tmp`` cannot execute there.
+    Honoring ``TMPDIR`` keeps this helper usable outside the container;
+    inside it the caller exports ``TMPDIR=/tmp/work`` before invoking the
+    probe (pinned by the workspace-architecture checker), so scratch venvs
+    land on the exec tmpfs like everything else that must run. When
+    ``TMPDIR`` is unset the helper probes ``/tmp/work`` with a trivial
+    ``/bin/sh`` script and only uses it when executing works there;
+    otherwise it falls back to the platform default so local evidence runs
+    stay functional.
+    """
+    if os.environ.get("TMPDIR"):
+        return tempfile.TemporaryDirectory(prefix="phase3b-wf-")
+    fallback = Path("/tmp/work")
+    try:
+        fallback.mkdir(parents=True, exist_ok=True)
+        probe = fallback / ".phase3b-exec-probe"
+        probe.write_bytes(b"#!/bin/sh\nexit 0\n")
+        probe.chmod(0o755)
+        usable = False
+        try:
+            subprocess.run(
+                [str(probe)],
+                check=True,
+                capture_output=True,
+            )
+            usable = True
+        except (OSError, subprocess.SubprocessError):
+            usable = False
+        finally:
+            probe.unlink(missing_ok=True)
+        if usable:
+            return tempfile.TemporaryDirectory(prefix="phase3b-wf-", dir=str(fallback))
+    except OSError:
+        pass
+    return tempfile.TemporaryDirectory(prefix="phase3b-wf-")
+
+
 def build_wheel(project_dir: Path, build_python: Path, out_dir: Path) -> Path:
     """Run pinned maturin from the repository root and return the wheel path.
 
@@ -365,7 +409,7 @@ def run_workflow_evidence(wheel: Path, observed_path: Path) -> dict[str, object]
         raise ProbeBlocked(f"wheel not found: {wheel}")
     wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
 
-    with tempfile.TemporaryDirectory(prefix="phase3b-wf-") as tmp:
+    with _workflow_scratch_dir() as tmp:
         venv_dir = Path(tmp) / "venv"
         evidence_python = make_venv(venv_dir)
         # --no-deps on purpose: numpy/matplotlib availability is probed and
