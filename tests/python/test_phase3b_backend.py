@@ -1263,9 +1263,13 @@ class TestHybridFallback(unittest.TestCase):
         # Content must be strictly eligible so the strict attempt reaches
         # the native seam; otherwise preflight fails first with
         # unsupported-capability and never observes the missing seam.
+        # ADR-0015 section 5: set the fixed style surface explicitly,
+        # because Matplotlib's projecting/round defaults are rejected.
         def build(ax):
             ax.axison = False
-            ax.add_line(Line2D([0, 10], [0, 5], color="red"))
+            ax.add_line(Line2D([0, 10], [0, 5], color="red",
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
             ax.set_xlim(0, 10)
             ax.set_ylim(0, 5)
 
