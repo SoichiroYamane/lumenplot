@@ -1812,7 +1812,9 @@ class Phase3A2WheelEvidenceMutationTests(unittest.TestCase):
                 'lumenplot = { path = "../lumenplot", version = "0.1.0" }',
                 'lumenplot = { path = "../lumenplot", version = "0.1.0" }\n'
                 'pyo3 = { version = "=0.29.2", default-features = false, features = ["macros", "extension-module", "abi3-py311"] }\n'
-                'numpy = { version = "=0.29.0", default-features = false }',
+                'numpy = { version = "=0.29.0", default-features = false }\n'
+                'png = { version = "=0.18.1", default-features = false }\n'
+                'tiny-skia = { version = "=0.12.0", default-features = false, features = ["std"] }',
             ),
             encoding="utf-8",
         )
@@ -1824,9 +1826,15 @@ fn render_line_png() -> PyResult<Vec<u8>> {
     Ok(Vec::new())
 }
 
+#[pyfunction]
+fn render_frame_png() -> PyResult<Vec<u8>> {
+    Ok(Vec::new())
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(render_line_png, module)?)?;
+    module.add_function(wrap_pyfunction!(render_frame_png, module)?)?;
     Ok(())
 }
 """,

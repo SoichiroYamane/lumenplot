@@ -262,7 +262,7 @@ EXPECTED_WORKSPACE_DEPENDENCIES = {
     "lumenplot-bench": {"lumenplot"},
     "lumenplot-engine": set(),
     "lumenplot-export": {"lumenplot-engine", "png", "tiny-skia"},
-    "lumenplot-python": {"lumenplot", "numpy", "pyo3"},
+    "lumenplot-python": {"lumenplot", "numpy", "png", "pyo3", "tiny-skia"},
     "lumenplot-render-api": {"lumenplot-engine"},
     "lumenplot-render-wgpu": {"lumenplot-render-api"},
     "lumenplot-runtime": {"lumenplot-render-wgpu"},
