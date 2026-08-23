@@ -1,3 +1,15 @@
+//! Private PyO3 seam for the `lumenplot_mpl._native` extension module.
+//!
+//! Phase-3A surface (`render_line_png`) is frozen byte-for-byte; the
+//! Phase-3B slice adds `render_frame_png(spec: dict) -> bytes` per manager
+//! decisions 2/3 (comment thread of the planning card). The frame rasterizer
+//! itself lives in [`crate::frame`], which is free of interpreter types:
+//! this module validates while holding the GIL, copies the caller's spec into
+//! owned Rust IR exactly once, drops every Python reference before rendering,
+//! and contains panics at the boundary.
+
+mod frame;
+
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -9,9 +21,17 @@ use numpy::{
     PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods, dtype,
 };
 use pyo3::buffer::PyUntypedBuffer;
-use pyo3::exceptions::{PyRuntimeError, PyTypeError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyAnyMethods, PyBytes, PyModule, PyModuleMethods, PyType};
+use pyo3::types::{
+    PyAny, PyAnyMethods, PyBytes, PyDict, PyDictMethods, PyList, PyListMethods, PyModule,
+    PyModuleMethods, PyString, PyType,
+};
+
+use crate::frame::{
+    CapSelector, Command, FillRuleSelector, FrameError, FrameSpec, ImageCommand, JoinSelector,
+    PathCommand,
+};
 
 /// Exact-type check for built-in NumPy `ndarray` objects.
 ///
@@ -67,6 +87,26 @@ fn bridge_error(py: Python<'_>, error: BridgeError) -> PyErr {
 
 fn type_error(name: &str, detail: &str) -> PyErr {
     PyTypeError::new_err(format!("{name} {detail}"))
+}
+
+fn validation_error(message: &'static str) -> PyErr {
+    PyValueError::new_err(message)
+}
+
+fn internal_error(message: &'static str) -> PyErr {
+    PyRuntimeError::new_err(message)
+}
+
+fn frame_error(error: FrameError) -> PyErr {
+    match error {
+        FrameError::Validation(message) => validation_error(message),
+        FrameError::OutOfMemory => internal_error("allocation failed"),
+        FrameError::Internal(message) => internal_error(message),
+    }
+}
+
+fn frame_error_to_pyerr(error: FrameError) -> PyErr {
+    frame_error(error)
 }
 
 fn extract_f64_values<'py>(value: &Bound<'py, PyAny>, name: &str) -> PyResult<Vec<f64>> {
@@ -482,5 +522,348 @@ fn render_line_png<'py>(
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(render_line_png, module)?)?;
+    module.add_function(wrap_pyfunction!(render_frame_png, module)?)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase-3B frame seam: `render_frame_png(spec: dict) -> bytes`.
+//
+// Binding contract (manager decisions 2/3 on the Phase-3B planning card):
+// validation failures raise ValueError; internal/raster failures raise
+// RuntimeError-family exceptions; panics never cross the boundary; the same
+// spec produces identical bytes. Extraction happens while the GIL is held and
+// copies the spec into owned IR exactly once; no Python borrow survives into
+// the rasterizer.
+// ---------------------------------------------------------------------------
+
+fn required_key<'py>(command: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyAny>> {
+    let Some(value) = command.get_item(key)? else {
+        return Err(validation_error("command dict is missing a required key"));
+    };
+    Ok(value.into_any())
+}
+
+fn optional_key<'py>(
+    command: &Bound<'py, PyDict>,
+    key: &str,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    match command.get_item(key)? {
+        Some(value) if !value.is_none() => Ok(Some(value.into_any())),
+        _ => Ok(None),
+    }
+}
+
+fn extract_f64_pair(value: &Bound<'_, PyAny>) -> PyResult<[f64; 2]> {
+    let values = value
+        .extract::<Vec<f64>>()
+        .map_err(|_| type_error("vertex", "must be a [float, float] pair"))?;
+    if values.len() != 2 {
+        return Err(validation_error("vertex must contain exactly two floats"));
+    }
+    Ok([values[0], values[1]])
+}
+
+fn extract_transform(value: &Bound<'_, PyAny>) -> PyResult<[f64; 6]> {
+    let values = value
+        .extract::<Vec<f64>>()
+        .map_err(|_| type_error("transform", "must be six finite floats"))?;
+    if values.len() != 6 {
+        return Err(validation_error(
+            "transform must contain exactly six floats",
+        ));
+    }
+    Ok([
+        values[0], values[1], values[2], values[3], values[4], values[5],
+    ])
+}
+
+fn extract_clip_rect(value: &Bound<'_, PyAny>) -> PyResult<[f64; 4]> {
+    let values = value
+        .extract::<Vec<f64>>()
+        .map_err(|_| type_error("clip_rect", "must be [x, y, width, height] floats"))?;
+    if values.len() != 4 {
+        return Err(validation_error(
+            "clip_rect must contain exactly four floats",
+        ));
+    }
+    Ok([values[0], values[1], values[2], values[3]])
+}
+
+fn extract_rgba_option(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<[u8; 4]>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let values = value
+        .extract::<Vec<i64>>()
+        .map_err(|_| type_error("rgba", "must be four integer channels"))?;
+    if values.len() != 4 || values.iter().any(|channel| !(0..=255).contains(channel)) {
+        return Err(validation_error(
+            "rgba channels must be integers in the range 0..=255",
+        ));
+    }
+    Ok(Some([
+        values[0] as u8,
+        values[1] as u8,
+        values[2] as u8,
+        values[3] as u8,
+    ]))
+}
+
+fn selector_from(
+    command: &Bound<'_, PyDict>,
+    key: &str,
+    allowed: &[(&'static str, &'static str)],
+) -> PyResult<&'static str> {
+    let value = required_key(command, key)?;
+    let text: &str = value
+        .cast::<PyString>()?
+        .to_str()
+        .map_err(|_| type_error(key, "must be a string"))?;
+    for (candidate, selected) in allowed {
+        if text == *candidate {
+            return Ok(selected);
+        }
+    }
+    Err(validation_error("command field has an unrecognized value"))
+}
+
+fn extract_path_command(command: &Bound<'_, PyDict>) -> PyResult<PathCommand> {
+    let vertices_value = required_key(command, "vertices")?;
+    let vertex_list = vertices_value
+        .cast::<PyList>()
+        .map_err(|_| type_error("vertices", "must be a list of [x, y] pairs"))?;
+    let mut vertices = Vec::new();
+    if vertices.try_reserve_exact(vertex_list.len()).is_err() {
+        return Err(internal_error("allocation failed"));
+    }
+    for vertex in vertex_list.iter() {
+        vertices.push(extract_f64_pair(&vertex)?);
+    }
+
+    let codes = match optional_key(command, "codes")? {
+        Some(codes_value) => {
+            let code_list = codes_value
+                .cast::<PyList>()
+                .map_err(|_| type_error("codes", "must be a list of integers or None"))?;
+            let mut codes = Vec::new();
+            if codes.try_reserve_exact(code_list.len()).is_err() {
+                return Err(internal_error("allocation failed"));
+            }
+            for code in code_list.iter() {
+                codes.push(
+                    code.extract::<i64>()
+                        .map_err(|_| type_error("codes", "must be a list of integers"))?,
+                );
+            }
+            Some(codes)
+        }
+        None => None,
+    };
+
+    let transform = extract_transform(&required_key(command, "transform")?)?;
+    let stroke_rgba = extract_rgba_option(optional_key(command, "stroke_rgba")?.as_ref())?;
+    let fill_rgba = extract_rgba_option(optional_key(command, "fill_rgba")?.as_ref())?;
+
+    let line_width_pt = optional_key(command, "line_width_pt")?
+        .map(|value| {
+            value
+                .extract::<f64>()
+                .map_err(|_| type_error("line_width_pt", "must be a float"))
+        })
+        .transpose()?
+        .unwrap_or(if stroke_rgba.is_some() { 1.0 } else { 0.0 });
+    let cap = match selector_from(
+        command,
+        "cap",
+        &[
+            ("butt", "butt"),
+            ("round", "round"),
+            ("projecting", "projecting"),
+        ],
+    )? {
+        "round" => CapSelector::Round,
+        "projecting" => CapSelector::Projecting,
+        _ => CapSelector::Butt,
+    };
+    let join = match selector_from(
+        command,
+        "join",
+        &[("miter", "miter"), ("round", "round"), ("bevel", "bevel")],
+    )? {
+        "round" => JoinSelector::Round,
+        "bevel" => JoinSelector::Bevel,
+        _ => JoinSelector::Miter,
+    };
+
+    let dash_offset_pt = optional_key(command, "dash_offset_pt")?
+        .map(|value| {
+            value
+                .extract::<f64>()
+                .map_err(|_| type_error("dash_offset_pt", "must be a float"))
+        })
+        .transpose()?
+        .unwrap_or(0.0);
+    let dashes = match optional_key(command, "dashes")? {
+        Some(dashes_value) => {
+            let dash_list = dashes_value
+                .cast::<PyList>()
+                .map_err(|_| type_error("dashes", "must be a list of floats or None"))?;
+            let mut dashes = Vec::new();
+            if dashes.try_reserve_exact(dash_list.len()).is_err() {
+                return Err(internal_error("allocation failed"));
+            }
+            for dash in dash_list.iter() {
+                dashes.push(
+                    dash.extract::<f64>()
+                        .map_err(|_| type_error("dashes", "must be a list of floats"))?,
+                );
+            }
+            Some(dashes)
+        }
+        None => None,
+    };
+
+    let fill_rule = match selector_from(
+        command,
+        "fill_rule",
+        &[("nonzero", "nonzero"), ("evenodd", "evenodd")],
+    )? {
+        "evenodd" => FillRuleSelector::EvenOdd,
+        _ => FillRuleSelector::NonZero,
+    };
+    let antialias = optional_key(command, "antialias")?
+        .map(|value| {
+            value
+                .extract::<bool>()
+                .map_err(|_| type_error("antialias", "must be a bool"))
+        })
+        .transpose()?
+        .unwrap_or(true);
+    let clip_rect = optional_key(command, "clip_rect")?
+        .map(|value| extract_clip_rect(&value))
+        .transpose()?;
+
+    PathCommand::new(
+        vertices,
+        codes,
+        transform,
+        stroke_rgba,
+        fill_rgba,
+        line_width_pt,
+        cap,
+        join,
+        dash_offset_pt,
+        dashes,
+        fill_rule,
+        antialias,
+        clip_rect,
+    )
+    .map_err(frame_error_to_pyerr)
+}
+
+fn extract_image_command(command: &Bound<'_, PyDict>) -> PyResult<ImageCommand> {
+    let x = required_key(command, "x")?
+        .extract::<f64>()
+        .map_err(|_| type_error("x", "must be a float"))?;
+    let y = required_key(command, "y")?
+        .extract::<f64>()
+        .map_err(|_| type_error("y", "must be a float"))?;
+    // Image dimensions are not self-describing from raw bytes, so they are
+    // required keys of the image command (additive refinement of decision
+    // 2/3's key list; recorded in the handoff).
+    let width = required_key(command, "width")?
+        .extract::<u32>()
+        .map_err(|_| type_error("width", "must be a positive int"))?;
+    let height = required_key(command, "height")?
+        .extract::<u32>()
+        .map_err(|_| type_error("height", "must be a positive int"))?;
+    let rgba_value = required_key(command, "rgba")?;
+    let rgba: Vec<u8> = rgba_value.extract().map_err(|_| {
+        type_error(
+            "rgba",
+            "must be a bytes-like object of length width*height*4",
+        )
+    })?;
+    let clip_rect = optional_key(command, "clip_rect")?
+        .map(|value| extract_clip_rect(&value))
+        .transpose()?;
+    ImageCommand::new(x, y, width, height, rgba, clip_rect).map_err(frame_error_to_pyerr)
+}
+
+fn extract_command(command: &Bound<'_, PyAny>) -> PyResult<Command> {
+    let dict = command
+        .cast::<PyDict>()
+        .map_err(|_| type_error("commands", "entries must be dicts"))?;
+    let kind_value = required_key(dict, "kind")?;
+    let kind: &str = kind_value
+        .cast::<PyString>()?
+        .to_str()
+        .map_err(|_| type_error("kind", "must be a string"))?;
+    match kind {
+        "path" => extract_path_command(dict).map(Command::Path),
+        "image" => extract_image_command(dict).map(Command::Image),
+        _ => Err(validation_error("unknown command kind")),
+    }
+}
+
+/// Extracts and validates the whole `spec` dictionary into owned IR while the
+/// GIL is held.
+fn extract_spec(spec: &Bound<'_, PyAny>) -> PyResult<FrameSpec> {
+    let dict = spec
+        .cast::<PyDict>()
+        .map_err(|_| type_error("spec", "must be a dict"))?;
+    let width_px: u64 = required_key(dict, "width_px")?
+        .extract()
+        .map_err(|_| type_error("width_px", "must be a positive int"))?;
+    let height_px: u64 = required_key(dict, "height_px")?
+        .extract()
+        .map_err(|_| type_error("height_px", "must be a positive int"))?;
+    let output_dpi: f64 = required_key(dict, "output_dpi")?
+        .extract()
+        .map_err(|_| type_error("output_dpi", "must be a float"))?;
+    let commands_value = required_key(dict, "commands")?;
+    let commands_list = commands_value
+        .cast::<PyList>()
+        .map_err(|_| type_error("commands", "must be a list of dicts"))?;
+
+    let width_px = u32::try_from(width_px)
+        .map_err(|_| validation_error("dimensions exceed the supported maximum"))?;
+    let height_px = u32::try_from(height_px)
+        .map_err(|_| validation_error("dimensions exceed the supported maximum"))?;
+    let mut frame_spec =
+        FrameSpec::new(width_px, height_px, output_dpi).map_err(frame_error_to_pyerr)?;
+
+    if frame_spec.reserve_commands(commands_list.len()).is_err() {
+        return Err(internal_error("allocation failed"));
+    }
+    for entry in commands_list.iter() {
+        frame_spec
+            .push_command(extract_command(&entry)?)
+            .map_err(frame_error_to_pyerr)?;
+    }
+    Ok(frame_spec)
+}
+
+#[pyfunction]
+fn render_frame_png<'py>(
+    py: Python<'py>,
+    spec: Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let frame_spec = extract_spec(&spec)?;
+    drop(spec);
+
+    let rendered = catch_unwind(AssertUnwindSafe(|| {
+        py.detach(move || frame::render_frame_png(&frame_spec))
+    }));
+    match rendered {
+        Ok(Ok(bytes)) => Ok(PyBytes::new(py, &bytes)),
+        Ok(Err(error)) => Err(frame_error(error)),
+        Err(_) => Err(lumenplot_error(
+            py,
+            "internal",
+            "internal",
+            "internal error",
+        )),
+    }
 }

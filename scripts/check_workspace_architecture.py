@@ -581,6 +581,14 @@ PHASE3A2_PYTHON_DEPENDENCIES = {
         "features": ["macros", "extension-module", "abi3-py311"],
     },
     "numpy": {"version": "=0.29.0", "default-features": False},
+    # Phase-3B L1 seam (render_frame_png): CPU raster + PNG encode, pinned to
+    # the same versions the accepted lumenplot-export slice already uses.
+    "png": {"version": "=0.18.1", "default-features": False},
+    "tiny-skia": {
+        "version": "=0.12.0",
+        "default-features": False,
+        "features": ["std"],
+    },
 }
 PHASE3A2_MANIFEST_KEYS = {
     "schema",
@@ -858,8 +866,11 @@ def _check_stub_source(package_name: str, source_dir: Path, root: Path, errors: 
         if source_dir.is_dir()
         else []
     )
-    if rust_files != ["src/lib.rs"]:
-        errors.append(f"package {package_name}: source must contain only src/lib.rs")
+    allowed_layouts = (["src/lib.rs"], ["src/frame.rs", "src/lib.rs"])
+    if rust_files not in allowed_layouts:
+        errors.append(
+            f"package {package_name}: source must be src/lib.rs or src/lib.rs + src/frame.rs"
+        )
         return
     source_path = source_dir / "lib.rs"
     try:
@@ -3214,10 +3225,10 @@ def _check_python_bridge_source(package_dir: Path, root: Path, errors: list[str]
         code,
     )
     if (
-        len(pyfunction_attributes) != 1
-        or pyfunction_names != ["render_line_png"]
+        len(pyfunction_attributes) != 2
+        or sorted(pyfunction_names) != ["render_frame_png", "render_line_png"]
         or pymodule_names != ["_native"]
-        or registered_names != ["render_line_png"]
+        or sorted(registered_names) != ["render_frame_png", "render_line_png"]
     ):
         errors.append("phase3a2 Python bridge: private native export inventory is not exact")
     if "#[pymodule]" not in code or "render_line_png" not in code:
