@@ -1899,17 +1899,20 @@ jobs:
           docker pull --platform=linux/amd64 "$IMAGE"
           IMAGE_CONFIG_DIGEST="$(docker image inspect --format '{{{{.Id}}}}' "$IMAGE")"
           test "$IMAGE_CONFIG_DIGEST" = "{self.CONFIG_DIGEST}"
-          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges -e PHASE3A2_RUSTUP_INIT_SHA256 --tmpfs /tmp:rw,noexec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'PREFETCH'
+          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges -e PHASE3A2_RUSTUP_INIT_SHA256 --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'PREFETCH'
             printf '%s\\n' "prefetch-inner-shell: heredoc reached container shell, cwd=$(pwd)"
             export CARGO_HOME=/usr/local/cargo
             export RUSTUP_HOME=/usr/local/cargo/rustup
             printf '%s  rustup-init\\n' "$PHASE3A2_RUSTUP_INIT_SHA256" > /tmp/rustup-init.sha256
-            curl --proto '=https' --tlsv1.2 --silent --show-error --location https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init > /tmp/rustup-init
+            curl --proto '=https' --tlsv1.2 --silent --show-error --location https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init > /tmp/work/rustup-init
             printf '%s\\n' "prefetch-inner-shell: digest file staged, cwd=$(pwd)"
             # The checksum file lists the bare name `rustup-init`, so the check
-            # must resolve it against /tmp; the workdir is read-only /src.
-            ( cd /tmp && sha256sum --check /tmp/rustup-init.sha256 )
-            bash /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
+            # must resolve it against the exec-capable staging directory; the
+            # workdir is read-only /src.
+            ( cd /tmp/work && sha256sum --check /tmp/rustup-init.sha256 )
+            # /tmp stays noexec; the verified ELF bootstrap is executed directly
+            # from the exec-mounted work tmpfs.
+            /tmp/work/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
             export PATH=/usr/local/cargo/bin:$PATH
             rustc --version
             cargo --version
@@ -2377,6 +2380,39 @@ jobs:
             "offline build/test container must not forward the rustup-init digest",
         )
 
+    def test_prefetch_container_must_mount_exec_capable_work_tmpfs(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace(
+                    "-e PHASE3A2_RUSTUP_INIT_SHA256 --tmpfs /tmp:rw,noexec,nosuid,nodev"
+                    " --tmpfs /tmp/work:rw,exec,nosuid,nodev",
+                    "-e PHASE3A2_RUSTUP_INIT_SHA256 --tmpfs /tmp:rw,noexec,nosuid,nodev",
+                    1,
+                ),
+                encoding="utf-8",
+            ),
+            "prefetch container must mount an exec-capable work tmpfs for rustup-init",
+        )
+
+    def test_prefetch_rustup_init_must_run_from_exec_tmpfs(self) -> None:
+        self.assert_rejected(
+            lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
+                (root / ".github/workflows/phase3a2-wheel.yml")
+                .read_text(encoding="utf-8")
+                .replace(
+                    "/tmp/work/rustup-init -y --no-modify-path --profile minimal"
+                    " --default-toolchain 1.89.0",
+                    "bash /tmp/rustup-init -y --no-modify-path --profile minimal"
+                    " --default-toolchain 1.89.0",
+                    1,
+                ),
+                encoding="utf-8",
+            ),
+            "pinned rustup provisioning",
+        )
+
     def test_auditwheel_repair_is_rejected(self) -> None:
         self.assert_rejected(
             lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
@@ -2613,7 +2649,7 @@ jobs:
             path = root / ".github/workflows/phase3a2-wheel.yml"
             text = path.read_text(encoding="utf-8")
             for line in text.splitlines():
-                if "( cd /tmp && sha256sum --check /tmp/rustup-init.sha256 )" in line:
+                if "( cd /tmp/work && sha256sum --check /tmp/rustup-init.sha256 )" in line:
                     text = text.replace(line + "\n", "", 1)
                     break
             path.write_text(text, encoding="utf-8")
@@ -2625,7 +2661,7 @@ jobs:
             path = root / ".github/workflows/phase3a2-wheel.yml"
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
-                    "( cd /tmp && sha256sum --check /tmp/rustup-init.sha256 )",
+                    "( cd /tmp/work && sha256sum --check /tmp/rustup-init.sha256 )",
                     "sha256sum --check /tmp/rustup-init.sha256",
                 ),
                 encoding="utf-8",

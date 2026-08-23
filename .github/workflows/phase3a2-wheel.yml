@@ -44,7 +44,7 @@ jobs:
           IMAGE_CONFIG_DIGEST="$(docker image inspect --format '{{.Id}}' "$IMAGE")"
           test "$IMAGE_CONFIG_DIGEST" = "sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5"
           docker image inspect --format '{{.Id}}' "$IMAGE"
-          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges -e PHASE3A2_RUSTUP_INIT_SHA256 --tmpfs /tmp:rw,noexec,nosuid,nodev -i --volume "$PWD:/src:ro" --volume "$PWD/wheelhouse:/cache/wheelhouse:rw" --volume "$PWD/cargo-home:/usr/local/cargo:rw" --volume "$PWD/evidence:/evidence:rw" --workdir /src "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b" /bin/bash -euo pipefail -c 'exec /bin/bash -euo pipefail' <<'PREFETCH'
+          docker run --rm --platform=linux/amd64 --network=bridge --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges -e PHASE3A2_RUSTUP_INIT_SHA256 --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev -i --volume "$PWD:/src:ro" --volume "$PWD/wheelhouse:/cache/wheelhouse:rw" --volume "$PWD/cargo-home:/usr/local/cargo:rw" --volume "$PWD/evidence:/evidence:rw" --workdir /src "quay.io/pypa/manylinux_2_28_x86_64:2026.08.15-1@sha256:0c87ccb5996dab6c3b7612ee4fda7b80c4ab3c44a86c2541e4a872afdf4f131b" /bin/bash -euo pipefail -c 'exec /bin/bash -euo pipefail' <<'PREFETCH'
           # Visibility diagnostic: if this line is absent from CI logs, the
           # heredoc stdin never reached the container shell; if present, the
           # inner shell is executing (discriminates transport vs script bugs).
@@ -56,11 +56,11 @@ jobs:
           printf '%s  rustup-init\n' "$PHASE3A2_RUSTUP_INIT_SHA256" > /tmp/rustup-init.sha256
           curl --proto '=https' --tlsv1.2 --silent --show-error --location \
             https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
-            > /tmp/rustup-init
-          # Resolve the digest-listed name against /tmp, not CWD=/src.
-          ( cd /tmp && sha256sum --check /tmp/rustup-init.sha256 )
-          # /tmp is mounted noexec, so the bootstrap runs via bash on the file.
-          bash /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
+            > /tmp/work/rustup-init
+          # Resolve the digest-listed name against the staging directory, not CWD=/src.
+          ( cd /tmp/work && sha256sum --check /tmp/rustup-init.sha256 )
+          # /tmp stays noexec; only the exec-mounted work tmpfs may run binaries.
+          /tmp/work/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0
           export PATH=/usr/local/cargo/bin:$PATH
           rustc --version
           cargo --version

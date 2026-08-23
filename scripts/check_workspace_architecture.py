@@ -3252,9 +3252,13 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             "pinned rustup-init download endpoint",
         ),
         # The checkfile lists the bare name `rustup-init`, so the guarded
-        # subshell must resolve it against /tmp; the workdir is read-only /src.
-        ("( cd /tmp && sha256sum --check /tmp/rustup-init.sha256 )", "rustup-init digest verification"),
-        ("bash /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0", "pinned rustup provisioning"),
+        # subshell must resolve it against the exec-capable /tmp/work staging
+        # directory; the workdir is read-only /src.
+        ("( cd /tmp/work && sha256sum --check /tmp/rustup-init.sha256 )", "rustup-init digest verification"),
+        # /tmp itself stays noexec; the verified ELF bootstrap is executed
+        # directly from the exec-mounted work tmpfs instead of being
+        # misinterpreted by bash.
+        ("/tmp/work/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0", "pinned rustup provisioning"),
         ("export PATH=/usr/local/cargo/bin:$PATH", "provisioned Cargo bin on PATH"),
         ("rustc --version", "in-container Rust verification"),
         ("cargo --version", "in-container Cargo verification"),
@@ -3398,11 +3402,22 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         if ":/cache/wheelhouse:rw" not in prefetch_invocation:
             errors.append("phase3a2 workflow: prefetch wheelhouse must be writable")
         # /tmp itself stays noexec; only the nested exec-capable work tmpfs may
-        # host build-script executables, proc-macro dylibs, and runtime venvs.
-        if "--tmpfs /tmp/work:rw,exec,nosuid,nodev" not in build_invocation:
-            errors.append("phase3a2 workflow: offline container lacks the exec work-dir carve-out")
-        if "--tmpfs /tmp/work:" in prefetch_invocation:
-            errors.append("phase3a2 workflow: prefetch container must not mount an exec carve-out")
+        # run binaries, and the prefetch container must stage the verified
+        # rustup-init there rather than executing from the noexec /tmp.
+        prefetch_work_tmpfs = [
+            value
+            for value in _phase3a2_docker_option_values(command_tokens[0], "--tmpfs")
+            if value.startswith("/tmp/work:")
+        ]
+        build_work_tmpfs = [
+            value
+            for value in _phase3a2_docker_option_values(command_tokens[1], "--tmpfs")
+            if value.startswith("/tmp/work:")
+        ]
+        if build_work_tmpfs != ["/tmp/work:rw,exec,nosuid,nodev"]:
+            errors.append("phase3a2 workflow: offline build/test container must mount an exec-capable work tmpfs")
+        if len(prefetch_work_tmpfs) != 1 or "exec" not in prefetch_work_tmpfs[0]:
+            errors.append("phase3a2 workflow: prefetch container must mount an exec-capable work tmpfs for rustup-init")
         if "cargo fetch --locked" not in prefetch:
             errors.append("phase3a2 workflow: locked Cargo prefetch is missing")
         if "cargo metadata --locked" not in prefetch:
@@ -3438,9 +3453,9 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
                 "printf '%s  rustup-init\\n' \"$PHASE3A2_RUSTUP_INIT_SHA256\" > /tmp/rustup-init.sha256",
                 "rustup-init expected-digest file",
             ),
-            # /tmp stays noexec, so the verified bootstrap must be interpreted
-            # by bash instead of executed directly.
-            ("bash /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0", "pinned rustup provisioning"),
+            # /tmp stays noexec; the verified bootstrap must be executed
+            # directly from the exec-mounted /tmp/work tmpfs.
+            ("/tmp/work/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.89.0", "pinned rustup provisioning"),
         ):
             if fragment not in prefetch:
                 errors.append(f"phase3a2 workflow: prefetch lacks {label}")
