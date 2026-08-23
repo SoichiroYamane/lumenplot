@@ -3164,6 +3164,9 @@ def _phase3a2_check_python_package(root: Path, errors: list[str]) -> None:
     for relative in required_files:
         if not (package_dir / relative).is_file():
             errors.append(f"phase3a2 Python package: missing {relative}")
+    # Phase-3B (ADR-0015/API-0005) sanctions exactly one adapter module,
+    # lumenplot_mpl/backend.py; the private-helper files stay Matplotlib-free.
+    phase3b_sanctioned = {"backend.py"}
     for path in sorted(package_dir.rglob("*")):
         if not path.is_file() or path.suffix not in {".py", ".pyi"}:
             continue
@@ -3171,9 +3174,10 @@ def _phase3a2_check_python_package(root: Path, errors: list[str]) -> None:
         if source is None:
             continue
         lowered = source.lower()
-        if "matplotlib" in lowered or re.search(r"\bbackend\b", lowered):
-            errors.append("phase3a2 Python package: Matplotlib/backend surface is forbidden")
-        if re.search(r"\brender_png\b", source):
+        if path.name not in phase3b_sanctioned:
+            if "matplotlib" in lowered or re.search(r"\bbackend\b", lowered):
+                errors.append("phase3a2 Python package: Matplotlib/backend surface is forbidden outside backend.py")
+        if re.search(r"\brender_png\b", source) and path.name != "backend.py":
             errors.append("phase3a2 Python package: public render_png is forbidden")
     init_path = package_dir / "__init__.py"
     native_stub = package_dir / "_native.pyi"
