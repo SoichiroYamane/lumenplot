@@ -192,7 +192,7 @@ jobs:
           echo "probe: auditwheel version"
           AUDITWHEEL_VERSION="$(auditwheel --version | sed 's/^auditwheel, version //')"
           echo "probe: abi3audit version"
-          ABI3AUDIT_VERSION="$(abi3audit --version)"
+          ABI3AUDIT_VERSION="$(/opt/python/cp311-cp311/bin/python -c 'import importlib.metadata as m; print(m.version("abi3audit"))')"
           RUST_VERSION_OBSERVED="$(RUSTUP_TOOLCHAIN=1.89.0 rustc --version | awk '{print $2}')"
           test -n "$AUDITWHEEL_VERSION" && test -n "$ABI3AUDIT_VERSION" && test -n "$RUST_VERSION_OBSERVED"
           test "$AUDITWHEEL_VERSION" = "6.8.0"
