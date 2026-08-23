@@ -100,14 +100,24 @@ def _install_stub_native():
 
 
 def _eligible_canvas(figsize=(2.0, 1.0), dpi=100, line_kwargs=None):
-    """Build a strict-eligible figure: one axes (axison off), one line."""
+    """Build a strict-eligible figure: one axes (axison off), one line.
+
+    Strict fixtures set the fixed style surface explicitly (ADR 0015 §5):
+    Matplotlib defaults to projecting caps and round joins, which strict
+    mode rejects rather than approximates.
+    """
     if not MATPLOTLIB_PRESENT:
         raise unittest.SkipTest("matplotlib not in this offline cell")
     fig = figure.Figure(figsize=figsize, dpi=dpi)
     canvas = _load_backend().FigureCanvasLumenPlot(fig)
     ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
     ax.axison = False
-    kwargs = {"color": "red", "linewidth": 2.0}
+    kwargs = {
+        "color": "red",
+        "linewidth": 2.0,
+        "solid_capstyle": "butt",
+        "solid_joinstyle": "miter",
+    }
     kwargs.update(line_kwargs or {})
     ax.add_line(Line2D([0.0, 10.0], [0.0, 5.0], **kwargs))
     ax.set_xlim(0.0, 10.0)
@@ -237,6 +247,112 @@ class TestRenderPng(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Effective savefig DPI and fractional-figsize geometry matrix (API 0005 §5/§6)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestDpiAndFigsizeMatrix(unittest.TestCase):
+    """Effective savefig DPI drives canvas pixels, vertices, and clip_rect."""
+
+    def setUp(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _check(self, figsize, dpi, render_dpi=None):
+        """One matrix row: PNG dims, spec fields, vertices, and clip."""
+        import numpy as np
+
+        effective_dpi = float(render_dpi if render_dpi is not None else dpi)
+        fig, canvas = _eligible_canvas(figsize=figsize, dpi=dpi)
+        ax = fig.get_axes()[0]
+        width_px = int(round(figsize[0] * effective_dpi))
+        height_px = int(round(figsize[1] * effective_dpi))
+
+        result = (
+            canvas.render_png(dpi=render_dpi)
+            if render_dpi is not None
+            else canvas.render_png()
+        )
+        self.assertEqual(_ihdr_dimensions(result.png_bytes),
+                         (width_px, height_px))
+
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        self.assertEqual(spec["width_px"], width_px)
+        self.assertEqual(spec["height_px"], height_px)
+        self.assertEqual(spec["output_dpi"], effective_dpi)
+
+        # Independent public-API expectation (same oracle shape as the
+        # structural-parity suite): map the data endpoints through public
+        # Axes extent and limits. The expectation is evaluated under the
+        # same temporary effective savefig DPI that API 0005 §5 prescribes
+        # for the render attempt itself.
+        original_dpi = fig.dpi
+        if render_dpi is not None:
+            fig.dpi = effective_dpi
+        try:
+            bbox = ax.get_window_extent()
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+
+            def pxx(x):
+                return (bbox.x0
+                        + (x - xlim[0]) / (xlim[1] - xlim[0]) * bbox.width)
+
+            def pxy(y):
+                return (bbox.y0
+                        + (y - ylim[0]) / (ylim[1] - ylim[0]) * bbox.height)
+
+            expected = [[pxx(0.0), pxy(0.0)], [pxx(10.0), pxy(5.0)]]
+            expected_clip = [
+                bbox.x0,
+                height_px - (bbox.y0 + bbox.height),
+                bbox.width,
+                bbox.height,
+            ]
+        finally:
+            fig.dpi = original_dpi
+
+        commands = spec["commands"]
+        self.assertEqual(len(commands), 1)
+        vertices = np.asarray(commands[0]["vertices"])
+        np.testing.assert_allclose(vertices, np.asarray(expected),
+                                   rtol=0, atol=1e-9)
+
+        # clip_rect restates the axes rectangle in top-left pixel space
+        # with exclusive right/bottom edges.
+        clip = np.asarray(commands[0]["clip_rect"])
+        np.testing.assert_allclose(clip, np.asarray(expected_clip),
+                                   rtol=0, atol=1e-9)
+        return fig
+
+    def test_integer_dpi_matrix(self):
+        for figsize, dpi in [((2.0, 1.0), 100), ((2.0, 1.0), 200),
+                             ((2.0, 1.0), 300)]:
+            with self.subTest(figsize=figsize, dpi=dpi):
+                fig = self._check(figsize, dpi)
+                del fig
+
+    def test_fractional_figsize(self):
+        # Fractional inches: 1.75in * 150dpi = 262.5 -> 262 px (banker's).
+        with self.subTest(figsize=(1.75, 1.25), dpi=150):
+            fig = self._check((1.75, 1.25), 150)
+            del fig
+        with self.subTest(figsize=(1.625, 1.125), dpi=160):
+            fig = self._check((1.625, 1.125), 160)
+            del fig
+
+    def test_render_dpi_override_drives_geometry_and_restores_state(self):
+        # Effective savefig DPI (API 0005 §5) differs from construction DPI.
+        fig = self._check((2.0, 1.0), 100, render_dpi=250)
+        # Temporary effective-DPI state is restored after output.
+        self.assertEqual(fig.dpi, 100)
+        del fig
+
+
+# ---------------------------------------------------------------------------
 # Structural Agg-parity smoke (public-API geometry oracle, not byte equality)
 # ---------------------------------------------------------------------------
 
@@ -282,7 +398,8 @@ class TestStructuralParity(unittest.TestCase):
         ax = fig.get_axes()[0]
         ax.lines[0].remove()
         ax.add_line(Line2D([0, 5, float("nan"), 10], [0, 2.5, 1.0, 5.0],
-                           color="red", linewidth=2.0))
+                           color="red", linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
         result = canvas.render_png()
         spec = _StubNativeModule.last_spec
         assert spec is not None
@@ -358,6 +475,75 @@ class TestStrictUnsupported(unittest.TestCase):
         ax.set_ylim(0, 5)
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
             fig.savefig(io.BytesIO(), format="png")
+
+
+# ---------------------------------------------------------------------------
+# Fixed style surface: Butt cap + Miter join only (ADR 0015 §5)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestFixedStyleSurface(unittest.TestCase):
+    """Effective cap/join styles outside Butt/Miter are rejected, never
+    approximated, and nothing reaches the native seam."""
+
+    def setUp(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_explicit_butt_miter_accepted_and_carried_into_spec(self):
+        fig, canvas = _eligible_canvas(
+            line_kwargs={"solid_capstyle": "butt",
+                         "solid_joinstyle": "miter"})
+        canvas.render_png()
+        command = _StubNativeModule.last_spec["commands"][0]
+        self.assertEqual(command["cap"], "butt")
+        self.assertEqual(command["join"], "miter")
+        del fig
+
+    def _render_with_styles(self, cap=None, join=None):
+        """Eligible figure whose line carries the given effective styles."""
+        kwargs = {}
+        if cap is not None:
+            kwargs["solid_capstyle"] = cap
+        if join is not None:
+            kwargs["solid_joinstyle"] = join
+        fig, canvas = _eligible_canvas()
+        ax = fig.get_axes()[0]
+        line = ax.lines[0]
+        if cap is not None:
+            line.set_solid_capstyle(cap)
+        if join is not None:
+            line.set_solid_joinstyle(join)
+        del kwargs
+        return fig, canvas
+
+    def _assert_rejected(self, cap, join):
+        fig, canvas = self._render_with_styles(cap, join)
+        before = _StubNativeModule.last_spec
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+            canvas.render_png()
+        self.assertEqual(ctx.exception.code, "unsupported-capability")
+        # Nothing was published to the native seam.
+        self.assertIs(_StubNativeModule.last_spec, before)
+        del fig
+
+    def test_matplotlib_defaults_rejected(self):
+        # Current Matplotlib defaults are projecting/round (ADR 0015 §5).
+        self._assert_rejected("projecting", "round")
+
+    def test_round_cap_rejected(self):
+        self._assert_rejected("round", "miter")
+
+    def test_projecting_cap_rejected(self):
+        self._assert_rejected("projecting", "miter")
+
+    def test_round_join_rejected(self):
+        self._assert_rejected("butt", "round")
+
+    def test_bevel_join_rejected(self):
+        self._assert_rejected("butt", "bevel")
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +672,450 @@ class TestFileOutputGuards(unittest.TestCase):
 
         with self.assertRaises(OSError):
             self.canvas.print_png(Failing())
+
+
+# ---------------------------------------------------------------------------
+# Rectangular clipping (API 0005 §6 hazard 3)
+# ---------------------------------------------------------------------------
+
+
+def _decode_rgba8(png_bytes: bytes) -> tuple[int, int, list[bytes]]:
+    """Decode an RGBA8 PNG produced by the native seam (stdlib only).
+
+    Returns ``(width, height, rows)`` where each row is ``width * 4``
+    decoded bytes. Supports the encoder's filter set including Paeth.
+    """
+    import zlib
+
+    assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n", "PNG magic missing"
+    pos = 8
+    idat = b""
+    width = height = bit_depth = color_type = None
+    while pos < len(png_bytes):
+        length = struct.unpack(">I", png_bytes[pos:pos + 4])[0]
+        chunk_type = png_bytes[pos + 4:pos + 8]
+        data = png_bytes[pos + 8:pos + 8 + length]
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type = struct.unpack(
+                ">IIBB", data[:10]
+            )
+            assert bit_depth == 8 and color_type == 6, (
+                "expected 8-bit RGBA"
+            )
+        elif chunk_type == b"IDAT":
+            idat += data
+        pos += 12 + length
+    assert width is not None and height is not None
+
+    raw = zlib.decompress(idat)
+    stride = width * 4 + 1
+
+    def paeth(a: int, b: int, c: int) -> int:
+        p = a + b - c
+        pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+        if pa <= pb and pa <= pc:
+            return a
+        if pb <= pc:
+            return b
+        return c
+
+    rows: list[bytes] = []
+    previous = bytearray(width * 4)
+    for y in range(height):
+        filt = raw[y * stride]
+        line = bytearray(raw[y * stride + 1:(y + 1) * stride])
+        for x in range(width * 4):
+            left = line[x - 4] if x >= 4 else 0
+            up = previous[x]
+            upper_left = previous[x - 4] if x >= 4 else 0
+            if filt == 1:
+                line[x] = (line[x] + left) & 0xFF
+            elif filt == 2:
+                line[x] = (line[x] + up) & 0xFF
+            elif filt == 3:
+                line[x] = (line[x] + (left + up) // 2) & 0xFF
+            elif filt == 4:
+                line[x] = (line[x] + paeth(left, up, upper_left)) & 0xFF
+        rows.append(bytes(line))
+        previous = line
+    return width, height, rows
+
+
+def _is_red(pixel: bytes) -> bool:
+    """A strongly red stroke pixel (tolerant of antialiasing edges)."""
+    r, g, b = pixel[0], pixel[1], pixel[2]
+    return bool(r >= 200 and g < 100 and b < 100)
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestRectangularClipping(unittest.TestCase):
+    """The validated axes rectangle clips the stroke on all four edges."""
+
+    def _install_spec_stub(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _clipped_canvas(self):
+        """Two eligible strokes together leave through all four edges.
+
+        A single straight segment can cross a convex rectangle's boundary
+        at most twice, so four-edge evidence needs two lines: one nearly
+        horizontal leaving left+right, one steep leaving top+bottom.
+        """
+        fig, canvas = _eligible_canvas(
+            figsize=(1.0, 0.5),
+            dpi=100,
+            line_kwargs={"color": (1.0, 0.0, 0.0, 1.0)},
+        )
+        ax = fig.get_axes()[0]
+        ax.lines[0].remove()
+        common = dict(
+            color=(1.0, 0.0, 0.0, 1.0),
+            linewidth=2.0,
+            solid_capstyle="butt",
+            solid_joinstyle="miter",
+        )
+        # Nearly horizontal: leaves through the left and right edges.
+        ax.add_line(Line2D([-50.0, 50.0], [2.5, 2.5], **common))
+        # Steep: leaves through the top and bottom edges.
+        ax.add_line(Line2D([5.0, 6.0], [-50.0, 50.0], **common))
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        return fig, canvas, ax
+
+    def test_clip_rect_carries_axes_rectangle(self):
+        """Request carries the four-sided clip in top-left pixel space."""
+        self._install_spec_stub()
+        fig, canvas, ax = self._clipped_canvas()
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        bbox = ax.get_window_extent()
+        commands = spec["commands"]
+        self.assertEqual(len(commands), 2)
+        expected_clip = [
+            bbox.x0,
+            50 - (bbox.y0 + bbox.height),
+            bbox.width,
+            bbox.height,
+        ]
+        for command in commands:
+            self.assertEqual(command["clip_rect"], expected_clip)
+        del fig
+
+    def test_stroke_clipped_on_all_four_edges(self):
+        """Raster evidence: red ink exists at all four clip edges and
+        nowhere outside them (real seam; skipped before lane L1)."""
+        try:
+            from lumenplot_mpl import _native
+        except (ImportError, AttributeError):
+            self.skipTest("native seam not built in this environment")
+        if not hasattr(_native, "render_frame_png"):
+            self.skipTest("render_frame_png not present yet")
+
+        fig, canvas, ax = self._clipped_canvas()
+        result = canvas.render_png()
+        del fig, canvas, ax
+        width, height, rows = _decode_rgba8(result.png_bytes)
+
+        bbox_x0, bbox_x1 = 10.0, 90.0
+        bbox_y0, bbox_y1 = 5.0, 45.0  # top-left row space
+        import numpy as np
+
+        def pixel(x, y):
+            offset = x * 4
+            return rows[y][offset:offset + 4]
+
+        def opaque_red(x, y):
+            return _is_red(pixel(x, y))
+
+        red_mask = np.zeros((height, width), dtype=bool)
+        for y in range(height):
+            for x in range(width):
+                red_mask[y, x] = opaque_red(x, y)
+
+        columns = np.flatnonzero(red_mask.any(axis=0))
+        rows_with_ink = np.flatnonzero(red_mask.any(axis=1))
+        # Left edge: ink touches the first clipped column...
+        self.assertTrue(columns.size and int(columns[0]) == int(bbox_x0),
+                        f"first ink column {columns[:5]}")
+        # Right edge likewise.
+        self.assertTrue(int(columns[-1]) == int(bbox_x1) - 1,
+                        f"last ink column {columns[-5:]}")
+        # Top edge.
+        self.assertTrue(rows_with_ink.size
+                        and int(rows_with_ink[0]) == int(bbox_y0),
+                        f"first ink row {rows_with_ink[:5]}")
+        # Bottom edge.
+        self.assertTrue(int(rows_with_ink[-1]) == int(bbox_y1) - 1,
+                        f"last ink row {rows_with_ink[-5:]}")
+        # And nothing outside the clip rectangle at all.
+        outside = red_mask.copy()
+        outside[int(bbox_y0):int(bbox_y1), int(bbox_x0):int(bbox_x1)] = False
+        self.assertFalse(outside.any(), "stroke ink found outside clip rect")
+
+    def test_vertices_follow_public_affine_outside_clip(self):
+        """Emitted geometry stays the plain public affine mapping even for
+        the off-canvas part of the segment; four-edge trimming is the
+        native rasterizer's job via clip_rect (ADR 0015 §6)."""
+        self._install_spec_stub()
+        fig, canvas, ax = self._clipped_canvas()
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        import numpy as np
+
+        bbox = ax.get_window_extent()
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        def pxx(x):
+            return bbox.x0 + (x - xlim[0]) / (xlim[1] - xlim[0]) * bbox.width
+
+        def pxy(y):
+            return bbox.y0 + (y - ylim[0]) / (ylim[1] - ylim[0]) * bbox.height
+
+        expected = [
+            # Nearly horizontal stroke, left+right ends.
+            [pxx(-50.0), pxy(2.5)],
+            [pxx(50.0), pxy(2.5)],
+        ]
+        np.testing.assert_allclose(
+            np.asarray(spec["commands"][0]["vertices"]),
+            np.asarray(expected),
+            rtol=0,
+            atol=1e-9,
+        )
+        expected = [
+            # Steep stroke, bottom+top ends. Vertices stay bottom-left
+            # display-pixel points per ADR 0015 §6; the native rasterizer
+            # maps them into its top-left logical space itself.
+            [pxx(5.0), pxy(-50.0)],
+            [pxx(6.0), pxy(50.0)],
+        ]
+        np.testing.assert_allclose(
+            np.asarray(spec["commands"][1]["vertices"]),
+            np.asarray(expected),
+            rtol=0,
+            atol=1e-9,
+        )
+        del fig
+
+
+# ---------------------------------------------------------------------------
+# Geometry edge cases: fractional axes placement, duplicate points
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestGeometryEdgeCases(unittest.TestCase):
+    def setUp(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _oracle(self, ax):
+        """Public-API affine expectation helpers for one axes."""
+        bbox = ax.get_window_extent()
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        def pxx(x):
+            return bbox.x0 + (x - xlim[0]) / (xlim[1] - xlim[0]) * bbox.width
+
+        def pxy(y):
+            return bbox.y0 + (y - ylim[0]) / (ylim[1] - ylim[0]) * bbox.height
+
+        return bbox, pxx, pxy
+
+    def test_fractional_axes_position_maps_exactly(self):
+        """Axes placed at fractional figure coordinates produce an exact
+        pixel-space clip rectangle and vertices (API 0005 §5)."""
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        ax = fig.get_axes()[0]
+        ax.set_position([0.13, 0.17, 0.61, 0.47])
+        result = canvas.render_png()
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        import numpy as np
+
+        bbox, pxx, pxy = self._oracle(ax)
+        height_px = 100
+        command = spec["commands"][0]
+        self.assertEqual(
+            command["clip_rect"],
+            [
+                bbox.x0,
+                height_px - (bbox.y0 + bbox.height),
+                bbox.width,
+                bbox.height,
+            ],
+        )
+        np.testing.assert_allclose(
+            np.asarray(command["vertices"]),
+            np.asarray([[pxx(0.0), pxy(0.0)], [pxx(10.0), pxy(5.0)]]),
+            rtol=0,
+        )
+        del fig
+
+    def test_duplicate_points_pass_through_without_dedup(self):
+        """A leading duplicate data point stays a zero-length segment in
+        the emitted request; the adapter neither drops nor reconnects."""
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        ax = fig.get_axes()[0]
+        ax.lines[0].remove()
+        ax.add_line(Line2D([3.0, 3.0, 7.0], [1.0, 1.0, 4.0],
+                           color=(0.0, 0.0, 1.0, 1.0), linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        import numpy as np
+
+        bbox, pxx, pxy = self._oracle(ax)
+        vertices = spec["commands"][0]["vertices"]
+        self.assertEqual(len(vertices), 3)
+        expected_first = [pxx(3.0), pxy(1.0)]
+        np.testing.assert_allclose(
+            np.asarray(vertices[:2]),
+            np.asarray([expected_first, expected_first]),
+            rtol=0,
+        )
+        # The real segment still spans to the final distinct point.
+        np.testing.assert_allclose(
+            np.asarray(vertices[2]),
+            np.asarray([pxx(7.0), pxy(4.0)]),
+            rtol=0,
+        )
+        del fig
+
+
+# ---------------------------------------------------------------------------
+# Stroke widths: 0.5 / 1 / 2 pt coverage oracle (ADR 0015 §5)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestStrokeWidths(unittest.TestCase):
+    """Positive finite solid stroke width passes through in points; raster
+    evidence shows strictly growing covered thickness with width."""
+
+    def _install_spec_stub(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_spec_carries_point_widths_exactly(self):
+        for width_pt in (0.5, 1.0, 2.0):
+            with self.subTest(width_pt=width_pt):
+                self._install_spec_stub()
+                fig, canvas = _eligible_canvas(
+                    line_kwargs={"linewidth": width_pt})
+                canvas.render_png()
+                command = _StubNativeModule.last_spec["commands"][0]
+                self.assertEqual(command["line_width_pt"], width_pt)
+                del fig
+
+    def test_raster_coverage_grows_with_width(self):
+        """Real seam: thicker strokes cover strictly more rows (skipped
+        before lane L1 lands)."""
+        try:
+            from lumenplot_mpl import _native
+        except (ImportError, AttributeError):
+            self.skipTest("native seam not built in this environment")
+        if not hasattr(_native, "render_frame_png"):
+            self.skipTest("render_frame_png not present yet")
+
+        covered_rows = {}
+        for width_pt in (0.5, 1.0, 2.0):
+            fig, canvas = _eligible_canvas(
+                figsize=(1.0, 0.5), dpi=100,
+                line_kwargs={"linewidth": width_pt})
+            ax = fig.get_axes()[0]
+            # Replace the default diagonal with a horizontal stroke so
+            # covered-row counts measure thickness, not length.
+            ax.lines[0].remove()
+            ax.add_line(Line2D([-50.0, 50.0], [2.5, 2.5],
+                               color=(1.0, 0.0, 0.0, 1.0),
+                               linewidth=width_pt,
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
+            result = canvas.render_png()
+            del fig, canvas
+            _, height, rows = _decode_rgba8(result.png_bytes)
+            # Alpha-weighted coverage of one mid column: proportional to
+            # physical thickness and strictly growing, because each wider
+            # stroke contains the narrower one around the same centerline.
+            mid_x = 50
+            coverage = sum(rows[y][mid_x * 4 + 3] for y in range(height))
+            self.assertGreater(coverage, 0,
+                               f"no stroke ink at {width_pt} pt")
+            ys = [
+                y for y in range(height)
+                if _is_red(rows[y][mid_x * 4:mid_x * 4 + 4])
+            ]
+            self.assertTrue(ys, f"no opaque ink at {width_pt} pt")
+            # All ink stays within the axes band around the mid row.
+            self.assertGreaterEqual(min(ys), 10)
+            self.assertLessEqual(max(ys), 40)
+            covered_rows[width_pt] = coverage
+        self.assertLess(covered_rows[0.5], covered_rows[1.0])
+        self.assertLess(covered_rows[1.0], covered_rows[2.0])
+
+
+# ---------------------------------------------------------------------------
+# Color/alpha quantization ladder (ADR 0015 §5)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestColorAlphaLadder(unittest.TestCase):
+    """Effective stroke RGBA is encoded straight-sRGB RGBA8; alpha composes
+    artist alpha multiplicatively and quantizes deterministically."""
+
+    def setUp(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _stroke_rgba(self, color, alpha=None):
+        fig, canvas = _eligible_canvas(
+            line_kwargs={"color": color} if alpha is None
+            else {"color": color, "alpha": alpha})
+        canvas.render_png()
+        return _StubNativeModule.last_spec["commands"][0]["stroke_rgba"]
+
+    def test_alpha_ladder_quantization(self):
+        expected = {
+            0.25: 64,
+            0.5: 128,
+            0.75: 191,
+            1.0: 255,
+        }
+        previous = None
+        for alpha in (0.25, 0.5, 0.75, 1.0):
+            with self.subTest(alpha=alpha):
+                stroke = self._stroke_rgba((1.0, 0.0, 0.0), alpha)
+                self.assertEqual(list(stroke), [255, 0, 0, expected[alpha]])
+                if previous is not None:
+                    self.assertGreater(stroke[3], previous)
+                previous = stroke[3]
+
+    def test_rgba_tuple_and_hex_string_inputs(self):
+        for color in ((0.0, 0.0, 1.0, 0.5), "#0000ff80"):
+            with self.subTest(color=color):
+                stroke = self._stroke_rgba(color)
+                self.assertEqual(list(stroke), [0, 0, 255, 128])
+
+    def test_zero_alpha_canonicalizes_rgb_to_zero(self):
+        for color in ((1.0, 0.0, 0.0), (1.0, 1.0, 1.0)):
+            with self.subTest(color=color):
+                stroke = self._stroke_rgba(color, 0.0)
+                self.assertEqual(list(stroke), [0, 0, 0, 0])
 
 
 # ---------------------------------------------------------------------------

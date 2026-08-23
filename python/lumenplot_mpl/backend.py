@@ -288,6 +288,9 @@ def _rgba8(color: Any, alpha: float | None = None) -> tuple[int, int, int, int]:
         int(round(min(max(b, 0.0), 1.0) * 255)),
         int(round(min(max(a, 0.0), 1.0) * 255)),
     )
+    if channel[3] == 0:
+        # ADR-0015 §5: fully transparent strokes encode RGB as zero.
+        return (0, 0, 0, 0)
     return channel
 
 
@@ -320,6 +323,8 @@ class _EligibilityPreflight:
         self.background_seen = False
         self.background_rgbface: Any = None
         self.line_paths = 0
+        self._clip_points: Any = None
+        self._height_px = 0
 
     def unsupported(self, reason: str, type_context: str | None = None) -> None:
         self.reasons.append((type_context, reason))
@@ -384,6 +389,24 @@ class _EligibilityPreflight:
             self.unsupported("explicit snap is unsupported", name)
         if line.get_url() is not None:
             self.unsupported("hyperlinks are unsupported", name)
+        # ADR-0015 §5: the native request supports exactly Butt cap and
+        # Miter join. Effective styles outside that set are rejected, not
+        # approximated; Matplotlib's defaults (projecting/round) must be
+        # overridden explicitly by strict-mode callers.
+        cap = str(line.get_solid_capstyle())
+        join = str(line.get_solid_joinstyle())
+        if cap != "butt":
+            self.unsupported(
+                f"solid cap style {cap!r} is unsupported; "
+                "strict mode requires 'butt'",
+                name,
+            )
+        if join != "miter":
+            self.unsupported(
+                f"solid join style {join!r} is unsupported; "
+                "strict mode requires 'miter'",
+                name,
+            )
         if line.get_gid() is None:
             return
 
@@ -484,10 +507,12 @@ class _EligibilityPreflight:
                 self.unsupported("non-finite clip rectangle")
         if gc.get_clip_path() != (None, None):
             self.unsupported("non-rectangular custom clip is unsupported")
-
-
-        if gc.get_clip_path() != (None, None):
-            self.unsupported("non-rectangular custom clip is unsupported")
+        elif clip_rect is not None:
+            # Remember the validated rectangular clip so the request can
+            # carry an explicit clip_rect. Every eligible stroke of this
+            # slice shares one axes rectangle.
+            if self._clip_points is None:
+                self._clip_points = points
 
     # -- geometry assembly -----------------------------------------------
 
@@ -508,6 +533,7 @@ class _EligibilityPreflight:
         """
         commands: list[dict] = []
         background_rgba = _RGBA_BLACK
+        self._height_px = int(height_px)
         for ax in figure.get_axes():
             if bool(getattr(ax, "axison", True)):
                 # Preflight already recorded this as unsupported.
@@ -527,6 +553,9 @@ class _EligibilityPreflight:
 
             def to_px_y(y: Any, _y0=y0, _h=h, _lim=ylim) -> Any:
                 return _y0 + (float(y) - _lim[0]) / (_lim[1] - _lim[0]) * _h
+
+            if self._clip_points is None:
+                self._clip_points = ((x0, y0), (x0 + w, y0 + h))
 
             for line in ax.get_lines():
                 spec = self._line_command(line, to_px_x, to_px_y)
@@ -564,8 +593,30 @@ class _EligibilityPreflight:
         stroke = _rgba8(line.get_color(), line.get_alpha())
         cap = str(line.get_solid_capstyle())
         join = str(line.get_solid_joinstyle())
-        if cap == "projecting":
-            cap = "projecting"
+        if cap != "butt" or join != "miter":
+            # Stage one already rejected non-Butt/Miter effective styles
+            # (ADR-0015 §5); reaching here means the collector trace and
+            # static whitelist disagreed, which is an internal fault.
+            self.unsupported(
+                f"effective cap/join {cap!r}/{join!r} outside the fixed "
+                "strict-mode style set",
+                name,
+            )
+        # The validated rectangular clip, in top-left pixel space with
+        # exclusive right/bottom edges (frozen seam contract).
+        clip_rect: list[float] | None = None
+        if self._clip_points is not None:
+            (cx0, cy0), (cx1, cy1) = self._clip_points
+            left = min(cx0, cx1)
+            right = max(cx0, cx1)
+            bottom = min(cy0, cy1)
+            top = max(cy0, cy1)
+            clip_rect = [
+                float(left),
+                float(self._height_px - top),
+                float(right - left),
+                float(top - bottom),
+            ]
         return {
             "kind": "path",
             "vertices": [[float(vx), float(vy)] for vx, vy in vertices],
@@ -579,7 +630,7 @@ class _EligibilityPreflight:
             "dashes": None,
             "fill_rule": "nonzero",
             "antialias": True,
-            "clip_rect": None,
+            "clip_rect": clip_rect,
         }
 
 
@@ -812,49 +863,58 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         output_dpi = self._resolve_dpi(dpi)
         figure = self.figure
 
-        width_in, height_in = figure.get_size_inches()
-        width_px = int(round(float(width_in) * output_dpi))
-        height_px = int(round(float(height_in) * output_dpi))
-        if width_px <= 0 or height_px <= 0:
-            raise LumenPlotUnsupportedError("non-positive canvas size")
-
+        # API 0005 §5 / ADR-0015 §6: the whole attempt -- eligibility
+        # traversal and geometry assembly alike -- runs under the effective
+        # savefig DPI, and the temporary effective-DPI state is restored
+        # afterwards whatever the outcome.
+        original_figure_dpi = float(figure.dpi)
+        figure.dpi = output_dpi
         try:
-            preflight = _EligibilityPreflight()
-            preflight.check_static(figure)
-            preflight.collect(figure)
-            if preflight.reasons:
-                type_context, reason = preflight.reasons[0]
-                raise LumenPlotUnsupportedError(
-                    f"unsupported content in strict mode: {reason}",
-                    type_context=type_context,
-                    generation=generation,
-                )
-            if not preflight.background_seen:
-                raise LumenPlotUnsupportedError(
-                    "figure background was not observed",
-                    generation=generation,
-                )
-            if preflight.line_paths == 0:
-                # An eligible frame still needs at least one line stroke;
-                # a bare background renders fine though.
-                pass
-            spec = preflight.build_frame_spec(
-                figure,
-                width_px=width_px,
-                height_px=height_px,
-                output_dpi=output_dpi,
-            )
-        except LumenPlotUnsupportedError as error:
-            if error.generation is None:
-                error.generation = generation
-            raise
-        except (ValueError, TypeError, RuntimeError) as error:
-            raise LumenPlotUnsupportedError(
-                f"preflight traversal failed: {error}",
-                generation=generation,
-            ) from error
+            width_in, height_in = figure.get_size_inches()
+            width_px = int(round(float(width_in) * output_dpi))
+            height_px = int(round(float(height_in) * output_dpi))
+            if width_px <= 0 or height_px <= 0:
+                raise LumenPlotUnsupportedError("non-positive canvas size")
 
-        png_bytes = self._call_native(spec, generation)
+            try:
+                preflight = _EligibilityPreflight()
+                preflight.check_static(figure)
+                preflight.collect(figure)
+                if preflight.reasons:
+                    type_context, reason = preflight.reasons[0]
+                    raise LumenPlotUnsupportedError(
+                        f"unsupported content in strict mode: {reason}",
+                        type_context=type_context,
+                        generation=generation,
+                    )
+                if not preflight.background_seen:
+                    raise LumenPlotUnsupportedError(
+                        "figure background was not observed",
+                        generation=generation,
+                    )
+                if preflight.line_paths == 0:
+                    # An eligible frame still needs at least one line stroke;
+                    # a bare background renders fine though.
+                    pass
+                spec = preflight.build_frame_spec(
+                    figure,
+                    width_px=width_px,
+                    height_px=height_px,
+                    output_dpi=output_dpi,
+                )
+            except LumenPlotUnsupportedError as error:
+                if error.generation is None:
+                    error.generation = generation
+                raise
+            except (ValueError, TypeError, RuntimeError) as error:
+                raise LumenPlotUnsupportedError(
+                    f"preflight traversal failed: {error}",
+                    generation=generation,
+                ) from error
+
+            png_bytes = self._call_native(spec, generation)
+        finally:
+            figure.dpi = original_figure_dpi
         return LumenPlotPngResult(png_bytes, ())
 
     def _call_native(self, spec: dict, generation: int) -> bytes:
