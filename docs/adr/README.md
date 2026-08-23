@@ -20,6 +20,7 @@ The architecture-authority owns architecture decisions; the implementation-worke
 | [0012](0012-private-line-frame-and-png-contract.md) | Accepted amendment — Phase-2A/2B implementation and local evidence recorded | Private line frame and deterministic PNG contract | Phase-2A/2B line-frame and PNG boundary |
 | [0013](0013-hidden-facade-private-python-line-png.md) | Accepted staged contract — Phase-3A implementation and evidence pending; Phase-3B public Matplotlib contract open | Hidden facade and private Python line/PNG helper | Phase-3A owned Rust seam, NumPy/GIL boundary, and helper-only package gate |
 | [0014](0014-phase3a2-pinned-manylinux-wheel-evidence.md) | Accepted contract — implementation and wheel evidence pending | Phase-3A2 pinned manylinux private-helper wheel and same-wheel evidence | Python package/build boundary without Phase-3B/public adapter claims |
+| [0015](0015-phase3b-public-matplotlib-adapter-contract.md) | Accepted contract — Phase-3B public adapter slice boundary recorded; implementation and public-backend evidence pending | Phase-3B public Matplotlib adapter contract | Public backend slice boundary: eligibility preflight, eligible trace, style/format guards, fallback, and terminal-failure rules |
 
 ADR 0002 explicitly supersedes ADR 0001. ADR 0001 remains available as historical context; it must not be used as the current v1 architecture without the replacement contract.
 
