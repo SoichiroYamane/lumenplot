@@ -1065,6 +1065,57 @@ class TestStrokeWidths(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Color/alpha quantization ladder (ADR 0015 §5)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestColorAlphaLadder(unittest.TestCase):
+    """Effective stroke RGBA is encoded straight-sRGB RGBA8; alpha composes
+    artist alpha multiplicatively and quantizes deterministically."""
+
+    def setUp(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _stroke_rgba(self, color, alpha=None):
+        fig, canvas = _eligible_canvas(
+            line_kwargs={"color": color} if alpha is None
+            else {"color": color, "alpha": alpha})
+        canvas.render_png()
+        return _StubNativeModule.last_spec["commands"][0]["stroke_rgba"]
+
+    def test_alpha_ladder_quantization(self):
+        expected = {
+            0.25: 64,
+            0.5: 128,
+            0.75: 191,
+            1.0: 255,
+        }
+        previous = None
+        for alpha in (0.25, 0.5, 0.75, 1.0):
+            with self.subTest(alpha=alpha):
+                stroke = self._stroke_rgba((1.0, 0.0, 0.0), alpha)
+                self.assertEqual(list(stroke), [255, 0, 0, expected[alpha]])
+                if previous is not None:
+                    self.assertGreater(stroke[3], previous)
+                previous = stroke[3]
+
+    def test_rgba_tuple_and_hex_string_inputs(self):
+        for color in ((0.0, 0.0, 1.0, 0.5), "#0000ff80"):
+            with self.subTest(color=color):
+                stroke = self._stroke_rgba(color)
+                self.assertEqual(list(stroke), [0, 0, 255, 128])
+
+    def test_zero_alpha_canonicalizes_rgb_to_zero(self):
+        for color in ((1.0, 0.0, 0.0), (1.0, 1.0, 1.0)):
+            with self.subTest(color=color):
+                stroke = self._stroke_rgba(color, 0.0)
+                self.assertEqual(list(stroke), [0, 0, 0, 0])
+
+
+# ---------------------------------------------------------------------------
 # Native seam availability
 # ---------------------------------------------------------------------------
 
