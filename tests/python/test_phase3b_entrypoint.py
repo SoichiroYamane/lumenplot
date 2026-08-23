@@ -29,9 +29,10 @@ def _backend_module_available() -> bool:
     try:
         __import__("lumenplot_mpl.backend")
     except ModuleNotFoundError as error:
-        # Only the missing backend module itself counts as "not landed";
-        # a broken dependency should fail loudly, not skip.
-        return error.name != "lumenplot_mpl.backend"
+        # A missing lumenplot_mpl or lumenplot_mpl.backend means the sibling
+        # lane has not landed yet -> skip. Any other missing module (a broken
+        # dependency) must fail loudly, not skip.
+        return error.name not in ("lumenplot_mpl", "lumenplot_mpl.backend")
     except ImportError:
         return False
     return True
