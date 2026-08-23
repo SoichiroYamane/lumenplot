@@ -341,5 +341,9 @@ jobs:
         run: |
           set -euo pipefail
           cp "$PWD/evidence/phase3a2-wheel-evidence.json" "$PWD/phase3a2-wheel-evidence.json"
+          # The mutation-test harness builds an external-consumer crate with
+          # CARGO_NET_OFFLINE=true, which resolves against the host cargo
+          # registry cache; warm it the same way ci.yml does before the run.
+          cargo fetch --locked
           python3 scripts/check_workspace_architecture.py --phase3a2-evidence
           python3 -m unittest scripts/test_check_workspace_architecture.py
