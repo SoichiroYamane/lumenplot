@@ -13,3 +13,6 @@ bindings = "pyo3"
 manifest-path = "crates/lumenplot-python/Cargo.toml"
 module-name = "lumenplot_mpl._native"
 python-source = "python"
+
+[project.entry-points."matplotlib.backend"]
+lumenplot = "lumenplot_mpl.backend"

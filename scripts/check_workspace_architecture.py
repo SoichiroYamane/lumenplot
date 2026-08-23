@@ -581,14 +581,13 @@ PHASE3A2_PYTHON_DEPENDENCIES = {
         "features": ["macros", "extension-module", "abi3-py311"],
     },
     "numpy": {"version": "=0.29.0", "default-features": False},
-    # Phase-3B L1 seam (render_frame_png): CPU raster + PNG encode, pinned to
-    # the same versions the accepted lumenplot-export slice already uses.
+}
+# Phase-3B raster pipeline additions (workstream-manager decision on task
+# t_52f05497): identical pins to lumenplot-export's accepted declarations,
+# admitted only while the Phase-3B static allowance is active.
+PHASE3A2_PHASE3B_PYTHON_DEPENDENCIES = {
     "png": {"version": "=0.18.1", "default-features": False},
-    "tiny-skia": {
-        "version": "=0.12.0",
-        "default-features": False,
-        "features": ["std"],
-    },
+    "tiny-skia": {"version": "=0.12.0", "default-features": False, "features": ["std"]},
 }
 PHASE3A2_MANIFEST_KEYS = {
     "schema",
@@ -866,11 +865,14 @@ def _check_stub_source(package_name: str, source_dir: Path, root: Path, errors: 
         if source_dir.is_dir()
         else []
     )
-    allowed_layouts = (["src/lib.rs"], ["src/frame.rs", "src/lib.rs"])
-    if rust_files not in allowed_layouts:
-        errors.append(
-            f"package {package_name}: source must be src/lib.rs or src/lib.rs + src/frame.rs"
-        )
+    allowed_files = ["src/lib.rs"]
+    if package_name == "lumenplot-python" and _phase3b_activation_reason(root) is not None:
+        # Phase-3B splits the private raster pipeline into src/frame.rs
+        # (accepted lane implementation); admit exactly that layout while
+        # the Phase-3B static allowance is active.
+        allowed_files = ["src/frame.rs", "src/lib.rs"]
+    if rust_files != allowed_files:
+        errors.append(f"package {package_name}: source must contain only src/lib.rs")
         return
     source_path = source_dir / "lib.rs"
     try:
@@ -3127,6 +3129,55 @@ def _phase3a2_activation_reasons(root: Path) -> list[str]:
     return reasons
 
 
+PHASE3A2_PHASE3B_PACKAGE_FILES = frozenset({"backend.py", "__init__.py"})
+# While the Phase-3B allowance is active, these are the ONLY matplotlib
+# shapes still rejected inside the two phase3b-owned package files; every
+# other occurrence (qualified chains such as matplotlib.lines.Line2D,
+# rcParams access, docstring prose) is admitted because the backend module
+# itself is the adapter. Workstream-manager decision on task t_52f05497.
+PHASE3A2_PHASE3B_MATPLOTLIB_FORBIDDEN_SHAPES = (
+    re.compile(r"^import matplotlib\.pylot"),
+    re.compile(r"^from matplotlib import"),
+    re.compile(r"^import matplotlib\.pylot as"),
+)
+
+
+def _phase3b_activation_reason(root: Path) -> str | None:
+    """Return why the Phase-3B static allowance activates for *root*, or None."""
+    if (root / "python" / "lumenplot_mpl" / "backend.py").is_file():
+        return "python/lumenplot_mpl/backend.py"
+    if any((root / "tests" / "python").glob("test_phase3b*.py")):
+        return "tests/python/test_phase3b*.py"
+    return None
+
+
+def _phase3a2_phase3b_matplotlib_forbidden(source: str) -> bool:
+    """Detect pyplot-import regressions in the two phase3b-owned files."""
+    return any(
+        shape.match(line) is not None
+        for line in source.splitlines()
+        for shape in PHASE3A2_PHASE3B_MATPLOTLIB_FORBIDDEN_SHAPES
+    )
+
+
+def _phase3a2_phase3b_render_png_outside_allowances(source: str) -> bool:
+    """Detect render_png occurrences outside the phase3b-allowed shapes.
+
+    Allowed: ``def render_png(`` definitions, dotted calls of the form
+    ``<identifier>.render_png(``, and occurrences inside single-backtick
+    doc-reference spans (e.g. ``:meth:`FigureCanvasLumenPlot.render_png`` `).
+    """
+    for line in source.splitlines():
+        without_doc_spans = re.sub(r"`[^`]*`", "", line)
+        if re.search(r"\bdef\s+render_png\s*\(", without_doc_spans):
+            continue
+        if re.search(r"\b[A-Za-z_]\w*\.render_png\s*\(", without_doc_spans):
+            continue
+        if re.search(r"\brender_png\b", without_doc_spans):
+            return True
+    return False
+
+
 def _phase3a2_read_text(path: Path, root: Path, errors: list[str], label: str) -> str | None:
     try:
         return path.read_text(encoding="utf-8")
@@ -3168,8 +3219,19 @@ def _phase3a2_check_pyproject(root: Path, errors: list[str]) -> None:
     dependencies = project.get("dependencies", [])
     if isinstance(dependencies, list) and any("matplotlib" in str(item).lower() for item in dependencies):
         errors.append("phase3a2 pyproject: Matplotlib dependency is forbidden")
-    if "backend" in str(project).lower() or "matplotlib" in str(project).lower():
-        errors.append("phase3a2 pyproject: public backend/Matplotlib surface is forbidden")
+    phase3b_active = _phase3b_activation_reason(root) is not None
+    lowered_project = str(project).lower()
+    if "backend" in lowered_project or "matplotlib" in lowered_project:
+        # The Phase-3B entry-point table is the one sanctioned public
+        # backend surface; while the allowance is active it must be the
+        # ONLY entry-point table and must carry the API-0005 §1 identity
+        # exactly. Anything else keeps the historical rejection.
+        entry_points_table = project.get("entry-points")
+        exact_identity = isinstance(entry_points_table, dict) and set(entry_points_table) == {
+            "matplotlib.backend"
+        } and entry_points_table["matplotlib.backend"] == {"lumenplot": "lumenplot_mpl.backend"}
+        if not (phase3b_active and exact_identity):
+            errors.append("phase3a2 pyproject: public backend/Matplotlib surface is forbidden")
 
 
 def _phase3a2_check_python_package(root: Path, errors: list[str]) -> None:
@@ -3181,9 +3243,7 @@ def _phase3a2_check_python_package(root: Path, errors: list[str]) -> None:
     for relative in required_files:
         if not (package_dir / relative).is_file():
             errors.append(f"phase3a2 Python package: missing {relative}")
-    # Phase-3B (ADR-0015/API-0005) sanctions exactly one adapter module,
-    # lumenplot_mpl/backend.py; the private-helper files stay Matplotlib-free.
-    phase3b_sanctioned = {"backend.py"}
+    phase3b_active = _phase3b_activation_reason(root) is not None
     for path in sorted(package_dir.rglob("*")):
         if not path.is_file() or path.suffix not in {".py", ".pyi"}:
             continue
@@ -3191,11 +3251,23 @@ def _phase3a2_check_python_package(root: Path, errors: list[str]) -> None:
         if source is None:
             continue
         lowered = source.lower()
-        if path.name not in phase3b_sanctioned:
-            if "matplotlib" in lowered or re.search(r"\bbackend\b", lowered):
-                errors.append("phase3a2 Python package: Matplotlib/backend surface is forbidden outside backend.py")
-        if re.search(r"\brender_png\b", source) and path.name != "backend.py":
-            errors.append("phase3a2 Python package: public render_png is forbidden")
+        if "matplotlib" in lowered or re.search(r"\bbackend\b", lowered):
+            # Phase-3B: backend.py is the adapter itself and __init__.py
+            # hosts it; while the allowance is active only pyplot-import
+            # shapes stay forbidden inside those two files.
+            if not (
+                phase3b_active
+                and path.name in PHASE3A2_PHASE3B_PACKAGE_FILES
+                and not _phase3a2_phase3b_matplotlib_forbidden(source)
+            ):
+                errors.append("phase3a2 Python package: Matplotlib/backend surface is forbidden")
+        if re.search(r"\brender_png\b", source):
+            if not (
+                phase3b_active
+                and path.name in PHASE3A2_PHASE3B_PACKAGE_FILES
+                and not _phase3a2_phase3b_render_png_outside_allowances(source)
+            ):
+                errors.append("phase3a2 Python package: public render_png is forbidden")
     init_path = package_dir / "__init__.py"
     native_stub = package_dir / "_native.pyi"
     if init_path.is_file():
@@ -3245,11 +3317,19 @@ def _check_python_bridge_source(package_dir: Path, root: Path, errors: list[str]
         r"\bwrap_pyfunction!\s*\(\s*([A-Za-z_]\w*)\s*,",
         code,
     )
+    # Exact private native export inventory. The expected set depends on
+    # the Phase-3B allowance: without its activation signals the historical
+    # single-export rule holds verbatim; with them, the whole-frame seam is
+    # required as well (fail-closed in both directions).
+    phase3b_active = _phase3b_activation_reason(root) is not None
+    expected_exports = (
+        ["render_frame_png", "render_line_png"] if phase3b_active else ["render_line_png"]
+    )
     if (
-        len(pyfunction_attributes) != 2
-        or sorted(pyfunction_names) != ["render_frame_png", "render_line_png"]
+        len(pyfunction_attributes) != len(expected_exports)
+        or sorted(pyfunction_names) != sorted(expected_exports)
         or pymodule_names != ["_native"]
-        or sorted(registered_names) != ["render_frame_png", "render_line_png"]
+        or sorted(registered_names) != sorted(expected_exports)
     ):
         errors.append("phase3a2 Python bridge: private native export inventory is not exact")
     if "#[pymodule]" not in code or "render_line_png" not in code:
@@ -4031,12 +4111,18 @@ def _check_dependencies(
     manifest: dict[str, Any],
     errors: list[str],
     phase3a2_active: bool = False,
+    phase3b_active: bool = False,
 ) -> None:
     expected_edges = EXPECTED_EDGES[package_name]
     if package_name == "lumenplot-export":
         expected_external = EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES
     elif package_name == "lumenplot-python" and phase3a2_active:
         expected_external = PHASE3A2_PYTHON_DEPENDENCIES
+        if phase3b_active:
+            expected_external = {
+                **PHASE3A2_PYTHON_DEPENDENCIES,
+                **PHASE3A2_PHASE3B_PYTHON_DEPENDENCIES,
+            }
     else:
         expected_external = {}
     actual_edges: set[str] = set()
@@ -4196,7 +4282,13 @@ def check_workspace(root: Path, *, require_phase3a2_evidence: bool = False) -> l
         elif isinstance(lib, dict) and "crate-type" in lib:
             errors.append(f"package {package_name}: only the future Python edge may set crate-type")
 
-        _check_dependencies(package_name, manifest, errors, phase3a2_active=phase3a2_active)
+        _check_dependencies(
+            package_name,
+            manifest,
+            errors,
+            phase3a2_active=phase3a2_active,
+            phase3b_active=bool(_phase3b_activation_reason(root)),
+        )
         _check_package_source(
             package_name,
             manifest_path.parent,
