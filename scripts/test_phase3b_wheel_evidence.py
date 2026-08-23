@@ -25,7 +25,8 @@ Usage:
 Network is needed only for the pinned maturin (and optional matplotlib)
 download; without network or a Rust toolchain the probe records why it
 stopped. This script produces convenience evidence only; it is not an
-acceptance-grade artifact until reviewed with its CI job proposal.
+acceptance-grade artifact — release claims remain gated by the offline
+containerized Phase-3A2 supply-chain lane.
 """
 
 from __future__ import annotations
@@ -396,7 +397,7 @@ def run_probe(workdir: Path) -> dict[str, object]:
         "helper_tests": helper_tests,
         "note": (
             "convenience evidence only; acceptance requires the reviewed "
-            "offline CI lane proposed in scripts/phase3b-ci-job-proposal.yml"
+            "offline containerized Phase-3A2 supply-chain lane"
         ),
     }
 

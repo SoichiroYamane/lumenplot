@@ -1,17 +1,19 @@
-# Phase-3B wheel/entry-point CI job proposal (propose-only)
+# Phase-3B wheel/entry-point CI job proposal (activated)
 
-Status: **proposal — not wired into GitHub Actions**
+Status: **activated** — see `.github/workflows/phase3b-wheel-evidence.yml`.
 
-This directory holds a *proposed* Phase-3B packaging-evidence CI job. It is
-deliberately **not** placed under `.github/workflows/`: per the accepted
-Phase-3B delivery order (ADR 0015 §12), lifecycle/loader evidence comes last,
-after the backend implementation lane lands, and workflow activation is a
-reviewed change. This file exists so reviewers can see and discuss the exact
-proposed shape without it executing anywhere.
+This directory holds the *original proposal* for the Phase-3B
+packaging-evidence CI job. It was deliberately kept out of
+`.github/workflows/` until the accepted Phase-3B delivery order (ADR 0015
+§12) allowed lifecycle/loader evidence: that evidence comes last, after the
+backend implementation lane lands. With the backend module merged and the
+entry point declared in `pyproject.toml`, the job is now active under
+`.github/workflows/phase3b-wheel-evidence.yml`; this file remains as the
+rationale record.
 
-## What the proposal contains
+## What was proposed (now active)
 
-`phase3b-ci-job-proposal.yml` — a draft job that would:
+The draft job would:
 
 1. check out the repository;
 2. create an isolated build venv, install the hash-pinned maturin 1.14.1
@@ -28,10 +30,11 @@ proposed shape without it executing anywhere.
    `filetypes` PNG-only, `required_interactive_framework is None`,
    forbidden legacy exports) and emit a JSON manifest as a workflow artifact.
 
-## Why propose-only
+## Why it was propose-only
 
 - ADR 0015 §12 orders this evidence after backend implementation; wiring the
-  job now would make CI red for reasons the ordered plan already anticipates.
+  job earlier would have made CI red for reasons the ordered plan already
+  anticipated.
 - The manifest is convenience evidence, not acceptance evidence: the offline,
   containerized, hash-pinned pattern of the Phase-3A2 lane remains the
   canonical supply-chain gate for release claims.
@@ -46,18 +49,21 @@ Run locally without any workflow changes:
 python3 scripts/test_phase3b_wheel_evidence.py --probe --workdir /tmp/phase3b-probe
 ```
 
-The command prints the same JSON manifest the proposed job would upload.
+The command prints the same JSON manifest the workflow uploads.
+
 Unit tests for the probe's own constants:
 
 ```sh
 python3 -m unittest scripts.test_phase3b_wheel_evidence
 ```
 
-## Follow-up when the backend lands
+## Activation record
 
-1. Re-run the local probe; expect `surface_status: "implemented"` with every
-   surface boolean true and zero skipped identity checks.
-2. Move `phase3b-ci-job-proposal.yml` under `.github/workflows/` (renamed,
-   pinned actions, least-privilege permissions) via a reviewed PR.
-3. Fold the emitted manifest into the Phase-3B evidence record alongside the
-   offline-lane outputs; do not treat this manifest alone as acceptance.
+1. The local probe reports `surface_status: "implemented"` with every surface
+   boolean true and zero skipped identity checks.
+2. The job now lives at `.github/workflows/phase3b-wheel-evidence.yml`
+   (renamed from this proposal), pinned to the reviewed action SHAs from
+   `docs/security/pinned-actions.yml`, least-privilege (`contents: read`),
+   with the artifact upload restricted to trusted `main` pushes.
+3. The emitted manifest folds into the Phase-3B evidence record alongside
+   the offline-lane outputs; it is not treated as acceptance alone.
