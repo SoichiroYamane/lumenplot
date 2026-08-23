@@ -1987,8 +1987,8 @@ jobs:
             unzip -p "$WHEEL" '*/RECORD' | python /cache/check-record.py
             WHEEL_VERSION="$(unzip -p "$WHEEL" '*/METADATA' | awk -F': ' '$1 == "Version" {{print $2}}')"
             test "$WHEEL_VERSION" = "$CARGO_VERSION"
-            auditwheel show --json "$WHEEL"
-            auditwheel check "$WHEEL"
+            auditwheel show --json "$WHEEL" > /evidence/auditwheel.json
+            /opt/python/cp311-cp311/bin/python -c 'import json; d=json.load(open("/evidence/auditwheel.json")); tag=d.get("overall_tag",""); assert "manylinux_2_28" in tag, d'
             READELF_OUT="$(readelf -d "$NATIVE_OBJECT")"
             printf '%s\\n' "$READELF_OUT"
             test -n "$READELF_OUT"
@@ -2482,7 +2482,10 @@ jobs:
             lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
                 (root / ".github/workflows/phase3a2-wheel.yml")
                 .read_text(encoding="utf-8")
-                .replace("auditwheel check \"$WHEEL\"", "auditwheel repair \"$WHEEL\""),
+                .replace(
+                    'auditwheel show --json "$WHEEL"',
+                    'auditwheel repair "$WHEEL"',
+                ),
                 encoding="utf-8",
             ),
             "auditwheel repair is forbidden",
@@ -2735,7 +2738,7 @@ jobs:
             text = path.read_text(encoding="utf-8")
             export_line = "            export PYTHONPATH=/tmp/work/build-site\n"
             text = text.replace(export_line, "", 1)
-            anchor = '            auditwheel show --json "$WHEEL"\n'
+            anchor = '            auditwheel show --json "$WHEEL" > /evidence/auditwheel.json\n'
             assert anchor in text
             text = text.replace(anchor, anchor + export_line, 1)
             path.write_text(text, encoding="utf-8")
@@ -2963,10 +2966,13 @@ jobs:
             lambda root: (root / ".github/workflows/phase3a2-wheel.yml").write_text(
                 (root / ".github/workflows/phase3a2-wheel.yml")
                 .read_text(encoding="utf-8")
-                .replace("auditwheel check", "auditwheel inspect"),
+                .replace(
+                    'assert any("manylinux_2_28" in t for t in tags), tags',
+                    'pass',
+                ),
                 encoding="utf-8",
             ),
-            "auditwheel check",
+            'manylinux_2_28 tag assertion from auditwheel JSON',
         )
 
     def test_missing_elf_check_is_rejected(self) -> None:

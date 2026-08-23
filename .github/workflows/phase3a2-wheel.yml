@@ -243,7 +243,11 @@ jobs:
             /opt/python/cp311-cp311/bin/python -c 'import json,sys; json.dump({"abi3audit_version": sys.argv[1], "auditwheel_version": sys.argv[2], "glibc": sys.argv[3], "platform": sys.argv[4], "rust_version": sys.argv[5], "elf_runpath": json.loads(sys.argv[6])}, sys.stdout, indent=2)' "$ABI3AUDIT_VERSION" "$AUDITWHEEL_VERSION" "$GLIBC_VERSION" "$PLATFORM_OBSERVED" "$RUST_VERSION_OBSERVED" "$ELF_RUNPATH_JSON" > /evidence/observed.json
           fi
           auditwheel show --json "$WHEEL" > /evidence/auditwheel.json
-          auditwheel check "$WHEEL"
+          # auditwheel 6.x removed the deprecated `check` subcommand; the
+          # manylinux_2_28 compliance is asserted from the `show --json`
+          # report's overall_tag (schema: version/wheel/pure/overall_tag/
+          # sym_tag/versioned_symbols/external_libs/policy_upgrades).
+          /opt/python/cp311-cp311/bin/python -c 'import json,sys; d=json.load(open("/evidence/auditwheel.json")); tag=d.get("overall_tag",""); assert "manylinux_2_28" in tag, d'
           abi3audit "$WHEEL"
           cargo metadata --locked --offline --format-version 1 > /evidence/cargo-metadata.json
           python /src/scripts/phase3a2-sbom.py --metadata /evidence/cargo-metadata.json --lockfile /src/Cargo.lock --pyproject /src/pyproject.toml > /evidence/sbom.json
