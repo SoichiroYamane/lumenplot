@@ -1926,14 +1926,14 @@ jobs:
             cargo metadata --locked --format-version 1 > /cache/wheelhouse/cargo-metadata.json
             cargo install --locked cargo-deny@0.20.2
             cargo deny check
-            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
-            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 311 --abi cp311 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
-            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 312 --abi cp312 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}
-            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp313']}
-            python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}
-            python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 311 --abi cp311 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 312 --abi cp312 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp313']}
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0
             sha256sum /cache/wheelhouse/auditwheel-6.8.0-*.whl > /cache/wheelhouse/auditwheel-sha256.txt
-            python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26
             sha256sum /cache/wheelhouse/abi3audit-0.0.26-*.whl > /cache/wheelhouse/abi3audit-sha256.txt
           PREFETCH
           )"
@@ -2643,6 +2643,19 @@ jobs:
             )
 
         self.assert_rejected(mutate, "prefetch download inventory is not exactly reviewed")
+
+    def test_bare_python_in_prefetch_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "/opt/python/cp311-cp311/bin/python -m pip download",
+                    "python -m pip download",
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "prefetch must not invoke a bare python interpreter")
 
     def test_unreviewed_prefetch_network_fetch_is_rejected(self) -> None:
         def mutate(root: Path) -> None:

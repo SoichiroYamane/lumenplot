@@ -2927,23 +2927,27 @@ def _phase3a2_valid_container_user(value: str) -> bool:
 
 
 def _phase3a2_expected_prefetch_downloads() -> list[str]:
+    # The pinned manylinux image ships versioned interpreters only and has no
+    # bare `python` on PATH, so every prefetch download names the reviewed
+    # CPython 3.11 interpreter explicitly.
+    interpreter = PHASE3A2_INTERPRETERS["3.11"]
     downloads = [
-        "python -m pip download --no-deps --only-binary=:all: --require-hashes "
+        f"{interpreter} -m pip download --no-deps --only-binary=:all: --require-hashes "
         f"--dest /cache/wheelhouse maturin==1.14.1 --hash=sha256:{PHASE3A2_MATURIN_WHEEL_SHA256}"
     ]
     for version, digest in PHASE3A2_NUMPY_WHEEL_SHA256.items():
         python_version = version.removeprefix("cp")
         downloads.append(
-            "python -m pip download --no-deps --only-binary=:all: --require-hashes "
+            f"{interpreter} -m pip download --no-deps --only-binary=:all: --require-hashes "
             "--dest /cache/wheelhouse --platform manylinux_2_28_x86_64 "
             f"--implementation cp --python-version {python_version} "
             f"--abi {version} numpy==2.4.6 --hash=sha256:{digest}"
         )
     downloads.append(
-        "python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0"
+        f"{interpreter} -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0"
     )
     downloads.append(
-        "python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26"
+        f"{interpreter} -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26"
     )
     return downloads
 
@@ -3444,6 +3448,13 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         ]
         if prefetch_download_lines != _phase3a2_expected_prefetch_downloads():
             errors.append("phase3a2 workflow: prefetch download inventory is not exactly reviewed")
+        # Bare `python` resolves to nothing in the pinned manylinux image and
+        # surfaces as exit 127 deep inside the prefetch leg; every interpreter
+        # invocation must name its explicit /opt/python path.
+        if re.search(r"(?m)^\s*python\b", prefetch):
+            errors.append(
+                "phase3a2 workflow: prefetch must not invoke a bare python interpreter"
+            )
         # The only permitted direct network fetch is the hash-pinned
         # rustup-init bootstrap; every other download must go through the
         # reviewed pip inventory above.  Backslash continuations are joined
