@@ -1,6 +1,6 @@
 # ADR 0014: Phase-3A2 pinned manylinux wheel evidence contract
 
-- Status: **Accepted contract; implementation and wheel evidence pending**
+- Status: **Accepted contract — Phase-3A2 helper/package/builder same-wheel evidence is recorded (CI-local manifest; GIL CPython 3.11–3.14); Phase-3B public-backend evidence remains pending**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
