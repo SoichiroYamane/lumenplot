@@ -49,6 +49,10 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="lumenplot-architecture-")
         fixture_root = Path(temporary.name)
         shutil.copy2(ROOT / "Cargo.toml", fixture_root / "Cargo.toml")
+        # The offline external-consumer probes resolve the full workspace
+        # graph, so the lockfile (with the `png` entry and every other
+        # transitive pin) must travel with the fixture.
+        shutil.copy2(ROOT / "Cargo.lock", fixture_root / "Cargo.lock")
         shutil.copytree(ROOT / "crates", fixture_root / "crates")
         reset_python_bridge_to_baseline(fixture_root)
         scripts_dir = fixture_root / "scripts"
