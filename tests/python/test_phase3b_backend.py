@@ -244,6 +244,112 @@ class TestRenderPng(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Effective savefig DPI and fractional-figsize geometry matrix (API 0005 §5/§6)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestDpiAndFigsizeMatrix(unittest.TestCase):
+    """Effective savefig DPI drives canvas pixels, vertices, and clip_rect."""
+
+    def setUp(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _check(self, figsize, dpi, render_dpi=None):
+        """One matrix row: PNG dims, spec fields, vertices, and clip."""
+        import numpy as np
+
+        effective_dpi = float(render_dpi if render_dpi is not None else dpi)
+        fig, canvas = _eligible_canvas(figsize=figsize, dpi=dpi)
+        ax = fig.get_axes()[0]
+        width_px = int(round(figsize[0] * effective_dpi))
+        height_px = int(round(figsize[1] * effective_dpi))
+
+        result = (
+            canvas.render_png(dpi=render_dpi)
+            if render_dpi is not None
+            else canvas.render_png()
+        )
+        self.assertEqual(_ihdr_dimensions(result.png_bytes),
+                         (width_px, height_px))
+
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        self.assertEqual(spec["width_px"], width_px)
+        self.assertEqual(spec["height_px"], height_px)
+        self.assertEqual(spec["output_dpi"], effective_dpi)
+
+        # Independent public-API expectation (same oracle shape as the
+        # structural-parity suite): map the data endpoints through public
+        # Axes extent and limits. The expectation is evaluated under the
+        # same temporary effective savefig DPI that API 0005 §5 prescribes
+        # for the render attempt itself.
+        original_dpi = fig.dpi
+        if render_dpi is not None:
+            fig.dpi = effective_dpi
+        try:
+            bbox = ax.get_window_extent()
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+
+            def pxx(x):
+                return (bbox.x0
+                        + (x - xlim[0]) / (xlim[1] - xlim[0]) * bbox.width)
+
+            def pxy(y):
+                return (bbox.y0
+                        + (y - ylim[0]) / (ylim[1] - ylim[0]) * bbox.height)
+
+            expected = [[pxx(0.0), pxy(0.0)], [pxx(10.0), pxy(5.0)]]
+            expected_clip = [
+                bbox.x0,
+                height_px - (bbox.y0 + bbox.height),
+                bbox.width,
+                bbox.height,
+            ]
+        finally:
+            fig.dpi = original_dpi
+
+        commands = spec["commands"]
+        self.assertEqual(len(commands), 1)
+        vertices = np.asarray(commands[0]["vertices"])
+        np.testing.assert_allclose(vertices, np.asarray(expected),
+                                   rtol=0, atol=1e-9)
+
+        # clip_rect restates the axes rectangle in top-left pixel space
+        # with exclusive right/bottom edges.
+        clip = np.asarray(commands[0]["clip_rect"])
+        np.testing.assert_allclose(clip, np.asarray(expected_clip),
+                                   rtol=0, atol=1e-9)
+        return fig
+
+    def test_integer_dpi_matrix(self):
+        for figsize, dpi in [((2.0, 1.0), 100), ((2.0, 1.0), 200),
+                             ((2.0, 1.0), 300)]:
+            with self.subTest(figsize=figsize, dpi=dpi):
+                fig = self._check(figsize, dpi)
+                del fig
+
+    def test_fractional_figsize(self):
+        # Fractional inches: 1.75in * 150dpi = 262.5 -> 262 px (banker's).
+        with self.subTest(figsize=(1.75, 1.25), dpi=150):
+            fig = self._check((1.75, 1.25), 150)
+            del fig
+        with self.subTest(figsize=(1.625, 1.125), dpi=160):
+            fig = self._check((1.625, 1.125), 160)
+            del fig
+
+    def test_render_dpi_override_drives_geometry_and_restores_state(self):
+        # Effective savefig DPI (API 0005 §5) differs from construction DPI.
+        fig = self._check((2.0, 1.0), 100, render_dpi=250)
+        # Temporary effective-DPI state is restored after output.
+        self.assertEqual(fig.dpi, 100)
+        del fig
+
+
+# ---------------------------------------------------------------------------
 # Structural Agg-parity smoke (public-API geometry oracle, not byte equality)
 # ---------------------------------------------------------------------------
 
