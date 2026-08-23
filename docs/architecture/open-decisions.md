@@ -121,10 +121,10 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ### O-10 — Matplotlib compatibility and profile matrix
 
-- State: Phase-3B public contract open; Phase-3A helper and Phase-3A2 wheel evidence staged separately
+- State: Accepted Phase-3B public Matplotlib adapter contract — implementation and public-backend evidence pending
 - Decision owner: architecture-authority
 - Needed before: adapter release claim
-- Record: [API 0003 — Phase-3A Python, NumPy, and private helper](api-0003-python-numpy-matplotlib.md), [ADR 0013 — hidden line/PNG facade and private Python helper](../adr/0013-hidden-facade-private-python-line-png.md), and [ADR 0014 — pinned manylinux wheel evidence](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md)
+- Record: [API 0005 — Phase-3B public Matplotlib backend surface](api-0005-phase3b-public-matplotlib-backend-surface.md) and [ADR 0015 — Phase-3B public Matplotlib adapter contract](../adr/0015-phase3b-public-matplotlib-adapter-contract.md); prior staged inputs remain in [API 0003](api-0003-python-numpy-matplotlib.md), [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md), and [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md)
 - Accepted scope: Phase-3A explicitly excludes a Matplotlib dependency, backend module, entry point, public `render_png`, result/diagnostic/warning types, canvas, and fallback. The later Phase-3B decision must use documented public APIs only, an exact object whitelist plus public `RendererBase` collector, the exact eligible trace, explicit style and non-PNG guards, 72-point mapping, and terminal-failure no-fallback rules.
 - Mandatory future boundary: Matplotlib 3.11.1 / backend API 1.1; evaluate
   exactly that surface and forbid `_Backend`, `_renderer`, `_api`,
@@ -134,8 +134,8 @@ The following are fixed by the accepted architecture and must not be returned to
   plus one Line2D `draw_path`; axes patch, spines, ticks, text, markers, images,
   collections, mesh/Gouraud, custom artists, and every other renderer callback
   are excluded and must cause explicit unsupported handling.
-- Constraints: the public Figure/Artist authority and high-level profile roles from ADR 0002 remain; their exact public result, diagnostic, canvas, generation, fallback, and file/path schema is not frozen by API 0003/ADR 0013.
-- Evidence: Phase-3A helper/wheel/runtime evidence first; later loader/entry-point, public API, strict unsupported, hybrid whole-frame Agg, diagnostic, and profile-separated evidence only after Phase-3B is accepted.
+- Constraints: the public Figure/Artist authority and high-level profile roles from ADR 0002 remain; their exact public result, diagnostic, canvas, generation, fallback, and file/path schema is fixed by API 0005/ADR 0015.
+- Evidence: Phase-3A helper/wheel/runtime evidence recorded (PR #15); the accepted [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md)/[API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md) now gate loader/entry-point, public API, strict unsupported, hybrid whole-frame Agg, diagnostic, and profile-separated evidence on the Phase-3B implementation.
 
 ### O-11 — Coordinate, unit, color, alpha, and ICC policy
 
