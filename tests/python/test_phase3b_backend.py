@@ -42,7 +42,14 @@ else:
 
 MATPLOTLIB_PRESENT = matplotlib is not None
 
-import lumenplot_mpl.backend as backend_mod  # noqa: E402
+class _BackendProxy:
+    """Lazily resolve lumenplot_mpl.backend; raises if matplotlib is absent."""
+    def __getattr__(self, name):
+        import importlib
+        return getattr(importlib.import_module("lumenplot_mpl.backend"), name)
+
+
+backend_mod = _BackendProxy()  # noqa: E402
 
 
 def _ihdr_dimensions(png_bytes: bytes) -> tuple[int, int]:
@@ -61,6 +68,12 @@ def _stub_native_png(width: int, height: int) -> bytes:
         ">IIBBBBB", width, height, 8, 6, 0, 0, 0
     )
     return header + b"\x00\x00\x00\x00IEND\xaeB`\x82"
+
+
+def _load_backend():
+    """Import the backend lazily; requires matplotlib (absent in offline cells)."""
+    import importlib
+    return importlib.import_module("lumenplot_mpl.backend")
 
 
 class _StubNativeModule(types.SimpleNamespace):
@@ -84,7 +97,7 @@ def _install_stub_native():
 def _eligible_canvas(figsize=(2.0, 1.0), dpi=100, line_kwargs=None):
     """Build a strict-eligible figure: one axes (axison off), one line."""
     fig = figure.Figure(figsize=figsize, dpi=dpi)
-    canvas = backend_mod.FigureCanvasLumenPlot(fig)
+    canvas = _load_backend().FigureCanvasLumenPlot(fig)
     ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
     ax.axison = False
     kwargs = {"color": "red", "linewidth": 2.0}
@@ -100,6 +113,7 @@ def _eligible_canvas(figsize=(2.0, 1.0), dpi=100, line_kwargs=None):
 # ---------------------------------------------------------------------------
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
 class TestModuleSurface(unittest.TestCase):
     def test_exports_and_identity(self):
         self.assertIs(backend_mod.FigureCanvas, backend_mod.FigureCanvasLumenPlot)
