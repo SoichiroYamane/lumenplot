@@ -28,14 +28,28 @@ import sys
 import types
 import unittest.mock
 
-import matplotlib
+import unittest
 
-matplotlib.use("module://matplotlib.backends.backend_agg")  # baseline only
+try:
+    import matplotlib
+except ModuleNotFoundError:  # offline cells: matplotlib evidence is a later slice
+    matplotlib = None
+else:
+    matplotlib.use("module://matplotlib.backends.backend_agg")  # baseline only
 
-from matplotlib import figure  # noqa: E402
-from matplotlib.lines import Line2D  # noqa: E402
+    from matplotlib import figure  # noqa: E402
+    from matplotlib.lines import Line2D  # noqa: E402
 
-import lumenplot_mpl.backend as backend_mod  # noqa: E402
+MATPLOTLIB_PRESENT = matplotlib is not None
+
+class _BackendProxy:
+    """Lazily resolve lumenplot_mpl.backend; raises if matplotlib is absent."""
+    def __getattr__(self, name):
+        import importlib
+        return getattr(importlib.import_module("lumenplot_mpl.backend"), name)
+
+
+backend_mod = _BackendProxy()  # noqa: E402
 
 
 def _ihdr_dimensions(png_bytes: bytes) -> tuple[int, int]:
@@ -56,6 +70,12 @@ def _stub_native_png(width: int, height: int) -> bytes:
     return header + b"\x00\x00\x00\x00IEND\xaeB`\x82"
 
 
+def _load_backend():
+    """Import the backend lazily; requires matplotlib (absent in offline cells)."""
+    import importlib
+    return importlib.import_module("lumenplot_mpl.backend")
+
+
 class _StubNativeModule(types.SimpleNamespace):
     """Stand-in for ``lumenplot_mpl._native`` recording the last spec."""
 
@@ -68,16 +88,20 @@ class _StubNativeModule(types.SimpleNamespace):
 
 
 def _install_stub_native():
-    patcher = unittest.mock.patch.object(
-        backend_mod, "_native", lambda: _StubNativeModule
+    # Resolve through the lazy proxy to the real module object before patching,
+    # so the render path (which reads the module global) sees the stub.
+    real = backend_mod if isinstance(backend_mod, types.ModuleType) else (
+        __import__("lumenplot_mpl.backend", fromlist=["_native"])
     )
-    return patcher
+    return unittest.mock.patch.object(real, "_native", lambda: _StubNativeModule)
 
 
 def _eligible_canvas(figsize=(2.0, 1.0), dpi=100, line_kwargs=None):
     """Build a strict-eligible figure: one axes (axison off), one line."""
+    if not MATPLOTLIB_PRESENT:
+        raise unittest.SkipTest("matplotlib not in this offline cell")
     fig = figure.Figure(figsize=figsize, dpi=dpi)
-    canvas = backend_mod.FigureCanvasLumenPlot(fig)
+    canvas = _load_backend().FigureCanvasLumenPlot(fig)
     ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
     ax.axison = False
     kwargs = {"color": "red", "linewidth": 2.0}
@@ -93,6 +117,7 @@ def _eligible_canvas(figsize=(2.0, 1.0), dpi=100, line_kwargs=None):
 # ---------------------------------------------------------------------------
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
 class TestModuleSurface(unittest.TestCase):
     def test_exports_and_identity(self):
         self.assertIs(backend_mod.FigureCanvas, backend_mod.FigureCanvasLumenPlot)
@@ -150,6 +175,7 @@ class TestModuleSurface(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestRenderPng(unittest.TestCase):
     def setUp(self):
         self._patcher = _install_stub_native()
@@ -212,6 +238,7 @@ class TestRenderPng(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestStructuralParity(unittest.TestCase):
     def setUp(self):
         self._patcher = _install_stub_native()
@@ -261,6 +288,7 @@ class TestStructuralParity(unittest.TestCase):
         del fig
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestStrictUnsupported(unittest.TestCase):
     """Strict mode: unsupported features must NOT silently render."""
 
@@ -334,6 +362,7 @@ class TestStrictUnsupported(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestDiagnosticsAndLifecycle(unittest.TestCase):
     def setUp(self):
         self._patcher = _install_stub_native()
@@ -390,6 +419,7 @@ class TestDiagnosticsAndLifecycle(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestFileOutputGuards(unittest.TestCase):
     def setUp(self):
         self._patcher = _install_stub_native()
@@ -461,6 +491,9 @@ class TestFileOutputGuards(unittest.TestCase):
 
 
 class TestNativeSeamPresence(unittest.TestCase):
+    @unittest.skipUnless(
+        MATPLOTLIB_PRESENT, "backend import itself needs matplotlib"
+    )
     def test_missing_seam_raises_backend_unavailable_not_silent(self):
         """Without the native module, strict mode must fail explicitly."""
 
@@ -468,7 +501,8 @@ class TestNativeSeamPresence(unittest.TestCase):
             def __getattr__(self, name):
                 raise AttributeError(name)
 
-        with unittest.mock.patch.object(backend_mod, "_native", lambda: Missing()):
+        import lumenplot_mpl.backend as _real_backend
+        with unittest.mock.patch.object(_real_backend, "_native", lambda: Missing()):
             fig, canvas = _eligible_canvas()
             with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
                 canvas.render_png()

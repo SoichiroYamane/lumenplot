@@ -15,7 +15,8 @@ This ADR is an accepted contract decision. It records the
 Phase-3B public Matplotlib adapter contract for the first implementable strict
 slice; independent review passed with no blocking findings at branch head
 `d9a7366`, and merged Phase-3A helper plus Phase-3A2 same-wheel evidence
-(PR #15) reconcile with this boundary. It freezes no implementation: no Python source,
+recorded in [ADR 0014](0014-phase3a2-pinned-manylinux-wheel-evidence.md) reconcile
+with this boundary. It freezes no implementation: no Python source,
 manifest, lockfile entry, wheel, workflow, or package artifact is authorized by
 this record. Every exact public Python surface name lives in API 0005's
 "Provisional names" section and remains unimplemented until the Phase-3B slice

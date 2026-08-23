@@ -581,6 +581,14 @@ PHASE3A2_PYTHON_DEPENDENCIES = {
         "features": ["macros", "extension-module", "abi3-py311"],
     },
     "numpy": {"version": "=0.29.0", "default-features": False},
+    # Phase-3B L1 seam (render_frame_png): CPU raster + PNG encode, pinned to
+    # the same versions the accepted lumenplot-export slice already uses.
+    "png": {"version": "=0.18.1", "default-features": False},
+    "tiny-skia": {
+        "version": "=0.12.0",
+        "default-features": False,
+        "features": ["std"],
+    },
 }
 # Phase-3B raster pipeline additions (workstream-manager decision on task
 # t_52f05497): identical pins to lumenplot-export's accepted declarations,
