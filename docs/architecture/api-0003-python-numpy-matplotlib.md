@@ -1,6 +1,6 @@
 # API 0003: Phase-3A Python, NumPy, and private line/PNG helper
 
-- Status: **Accepted staged Phase-3A contract; Phase-3A2 builder/evidence contract recorded; helper/package evidence pending; Phase-3B public Matplotlib contract open**
+- Status: **Accepted staged Phase-3A contract; Phase-3A2 builder/evidence contract recorded; helper/package evidence recorded (PR #15); Phase-3B public Matplotlib contract accepted as API 0005/ADR 0015**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
@@ -207,11 +207,13 @@ CI-local `phase3a2-wheel-evidence.json` schema. This record remains a contract
 only: no wheel, package, workflow, or runtime result is claimed until that
 evidence is generated and reviewed.
 
-## Phase-3B boundary remains open
+## Phase-3B boundary
 
-The public-backend research supplies mandatory inputs to a later decision; it
-does not authorize Phase-3B implementation or freeze a public schema. That
-decision must at minimum preserve:
+The public-backend research inputs listed below were consumed by the accepted
+Phase-3B decision — [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md)
+and [API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md) — which
+preserved every hazard in this list. The boundary requirements remain binding for
+the Phase-3B implementation:
 
 - evaluate exactly Matplotlib 3.11.1 with backend API 1.1; this is a future
   Phase-3B evidence target, not a Phase-3A dependency or support result;
