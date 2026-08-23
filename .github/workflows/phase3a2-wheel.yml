@@ -195,7 +195,7 @@ jobs:
           test "$AUDITWHEEL_VERSION" = "6.8.0"
           test "$ABI3AUDIT_VERSION" = "0.0.26"
           test "$RUST_VERSION_OBSERVED" = "1.89.0"
-          CARGO_VERSION="$(cargo metadata --locked --offline --format-version 1 --no-deps | python -c 'import json,sys; print(next(item["version"] for item in json.load(sys.stdin)["packages"] if item["name"] == "lumenplot"))')"
+          CARGO_VERSION="$(cargo metadata --locked --offline --format-version 1 --no-deps | /opt/python/cp311-cp311/bin/python -c 'import json,sys; print(next(item["version"] for item in json.load(sys.stdin)["packages"] if item["name"] == "lumenplot"))')"
           SOURCE_COMMIT="$(git rev-parse --verify HEAD)"
           CARGO_LOCK_SHA256="$(sha256sum Cargo.lock | cut -d' ' -f1)"
           cargo build --release --locked --offline -p lumenplot-python
