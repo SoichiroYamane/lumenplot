@@ -183,24 +183,19 @@ jobs:
       - name: Install pinned evidence stack
         # Versions match the Phase-3A2/3B evidence pins: numpy is the
         # pyproject.toml runtime dependency; matplotlib matches the reviewed
-        # wheel-evidence probe (scripts/phase3b-ci-job-proposal.md). maturin
-        # is pinned to the same reviewed version as the build-system
-        # requirement used by the wheel-evidence probe.
+        # Phase-3B probe recorded in scripts/phase3b-ci-job-proposal.md.
         run: |
           python3 -m pip install --disable-pip-version-check \
-            "numpy==2.4.6" "matplotlib==3.11.1" "maturin==1.14.1"
+            "numpy==2.4.6" "matplotlib==3.11.1"
 
-      - name: Build lumenplot-mpl wheel
+      - name: Install the distribution under test
         # The contract suites import the compiled lumenplot_mpl._native
         # extension at module load, so a bare interpreter cannot collect them;
-        # building and installing the distribution under test is part of the
-        # gate, not environment convenience.
+        # installing the distribution under test is part of the gate, not
+        # environment convenience. The build backend and its reviewed pin
+        # come from the pyproject.toml build-system requirement.
         run: |
-          python3 -m maturin build --release --locked --out "$RUNNER_TEMP/wheelhouse"
-
-      - name: Install built wheel
-        run: |
-          python3 -m pip install --no-deps "$RUNNER_TEMP"/wheelhouse/*.whl
+          python3 -m pip install --no-deps --disable-pip-version-check .
 
       - name: Run tests/python contract suites
         run: |
