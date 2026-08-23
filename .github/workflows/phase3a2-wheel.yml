@@ -203,6 +203,9 @@ jobs:
           CARGO_VERSION="$(cargo metadata --locked --offline --format-version 1 --no-deps | /opt/python/cp311-cp311/bin/python -c 'import json,sys; print(next(item["version"] for item in json.load(sys.stdin)["packages"] if item["name"] == "lumenplot"))')"
           # The bind-mounted checkout is owned by the runner UID, not the
           # container's non-root user, so git needs an explicit safe.directory.
+          # HOME is read-only in this container; keep the config on the
+          # exec-mounted work tmpfs instead.
+          export GIT_CONFIG_GLOBAL=/tmp/work/gitconfig
           git config --global --add safe.directory /src
           SOURCE_COMMIT="$(git rev-parse --verify HEAD)"
           CARGO_LOCK_SHA256="$(sha256sum Cargo.lock | cut -d' ' -f1)"
