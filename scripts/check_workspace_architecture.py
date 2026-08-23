@@ -2994,6 +2994,23 @@ def _phase3a2_expected_prefetch_downloads() -> list[str]:
             f"{interpreter} -m pip download --no-deps --only-binary=:all: "
             f"--dest /cache/wheelhouse {package}"
         )
+    # Phase-3B golden-matrix seam: matplotlib 3.11.x and its transitive
+    # runtime dependencies follow the same unpinned-then-digest-recorded
+    # pattern as the audit-tool wheels above.
+    for package in (
+        "matplotlib==3.11.1",
+        "contourpy==1.3.3",
+        "cycler==0.12.1",
+        "fonttools==4.63.0",
+        "kiwisolver==1.5.0",
+        "pillow==12.3.0",
+        "pyparsing==3.3.2",
+        "python-dateutil==2.9.0.post0",
+    ):
+        downloads.append(
+            f"{interpreter} -m pip download --no-deps --only-binary=:all: "
+            f"--dest /cache/wheelhouse {package}"
+        )
     return downloads
 
 
@@ -3653,6 +3670,16 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         numpy_install = f"numpy==2.4.6 --hash=sha256:{PHASE3A2_NUMPY_WHEEL_SHA256['cp' + version.replace('.', '')]}"
         if numpy_install not in cell:
             errors.append(f"phase3a2 workflow: runtime cell {version} lacks its exact hash-pinned NumPy wheel")
+        if version == "3.11":
+            # Phase-3B golden matrix: the cp311 evidence cell must stage the
+            # reviewed matplotlib stack (MPLREQS311 requirements heredoc) so
+            # the backend-adapter tests exercise real Agg instead of
+            # self-skipping in the evidence container.
+            if "MPLREQS311" not in cell:
+                errors.append(
+                    f"phase3a2 workflow: runtime cell {version} lacks "
+                    "the hash-pinned Phase-3B matplotlib stack"
+                )
         for fragment, label in (
             ('-r /tmp/helper-wheel', "identical helper-wheel install"),
             ("--hash=sha256:$WHEEL_SHA256", "hash-pinned helper-wheel install"),
@@ -3717,6 +3744,10 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
                 "requests-cache==1.3.3", "url-normalize==1.4.3",
                 "attrs==26.1.0", "cattrs==24.1.2",
                 "urllib3==2.7.0", "certifi==2026.7.22", "idna==3.19",
+                # Phase-3B golden-matrix seam runtime stack.
+                "matplotlib==3.11.1", "contourpy==1.3.3", "cycler==0.12.1",
+                "fonttools==4.63.0", "kiwisolver==1.5.0", "pillow==12.3.0",
+                "pyparsing==3.3.2", "python-dateutil==2.9.0.post0",
             )
             if not any(pkg + " " in line or pkg == line.rstrip().split()[-1]
                        for pkg in allowed):

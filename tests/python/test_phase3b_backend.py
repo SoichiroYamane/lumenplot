@@ -22,6 +22,7 @@ guarded block exercises the real seam when it is present.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import struct
 import sys
@@ -519,6 +520,99 @@ class TestNativeSeamPresence(unittest.TestCase):
         fig, canvas = _eligible_canvas()
         result = canvas.render_png()
         self.assertTrue(result.png_bytes[:8] == b"\x89PNG\r\n\x1a\n")
+
+
+# ---------------------------------------------------------------------------
+# Phase-3B golden matrix (API-0005 §6): real-seam structural parity against
+# pure Agg. Structural only — API-0005 forbids claiming byte-level Agg parity.
+# ---------------------------------------------------------------------------
+
+
+def _png_signature(png_bytes: bytes) -> bool:
+    return png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def _pixel_diversity(png_bytes: bytes) -> int:
+    """Count distinct RGBA pixel values by decoding the PNG with Pillow."""
+    import io as _io
+
+    from PIL import Image
+
+    with Image.open(_io.BytesIO(png_bytes)) as image:
+        rgba = image.convert("RGBA")
+        width, height = rgba.size
+        pixels = rgba.load()
+        return len(
+            {pixels[x, y] for y in range(height) for x in range(width)}
+        )
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
+class TestGoldenMatrix(unittest.TestCase):
+    """API-0005 §6 golden comparison matrix, cp311 evidence cell.
+
+    Renders one eligible figure twice — once through the LumenPlot adapter
+    (real native seam) and once through pure Agg — and compares structural
+    parity: identical canvas dimensions, valid PNG signature on both sides,
+    and non-trivial pixel diversity on both sides. Byte equality is neither
+    asserted nor desired (API-0005 forbids claiming Agg parity); the two
+    rasters are additionally required to differ so this test cannot be
+    satisfied by rendering Agg twice.
+    """
+
+    def test_structural_parity_with_real_seam(self):
+        try:
+            from lumenplot_mpl import _native
+        except (ImportError, AttributeError):
+            self.skipTest("native seam not built in this environment")
+        if not hasattr(_native, "render_frame_png"):
+            self.skipTest("render_frame_png not present yet")
+
+        figsize, dpi = (2.0, 1.0), 100
+
+        # Leg 1: through the LumenPlot adapter (real native seam).
+        fig, canvas = _eligible_canvas(figsize=figsize, dpi=dpi)
+        lumen_result = canvas.render_png()
+        lumen_bytes = bytes(lumen_result.png_bytes)
+
+        # Leg 2: the same figure content through pure Agg.
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        agg_fig = figure.Figure(figsize=figsize, dpi=dpi)
+        FigureCanvasAgg(agg_fig)
+        ax = agg_fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.axison = False
+        ax.add_line(Line2D([0.0, 10.0], [0.0, 5.0], color="red", linewidth=2.0))
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        buffer = io.BytesIO()
+        agg_fig.savefig(buffer, format="png", dpi=dpi)
+        agg_bytes = buffer.getvalue()
+
+        # Structural parity: dimensions and PNG signature.
+        self.assertTrue(_png_signature(lumen_bytes))
+        self.assertTrue(_png_signature(agg_bytes))
+        self.assertEqual(
+            _ihdr_dimensions(lumen_bytes),
+            _ihdr_dimensions(agg_bytes),
+            "adapter and pure-Agg rasters must agree on canvas dimensions",
+        )
+        self.assertEqual(_ihdr_dimensions(lumen_bytes), (200, 100))
+
+        # Non-trivial pixel diversity on both legs (a blank raster would
+        # mean the seam silently produced an empty frame).
+        for label, payload in (("adapter", lumen_bytes), ("pure-agg", agg_bytes)):
+            with self.subTest(leg=label):
+                diversity = _pixel_diversity(payload)
+                self.assertGreater(diversity, 1)
+
+        # The two rasters must actually differ: identical bytes would mean
+        # one leg secretly delegated to the other.
+        self.assertNotEqual(
+            hashlib.sha256(lumen_bytes).hexdigest(),
+            hashlib.sha256(agg_bytes).hexdigest(),
+            "adapter output must not be a byte copy of Agg (no parity claim)",
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

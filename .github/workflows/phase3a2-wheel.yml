@@ -110,6 +110,17 @@ jobs:
           /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse markdown-it-py==4.2.0
           /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pygments==2.21.0
           /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse mdurl==0.1.2
+          # Phase-3B golden-matrix seam: matplotlib 3.11.x and its transitive
+          # runtime dependencies are prefetched with the same unpinned-then-
+          # digest-recorded pattern as auditwheel/abi3audit above.
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse matplotlib==3.11.1
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse contourpy==1.3.3
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse cycler==0.12.1
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse fonttools==4.63.0
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse kiwisolver==1.5.0
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pillow==12.3.0
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pyparsing==3.3.2
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse python-dateutil==2.9.0.post0
           # Transitive dependencies of auditwheel 6.8.0 and abi3audit 0.0.26,
           # each hash-pinned from its PyPI release page (cp311 manylinux or
           # py3/py2.py3 wheels). The build container installs them with
@@ -136,6 +147,16 @@ jobs:
           printf '%s\n' "9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a  markdown_it_py-4.2.0-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
           printf '%s\n' "2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9  pygments-2.21.0-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
           printf '%s\n' "84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8  mdurl-0.1.2-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          # Phase-3B golden-matrix seam digests (cp311 manylinux or
+          # py3/py2.py3 wheels), recorded from the same PyPI release pages.
+          printf '%s\n' "aee55e9041211bf84302ab55ec3965df18dd90ae19f8b58332a7feaf208bfe83  matplotlib-3.11.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "51e79c1f7470158e838808d4a996fa9bac72c498e93d8ebe5119bc1e6becb0db  contourpy-1.3.3-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30  cycler-0.12.1-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "d76ac49f929aecaf82d83250b8347e099d7aecba0f4726c1d9b6df3b8bb5fe18  fonttools-4.63.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "2517e24d7315eb51c10664cdb865195df38ab74456c677df67bb47f12d088a27  kiwisolver-1.5.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "23d27a3e0307ec2244cc51e7287b919aa68d097504ebe19df4e76a98a3eea5bd  pillow-12.3.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d  pyparsing-3.3.2-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427  python_dateutil-2.9.0.post0-py2.py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
           test -s /cache/wheelhouse/maturin-1.14.1-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.musllinux_1_1_x86_64.whl
           PREFETCH
 
@@ -181,6 +202,16 @@ jobs:
           printf '%s\n' 'markdown-it-py==4.2.0 --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a' >> /tmp/build-requirements.txt
           printf '%s\n' 'pygments==2.21.0 --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9' >> /tmp/build-requirements.txt
           printf '%s\n' 'mdurl==0.1.2 --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8' >> /tmp/build-requirements.txt
+          # Phase-3B golden-matrix seam runtime stack, installed into the build
+          # site so the cp311 evidence cell can import matplotlib.
+          printf '%s\n' 'matplotlib==3.11.1 --hash=sha256:aee55e9041211bf84302ab55ec3965df18dd90ae19f8b58332a7feaf208bfe83' >> /tmp/build-requirements.txt
+          printf '%s\n' 'contourpy==1.3.3 --hash=sha256:51e79c1f7470158e838808d4a996fa9bac72c498e93d8ebe5119bc1e6becb0db' >> /tmp/build-requirements.txt
+          printf '%s\n' 'cycler==0.12.1 --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30' >> /tmp/build-requirements.txt
+          printf '%s\n' 'fonttools==4.63.0 --hash=sha256:d76ac49f929aecaf82d83250b8347e099d7aecba0f4726c1d9b6df3b8bb5fe18' >> /tmp/build-requirements.txt
+          printf '%s\n' 'kiwisolver==1.5.0 --hash=sha256:2517e24d7315eb51c10664cdb865195df38ab74456c677df67bb47f12d088a27' >> /tmp/build-requirements.txt
+          printf '%s\n' 'pillow==12.3.0 --hash=sha256:23d27a3e0307ec2244cc51e7287b919aa68d097504ebe19df4e76a98a3eea5bd' >> /tmp/build-requirements.txt
+          printf '%s\n' 'pyparsing==3.3.2 --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d' >> /tmp/build-requirements.txt
+          printf '%s\n' 'python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427' >> /tmp/build-requirements.txt
           /opt/python/cp311-cp311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --no-deps --find-links=/cache/wheelhouse -r /tmp/build-requirements.txt --target=/tmp/work/build-site
           # pip --target installs live outside the interpreter's default sys.path,
           # so both PATH and PYTHONPATH must point at the target directory before
@@ -259,6 +290,22 @@ jobs:
 
           /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/work/venv311
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93' > /tmp/numpy311.txt
+          # Phase-3B golden matrix: the cp311 evidence cell also installs the
+          # hash-pinned matplotlib stack so the backend adapter tests run
+          # against real Agg instead of skipping. (The requirements heredoc is
+          # written at block-scalar indentation; the shell reads it at column 0.)
+          cat >> /tmp/numpy311.txt <<'MPLREQS311'
+          matplotlib==3.11.1 --hash=sha256:aee55e9041211bf84302ab55ec3965df18dd90ae19f8b58332a7feaf208bfe83
+          contourpy==1.3.3 --hash=sha256:51e79c1f7470158e838808d4a996fa9bac72c498e93d8ebe5119bc1e6becb0db
+          cycler==0.12.1 --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30
+          fonttools==4.63.0 --hash=sha256:d76ac49f929aecaf82d83250b8347e099d7aecba0f4726c1d9b6df3b8bb5fe18
+          kiwisolver==1.5.0 --hash=sha256:2517e24d7315eb51c10664cdb865195df38ab74456c677df67bb47f12d088a27
+          pillow==12.3.0 --hash=sha256:23d27a3e0307ec2244cc51e7287b919aa68d097504ebe19df4e76a98a3eea5bd
+          pyparsing==3.3.2 --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d
+          python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
+          packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+          six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+          MPLREQS311
           /tmp/work/venv311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy311.txt
           # pip's --hash option only exists inside requirements files, so the
           # helper wheel carries its recomputed pin through the same channel.

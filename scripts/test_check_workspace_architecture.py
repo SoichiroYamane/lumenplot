@@ -1974,6 +1974,17 @@ jobs:
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse markdown-it-py==4.2.0
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pygments==2.21.0
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse mdurl==0.1.2
+            # Phase-3B golden-matrix seam: matplotlib 3.11.x and its transitive
+            # runtime dependencies are prefetched with the same unpinned-then-
+            # digest-recorded pattern as auditwheel/abi3audit above.
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse matplotlib==3.11.1
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse contourpy==1.3.3
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse cycler==0.12.1
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse fonttools==4.63.0
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse kiwisolver==1.5.0
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pillow==12.3.0
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pyparsing==3.3.2
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse python-dateutil==2.9.0.post0
           PREFETCH
           )"
           docker run --rm --platform=linux/amd64 --network=none --read-only --user 1000:1000 --cap-drop=ALL --security-opt=no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /tmp/work:rw,exec,nosuid,nodev -v "$PWD:/src:ro" -v "$PWD/wheelhouse:/cache/wheelhouse:ro" -v "$PWD/evidence:/evidence:rw" "$IMAGE" bash -eu -o pipefail -c "$(cat <<'BUILD'
@@ -2011,7 +2022,25 @@ jobs:
             abi3audit "$WHEEL"
             python /cache/check-sbom.py --format 'CycloneDX 1.5' --cargo-metadata /cache/wheelhouse/cargo-metadata.json
             /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/lp-3.11
-            /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
+            # Phase-3B golden matrix: the cp311 evidence cell also installs
+            # the hash-pinned matplotlib stack so the backend adapter tests
+            # run against real Agg instead of skipping. (The requirements
+            # heredoc is written at block-scalar indentation; the shell reads
+            # it at column 0.)
+            printf '%s\\n' 'numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}' > /tmp/numpy311.txt
+            cat >> /tmp/numpy311.txt <<'MPLREQS311'
+            matplotlib==3.11.1 --hash=sha256:aee55e9041211bf84302ab55ec3965df18dd90ae19f8b58332a7feaf208bfe83
+            contourpy==1.3.3 --hash=sha256:51e79c1f7470158e838808d4a996fa9bac72c498e93d8ebe5119bc1e6becb0db
+            cycler==0.12.1 --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30
+            fonttools==4.63.0 --hash=sha256:d76ac49f929aecaf82d83250b8347e099d7aecba0f4726c1d9b6df3b8bb5fe18
+            kiwisolver==1.5.0 --hash=sha256:2517e24d7315eb51c10664cdb865195df38ab74456c677df67bb47f12d088a27
+            pillow==12.3.0 --hash=sha256:23d27a3e0307ec2244cc51e7287b919aa68d097504ebe19df4e76a98a3eea5bd
+            pyparsing==3.3.2 --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d
+            python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
+            packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+            six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+            MPLREQS311
+            /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy311.txt
             # pip's --hash only exists inside requirements files.
             printf '%s\\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel311.txt
             /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel311.txt
