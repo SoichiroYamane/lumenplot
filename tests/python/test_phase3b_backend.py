@@ -992,6 +992,79 @@ class TestGeometryEdgeCases(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Stroke widths: 0.5 / 1 / 2 pt coverage oracle (ADR 0015 §5)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestStrokeWidths(unittest.TestCase):
+    """Positive finite solid stroke width passes through in points; raster
+    evidence shows strictly growing covered thickness with width."""
+
+    def _install_spec_stub(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_spec_carries_point_widths_exactly(self):
+        for width_pt in (0.5, 1.0, 2.0):
+            with self.subTest(width_pt=width_pt):
+                self._install_spec_stub()
+                fig, canvas = _eligible_canvas(
+                    line_kwargs={"linewidth": width_pt})
+                canvas.render_png()
+                command = _StubNativeModule.last_spec["commands"][0]
+                self.assertEqual(command["line_width_pt"], width_pt)
+                del fig
+
+    def test_raster_coverage_grows_with_width(self):
+        """Real seam: thicker strokes cover strictly more rows (skipped
+        before lane L1 lands)."""
+        try:
+            from lumenplot_mpl import _native
+        except (ImportError, AttributeError):
+            self.skipTest("native seam not built in this environment")
+        if not hasattr(_native, "render_frame_png"):
+            self.skipTest("render_frame_png not present yet")
+
+        covered_rows = {}
+        for width_pt in (0.5, 1.0, 2.0):
+            fig, canvas = _eligible_canvas(
+                figsize=(1.0, 0.5), dpi=100,
+                line_kwargs={"linewidth": width_pt})
+            ax = fig.get_axes()[0]
+            # Replace the default diagonal with a horizontal stroke so
+            # covered-row counts measure thickness, not length.
+            ax.lines[0].remove()
+            ax.add_line(Line2D([-50.0, 50.0], [2.5, 2.5],
+                               color=(1.0, 0.0, 0.0, 1.0),
+                               linewidth=width_pt,
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
+            result = canvas.render_png()
+            del fig, canvas
+            _, height, rows = _decode_rgba8(result.png_bytes)
+            # Alpha-weighted coverage of one mid column: proportional to
+            # physical thickness and strictly growing, because each wider
+            # stroke contains the narrower one around the same centerline.
+            mid_x = 50
+            coverage = sum(rows[y][mid_x * 4 + 3] for y in range(height))
+            self.assertGreater(coverage, 0,
+                               f"no stroke ink at {width_pt} pt")
+            ys = [
+                y for y in range(height)
+                if _is_red(rows[y][mid_x * 4:mid_x * 4 + 4])
+            ]
+            self.assertTrue(ys, f"no opaque ink at {width_pt} pt")
+            # All ink stays within the axes band around the mid row.
+            self.assertGreaterEqual(min(ys), 10)
+            self.assertLessEqual(max(ys), 40)
+            covered_rows[width_pt] = coverage
+        self.assertLess(covered_rows[0.5], covered_rows[1.0])
+        self.assertLess(covered_rows[1.0], covered_rows[2.0])
+
+
+# ---------------------------------------------------------------------------
 # Native seam availability
 # ---------------------------------------------------------------------------
 
