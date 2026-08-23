@@ -1950,6 +1950,10 @@ jobs:
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pefile==2024.8.26
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse requests==2.34.2
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse charset-normalizer==3.5.1
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse requests-cache==1.3.3
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse url-normalize==1.4.3
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse attrs==26.1.0
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse cattrs==24.1.2
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse rich==15.0.0
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse markdown-it-py==4.2.0
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --dest /cache/wheelhouse pygments==2.21.0

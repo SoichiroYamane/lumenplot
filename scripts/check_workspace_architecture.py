@@ -2966,6 +2966,10 @@ def _phase3a2_expected_prefetch_downloads() -> list[str]:
         "pefile==2024.8.26",
         "requests==2.34.2",
         "charset-normalizer==3.5.1",
+        "requests-cache==1.3.3",
+        "url-normalize==1.4.3",
+        "attrs==26.1.0",
+        "cattrs==24.1.2",
         "rich==15.0.0",
         "markdown-it-py==4.2.0",
         "pygments==2.21.0",
@@ -3690,6 +3694,8 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
                 "kaitaistruct==0.11", "pefile==2024.8.26", "requests==2.34.2",
                 "charset-normalizer==3.5.1", "rich==15.0.0",
                 "markdown-it-py==4.2.0", "pygments==2.21.0", "mdurl==0.1.2",
+                "requests-cache==1.3.3", "url-normalize==1.4.3",
+                "attrs==26.1.0", "cattrs==24.1.2",
             )
             if not any(pkg + " " in line or pkg == line.rstrip().split()[-1]
                        for pkg in allowed):
