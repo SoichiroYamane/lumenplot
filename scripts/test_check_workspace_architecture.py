@@ -1954,6 +1954,7 @@ jobs:
             CARGO_VERSION="$(cargo metadata --locked --offline --format-version 1 | python -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "lumenplot-python"))')"
             SOURCE_COMMIT="$(git rev-parse --verify HEAD)"
             python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse maturin==1.14.1 --hash=sha256:{self.MATURIN_HASH}
+            export PYTHONPATH=/tmp/work/build-site
             cargo build --release --locked --offline
             maturin build --release --locked --offline --interpreter /opt/python/cp311-cp311/bin/python --compatibility manylinux_2_28
             WHEEL="dist/lumenplot_mpl-$CARGO_VERSION-cp311-abi3-manylinux_2_28_x86_64.whl"
@@ -2688,6 +2689,41 @@ jobs:
         self.assert_rejected(
             mutate,
             "prefetch lacks an exact requirements-file hash pin for a reviewed wheelhouse input",
+        )
+
+    def test_missing_build_site_pythonpath_export_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "            export PYTHONPATH=/tmp/work/build-site\n",
+                    "",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(
+            mutate,
+            "must export PYTHONPATH=/tmp/work/build-site before the first auditwheel/abi3audit invocation",
+        )
+
+    def test_late_build_site_pythonpath_export_is_rejected(self) -> None:
+        # Moving the export below the first console-script invocation recreates
+        # the ModuleNotFoundError this guard exists to prevent.
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            text = path.read_text(encoding="utf-8")
+            export_line = "            export PYTHONPATH=/tmp/work/build-site\n"
+            text = text.replace(export_line, "", 1)
+            anchor = '            auditwheel show --json "$WHEEL"\n'
+            assert anchor in text
+            text = text.replace(anchor, anchor + export_line, 1)
+            path.write_text(text, encoding="utf-8")
+
+        self.assert_rejected(
+            mutate,
+            "must export PYTHONPATH=/tmp/work/build-site before the first auditwheel/abi3audit invocation",
         )
 
     def test_unreviewed_prefetch_network_fetch_is_rejected(self) -> None:

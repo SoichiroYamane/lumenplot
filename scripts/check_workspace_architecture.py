@@ -3523,6 +3523,31 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
             errors.append("phase3a2 workflow: offline container is missing the wheel build")
         if "cargo build --release --locked --offline" not in build:
             errors.append("phase3a2 workflow: offline Cargo build is missing")
+        # pip installs the builder tools with --target, whose console scripts
+        # import their package through PYTHONPATH; the export must therefore
+        # precede the first auditwheel/abi3audit invocation or those commands
+        # die with ModuleNotFoundError inside the offline container.
+        pythonpath_export_index = build.find("export PYTHONPATH=/tmp/work/build-site")
+        tool_invocation = re.search(
+            r"^\s*auditwheel (?:--version|show|check|repair)\b|"
+            r'^\s*AUDITWHEEL_VERSION="\$\(auditwheel\b|'
+            r"^\s*abi3audit\b|"
+            r'^\s*ABI3AUDIT_VERSION="\$\(abi3audit\b',
+            build,
+            re.MULTILINE,
+        )
+        if "auditwheel" not in build:
+            errors.append("phase3a2 workflow: offline container is missing the auditwheel policy check")
+        elif pythonpath_export_index == -1:
+            errors.append(
+                "phase3a2 workflow: offline build/test container must export "
+                "PYTHONPATH=/tmp/work/build-site before the first auditwheel/abi3audit invocation"
+            )
+        elif tool_invocation is not None and tool_invocation.start() < pythonpath_export_index:
+            errors.append(
+                "phase3a2 workflow: offline build/test container must export "
+                "PYTHONPATH=/tmp/work/build-site before the first auditwheel/abi3audit invocation"
+            )
         if "maturin build" in prefetch:
             errors.append("phase3a2 workflow: wheel build must not run in the networked prefetch container")
     if shell_code.count("maturin build") != 1:
