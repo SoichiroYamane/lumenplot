@@ -110,7 +110,7 @@ jobs:
           printf '%s\n' "5c6ce79177b4e193a577ecd359e26516d1d6d000a0bffd6e1010f2a46a62a561  kaitaistruct-0.11-py2.py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
           printf '%s\n' "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f  pefile-2024.8.26-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
           printf '%s\n' "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0  requests-2.34.2-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
-          printf '%s\n' "6df0ec430f9a831772c23ca5a224cba36517a58a84bb32c32bb59a9fa67c47f6  charset_normalizer-3.5.1-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
+          printf '%s\n' "6df0ec430f9a831772c23ca5a224cba36517a58a84bb32c32bb59a9fa67c47f6  charset-normalizer-3.5.1-py3-none-any.whl" >> /cache/wheelhouse/tool-deps.sha256
           test -s /cache/wheelhouse/maturin-1.14.1-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.musllinux_1_1_x86_64.whl
           PREFETCH
 
