@@ -124,7 +124,9 @@ version = "0.1.0"
 dependencies = [
  "lumenplot",
  "numpy",
+ "png",
  "pyo3",
+ "tiny-skia",
 ]
 
 [[package]]

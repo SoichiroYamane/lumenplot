@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 
@@ -15,3 +15,6 @@ def render_line_png(
     line_width: float,
     background_rgba: Sequence[int],
 ) -> bytes: ...
+
+
+def render_frame_png(spec: Mapping[str, Any]) -> bytes: ...
