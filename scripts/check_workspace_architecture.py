@@ -2966,6 +2966,10 @@ def _phase3a2_expected_prefetch_downloads() -> list[str]:
         "pefile==2024.8.26",
         "requests==2.34.2",
         "charset-normalizer==3.5.1",
+        "rich==15.0.0",
+        "markdown-it-py==4.2.0",
+        "pygments==2.21.0",
+        "mdurl==0.1.2",
     ):
         downloads.append(
             f"{interpreter} -m pip download --no-deps --only-binary=:all: "
