@@ -2255,7 +2255,7 @@ def _check_facade_source(package_dir: Path, root: Path, errors: list[str]) -> No
     try:
         root_code = _strip_rust_comments_and_literals(root_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError):
-        errors.append(f"package lumenplot: cannot read src/lib.rs")
+        errors.append("package lumenplot: cannot read src/lib.rs")
         return
     if INVALID_RUST_SYNTAX in root_code:
         errors.append("package lumenplot: malformed Rust syntax")
@@ -3118,20 +3118,29 @@ PHASE3A2_PHASE3B_PACKAGE_FILES = frozenset({"backend.py", "__init__.py"})
 # other occurrence (qualified chains such as matplotlib.lines.Line2D,
 # rcParams access, docstring prose) is admitted because the backend module
 # itself is the adapter. Workstream-manager decision on task t_52f05497.
+# Leading whitespace is allowed so function-local pyplot imports cannot
+# dodge the tripwire by indentation.
 PHASE3A2_PHASE3B_MATPLOTLIB_FORBIDDEN_SHAPES = (
-    re.compile(r"^import matplotlib\.pylot"),
-    re.compile(r"^from matplotlib import"),
-    re.compile(r"^import matplotlib\.pylot as"),
+    re.compile(r"^\s*import matplotlib\.pyplot\b"),
+    re.compile(r"^\s*from matplotlib import\b"),
+    re.compile(r"^\s*import matplotlib\.pyplot\s+as\b"),
 )
+
+
+def _phase3b_activation_reasons(root: Path) -> list[str]:
+    """Return every Phase-3B activation signal present for *root*."""
+    reasons: list[str] = []
+    if (root / "python" / "lumenplot_mpl" / "backend.py").is_file():
+        reasons.append("python/lumenplot_mpl/backend.py")
+    if any((root / "tests" / "python").glob("test_phase3b*.py")):
+        reasons.append("tests/python/test_phase3b*.py")
+    return reasons
 
 
 def _phase3b_activation_reason(root: Path) -> str | None:
     """Return why the Phase-3B static allowance activates for *root*, or None."""
-    if (root / "python" / "lumenplot_mpl" / "backend.py").is_file():
-        return "python/lumenplot_mpl/backend.py"
-    if any((root / "tests" / "python").glob("test_phase3b*.py")):
-        return "tests/python/test_phase3b*.py"
-    return None
+    reasons = _phase3b_activation_reasons(root)
+    return reasons[0] if reasons else None
 
 
 def _phase3a2_phase3b_matplotlib_forbidden(source: str) -> bool:
@@ -4296,6 +4305,13 @@ def main(argv: list[str] | None = None) -> int:
     print("workspace architecture: OK")
     if _phase3a2_activation_reasons(args.root.resolve()):
         print("phase3a2 static contract: OK")
+        # Observability contract (task t_52f05497 decision D1): whenever the
+        # Phase-3B allowance relaxes the static contract, name the activation
+        # signals so reviewers can see which gated rules are admitted. With
+        # no signals nothing is printed and every historical rule holds.
+        phase3b_reasons = _phase3b_activation_reasons(args.root.resolve())
+        if phase3b_reasons:
+            print(f"phase3b static allowance: active ({'; '.join(phase3b_reasons)})")
     if args.phase3a2_evidence:
         print("phase3a2 wheel evidence: OK")
     return 0

@@ -3124,5 +3124,363 @@ jobs:
         self.assert_rejected(mutate, "private path or credential text is not redacted", evidence=True)
 
 
+PHASE3B_BRIDGE_DEPS = (
+    'pyo3 = { version = "=0.29.2", default-features = false, features = ["macros", "extension-module", "abi3-py311"] }\n'
+    'numpy = { version = "=0.29.0", default-features = false }'
+)
+PHASE3B_RASTER_DEPS = (
+    '\npng = { version = "=0.18.1", default-features = false }'
+    '\ntiny-skia = { version = "=0.12.0", default-features = false, features = ["std"] }'
+)
+PHASE3B_PYPROJECT_BASE = """\
+[build-system]
+requires = ["maturin==1.14.1"]
+build-backend = "maturin"
+
+[project]
+name = "lumenplot-mpl"
+version = "0.1.0"
+requires-python = ">=3.11,<3.15"
+dependencies = ["numpy==2.4.6"]
+"""
+PHASE3B_ENTRY_POINT_TOML = """
+[project.entry-points."matplotlib.backend"]
+lumenplot = "lumenplot_mpl.backend"
+"""
+PHASE3B_BACKEND_PY = '''\
+"""Matplotlib backend adapter for the Phase-3B slice."""
+
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+
+from lumenplot_mpl._native import render_frame_png
+
+
+class FigureCanvasLumenPlot(FigureCanvasAgg):
+    """Canvas whose rendering goes through the private whole-frame seam."""
+
+    def draw(self) -> None:
+        payload = render_frame_png()
+        self._apply_payload(payload)
+
+
+Figure.register_backend(FigureCanvasLumenPlot)
+'''
+PHASE3B_INIT_PY = """\
+from ._native import render_frame_png
+from .backend import FigureCanvasLumenPlot
+
+
+class LumenPlotError(RuntimeError):
+    pass
+"""
+PHASE3B_NATIVE_STUB = """\
+def render_line_png() -> bytes: ...
+def render_frame_png() -> bytes: ...
+"""
+PHASE3B_BRIDGE_LINE_ONLY = """\
+use pyo3::prelude::*;
+
+#[pyfunction]
+fn render_line_png() -> PyResult<Vec<u8>> {
+    Ok(Vec::new())
+}
+
+#[pymodule]
+fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(render_line_png, module)?);
+    Ok(())
+}
+"""
+PHASE3B_BRIDGE_FRAME_BOTH = """\
+use pyo3::prelude::*;
+
+#[pyfunction]
+fn render_line_png() -> PyResult<Vec<u8>> {
+    Ok(Vec::new())
+}
+
+#[pyfunction]
+fn render_frame_png() -> PyResult<Vec<u8>> {
+    Ok(Vec::new())
+}
+
+#[pymodule]
+fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(render_line_png, module)?);
+    module.add_function(wrap_pyfunction!(render_frame_png, module)?);
+    Ok(())
+}
+"""
+
+
+class Phase3bStaticAllowanceMutationTests(unittest.TestCase):
+    """The Phase-3B static allowances must stay activation-gated.
+
+    Every relaxation admitted while the allowance is active must be
+    rejected again once the activation signals disappear (fail-closed in
+    both directions), and the checker must report the activation itself.
+    """
+
+    def fixture(self) -> tempfile.TemporaryDirectory[str]:
+        temporary = tempfile.TemporaryDirectory(prefix="lumenplot-phase3b-allowance-")
+        root = Path(temporary.name)
+        shutil.copy2(ROOT / "Cargo.toml", root / "Cargo.toml")
+        shutil.copy2(ROOT / "Cargo.lock", root / "Cargo.lock")
+        shutil.copytree(ROOT / "crates", root / "crates")
+        reset_python_bridge_to_baseline(root)
+        scripts_dir = root / "scripts"
+        scripts_dir.mkdir()
+        shutil.copy2(CHECKER, scripts_dir / CHECKER.name)
+        return temporary
+
+    def run_checker(self, fixture_root: Path) -> tuple[int, str]:
+        command = [sys.executable, str(fixture_root / "scripts" / CHECKER.name), "--root", str(fixture_root)]
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+        return result.returncode, result.stdout + result.stderr
+
+    def assert_passes(self, root: Path, expected_output: str) -> None:
+        returncode, output = self.run_checker(root)
+        self.assertEqual(returncode, 0, output)
+        self.assertEqual(output, expected_output)
+
+    def assert_rejected(self, mutate, expected: str) -> None:
+        with self.fixture() as temporary:
+            root = Path(temporary)
+            mutate(root)
+            returncode, output = self.run_checker(root)
+            self.assertNotEqual(returncode, 0, output)
+            self.assertIn(expected, output)
+            self.assertNotIn(str(root), output)
+
+    # -- fixture builders -------------------------------------------------
+
+    def write_bridge_manifest(self, root: Path, *, raster_deps: bool = False) -> None:
+        manifest_path = root / "crates/lumenplot-python/Cargo.toml"
+        external = PHASE3B_RASTER_DEPS if raster_deps else ""
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(
+                'lumenplot = { path = "../lumenplot", version = "0.1.0" }',
+                f'lumenplot = {{ path = "../lumenplot", version = "0.1.0" }}\n{PHASE3B_BRIDGE_DEPS}{external}',
+            ),
+            encoding="utf-8",
+        )
+
+    def write_bridge_source(self, root: Path, source: str, *, with_frame_rs: bool = False) -> None:
+        source_dir = root / "crates/lumenplot-python/src"
+        (source_dir / "lib.rs").write_text(source, encoding="utf-8")
+        if with_frame_rs:
+            (source_dir / "frame.rs").write_text(
+                "//! Whole-frame raster pipeline (accepted lane implementation).\n",
+                encoding="utf-8",
+            )
+
+    def write_python_package(self, root: Path, *, backend_py: bool = True) -> None:
+        package = root / "python/lumenplot_mpl"
+        package.mkdir(parents=True)
+        init_source = PHASE3B_INIT_PY if backend_py else "from ._native import render_line_png\n\n\nclass LumenPlotError(RuntimeError):\n    pass\n"
+        (package / "__init__.py").write_text(init_source, encoding="utf-8")
+        (package / "_native.pyi").write_text(PHASE3B_NATIVE_STUB, encoding="utf-8")
+        (package / "py.typed").write_text("", encoding="utf-8")
+        if backend_py:
+            (package / "backend.py").write_text(PHASE3B_BACKEND_PY, encoding="utf-8")
+
+    def write_pyproject(self, root: Path, *, entry_points: bool = True) -> None:
+        suffix = PHASE3B_ENTRY_POINT_TOML if entry_points else ""
+        (root / "pyproject.toml").write_text(PHASE3B_PYPROJECT_BASE + suffix, encoding="utf-8")
+
+    def activate(self, root: Path, *, with_frame_rs: bool = True, raster_deps: bool = True) -> None:
+        """Build a fully valid activated Phase-3B tree.
+
+        Activation makes the raster dependency pins part of the exact
+        external inventory, so ``raster_deps`` defaults to True here; the
+        CI workflow and pinned-actions inventory are added because an
+        active Phase-3A2 tree requires them statically. None of these
+        artifacts belong in the baseline fixture, where the workflow would
+        itself count as a Phase-3A2 activation reason.
+        """
+        self.write_bridge_manifest(root, raster_deps=raster_deps)
+        self.write_bridge_source(root, PHASE3B_BRIDGE_FRAME_BOTH, with_frame_rs=with_frame_rs)
+        self.write_python_package(root)
+        self.write_pyproject(root)
+        inventory = root / "docs/security"
+        inventory.mkdir(parents=True)
+        shutil.copy2(ROOT / "docs/security/pinned-actions.yml", inventory / "pinned-actions.yml")
+        workflows = root / ".github/workflows"
+        workflows.mkdir(parents=True)
+        # Reuse the canonical valid workflow so this suite has one source
+        # of truth for a statically accepted Phase-3A2 pipeline.
+        (workflows / "phase3a2-wheel.yml").write_text(
+            Phase3A2WheelEvidenceMutationTests().valid_workflow(),
+            encoding="utf-8",
+        )
+
+    def deactivate(self, root: Path) -> None:
+        """Remove every activation signal while keeping the artifacts."""
+        (root / "python/lumenplot_mpl/backend.py").unlink()
+
+    # -- activation reporting ---------------------------------------------
+
+    def test_active_fixture_passes_and_names_the_signal(self) -> None:
+        with self.fixture() as temporary:
+            root = Path(temporary)
+            self.activate(root)
+            self.assert_passes(
+                root,
+                "workspace architecture: OK\n"
+                "phase3a2 static contract: OK\n"
+                "phase3b static allowance: active (python/lumenplot_mpl/backend.py)\n",
+            )
+
+    def test_tests_glob_signal_activates_alone(self) -> None:
+        with self.fixture() as temporary:
+            root = Path(temporary)
+            self.activate(root)
+            self.deactivate(root)
+            tests_dir = root / "tests/python"
+            tests_dir.mkdir(parents=True)
+            (tests_dir / "test_phase3b_probe.py").write_text("", encoding="utf-8")
+            self.assert_passes(
+                root,
+                "workspace architecture: OK\n"
+                "phase3a2 static contract: OK\n"
+                "phase3b static allowance: active (tests/python/test_phase3b*.py)\n",
+            )
+
+    def test_baseline_fixture_prints_no_allowance_line(self) -> None:
+        with self.fixture() as temporary:
+            self.assert_passes(Path(temporary), "workspace architecture: OK\n")
+
+    # -- inactive direction: artifacts without signals are rejected -------
+
+    def test_inactive_tree_rejects_whole_frame_export(self) -> None:
+        def mutate(root: Path) -> None:
+            self.write_bridge_manifest(root)
+            self.write_bridge_source(root, PHASE3B_BRIDGE_FRAME_BOTH)
+
+        self.assert_rejected(mutate, "private native export inventory is not exact")
+
+    def test_inactive_tree_rejects_frame_rs_layout(self) -> None:
+        def mutate(root: Path) -> None:
+            source_dir = root / "crates/lumenplot-python/src"
+            (source_dir / "frame.rs").write_text("//! stray lane file\n", encoding="utf-8")
+
+        self.assert_rejected(mutate, "source must contain only src/lib.rs")
+
+    def test_inactive_tree_rejects_raster_dependency_pins(self) -> None:
+        def mutate(root: Path) -> None:
+            self.write_bridge_manifest(root, raster_deps=True)
+
+        self.assert_rejected(mutate, "external dependency 'png' is not allowed")
+
+    def test_inactive_tree_rejects_entry_point_table(self) -> None:
+        def mutate(root: Path) -> None:
+            self.write_pyproject(root)
+
+        self.assert_rejected(mutate, "public backend/Matplotlib surface is forbidden")
+
+    def test_inactive_tree_rejects_pyplot_import_in_package(self) -> None:
+        def mutate(root: Path) -> None:
+            package = root / "python/lumenplot_mpl"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text(
+                "import matplotlib.pyplot as plt\n\n\nclass LumenPlotError(RuntimeError):\n    pass\n",
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "Matplotlib/backend surface is forbidden")
+
+    # -- active direction: relaxations hold only under activation ---------
+
+    def test_active_fixture_admits_frame_rs_layout(self) -> None:
+        with self.fixture() as temporary:
+            root = Path(temporary)
+            self.activate(root, with_frame_rs=True)
+            returncode, output = self.run_checker(root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_active_fixture_requires_raster_dependency_pins(self) -> None:
+        """Activation adds the raster pins to the exact external inventory."""
+
+        def mutate(root: Path) -> None:
+            self.activate(root, raster_deps=False)
+
+        self.assert_rejected(mutate, "exact external dependency inventory mismatch")
+
+    def test_active_fixture_still_requires_the_whole_frame_export(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate(root)
+            self.write_bridge_source(root, PHASE3B_BRIDGE_LINE_ONLY, with_frame_rs=False)
+
+        self.assert_rejected(mutate, "private native export inventory is not exact")
+
+    def test_active_fixture_keeps_residual_pyplot_shapes_forbidden(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate(root)
+            path = root / "python/lumenplot_mpl/backend.py"
+            path.write_text(
+                "import matplotlib.pyplot as plt\n\n" + PHASE3B_BACKEND_PY,
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "Matplotlib/backend surface is forbidden")
+
+    def test_active_fixture_keeps_bare_public_render_png_forbidden(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate(root)
+            path = root / "python/lumenplot_mpl/__init__.py"
+            path.write_text(
+                PHASE3B_INIT_PY + "\n\nsnapshot = render_png()\n",
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "public render_png is forbidden")
+
+    def test_active_fixture_admits_dotted_render_png_shapes(self) -> None:
+        """Method defs and dotted calls stay admitted while active."""
+
+        with self.fixture() as temporary:
+            root = Path(temporary)
+            self.activate(root)
+            path = root / "python/lumenplot_mpl/backend.py"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source
+                + """
+
+    def render_png(self) -> bytes:
+        return FigureCanvasLumenPlot.render_png(self)
+""",
+                encoding="utf-8",
+            )
+            returncode, output = self.run_checker(root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_active_fixture_rejects_extra_entry_point_groups(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate(root)
+            path = root / "pyproject.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\n[project.entry-points."console_scripts"]\nlumenplot-cli = "lumenplot_mpl.cli:main"\n',
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "public backend/Matplotlib surface is forbidden")
+
+    def test_active_fixture_rejects_wrong_entry_point_identity(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate(root)
+            path = root / "pyproject.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    '"lumenplot_mpl.backend"', '"lumenplot_mpl.other"',
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "public backend/Matplotlib surface is forbidden")
+
+
 if __name__ == "__main__":
     unittest.main()
