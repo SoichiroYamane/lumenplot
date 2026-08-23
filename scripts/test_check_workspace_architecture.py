@@ -40,6 +40,18 @@ BASELINE_PYTHON_SOURCE = """//! Private Phase-0 documentation stub for the futur
 def reset_python_bridge_to_baseline(root: Path) -> None:
     manifest = root / "crates/lumenplot-python/Cargo.toml"
     source = root / "crates/lumenplot-python/src/lib.rs"
+    source_dir = root / "crates/lumenplot-python/src"
+    # Fixtures model the Phase-0 baseline: the working tree may carry the
+    # accepted Phase-3B lane files (e.g. src/frame.rs) alongside lib.rs,
+    # but the baseline bridge crate ships documentation-only src/lib.rs.
+    if source_dir.is_dir():
+        for stale in sorted(source_dir.iterdir()):
+            if stale.name == "lib.rs":
+                continue
+            if stale.is_dir():
+                shutil.rmtree(stale)
+            else:
+                stale.unlink()
     manifest.write_text(BASELINE_PYTHON_MANIFEST, encoding="utf-8")
     source.write_text(BASELINE_PYTHON_SOURCE, encoding="utf-8")
 
