@@ -449,4 +449,322 @@ mod tests {
         assert_eq!(log.segments.len(), 3);
         assert!(log.full_resolution);
     }
+
+    fn monotonic_series_from_xy(
+        x: Vec<f64>,
+        y: Vec<f64>,
+        segments: Option<Vec<std::ops::Range<usize>>>,
+    ) -> std::sync::Arc<SeriesStorage> {
+        SeriesStorage::from_normalized(
+            SeriesInput::from_owned_xy(Topology::MonotonicX, x, y, segments)
+                .expect("input")
+                .into_normalized(),
+            DataEpoch(1),
+            crate::data::ChunkRevision(1),
+        )
+        .expect("storage")
+    }
+
+    /// Brute-force model oracle: for every populated (segment, bin) select
+    /// first, last, minimum-y, and maximum-y exactly as the Phase-1A M4
+    /// contract defines them (ADR 0010 section 7). Non-final bins are
+    /// half-open; the final bin includes q1. Minimum and maximum use finite
+    /// y values with the earliest SourceIndex winning ties.
+    fn brute_force_selection_sources(series: &SeriesStorage, boundaries: &[f64]) -> Vec<u64> {
+        let mut expected = Vec::new();
+        let segment = &series.segments()[0];
+        let points = series.points();
+        let bisect = |value: f64, upper: bool| {
+            let mut left = segment.point_start;
+            let mut right = segment.point_end;
+            while left < right {
+                let middle = left + (right - left) / 2;
+                let goes_right = if upper {
+                    points[middle].x <= value
+                } else {
+                    points[middle].x < value
+                };
+                if goes_right {
+                    left = middle + 1;
+                } else {
+                    right = middle;
+                }
+            }
+            left
+        };
+        for bin in 0..boundaries.len() - 1 {
+            let start = bisect(boundaries[bin], false);
+            let end = if bin + 2 == boundaries.len() {
+                bisect(boundaries[bin + 1], true)
+            } else {
+                bisect(boundaries[bin + 1], false)
+            };
+            if start >= end {
+                continue;
+            }
+            let range = &points[start..end];
+            expected.push(range.first().expect("first").source);
+            expected.push(
+                range
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, left), (_, right)| {
+                        left.y
+                            .total_cmp(&right.y)
+                            .then(left.source.cmp(&right.source))
+                    })
+                    .map(|(_, point)| point.source)
+                    .expect("minimum"),
+            );
+            expected.push(
+                range
+                    .iter()
+                    .max_by(|left, right| {
+                        left.y
+                            .total_cmp(&right.y)
+                            .then(right.source.cmp(&left.source))
+                    })
+                    .map(|point| point.source)
+                    .expect("maximum"),
+            );
+            expected.push(range.last().expect("last").source);
+        }
+        expected.sort_unstable();
+        expected.dedup();
+        expected
+    }
+
+    #[test]
+    fn spike_extrema_survive_m4_decimation() {
+        // LP-LOD-003/LP-LOD-002 spike fixture: narrow one-sample extrema in
+        // interior bins must survive selection, which blind fixed-stride
+        // decimation cannot guarantee.
+        let count = 240usize;
+        let x: Vec<_> = (0..count).map(|value| value as f64).collect();
+        let mut y: Vec<_> = (0..count).map(|value| (value % 7) as f64).collect();
+        let spikes = [(37usize, 500.0f64), (118, -700.0), (201, 900.0)];
+        for &(index, value) in &spikes {
+            y[index] = value;
+        }
+        let series = monotonic_series_from_xy(x, y, None);
+        let bins = 8;
+        let selection = select_monotonic(
+            &series,
+            &Viewport::from_bounds(0.0, (count - 1) as f64, -1_000.0, 1_000.0).expect("viewport"),
+            &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+            bins,
+        )
+        .expect("selection");
+        assert!(!selection.full_resolution);
+        let actual: std::collections::BTreeSet<u64> = selection.segments[0]
+            .points
+            .iter()
+            .map(|point| point.source)
+            .collect();
+        for &(index, _) in &spikes {
+            assert!(
+                actual.contains(&(index as u64)),
+                "spike at {index} was dropped by LOD selection"
+            );
+        }
+        // Negative control: uniform fixed-stride decimation misses at least
+        // one spike, so the fixture genuinely distinguishes M4 from stride.
+        let stride_step = count / bins;
+        let stride_samples: std::collections::BTreeSet<usize> =
+            (0..count).step_by(stride_step).collect();
+        assert!(
+            spikes
+                .iter()
+                .any(|&(index, _)| !stride_samples.contains(&index)),
+            "fixture lost its discriminating power: stride would keep every spike"
+        );
+        // Every populated bin still contributes its first and last samples.
+        let boundaries = make_boundaries(0.0, (count - 1) as f64, bins).expect("boundaries");
+        let expected = brute_force_selection_sources(&series, &boundaries);
+        let actual_vec: Vec<_> = actual.into_iter().collect();
+        assert_eq!(actual_vec, expected);
+    }
+
+    #[test]
+    fn extrema_match_bruteforce_oracle_on_generated_series() {
+        // LP-LOD-003: first/min/max/last with source-index identity, order,
+        // earliest-source tie-breaking, duplicate-x runs, and interior spikes
+        // are compared against an independent brute-force scan.
+        for case in 0..10usize {
+            let count = 400 + case * 53;
+            let bins = 5 + case % 4;
+            let mut x: Vec<_> = (0..count).map(|value| value as f64).collect();
+            let mut y: Vec<_> = (0..count)
+                .map(|value| ((value * value) % 97) as f64 - 48.0)
+                .collect();
+            // Deterministic duplicate-x runs keep distinct samples distinct.
+            for duplicate_at in [50, 150, 250] {
+                if duplicate_at < count {
+                    x[duplicate_at] = x[duplicate_at - 1];
+                }
+            }
+            // Interior spikes far outside the background band.
+            let spike_positions = [
+                (40 + case * 11).min(count - 1),
+                count / 2 + (case % 17),
+                (310 + case * 3).min(count - 1),
+            ];
+            for (offset, position) in spike_positions.into_iter().enumerate() {
+                y[position] = if offset % 2 == 0 {
+                    300.0 + case as f64 * 7.0
+                } else {
+                    -(350.0 + case as f64 * 5.0)
+                };
+            }
+            let series = monotonic_series_from_xy(x, y, None);
+            let view =
+                Viewport::from_bounds(0.0, (count - 1) as f64, -1_000.0, 1_000.0).expect("view");
+            let selection = select_monotonic(
+                &series,
+                &view,
+                &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+                bins,
+            )
+            .expect("selection");
+            assert!(!selection.full_resolution, "case {case}");
+            let boundaries = make_boundaries(0.0, (count - 1) as f64, bins).expect("boundaries");
+            assert_eq!(selection.effective_bins, boundaries.len() - 1);
+            let mut actual: Vec<_> = selection.segments[0]
+                .points
+                .iter()
+                .map(|point| point.source)
+                .collect();
+            // Within a segment, candidates are ordered by SourceIndex.
+            assert!(
+                actual.windows(2).all(|pair| pair[0] < pair[1]),
+                "case {case}: candidates not source-ordered"
+            );
+            actual.sort_unstable();
+            actual.dedup();
+            assert_eq!(
+                actual,
+                brute_force_selection_sources(&series, &boundaries),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn topology_violation_rejects_cross_topology_selection() {
+        // LP-LOD-002 negative fixture: each selector refuses foreign topology.
+        let monotonic = monotonic_series_from_xy(vec![0.0, 1.0, 2.0], vec![1.0, 0.0, 2.0], None);
+        let arbitrary = {
+            let input = SeriesInput::from_owned_xy(
+                Topology::ArbitraryXY,
+                vec![2.0, 0.0, 1.0],
+                vec![2.0, 0.0, 1.0],
+                None,
+            )
+            .expect("input");
+            SeriesStorage::from_normalized(
+                input.into_normalized(),
+                DataEpoch(1),
+                crate::data::ChunkRevision(1),
+            )
+            .expect("storage")
+        };
+        let viewport = Viewport::from_bounds(0.0, 2.0, -1.0, 3.0).expect("viewport");
+        let scales = AxisScales::new(AxisScale::Linear, AxisScale::Linear);
+        assert_eq!(
+            select_monotonic(&arbitrary, &viewport, &scales, 4)
+                .expect_err("foreign topology must fail")
+                .kind(),
+            SceneErrorKind::TopologyViolation
+        );
+        assert_eq!(
+            crate::lod::arbitrary::select_arbitrary(&monotonic, &viewport, &scales)
+                .expect_err("foreign topology must fail")
+                .kind(),
+            SceneErrorKind::TopologyViolation
+        );
+    }
+
+    #[test]
+    fn zero_bins_are_rejected_before_selection() {
+        let series =
+            monotonic_series_from_xy(vec![0.0, 1.0, 2.0, 3.0], vec![0.0, 1.0, -1.0, 2.0], None);
+        assert_eq!(
+            select_monotonic(
+                &series,
+                &Viewport::from_bounds(0.0, 3.0, -2.0, 2.0).expect("viewport"),
+                &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+                0,
+            )
+            .expect_err("zero bins must fail")
+            .kind(),
+            SceneErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn log_scales_use_explicit_full_resolution_and_split_derived_gaps() {
+        // LP-LOD-002 policy fixture: Log10 never uses the accelerated binning
+        // decision; nonpositive coordinates become derived out-of-domain gaps
+        // and canonical data is not silently narrowed.
+        // x stays nondecreasing across the whole source, including gap
+        // slots; y carries nonpositive values that become derived gaps.
+        let x = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = vec![1.0, 2.0, -1.0, -3.0, 4.0, 5.0];
+        let series = monotonic_series_from_xy(x, y, None);
+        let scales = AxisScales::new(AxisScale::Log10, AxisScale::Log10);
+        let selection = select_monotonic(
+            &series,
+            &Viewport::from_bounds(1.0, 5.0, 0.1, 6.0).expect("viewport"),
+            &scales,
+            4,
+        )
+        .expect("selection");
+        assert!(selection.full_resolution);
+        assert_eq!(selection.effective_bins, 1);
+        let flattened: Vec<Vec<u64>> = selection
+            .segments
+            .iter()
+            .map(|segment| segment.points.iter().map(|point| point.source).collect())
+            .collect();
+        assert_eq!(flattened, vec![vec![1], vec![4, 5]]);
+    }
+
+    #[test]
+    fn collapsed_boundaries_keep_selection_exact_against_the_oracle() {
+        // Adjacent f64 boundaries may collapse deterministically into fewer
+        // effective bins; the selection must stay exact for the effective
+        // bins rather than degrading toward stride sampling.
+        let count = 96usize;
+        let x: Vec<_> = (0..count).map(|value| value as f64).collect();
+        let y: Vec<_> = (0..count)
+            .map(|value| {
+                if value == 61 {
+                    800.0
+                } else {
+                    (value % 5) as f64
+                }
+            })
+            .collect();
+        let series = monotonic_series_from_xy(x, y, None);
+        let next_after_zero = f64::from_bits(0.0_f64.to_bits() + 1);
+        let view = Viewport::from_bounds(0.0, next_after_zero, -1.0, 1_000.0).expect("viewport");
+        let selection = select_monotonic(
+            &series,
+            &view,
+            &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+            16,
+        )
+        .expect("selection");
+        let boundaries = make_boundaries(view.x().min(), view.x().max(), 16).expect("boundaries");
+        assert!(boundaries.len() <= 3, "boundaries failed to collapse");
+        assert_eq!(selection.effective_bins, boundaries.len() - 1);
+        let mut actual: Vec<_> = selection.segments[0]
+            .points
+            .iter()
+            .map(|point| point.source)
+            .collect();
+        actual.sort_unstable();
+        actual.dedup();
+        assert_eq!(actual, brute_force_selection_sources(&series, &boundaries));
+    }
 }
