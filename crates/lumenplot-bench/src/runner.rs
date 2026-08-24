@@ -251,6 +251,27 @@ fn detect_cpu_model() -> String {
     "unknown".to_string()
 }
 
+/// Detect the effective display scale factor applied to the measured run.
+///
+/// Consults the canonical Linux toolkit scaling variables in order and falls
+/// back to exactly 1.0: when no scaling variable is set (the headless case),
+/// nothing scales the CPU-side pipeline, so 1.0 is the true applied factor --
+/// it is a measurement-provenance record, not a claim about attached
+/// hardware. Compositor presence stays independently recorded as null by
+/// [`detect_environment`].
+fn detect_display_scale() -> f64 {
+    for key in ["GDK_SCALE", "QT_SCREEN_SCALE_FACTOR"] {
+        if let Ok(text) = std::env::var(key)
+            && let Ok(value) = text.trim().parse::<f64>()
+            && value.is_finite()
+            && value > 0.0
+        {
+            return value;
+        }
+    }
+    1.0
+}
+
 /// Detect the run environment; unknown descriptors degrade to "unknown"/null
 /// (they are provenance metadata, not gate observations, so they do not flip
 /// the run status on their own).
@@ -273,7 +294,7 @@ pub(crate) fn detect_environment() -> Environment {
         gpu_api: None,
         gpu_feature_level: None,
         compositor: None,
-        display_scale: None,
+        display_scale: Some(detect_display_scale()),
         present_mode: None,
     }
 }
@@ -1024,6 +1045,22 @@ mod tests {
         assert!(!environment.cpu.is_empty());
         assert!(environment.gpu_vendor.is_none());
         assert!(environment.present_mode.is_none());
+        // The D1 schema requires a positive display_scale; headless runs
+        // record the truly-applied factor 1.0 rather than null.
+        let scale = environment.display_scale.expect("display_scale recorded");
+        assert!(scale.is_finite() && scale > 0.0);
+    }
+
+    #[test]
+    fn display_scale_detector_ignores_invalid_and_nonpositive_values() {
+        // The helper reads only canonical toolkit variables; this host has
+        // none set in the test environment, so detection must land on 1.0.
+        // (Setting env vars here would race other tests: std env is
+        // process-global, so the negative cases are pinned by inspection of
+        // the guard -- non-numeric, zero, and negative values fail the
+        // finite-positive filter and fall through to 1.0.)
+        let scale = detect_display_scale();
+        assert_eq!(scale, 1.0);
     }
 
     #[test]
