@@ -176,6 +176,7 @@ fn validate_segments(source_len: usize, segments: &[Range<usize>]) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::{ChunkRevision, DataEpoch, SeriesStorage};
 
     #[test]
     fn normalizes_segments_and_ignores_uncovered_payload() {
@@ -295,5 +296,95 @@ mod tests {
                 .kind(),
             SceneErrorKind::CapacityExceeded
         );
+    }
+
+    #[test]
+    fn monotonicx_rejects_decreasing_and_arbitraryxy_accepts_it() {
+        // LP-LOD-004 topology-model fixture: the two topologies are distinct
+        // ingestion models. MonotonicX enforces the x-nondecreasing invariant
+        // (strictly decreasing pairs are TopologyViolation); ArbitraryXY
+        // deliberately accepts arbitrary x order because its v1 contract is
+        // correctness-preserving culling, not an ordering assumption.
+        let decreasing_x = vec![3.0, 1.0, 2.0];
+        let y = vec![1.0, 2.0, 3.0];
+
+        let monotonic =
+            SeriesInput::from_owned_xy(Topology::MonotonicX, decreasing_x.clone(), y.clone(), None);
+        assert_eq!(
+            monotonic
+                .expect_err("MonotonicX must reject decreasing x")
+                .kind(),
+            SceneErrorKind::TopologyViolation
+        );
+
+        let arbitrary = SeriesInput::from_owned_xy(Topology::ArbitraryXY, decreasing_x, y, None)
+            .expect("ArbitraryXY accepts any x order")
+            .into_normalized();
+        assert_eq!(arbitrary.points().len(), 3);
+        assert_eq!(arbitrary.points()[0].source, 0);
+    }
+
+    #[test]
+    fn monotonicx_equality_is_valid_but_append_reversal_is_not() {
+        // LP-LOD-004 boundary model: equal adjacent x stays inside
+        // MonotonicX (duplicate-x runs are valid samples), while a strictly
+        // smaller x across an append boundary violates the topology even
+        // though each half was individually nondecreasing.
+        let flat = SeriesInput::from_owned_xy(
+            Topology::MonotonicX,
+            vec![1.0, 1.0, 1.0],
+            vec![0.0, 5.0, -2.0],
+            None,
+        )
+        .expect("equal adjacent x is valid MonotonicX");
+        let first =
+            SeriesStorage::from_normalized(flat.into_normalized(), DataEpoch(4), ChunkRevision(1))
+                .expect("storage");
+
+        let continuation =
+            SeriesInput::from_owned_xy(Topology::MonotonicX, vec![0.5], vec![9.0], None);
+        assert_eq!(
+            SeriesStorage::append(&first, continuation.expect("input").into_normalized())
+                .expect_err("append must keep the x order across the seam")
+                .kind(),
+            SceneErrorKind::TopologyViolation
+        );
+
+        let same_x_continuation =
+            SeriesInput::from_owned_xy(Topology::MonotonicX, vec![1.0], vec![7.0], None)
+                .expect("input")
+                .into_normalized();
+        let appended = SeriesStorage::append(&first, same_x_continuation)
+            .expect("append succeeds")
+            .expect("append changes state");
+        assert_eq!(appended.point_count(), 4);
+        assert_eq!(appended.topology(), Topology::MonotonicX);
+    }
+
+    #[test]
+    fn append_cannot_change_a_series_topology() {
+        // LP-LOD-004 identity model: topology is a per-series invariant.
+        // Appending data with a different topology must fail closed instead
+        // of silently retagging the stored series.
+        let monotonic =
+            SeriesInput::from_owned_xy(Topology::MonotonicX, vec![0.0, 1.0], vec![1.0, 2.0], None)
+                .expect("input");
+        let series = SeriesStorage::from_normalized(
+            monotonic.into_normalized(),
+            DataEpoch(1),
+            ChunkRevision(1),
+        )
+        .expect("storage");
+
+        let arbitrary_append =
+            SeriesInput::from_owned_xy(Topology::ArbitraryXY, vec![5.0, 4.0], vec![0.0, 1.0], None)
+                .expect("valid on its own");
+        assert_eq!(
+            SeriesStorage::append(&series, arbitrary_append.into_normalized())
+                .expect_err("cross-topology append must fail")
+                .kind(),
+            SceneErrorKind::TopologyViolation
+        );
+        assert_eq!(series.source_len(), 2);
     }
 }
