@@ -404,6 +404,46 @@ class ManifestValidationTests(unittest.TestCase):
         del manifest["clocks"][1]["domain"]
         self.assertTrue(any("clocks[1].domain" in e for e in self.validate(manifest)))
 
+    def test_present_but_wrong_typed_containers_are_rejected(self) -> None:
+        # Round-3 finding A: present-but-non-object containers must be
+        # rejected like main does; silently accepting them let --compare
+        # crash on manifest["protocol"]["bootstrap"] afterwards.
+        cases = [
+            (("fixture",), "hello", "fixture"),
+            (("environment",), [1], "environment"),
+            (("protocol",), "nope", "protocol"),
+            (("protocol", "bootstrap"), "x", "protocol.bootstrap"),
+            (("blocks",), {"block_index": 0}, "blocks"),
+        ]
+        for keys, value, label in cases:
+            with self.subTest(keys=keys, value=value):
+                manifest = make_manifest()
+                target = manifest
+                for key in keys[:-1]:
+                    target = target[key]
+                target[keys[-1]] = value
+                errors = self.validate(manifest)
+                self.assertTrue(
+                    any(label in error and "expected" in error for error in errors),
+                    errors,
+                )
+
+        # A present-but-non-object entry inside blocks keeps its per-entry error.
+        manifest = make_manifest()
+        manifest["blocks"] = [{}]
+        errors = self.validate(manifest)
+        self.assertTrue(any("blocks[0]" in error for error in errors), errors)
+
+        # Null stays accepted exactly where D1 marks |null.
+        manifest = make_manifest()
+        manifest["environment"]["gpu"] = None
+        manifest["environment"]["compositor"] = None
+        manifest["environment"]["present_mode"] = None
+        manifest["max_block_p99_ns"] = None
+        manifest["pooled"] = None
+        manifest["inconclusive_reasons"] = None
+        self.assertEqual(self.validate(manifest), [])
+
     def test_nullable_fields_accept_none(self) -> None:
         manifest = make_manifest()
         manifest["environment"]["gpu"] = None
@@ -773,6 +813,17 @@ class CompareCommandTests(unittest.TestCase):
             any(line.startswith("ERROR: B:") for line in completed.stderr.splitlines()),
             completed.stderr,
         )
+
+    def test_wrong_typed_container_manifest_exits_two_not_crash(self) -> None:
+        # Round-3 finding A, CLI level: a present-but-non-object protocol
+        # must exit 2 with the validator error, never an uncaught TypeError.
+        manifest = make_manifest()
+        manifest["protocol"] = "nope"
+        path_bad = write_json(self.root / "wrong-typed.json", manifest)
+        completed = run_cli("--compare", str(self.path_a), str(path_bad))
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("protocol: expected a JSON object", completed.stderr)
+        self.assertNotIn("TypeError", completed.stderr)
 
     def test_missing_input_file_exits_two(self) -> None:
         completed = run_cli(

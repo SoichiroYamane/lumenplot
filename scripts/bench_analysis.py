@@ -242,6 +242,8 @@ def validate_manifest(manifest: Any) -> list[str]:
 
 def _validate_fixture(fixture: Any, add: Any) -> None:
     if not isinstance(fixture, dict):
+        if fixture is not None:
+            add("fixture", "expected a JSON object")
         return
     for field in REQUIRED_FIXTURE_FIELDS:
         if field not in fixture:
@@ -264,6 +266,8 @@ def _validate_fixture(fixture: Any, add: Any) -> None:
 
 def _validate_environment(environment: Any, add: Any) -> None:
     if not isinstance(environment, dict):
+        if environment is not None:
+            add("environment", "expected a JSON object")
         return
     for field in REQUIRED_ENVIRONMENT_FIELDS:
         if field not in environment:
@@ -292,6 +296,8 @@ def _validate_environment(environment: Any, add: Any) -> None:
 
 def _validate_protocol(protocol: Any, add: Any) -> None:
     if not isinstance(protocol, dict):
+        if protocol is not None:
+            add("protocol", "expected a JSON object")
         return
     for field in REQUIRED_PROTOCOL_FIELDS:
         if field not in protocol:
@@ -316,6 +322,8 @@ def _validate_protocol(protocol: Any, add: Any) -> None:
         add("protocol.trimming", f"expected \"{TRIMMING}\", got {protocol['trimming']!r}")
     bootstrap = protocol.get("bootstrap")
     if not isinstance(bootstrap, dict):
+        if bootstrap is not None:
+            add("protocol.bootstrap", "expected a JSON object")
         return
     for field in REQUIRED_BOOTSTRAP_FIELDS:
         if field not in bootstrap:
@@ -400,6 +408,8 @@ def _validate_blocks(
     status: Any = None,
 ) -> None:
     if not isinstance(blocks, list):
+        if blocks is not None:
+            add("blocks", f"expected a JSON array of {BLOCK_COUNT} blocks")
         return
     if len(blocks) != BLOCK_COUNT:
         add("blocks", f"expected exactly {BLOCK_COUNT} blocks, got {len(blocks)}")
