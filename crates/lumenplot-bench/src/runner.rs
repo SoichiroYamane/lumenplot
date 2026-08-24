@@ -342,9 +342,14 @@ fn run_block_in_process(
 
 /// Assemble one frame's facade request from the fixture data.
 ///
-/// The facade consumes owned buffers, so each measured frame clones the
-/// fixture; the copy cost sits inside the measured span identically for
-/// every frame and is part of the documented harness overhead.
+/// The facade consumes owned buffers, so each frame clones the fixture
+/// during this assembly. Callers run this BEFORE event acceptance (see
+/// `run_block_in_process`, which builds the request ahead of
+/// `ClockBoard::observe_frame`), so the copy cost lies OUTSIDE the measured
+/// scheduler span `event_accept_to_present_return`: that span starts at the
+/// accept timestamp and ends when the facade render call returns, and thus
+/// measures rendering only, with fixture assembly excluded identically for
+/// every frame.
 fn build_frame_request(
     xs: &[f64],
     ys: &[f64],
