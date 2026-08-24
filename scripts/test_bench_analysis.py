@@ -361,6 +361,84 @@ class ManifestValidationTests(unittest.TestCase):
         manifest["inconclusive_reasons"] = ["stale"]
         self.assertTrue(any("forbids" in e for e in self.validate(manifest)))
 
+        # Null reasons mean "nothing recorded": acceptable while not
+        # inconclusive, rejected when the run claims an inconclusive outcome.
+        manifest = make_manifest()
+        manifest["status"] = "complete"
+        manifest["inconclusive_reasons"] = None
+        self.assertEqual(self.validate(manifest), [])
+
+        manifest = make_manifest()
+        manifest["status"] = "inconclusive"
+        manifest["inconclusive_reasons"] = None
+        self.assertTrue(
+            any("requires at least one reason" in e for e in self.validate(manifest))
+        )
+
+    def test_required_nested_fields_are_enforced(self) -> None:
+        cases = [
+            (("fixture",), bench.REQUIRED_FIXTURE_FIELDS),
+            (("environment",), bench.REQUIRED_ENVIRONMENT_FIELDS),
+            (("protocol",), bench.REQUIRED_PROTOCOL_FIELDS),
+            (("protocol", "bootstrap"), bench.REQUIRED_BOOTSTRAP_FIELDS),
+            (("blocks", 0), bench.REQUIRED_BLOCK_FIELDS),
+        ]
+        for base, fields in cases:
+            for field in fields:
+                with self.subTest(base=base, field=field):
+                    manifest = make_manifest()
+                    target = manifest
+                    for key in base:
+                        target = target[key]
+                    del target[field]
+                    errors = self.validate(manifest)
+                    self.assertTrue(
+                        any(field in error for error in errors),
+                        errors,
+                    )
+
+        manifest = make_manifest()
+        del manifest["clocks"][0]["name"]
+        self.assertTrue(any("clocks[0].name" in e for e in self.validate(manifest)))
+        manifest = make_manifest()
+        del manifest["clocks"][1]["domain"]
+        self.assertTrue(any("clocks[1].domain" in e for e in self.validate(manifest)))
+
+    def test_nullable_fields_accept_none(self) -> None:
+        manifest = make_manifest()
+        manifest["environment"]["gpu"] = None
+        manifest["environment"]["compositor"] = None
+        manifest["environment"]["present_mode"] = None
+        manifest["max_block_p99_ns"] = None
+        self.assertEqual(self.validate(manifest), [])
+
+    def test_block_quantiles_nullable_only_when_inconclusive(self) -> None:
+        def inconclusive() -> dict:
+            manifest = make_manifest()
+            manifest["status"] = "inconclusive"
+            manifest["inconclusive_reasons"] = ["GPU timestamp stream truncated"]
+            return manifest
+
+        manifest = inconclusive()
+        for block in manifest["blocks"]:
+            block["p50_ns"] = block["p95_ns"] = block["p99_ns"] = None
+        self.assertEqual(self.validate(manifest), [])
+
+        manifest = inconclusive()
+        for block in manifest["blocks"]:
+            del block["p99_ns"]
+        self.assertTrue(
+            any("p99_ns" in e for e in self.validate(manifest)),
+            "absent quantile must be rejected even when inconclusive",
+        )
+
+        manifest = make_manifest()
+        manifest["blocks"][2]["p99_ns"] = None
+        self.assertTrue(
+            any("p99_ns" in e for e in self.validate(manifest)),
+            "null quantile under a complete run must be rejected",
+        )
+
     def test_environment_and_fixture_shapes(self) -> None:
         manifest = make_manifest()
         manifest["environment"]["gpu"]["driver"] = ""
@@ -634,6 +712,56 @@ class CompareCommandTests(unittest.TestCase):
         self.assertIn("**INCONCLUSIVE**", report)
         self.assertIn("GPU timestamp stream truncated", report)
         self.assertNotIn("Overall: COMPLETE", report)
+
+    def test_inconclusive_null_quantiles_report_is_total(self) -> None:
+        # Round-2 finding 2 repro 1: inconclusive B with null quantiles used
+        # to crash compare with TypeError (float(None)); now renders n/a.
+        self.manifest_b["status"] = "inconclusive"
+        self.manifest_b["inconclusive_reasons"] = ["GPU timestamp stream truncated"]
+        for block in self.manifest_b["blocks"]:
+            block["p50_ns"] = block["p95_ns"] = block["p99_ns"] = None
+        self.manifest_b["max_block_p99_ns"] = None
+        self.manifest_b["pooled"] = None
+        path_b = write_json(self.root / "b-null-quantiles.json", self.manifest_b)
+        first = run_cli(
+            "--compare", str(self.path_a), str(path_b), "--out", str(self.root / "report.md")
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        report = self.read_report()
+        self.assertIn("**INCONCLUSIVE**", report)
+        self.assertIn("GPU timestamp stream truncated", report)
+        self.assertIn("| n/a | n/a | n/a |", report.replace("||", "| |"))
+        self.assertIn("n/a — no block pair has p99 available on both sides", report)
+        self.assertNotIn("None", report)
+
+    def test_compare_survives_null_reasons_and_sparse_blocks(self) -> None:
+        # Round-2 finding 2 repros 2 and 3: null inconclusive_reasons on an
+        # otherwise complete pair, and sparse-but-valid blocks (missing
+        # pooled), both used to crash; both stay total and deterministic.
+        self.manifest_a["inconclusive_reasons"] = None
+        self.manifest_b["inconclusive_reasons"] = None
+        path_a = write_json(self.root / "a-null-reasons.json", self.manifest_a)
+        path_b = write_json(self.root / "b-null-reasons.json", self.manifest_b)
+        completed = run_cli("--compare", str(path_a), str(path_b))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, run_cli("--compare", str(path_a), str(path_b)).stdout)
+
+        manifest_a = make_manifest()
+        manifest_b = make_manifest()
+        slower_p99 = [85_000_000.0, 92_000_000.0, 99_000_000.0, 106_000_000.0, 113_000_000.0]
+        for index, block in enumerate(manifest_b["blocks"]):
+            block["p99_ns"] = slower_p99[index]
+        manifest_b["max_block_p99_ns"] = 113_000_000.0
+        for manifest in (manifest_a, manifest_b):
+            manifest["pooled"] = None
+            manifest["inconclusive_reasons"] = None
+            manifest["environment"]["compositor"] = None
+        sparse_a = write_json(self.root / "sparse-a.json", manifest_a)
+        sparse_b = write_json(self.root / "sparse-b.json", manifest_b)
+        completed = run_cli("--compare", str(sparse_a), str(sparse_b))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("| 0 | 1000 | 1000 | 100000000 | 85000000 | -15000000 | -15.00% |", completed.stdout)
+        self.assertIn("n/a", completed.stdout)  # pooled section renders null
 
     def test_invalid_side_manifest_exits_two_with_label(self) -> None:
         manifest = make_manifest()

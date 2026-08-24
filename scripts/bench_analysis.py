@@ -17,6 +17,8 @@ Modes (mutually exclusive):
 * ``--compare A.json B.json [--out REPORT.md]``
     Paired A/B report: per-block p99 deltas, descriptive summaries,
     max-block-p99 comparison, and a bootstrap CI over paired block deltas.
+    Block pairs whose p99 is unavailable (null) on either side are rendered
+    as ``n/a`` and excluded from the paired statistics instead of crashing.
 
 The manifest and JSONL formats are internal tooling contracts only; they are
 not public Scene, RenderPacket, project, or persistence formats.
@@ -73,6 +75,33 @@ REQUIRED_TOP_LEVEL = (
 
 GPU_FIELDS = ("vendor", "device", "driver", "api", "feature_level")
 ENV_STRING_FIELDS = ("os", "os_version", "arch", "kernel", "cpu")
+
+# Pinned D1 decision: every schema field below is mandatory. Fields absent
+# from these tuples are optional; the explicitly nullable fields are
+# environment.gpu, environment.compositor, environment.present_mode, and
+# max_block_p99_ns, plus block p50/p95/p99_ns when status is "inconclusive".
+REQUIRED_FIXTURE_FIELDS = ("id", "points", "canvas_px", "dpi")
+REQUIRED_ENVIRONMENT_FIELDS = ("os", "os_version", "arch", "kernel", "cpu", "display_scale")
+REQUIRED_PROTOCOL_FIELDS = (
+    "blocks",
+    "min_frames_per_block",
+    "quantile_method",
+    "trimming",
+    "bootstrap",
+)
+REQUIRED_BOOTSTRAP_FIELDS = ("resamples", "ci", "seed", "method")
+REQUIRED_CLOCK_FIELDS = ("name", "domain")
+REQUIRED_BLOCK_FIELDS = (
+    "block_index",
+    "pid",
+    "started_at_utc",
+    "frame_count",
+    "p50_ns",
+    "p95_ns",
+    "p99_ns",
+    "raw_samples_path",
+)
+NULLABLE_QUANTILE_STATUS = "inconclusive"
 
 RFC3339_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$"
@@ -195,7 +224,7 @@ def validate_manifest(manifest: Any) -> list[str]:
     _validate_protocol(manifest.get("protocol"), add)
     _validate_clocks(manifest.get("clocks"), add)
     min_frames = _protocol_min_frames(manifest.get("protocol"))
-    _validate_blocks(manifest.get("blocks"), min_frames, add)
+    _validate_blocks(manifest.get("blocks"), min_frames, add, manifest.get("status"))
 
     pooled = manifest.get("pooled")
     if pooled is not None and not isinstance(pooled, dict):
@@ -212,10 +241,11 @@ def validate_manifest(manifest: Any) -> list[str]:
 
 
 def _validate_fixture(fixture: Any, add: Any) -> None:
-    if fixture is None or not isinstance(fixture, dict):
-        if fixture is not None:
-            add("fixture", "expected a JSON object")
+    if not isinstance(fixture, dict):
         return
+    for field in REQUIRED_FIXTURE_FIELDS:
+        if field not in fixture:
+            add(f"fixture.{field}", "required field is missing")
     if "id" in fixture and not is_nonempty_str(fixture["id"]):
         add("fixture.id", "expected a non-empty string")
     points = fixture.get("points")
@@ -233,10 +263,11 @@ def _validate_fixture(fixture: Any, add: Any) -> None:
 
 
 def _validate_environment(environment: Any, add: Any) -> None:
-    if environment is None or not isinstance(environment, dict):
-        if environment is not None:
-            add("environment", "expected a JSON object")
+    if not isinstance(environment, dict):
         return
+    for field in REQUIRED_ENVIRONMENT_FIELDS:
+        if field not in environment:
+            add(f"environment.{field}", "required field is missing")
     for field in ENV_STRING_FIELDS:
         if field in environment and not is_nonempty_str(environment[field]):
             add(f"environment.{field}", "expected a non-empty string")
@@ -260,10 +291,11 @@ def _validate_environment(environment: Any, add: Any) -> None:
 
 
 def _validate_protocol(protocol: Any, add: Any) -> None:
-    if protocol is None or not isinstance(protocol, dict):
-        if protocol is not None:
-            add("protocol", "expected a JSON object")
+    if not isinstance(protocol, dict):
         return
+    for field in REQUIRED_PROTOCOL_FIELDS:
+        if field not in protocol:
+            add(f"protocol.{field}", "required field is missing")
     blocks = protocol.get("blocks")
     if blocks is not None and (not is_int(blocks) or blocks != BLOCK_COUNT):
         add("protocol.blocks", f"expected int {BLOCK_COUNT}, got {blocks!r}")
@@ -283,11 +315,11 @@ def _validate_protocol(protocol: Any, add: Any) -> None:
     if protocol.get("trimming") not in (None, TRIMMING):
         add("protocol.trimming", f"expected \"{TRIMMING}\", got {protocol['trimming']!r}")
     bootstrap = protocol.get("bootstrap")
-    if bootstrap is None:
-        return
     if not isinstance(bootstrap, dict):
-        add("protocol.bootstrap", "expected a JSON object")
         return
+    for field in REQUIRED_BOOTSTRAP_FIELDS:
+        if field not in bootstrap:
+            add("protocol.bootstrap." + field, "required field is missing")
     resamples = bootstrap.get("resamples")
     if resamples is not None and (not is_int(resamples) or resamples != BOOTSTRAP_RESAMPLES):
         add(
@@ -329,6 +361,8 @@ def _validate_clocks(clocks: Any, add: Any) -> None:
             add(path, "expected a JSON object")
             continue
         name = clock.get("name")
+        if "name" not in clock:
+            add(f"{path}.name", "required field is missing")
         if name is not None:
             if not is_nonempty_str(name):
                 add(f"{path}.name", "expected a non-empty string")
@@ -336,6 +370,8 @@ def _validate_clocks(clocks: Any, add: Any) -> None:
                 add(f"{path}.name", f"duplicate clock name {name!r}")
             else:
                 seen_names.add(name)
+        if "domain" not in clock:
+            add(f"{path}.domain", "required field is missing")
         domain = clock.get("domain")
         if domain is not None and domain not in CLOCK_DOMAINS:
             add(f"{path}.domain", f"expected one of {list(CLOCK_DOMAINS)}, got {domain!r}")
@@ -357,10 +393,13 @@ def _validate_clocks(clocks: Any, add: Any) -> None:
                 add(f"{path}.name", "queue-domain clock names must start with \"queue_\"")
 
 
-def _validate_blocks(blocks: Any, min_frames: int, add: Any) -> None:
-    if blocks is None or not isinstance(blocks, list):
-        if blocks is not None:
-            add("blocks", f"expected a JSON array of {BLOCK_COUNT} blocks")
+def _validate_blocks(
+    blocks: Any,
+    min_frames: int,
+    add: Any,
+    status: Any = None,
+) -> None:
+    if not isinstance(blocks, list):
         return
     if len(blocks) != BLOCK_COUNT:
         add("blocks", f"expected exactly {BLOCK_COUNT} blocks, got {len(blocks)}")
@@ -382,6 +421,9 @@ def _validate_blocks(blocks: Any, min_frames: int, add: Any) -> None:
         started_at = block.get("started_at_utc")
         if started_at is not None and not is_rfc3339_utc(started_at):
             add(f"{path}.started_at_utc", f"expected an RFC3339 UTC timestamp, got {started_at!r}")
+        for field in REQUIRED_BLOCK_FIELDS:
+            if field not in block:
+                add(f"{path}.{field}", "required field is missing")
         frame_count = block.get("frame_count")
         if frame_count is not None and (not is_int(frame_count) or frame_count < min_frames):
             add(f"{path}.frame_count", f"expected int >= {min_frames}, got {frame_count!r}")
@@ -389,6 +431,9 @@ def _validate_blocks(blocks: Any, min_frames: int, add: Any) -> None:
         for field in ("p50_ns", "p95_ns", "p99_ns"):
             value = block.get(field)
             if value is None:
+                if status == NULLABLE_QUANTILE_STATUS:
+                    continue
+                add(f"{path}.{field}", "expected a non-negative number or null when inconclusive")
                 continue
             if not is_number(value) or value < 0:
                 add(f"{path}.{field}", "expected a non-negative number")
@@ -411,21 +456,27 @@ def _validate_blocks(blocks: Any, min_frames: int, add: Any) -> None:
 def _validate_status(status: Any, reasons: Any, add: Any) -> None:
     if status is not None and status not in STATUSES:
         add("status", f"expected one of {list(STATUSES)}, got {status!r}")
-    if reasons is not None:
-        if not isinstance(reasons, list) or not all(is_nonempty_str(r) for r in reasons):
-            add("inconclusive_reasons", "expected an array of non-empty strings")
-    if status == "inconclusive":
-        if isinstance(reasons, list) and not reasons:
-            add(
-                "inconclusive_reasons",
-                "status \"inconclusive\" requires at least one reason string",
-            )
-    if status == "complete":
-        if isinstance(reasons, list) and reasons:
-            add(
-                "inconclusive_reasons",
-                "status \"complete\" forbids inconclusive reasons",
-            )
+    # inconclusive_reasons is a nullable field: null means "nothing was
+    # recorded", which is acceptable only while the run is not inconclusive.
+    # An empty array counts as "nothing recorded"; a non-empty array counts
+    # as recorded reasons and must match the status exactly.
+    shape_ok = reasons is None or (
+        isinstance(reasons, list) and all(is_nonempty_str(r) for r in reasons)
+    )
+    if not shape_ok:
+        add("inconclusive_reasons", "expected an array of non-empty strings")
+        return
+    has_reasons = isinstance(reasons, list) and len(reasons) > 0
+    if status == "inconclusive" and not has_reasons:
+        add(
+            "inconclusive_reasons",
+            "status \"inconclusive\" requires at least one reason string",
+        )
+    if status == "complete" and has_reasons:
+        add(
+            "inconclusive_reasons",
+            "status \"complete\" forbids inconclusive reasons",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -567,24 +618,40 @@ def command_compare(args: argparse.Namespace) -> int:
         )
         return EXIT_CROSS_PROFILE
 
+    # Totality: block p99 is nullable when a run is inconclusive, so either
+    # side can be None. Unavailable pairs are excluded from the paired
+    # statistics and rendered as n/a instead of crashing.
+    blocks_a = sorted(manifest_a["blocks"], key=lambda b: b["block_index"])
+    blocks_b = sorted(manifest_b["blocks"], key=lambda b: b["block_index"])
     deltas = [
         float(block_b["p99_ns"]) - float(block_a["p99_ns"])
-        for block_a, block_b in zip(
-            sorted(manifest_a["blocks"], key=lambda b: b["block_index"]),
-            sorted(manifest_b["blocks"], key=lambda b: b["block_index"]),
-        )
+        for block_a, block_b in zip(blocks_a, blocks_b)
+        if block_a.get("p99_ns") is not None and block_b.get("p99_ns") is not None
     ]
-    bootstrap = manifest_a["protocol"]["bootstrap"]
-    point_estimate, ci_low, ci_high = paired_bootstrap_ci(
-        deltas,
-        seed=bootstrap["seed"],
-        resamples=bootstrap["resamples"],
-        ci_level=bootstrap["ci"],
-    )
+    bootstrap = _bootstrap_params(manifest_a)
+    if deltas:
+        point_estimate, ci_low, ci_high = paired_bootstrap_ci(
+            deltas,
+            seed=bootstrap["seed"],
+            resamples=bootstrap["resamples"],
+            ci_level=bootstrap["ci"],
+        )
+    else:
+        # No comparable block pair exists (every p99 unavailable on at least
+        # one side); the report stays total and renders n/a statistics.
+        point_estimate = ci_low = ci_high = None
 
     report = build_report(
-        args.compare_a, args.compare_b, manifest_a, manifest_b,
-        deltas, point_estimate, ci_low, ci_high,
+        args.compare_a,
+        args.compare_b,
+        manifest_a,
+        manifest_b,
+        list(zip(blocks_a, blocks_b)),
+        deltas,
+        point_estimate,
+        ci_low,
+        ci_high,
+        bootstrap,
     )
     out_path: Path | None = args.out
     if out_path is not None:
@@ -609,8 +676,15 @@ def _fmt_delta_percent(base: Any, delta: Any) -> str:
     return f"{(float(delta) / float(base)) * 100.0:+.2f}%"
 
 
-def _block_by_index(manifest: dict[str, Any]) -> dict[int, dict[str, Any]]:
-    return {block["block_index"]: block for block in manifest["blocks"]}
+def _bootstrap_params(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Bootstrap parameters for the paired CI, taken from A's protocol block."""
+    bootstrap = manifest["protocol"]["bootstrap"]
+    return {
+        "seed": bootstrap["seed"],
+        "resamples": bootstrap["resamples"],
+        "ci": bootstrap["ci"],
+        "method": bootstrap["method"],
+    }
 
 
 def build_report(
@@ -618,17 +692,21 @@ def build_report(
     path_b: str,
     manifest_a: dict[str, Any],
     manifest_b: dict[str, Any],
+    block_pairs: list[tuple[dict[str, Any], dict[str, Any]]],
     deltas: list[float],
-    point_estimate: float,
-    ci_low: float,
-    ci_high: float,
+    point_estimate: float | None,
+    ci_low: float | None,
+    ci_high: float | None,
+    bootstrap: dict[str, Any] | None = None,
 ) -> str:
     """Render the deterministic paired A/B markdown report.
 
     The report embeds no wall-clock time: two invocations over the same
-    manifest pair produce byte-identical output.
+    manifest pair produce byte-identical output. Unavailable (null) block
+    quantiles render as ``n/a``; the paired statistics cover only the
+    comparable pairs and are ``n/a`` when no pair is comparable.
     """
-    bootstrap = manifest_a["protocol"]["bootstrap"]
+    params = _bootstrap_params(manifest_a) if bootstrap is None else bootstrap
     lines: list[str] = []
     lines.append("# O-08 paired benchmark comparison (A/B)")
     lines.append("")
@@ -651,11 +729,12 @@ def build_report(
         f"B id=`{fixture_b['id']}` (points={fixture_b['points']}, "
         f"canvas_px={fixture_b['canvas_px']}, dpi={fixture_b['dpi']})"
     )
+    protocol_a = manifest_a["protocol"]
     lines.append(
         "- Protocol: blocks=5, min_frames_per_block="
-        f"{manifest_a['protocol']['min_frames_per_block']}, "
-        f"quantile_method={manifest_a['protocol']['quantile_method']}, "
-        f"trimming={manifest_a['protocol']['trimming']}"
+        f"{protocol_a.get('min_frames_per_block', MIN_FRAMES_PER_BLOCK)}, "
+        f"quantile_method={protocol_a.get('quantile_method', QUANTILE_METHOD)}, "
+        f"trimming={protocol_a.get('trimming', TRIMMING)}"
     )
     lines.append("")
 
@@ -663,9 +742,13 @@ def build_report(
     lines.append("")
     reasons: list[str] = []
     for label, manifest in (("A", manifest_a), ("B", manifest_b)):
-        if manifest["status"] == "inconclusive":
-            lines.append(f"- {label}: **inconclusive** — reasons: {manifest['inconclusive_reasons']}")
-            reasons.extend(f"{label}: {reason}" for reason in manifest["inconclusive_reasons"])
+        if manifest.get("status") == "inconclusive":
+            side_reasons = manifest.get("inconclusive_reasons") or [
+                "(no reason recorded)",
+            ]
+            rendered = ", ".join(f'"{reason}"' for reason in side_reasons)
+            lines.append(f"- {label}: **inconclusive** — reasons: {rendered}")
+            reasons.extend(f"{label}: {reason}" for reason in side_reasons)
         else:
             lines.append(f"- {label}: complete")
     if reasons:
@@ -680,37 +763,32 @@ def build_report(
     lines.append("")
     lines.append("| block | frames A | frames B | A p99 | B p99 | delta | delta % |")
     lines.append("| --- | --- | --- | --- | --- | --- | --- |")
-    blocks_a = _block_by_index(manifest_a)
-    blocks_b = _block_by_index(manifest_b)
-    for index, delta in enumerate(deltas):
-        block_a, block_b = blocks_a[index], blocks_b[index]
+    for index, (block_a, block_b) in enumerate(block_pairs):
+        p99_a, p99_b = block_a.get("p99_ns"), block_b.get("p99_ns")
+        delta = (
+            float(p99_b) - float(p99_a)
+            if p99_a is not None and p99_b is not None
+            else None
+        )
         lines.append(
-            f"| {index} | {block_a['frame_count']} | {block_b['frame_count']} "
-            f"| {_fmt(block_a['p99_ns'])} | {_fmt(block_b['p99_ns'])} "
-            f"| {_fmt(delta)} | {_fmt_delta_percent(block_a['p99_ns'], delta)} |"
+            f"| {index} | {_fmt(block_a.get('frame_count'))} "
+            f"| {_fmt(block_b.get('frame_count'))} "
+            f"| {_fmt(p99_a)} | {_fmt(p99_b)} "
+            f"| {_fmt(delta)} | {_fmt_delta_percent(p99_a, delta)} |"
         )
     lines.append("")
 
     lines.append("## Block aggregates (descriptive, ns)")
     lines.append("")
+    lines.append("Computed over blocks with an available value; n/a when none.")
+    lines.append("")
     lines.append("| statistic | A | B |")
     lines.append("| --- | --- | --- |")
     for field in ("p50_ns", "p95_ns", "p99_ns"):
-        agg_a = (
-            statistics.fmean([float(block[field]) for block in manifest_a["blocks"]]),
-            min(float(block[field]) for block in manifest_a["blocks"]),
-            max(float(block[field]) for block in manifest_a["blocks"]),
-        )
-        agg_b = (
-            statistics.fmean([float(block[field]) for block in manifest_b["blocks"]]),
-            min(float(block[field]) for block in manifest_b["blocks"]),
-            max(float(block[field]) for block in manifest_b["blocks"]),
-        )
-        lines.append(
-            f"| {field} mean of blocks | {_fmt(agg_a[0])} | {_fmt(agg_b[0])} |"
-        )
-        lines.append(f"| {field} min block | {_fmt(agg_a[1])} | {_fmt(agg_b[1])} |")
-        lines.append(f"| {field} max block | {_fmt(agg_a[2])} | {_fmt(agg_b[2])} |")
+        agg_a = _block_field_aggregates(manifest_a["blocks"], field)
+        agg_b = _block_field_aggregates(manifest_b["blocks"], field)
+        for name, index in (("mean of blocks", 0), ("min block", 1), ("max block", 2)):
+            lines.append(f"| {field} {name} | {_fmt(agg_a[index])} | {_fmt(agg_b[index])} |")
     lines.append("")
 
     lines.append("## Pooled descriptive summary")
@@ -724,12 +802,16 @@ def build_report(
         lines.append(f"### {label} pooled")
         lines.append("")
         lines.append("```json")
-        lines.append(json.dumps(manifest["pooled"], indent=2, sort_keys=True))
+        pooled = manifest.get("pooled")
+        if isinstance(pooled, dict):
+            lines.append(json.dumps(pooled, indent=2, sort_keys=True))
+        else:
+            lines.append(json.dumps(None))
         lines.append("```")
         lines.append("")
 
-    max_a = manifest_a["max_block_p99_ns"]
-    max_b = manifest_b["max_block_p99_ns"]
+    max_a = manifest_a.get("max_block_p99_ns")
+    max_b = manifest_b.get("max_block_p99_ns")
     max_delta = None if max_a is None or max_b is None else float(max_b) - float(max_a)
     lines.append("## Max block p99 (gate statistic, ns)")
     lines.append("")
@@ -741,21 +823,41 @@ def build_report(
 
     lines.append("## Paired bootstrap over block p99 deltas")
     lines.append("")
-    lines.append(
-        f"Statistic: mean of the 5 paired block p99 deltas; point estimate "
-        f"{_fmt(point_estimate)} ns."
-    )
-    lines.append(
-        f"95% CI (percentile method, seed={bootstrap['seed']}, "
-        f"resamples={bootstrap['resamples']}, nearest-rank bounds): "
-        f"[{_fmt(ci_low)}, {_fmt(ci_high)}] ns."
-    )
+    if point_estimate is None or ci_low is None or ci_high is None:
+        lines.append(
+            "n/a — no block pair has p99 available on both sides, so the "
+            "paired bootstrap has no sample."
+        )
+    else:
+        lines.append(
+            f"Statistic: mean of the {len(deltas)} paired block p99 deltas; point estimate "
+            f"{_fmt(point_estimate)} ns."
+        )
+        lines.append(
+            f"95% CI (percentile method, seed={params['seed']}, "
+            f"resamples={params['resamples']}, nearest-rank bounds): "
+            f"[{_fmt(ci_low)}, {_fmt(ci_high)}] ns."
+        )
     lines.append(
         "Interpretation: the interval is descriptive evidence only; native "
         "adoption gates remain governed by the accepted decision record."
     )
     lines.append("")
     return "\n".join(lines)
+
+
+def _block_field_aggregates(
+    blocks: list[dict[str, Any]], field: str
+) -> tuple[float | None, float | None, float | None]:
+    """Return (mean, min, max) over available numeric values of one field.
+
+    Blocks whose value is null (inconclusive) are skipped; aggregates are
+    n/a when no block carries an available value.
+    """
+    values = [float(block[field]) for block in blocks if block.get(field) is not None]
+    if not values:
+        return None, None, None
+    return statistics.fmean(values), min(values), max(values)
 
 
 # ---------------------------------------------------------------------------
