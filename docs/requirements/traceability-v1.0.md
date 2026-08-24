@@ -1,6 +1,6 @@
 # LumenPlot v1.0 requirement traceability
 
-- Status: pre-alpha publication; Phase-1A/B, bounded Phase-2A/2B implementation/local contract evidence, and the Phase-3A2 private-helper one-wheel build with same-wheel CPython 3.11–3.14 runtime evidence exist, while the Phase-3B first strict-slice implementation (public strict-mode Matplotlib backend over the private whole-frame render seam, with local contract-test evidence) exists — hybrid-explicit fallback, the entry-point manifest, and packaged public-backend evidence remain pending — and no full-v1 product, benchmark, support, or release completion is claimed.
+- Status: pre-alpha publication; Phase-1A/B, bounded Phase-2A/2B implementation/local contract evidence, and the Phase-3A2 private-helper one-wheel build with same-wheel CPython 3.11–3.14 runtime evidence exist, while the Phase-3B first strict-slice implementation (public strict-mode Matplotlib backend over the private whole-frame render seam, with local contract-test evidence) exists and the merged hybrid-explicit fallback slice plus its strict-style fixture reconciliation add bounded local contract-test evidence (PRs #26/#28/#29/#32) — profile selection, adapter authority/revision fixtures, the full strict error-fixture set, mixed vector/raster output, packaged public-backend runtime evidence, benchmark, support, or release completion remain pending and are claimed for nothing.
 - Source of truth: `docs/requirements/lumenplot-v1.0.md` and its Appendix A coverage matrix.
 - This document maps every stable requirement entry to an evidence type and records the current result separately from its target. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md), its narrow [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) amendment, and the updated [API 0001](../architecture/api-0001-native-scene-state.md)/[API 0002](../architecture/api-0002-errors-capabilities-fallback.md) record the accepted Phase-1 native core/facade contract; [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and PNG contract; [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) records the staged Phase-3A hidden facade/private helper contract. They do not change any product result below.
 
@@ -9,6 +9,7 @@
 | Result | Meaning |
 | --- | --- |
 | `Not implemented` | The full requirement has not been closed by product implementation evidence in this bundle; a bounded Phase-1 slice may exist without closing the row. |
+| `Implemented (bounded Phase-3B local contract evidence: ...)` | The bounded Phase-3B behavior is exercised by the named merged test classes in this repository; the full requirement, platform matrix, and any release claim stay open. |
 | `Not measured` | A benchmark or numeric target has no product measurement in this bundle. |
 | `environment required` | Platform, GPU, driver, display, or present evidence requires a declared test environment; it is not inferred from source research. |
 | `Reference only` | A candidate technology or dated version is not a support claim or dependency pin. |
@@ -46,7 +47,7 @@ or `environment required` results.
 | Phase-1 engine error ownership and mapping | [API 0002](../architecture/api-0002-errors-capabilities-fallback.md) | Accepted contract; Phase-1 mapping/local failure evidence recorded |
 | Phase-2A/2B private line frame and deterministic PNG | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) | Accepted amendment; bounded implementation and local evidence recorded; full-v1 export pending |
 | Phase-3A hidden facade and private Python helper | [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) + [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) | Accepted staged contract; Phase-3A2 private-helper one-wheel build and same-wheel CPython 3.11–3.14 runtime evidence recorded in CI-local evidence; public adapter/package surface and Phase-3B public Matplotlib contract open |
-| Phase-3B public Matplotlib backend first slice | [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) + [API 0005](../architecture/api-0005-phase3b-public-matplotlib-backend-surface.md) | Accepted contract; first strict-slice implementation merged (private `render_frame_png` whole-frame seam, public strict-mode `lumenplot_mpl.backend`, local contract and entry-point-discovery test evidence); hybrid-explicit fallback, entry-point manifest, and packaged public-backend evidence pending |
+| Phase-3B public Matplotlib backend first slice | [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) + [API 0005](../architecture/api-0005-phase3b-public-matplotlib-backend-surface.md) | Accepted contract; first strict-slice implementation merged (private `render_frame_png` whole-frame seam, public strict-mode `lumenplot_mpl.backend`, local contract and entry-point-discovery test evidence); PR #32 adds the hybrid-explicit whole-frame fallback slice, terminal-failure guards, entry-point manifest, wheel/entry-point evidence job, and reconciled strict-style fixtures as local contract-test evidence; profile-selection, authority/revision, full error-fixture, mixed-output, and packaged public-backend runtime evidence remain pending |
 
 ## Coverage summary
 
@@ -175,13 +176,13 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-TEXT-006` | `MUST NOT` | PDF structural negative test | 2 | v1 | `AT-EXPORT-PDF-VECTOR` | Not implemented |
 | `LP-TEXT-007` | `SHOULD` | reproducibility manifest | 2 | v1 quality | `AT-SEC-FONTS` | Not implemented |
 | `LP-MPL-001` | `MUST` | package and DAG review | 1-2 | v1 | `AT-MPL-LOADER`, `AT-REVIEW-CORE-DAG` | Not implemented |
-| `LP-MPL-002` | `MUST` | loader and packaging smoke tests | 1-2 | v1 | `AT-MPL-LOADER` | Not implemented |
+| `LP-MPL-002` | `MUST` | loader and packaging smoke tests | 1-2 | v1 | `AT-MPL-LOADER` | Implemented (bounded Phase-3B local contract evidence: PRs #26/#28/#29/#32; `EntryPointDiscoveryTests`, `DeclaredIdentityConstantsTests`, `TestModuleSurface`) |
 | `LP-MPL-003` | `MUST` | profile selection tests | 1-2 | v1 | `AT-MPL-PROFILES` | Not implemented |
 | `LP-MPL-004` | `MUST` | authority and revision tests | 1-2 | v1 | `AT-MPL-AUTHORITY` | Not implemented |
 | `LP-MPL-005` | `MUST` | native authority tests | 1 | v1 | `AT-SEM-STATE-REVISION` | Not implemented |
 | `LP-MPL-006` | `MUST` | error fixtures | 1-2 | v1 | `AT-MPL-FALLBACK` | Not implemented |
-| `LP-MPL-007` | `MUST` | fallback fixture | 1-2 | v1 | `AT-MPL-FALLBACK` | Not implemented |
-| `LP-MPL-008` | `MUST` | diagnostic schema and golden tests | 1-2 | v1 | `AT-MPL-FALLBACK` | Not implemented |
+| `LP-MPL-007` | `MUST` | fallback fixture | 1-2 | v1 | `AT-MPL-FALLBACK` | Implemented (bounded Phase-3B local contract evidence: PR #32; `TestHybridFallback`, `TestHybridTerminalFailures`) |
+| `LP-MPL-008` | `MUST` | diagnostic schema and golden tests | 1-2 | v1 | `AT-MPL-FALLBACK` | Implemented (bounded Phase-3B local contract evidence: PR #32; `TestHybridFallback`, `TestHybridTerminalFailures`; schema fields also covered by strict-mode oracle classes) |
 | `LP-MPL-009` | `MUST` | mixed-output structural test | 2 | v1 | `AT-EXPORT-FALLBACK` | Not implemented |
 | `LP-MPL-010` | `SHOULD` | mapped-adapter review | 2 | v1 quality | `AT-MPL-FALLBACK` | Not implemented |
 | `LP-MPL-011` | `MUST NOT` | separated benchmark claims | 1-3 | v1 | `AT-BENCH-PROFILE-SEPARATION` | Not measured (environment required where hardware or GPU is involved) |
@@ -363,13 +364,13 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-TEXT-005` | `MUST` | `AT-EXPORT-PDF-TEXT` | Not implemented |
 | `LP-TEXT-006` | `MUST NOT` | `AT-EXPORT-PDF-VECTOR` | Not implemented |
 | `LP-MPL-001` | `MUST` | `AT-MPL-LOADER`, `AT-REVIEW-CORE-DAG` | Not implemented |
-| `LP-MPL-002` | `MUST` | `AT-MPL-LOADER` | Not implemented |
+| `LP-MPL-002` | `MUST` | `AT-MPL-LOADER` | Implemented (bounded Phase-3B local contract evidence: PRs #26/#28/#29/#32; `EntryPointDiscoveryTests`, `DeclaredIdentityConstantsTests`, `TestModuleSurface`) |
 | `LP-MPL-003` | `MUST` | `AT-MPL-PROFILES` | Not implemented |
 | `LP-MPL-004` | `MUST` | `AT-MPL-AUTHORITY` | Not implemented |
 | `LP-MPL-005` | `MUST` | `AT-SEM-STATE-REVISION` | Not implemented |
 | `LP-MPL-006` | `MUST` | `AT-MPL-FALLBACK` | Not implemented |
-| `LP-MPL-007` | `MUST` | `AT-MPL-FALLBACK` | Not implemented |
-| `LP-MPL-008` | `MUST` | `AT-MPL-FALLBACK` | Not implemented |
+| `LP-MPL-007` | `MUST` | `AT-MPL-FALLBACK` | Implemented (bounded Phase-3B local contract evidence: PR #32; `TestHybridFallback`, `TestHybridTerminalFailures`) |
+| `LP-MPL-008` | `MUST` | `AT-MPL-FALLBACK` | Implemented (bounded Phase-3B local contract evidence: PR #32; `TestHybridFallback`, `TestHybridTerminalFailures`; schema fields also covered by strict-mode oracle classes) |
 | `LP-MPL-009` | `MUST` | `AT-EXPORT-FALLBACK` | Not implemented |
 | `LP-MPL-011` | `MUST NOT` | `AT-BENCH-PROFILE-SEPARATION` | Not measured (environment required where hardware or GPU is involved) |
 | `LP-MPL-013` | `MUST` | `AT-LIFE-FFI`, `AT-BENCH-PROFILE-SEPARATION` | Not measured (environment required where hardware or GPU is involved) |
@@ -449,7 +450,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-EXPORT` | PNG/PDF blockers, SVG non-blocking path, state snapshots, and fallback scope | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the private line/PNG boundary and its bounded implementation/local evidence; full-v1 export, state, vector, and fallback evidence remain pending. |
 | `LP-FUNC` | native functional interaction, annotations, viewer, and optional capability scope | Phase-1 view/scale implementation and local evidence are recorded in [API 0001](../architecture/api-0001-native-scene-state.md); interaction, annotations, viewer, and v1 evidence remain pending. |
 | `LP-LOD` | MonotonicX dyadic extrema and ArbitraryXY correctness/culling | Phase-1 selection implementation and local evidence are recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); v1 correctness/performance evidence remains pending. |
-| `LP-MPL` | loader, profiles, authority, fallback diagnostics, FFI, and separated performance claims | Phase-1 public error mapping is recorded in [API 0002](../architecture/api-0002-errors-capabilities-fallback.md); [API 0003](../architecture/api-0003-python-numpy-matplotlib.md), [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md), and [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) record the staged Phase-3A helper and Phase-3A2 pinned wheel/evidence boundaries; the Phase-3A2 private-helper one-wheel build and same-wheel CPython 3.11–3.14 runtime evidence exist as CI-local evidence; the Phase-3B first strict slice (whole-frame seam plus public strict-mode backend) is merged with local contract-test evidence, while hybrid-explicit fallback, the entry-point manifest, and packaged public-backend evidence remain open. |
+| `LP-MPL` | loader, profiles, authority, fallback diagnostics, FFI, and separated performance claims | Phase-1 public error mapping is recorded in [API 0002](../architecture/api-0002-errors-capabilities-fallback.md); [API 0003](../architecture/api-0003-python-numpy-matplotlib.md), [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md), and [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) record the staged Phase-3A helper and Phase-3A2 pinned wheel/evidence boundaries; the Phase-3A2 private-helper one-wheel build and same-wheel CPython 3.11–3.14 runtime evidence exist as CI-local evidence; the Phase-3B first strict slice (whole-frame seam plus public strict-mode backend) is merged with local contract-test evidence, PRs #26/#28/#29 add the entry-point manifest, the standing Python contract gate, and the wheel/entry-point evidence job (green on `main`), and PR #32 adds hybrid-explicit whole-frame fallback with terminal-failure guards and reconciled strict-style fixtures; loader/packaging identity (`LP-MPL-002`) and the fallback-fixture/diagnostic-schema rows (`LP-MPL-007`/`LP-MPL-008`) now carry bounded implemented results naming their merged test classes, while profile selection, adapter authority/revision fixtures, the full strict error-fixture set, mixed vector/raster output, packaged public-backend runtime evidence, and all benchmark claims remain open. |
 | `LP-PERF` | 10M native gate, workload fixtures, warm-up, segments, quantiles, and manifests | Pending implementation and evidence; no completion is claimed. |
 | `LP-PLAT` | capability selection, main-thread runtime, surfaces, device loss, and platform matrix | Pending implementation and evidence; no completion is claimed. |
 | `LP-PROD` | product independence, shared semantic frame, and core dependency direction | Phase-1 native core/facade implementation and local evidence are recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); the shared v1 frame and product evidence remain pending. |
