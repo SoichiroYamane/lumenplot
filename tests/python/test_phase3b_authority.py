@@ -9,12 +9,11 @@ Boundary of this lane (orchestrator-scoped decision, coordinated with lanes
 B/C): the Figure/Artist-authority consequences already pinned elsewhere stay
 out of scope here — fingerprint/one-shot-snapshot/writeback/DPI-restore
 families belong to a separate figure-authority fixture lane that has not
-landed yet (no such test file exists on any branch at this time), and
-``test_phase3b_native_authority.py`` (merged, PR #41)
-owns the PlotScene-side seam consequences for LP-MPL-005. This module pins
-the four card-mandated REPEAT-ATTEMPT authority properties at the public
-canvas surface (:class:`lumenplot_mpl.backend.FigureCanvasLumenPlot`), none
-of which either suite covers:
+landed yet, and ``test_phase3b_native_authority.py`` (merged, PR #41) owns
+the PlotScene-side seam consequences for LP-MPL-005. This module pins the
+four card-mandated REPEAT-ATTEMPT authority properties at the public canvas
+surface (:class:`lumenplot_mpl.backend.FigureCanvasLumenPlot`), none of
+which either suite covers:
 
 1. repeated renders of an unchanged Figure emit byte-identical PNGs and
    equivalent derived frame specs (a stable derived snapshot, not drift);
@@ -35,7 +34,6 @@ of ``test_phase3b_backend.py``.
 from __future__ import annotations
 
 import copy
-import io
 import struct
 import types
 import unittest
