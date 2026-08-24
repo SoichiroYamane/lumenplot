@@ -815,12 +815,12 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         """Resolve the effective savefig DPI (API 0005 §5).
 
         ``dpi='figure'`` resolves to the figure's original DPI; ``None``
-        falls back to rcParams ``savefig.dpi`` which may itself be
-        ``'figure'``.
+        falls back to rcParams ``savefig.dpi``, which may be a number or
+        itself ``'figure'``.
         """
         if dpi is None or dpi == "figure":
             rc = matplotlib.rcParams["savefig.dpi"]
-            if dpi is None and isinstance(rc, str):
+            if dpi is None:
                 dpi = rc
         if dpi in (None, "figure"):
             return float(getattr(self.figure, "_original_dpi", self.figure.dpi))
