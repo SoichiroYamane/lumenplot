@@ -320,7 +320,7 @@ fn run_block_in_process(
     // A/B order randomization seeded from the pinned manifest seed mixed
     // with the block index; future paired fixtures consume this ordering.
     // The draw is deterministic per block and logged on the info stream.
-    let ab_seed = BOOTSTRAP_SEED.wrapping_add(u64::from(block_index) * 0x9E37_79B9_7F4A_7C15);
+    let ab_seed = ab_order_seed(block_index);
     let mut order_generator = XorShift64Star::new(ab_seed);
     let first_phase = if order_generator.next_u64().is_multiple_of(2) {
         "A"
@@ -378,6 +378,17 @@ fn build_frame_request(
         FIXTURE_DPI,
     )
     .map_err(|error| format!("fixture request rejected: {}", error.message()))
+}
+
+/// Derive the per-block A/B ordering seed from the pinned bootstrap seed and
+/// the block index.
+///
+/// Both the mix and the addition wrap on overflow (`wrapping_mul` /
+/// `wrapping_add`) so debug builds with overflow checks stay panic-free for
+/// every block index while release builds keep their historical wrapped-seed
+/// values bit-for-bit.
+fn ab_order_seed(block_index: u32) -> u64 {
+    BOOTSTRAP_SEED.wrapping_add(u64::from(block_index).wrapping_mul(0x9E37_79B9_7F4A_7C15))
 }
 
 /// Internal block-runner mode: executed as a fresh child process per block.
@@ -703,6 +714,29 @@ mod tests {
         }
         let mut zero = XorShift64Star::new(0);
         assert_ne!(zero.next_u64(), 0);
+    }
+
+    #[test]
+    fn ab_order_seed_wraps_deterministically_for_all_block_indices() {
+        // The seed mix must wrap on overflow instead of panicking under
+        // debug-profile overflow checks: a plain `*` here aborts every block
+        // with index >= 2 (the golden-ratio product exceeds u64::MAX), which
+        // is exactly how the round-1 defect reached the branch. Pinned
+        // wrapped values below are BOOTSTRAP_SEED + index * golden ratio
+        // modulo 2^64, so release-profile seeds are unchanged by design.
+        let expected: [(u32, u64); 5] = [
+            (0, 0x0000_0000_0135_27d8),
+            (1, 0x9e37_79b9_807f_a3ed),
+            (2, 0x3c6e_f372_ffca_2002),
+            (5, 0x1715_609f_7da9_9441),
+            (9, 0x8ff3_4785_7ad3_8495),
+        ];
+        for (block_index, seed) in expected {
+            assert_eq!(ab_order_seed(block_index), seed);
+        }
+        // Extreme boundary: the maximum representable block index must also
+        // stay panic-free and land on its pinned wrapped value.
+        assert_eq!(ab_order_seed(u32::MAX), 0xe113_025b_81ea_abc3);
     }
 
     #[test]
