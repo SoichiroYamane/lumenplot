@@ -9,7 +9,7 @@
 - Protocol and gate record: [ADR 0006 — support cells, benchmark protocol, and native gates](0006-support-benchmark-native-gates.md) (§O-08 protocol, §O-16 adoption gate)
 - Boundary records: [ADR 0003 — facade and crate dependency graph](0003-facade-and-crate-dag.md), [ADR 0004 — RenderPacket resource lifecycle](0004-renderpacket-resource-lifecycle.md), [ADR 0005 — runtime, viewer, and host loop](0005-runtime-viewer-host-loop.md), [ADR 0008 — portable GPU runtime and shader artifacts](0008-portable-gpu-and-shaders.md)
 - Seam predecessor: [ADR 0012 — private line frame and deterministic PNG contract](0012-private-line-frame-and-png-contract.md); the minimal synchronous frame seam this lane consumes is specified in [the post-v1 Metal fast-path design notes](../research/post-v1-metal-fastpath-design-notes.md)
-- Evidence inputs: the first executed O-08 five-block A/B bundle (strict / hybrid / accelerated profiles measured on a non-declared host, native cell refused pre-run) with its per-run manifests, raw JSONL samples, paired same-profile report, and gate-input coverage matrix
+- Evidence inputs: the first executed O-08 five-block A/B bundle (strict / hybrid / accelerated profiles measured on a non-declared host, native cell refused pre-run), stored by the measurement lane as [`artifacts/EVIDENCE.md`](../../artifacts/EVIDENCE.md) (per-profile manifests, raw JSONL samples, paired same-profile report, native refusal transcript, pooled statistics) and [`artifacts/coverage-matrix.md`](../../artifacts/coverage-matrix.md) (gate-input coverage matrix); every measured number in this record cites one of these two paths
 
 This record is a **disposition of the O-16 gate against currently existing
 evidence**, written so the architecture-authority can act on it without
@@ -56,20 +56,42 @@ executed O-08 bundle to evaluate the gate against. This record evaluates the
 gate against the first such bundle, produced on a Linux host with no GPU and
 no compositor instrumentation: three executable profiles measured for real
 (strict, hybrid, accelerated), each five fresh-process blocks of 1000
-accepted frames over raw JSONL capture, plus a native cell that refuses
-pre-run because no native render path exists in this workspace.
+accepted frames over raw JSONL capture
+([`artifacts/EVIDENCE.md`](../../artifacts/EVIDENCE.md)), plus a native cell
+that refuses pre-run because no native render path exists in this workspace.
+
+Prototype-lane legality provenance: a minimal synchronous frame seam and a
+quarantined `lumenplot-render-metal` crate behind a default-off feature flag
+exist solely as isolated measurement vehicles, authorized for this campaign
+by explicit architecture-commander instruction. The underlying legality
+question — whether a non-shipping Metal crate may exist behind such a gate
+during measurement — was left undecided at authorization time and remains
+[open question 1 of the post-v1 Metal fast-path design notes](../research/post-v1-metal-fastpath-design-notes.md#7-open-questions-reserved-for-the-architecture-authority);
+the authorization is therefore recorded here as provenance only. It is not a
+Go decision, adds no dependency to any accepted v1 crate, creates no
+`Backend::Auto` participation, and grants no shipping surface.
 
 ## Gate evaluation
 
-The O-16 Go gate, quoted verbatim as its conjuncts:
+The O-16 preamble precondition — no implementation fan-out before the
+portable baseline and the O-07/O-08 evidence pass — is not yet engaged by any
+adoption claim, because no implementation fan-out has occurred. For the
+record: the portable strict/hybrid half of the baseline was measured for
+real, but on an undeclared Linux host, and the macOS/Metal declared cell is
+environment required (native cell refused pre-run, exit code 2, zero
+artifacts — see [`artifacts/EVIDENCE.md`](../../artifacts/EVIDENCE.md) and
+[`artifacts/coverage-matrix.md`](../../artifacts/coverage-matrix.md)).
 
-| # | Gate conjunct | Threshold | Disposition |
-| --- | --- | --- | --- |
-| 1 | Portable baseline pass + O-07/O-08 evidence pass on declared hardware | — | **Not met** — the portable strict/hybrid baseline measured successfully, but on an undeclared Linux host; the macOS/Metal declared cell is environment required (native cell refused pre-run, exit 2, zero artifacts) |
-| 2 | Median end-to-end improvement ≥15% | two representative vendor cells | **Unmeasurable** — requires a native B side on two declared cells; none exists |
-| 3 | p99 end-to-end improvement ≥15% | three fresh-process comparisons | **Unmeasurable** — same reason |
-| 4 | No p99 regression >5% on any declared cell | regression bound | **Unmeasurable** — same reason |
-| 5 | No unexplained memory amplification >10% | memory bound | **Unmeasurable** — additionally, the current runner has no RSS instrumentation lane at all |
+The five Go conjuncts, quoted verbatim, each with its disposition against
+that bundle:
+
+| # | Gate conjunct (verbatim from ADR 0006 §O-16) | Disposition |
+| --- | --- | --- |
+| 1 | correctness, security, lifecycle, and license review passes | **Not yet applicable** — no native implementation exists in this workspace to review |
+| 2 | at least 15% median and p99 end-to-end improvement on at least two representative vendor cells | **Unmeasurable** — requires a native side measured on two declared vendor cells; none exists, and the second-vendor-cell question is an open ruling |
+| 3 | the improvement is observed across at least three fresh-process comparisons | **Unmeasurable** — no native side exists to compare |
+| 4 | no p99 regression greater than 5% on any declared cell | **Unmeasurable** — no native side exists to compare |
+| 5 | no unexplained memory amplification greater than 10% | **Unmeasurable** — additionally, no current runner provides a memory (RSS) instrumentation lane ([`artifacts/coverage-matrix.md`](../../artifacts/coverage-matrix.md), gate input 5) |
 
 Consequence clauses that bind regardless of numbers: a critical
 correctness/security/lifecycle failure quarantines the native path
@@ -90,16 +112,24 @@ bundle; per O-08 they are never pooled across profiles into one performance
 claim, and they are not comparable accept-to-present claims because the
 accelerated seam has no present step yet:
 
+Source for every value below:
+[`artifacts/EVIDENCE.md`](../../artifacts/EVIDENCE.md) (pooled descriptive
+statistics and the native refusal transcript), cross-checked against the
+gate-input rows of
+[`artifacts/coverage-matrix.md`](../../artifacts/coverage-matrix.md).
+
 | Profile | pooled p50 | pooled p95 | pooled p99 | status |
 | --- | --- | --- | --- | --- |
-| strict | 22.015 ms | 23.030 ms | 24.256 ms | measured, inconclusive (no gpu/queue/scanout instrumentation on host) |
-| hybrid | 22.236 ms | 23.605 ms | 24.710 ms | measured, inconclusive (same reasons; drives the same implemented facade path as strict) |
-| accelerated | 0.145 ms | 0.151 ms | 0.163 ms | measured, inconclusive (seam resolve cost only; no present step) |
-| native | — | — | — | refused pre-run, exit 2, no manifest or samples written |
+| strict | 22.015 ms | 23.030 ms | 24.256 ms | measured, inconclusive (no gpu/queue/scanout instrumentation on host) — `artifacts/EVIDENCE.md` |
+| hybrid | 22.236 ms | 23.605 ms | 24.710 ms | measured, inconclusive (same reasons; drives the same implemented facade path as strict) — `artifacts/EVIDENCE.md` |
+| accelerated | 0.145 ms | 0.151 ms | 0.163 ms | measured, inconclusive (seam resolve cost only; no present step) — `artifacts/EVIDENCE.md` |
+| native | — | — | — | refused pre-run, exit 2, no manifest or samples written — `artifacts/EVIDENCE.md`, `artifacts/coverage-matrix.md` |
 
 The ~150x gap between accelerated and strict is expected and correctly
 labelled: packet construction plus scene resolution versus the full facade
 render path. It predicts nothing about an accept-to-present A/B outcome.
+(Both observations are recorded in
+[`artifacts/EVIDENCE.md`](../../artifacts/EVIDENCE.md).)
 
 ### Honesty rule for the native cell
 
@@ -110,7 +140,11 @@ unexecutable cell is refusal before any output directory or child process
 exists — stderr reason, exit code 2, zero artifacts. Emitting a synthetic
 "inconclusive" native manifest would require either fabricated frame counts
 or a schema-invalid document; both are forbidden. The refusal behavior is
-unit-tested alongside the profile availability matrix.
+unit-tested alongside the profile availability matrix. The schema constraint
+and the refusal transcript are recorded in
+[`artifacts/EVIDENCE.md`](../../artifacts/EVIDENCE.md), and the covering
+unit tests are named in
+[`artifacts/coverage-matrix.md`](../../artifacts/coverage-matrix.md).
 
 ## Alternatives considered
 
@@ -149,11 +183,17 @@ unit-tested alongside the profile availability matrix.
 ## Verification and evidence boundary
 
 Required artifacts referenced by this record, all produced by the
-measurement lane and stored with it: per-profile target-cell/environment
-provenance manifests, raw per-frame JSONL samples, the R2 analysis tool's
-validation reports, a same-profile paired A/B report, a cross-profile
-comparison refusal transcript, the native pre-run refusal transcript, and
-the per-conjunct coverage matrix mapping each gate input to its artifact.
+measurement lane and stored in-tree with it, are the two evidence documents
+cited throughout: [`artifacts/EVIDENCE.md`](../../artifacts/EVIDENCE.md) —
+the profile x status matrix, the native refusal transcript, the pooled
+statistics quoted above, the R2 tooling behaviors (manifest validation,
+cross-profile comparison refusal, same-profile paired A/B, per-clock
+quantiles), and per-run environment provenance — and
+[`artifacts/coverage-matrix.md`](../../artifacts/coverage-matrix.md) — the
+per-conjunct map from each O-16 gate input to its evidence artifact and its
+measurability verdict on this host. The underlying per-run manifests and raw
+JSONL samples referenced by those two documents remain stored with the
+measurement lane itself.
 None of these artifacts closes a traceability row by itself: results remain
 `Not measured` / `environment required` in the
 [traceability registry](../requirements/traceability-v1.0.md) until the
@@ -175,6 +215,8 @@ declared-hardware evidence pass exists.
 ## Related records
 
 - [ADR index](README.md)
+- [O-08 evidence bundle summary — `artifacts/EVIDENCE.md`](../../artifacts/EVIDENCE.md)
+- [O-16 gate-input coverage matrix — `artifacts/coverage-matrix.md`](../../artifacts/coverage-matrix.md)
 - [ADR 0002 — GPU-native engine and Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - [ADR 0006 — support, benchmark, and native gates](0006-support-benchmark-native-gates.md)
 - [O-16 open-decision entry](../architecture/open-decisions.md#o-16-native-backend-adoption-and-retirement-gates)
