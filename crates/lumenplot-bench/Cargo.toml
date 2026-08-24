@@ -7,5 +7,16 @@ license.workspace = true
 repository.workspace = true
 readme.workspace = true
 
+# The accelerated profile drives the accepted M1 frame seam directly
+# (`SceneHandle::resolve_frame`), so the bench crate carries internal
+# workspace edges to the facade (strict/hybrid PNG path) and to the two
+# crates whose types the seam consumer needs by name:
+# `lumenplot-engine::bridge::{SrgbRgba8, Viewport}` for seam arguments and
+# `lumenplot-render-api` itself for `SceneHandle`/`FrameSpec`. No registry
+# dependency is added; the external inventory stays empty and the
+# architecture/dependency checkers pin this exact table while their bench
+# sentinels are active (fail-closed).
 [dependencies]
 lumenplot = { path = "../lumenplot", version = "0.1.0" }
+lumenplot-engine = { path = "../lumenplot-engine", version = "0.1.0" }
+lumenplot-render-api = { path = "../lumenplot-render-api", version = "0.1.0" }

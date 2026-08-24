@@ -299,7 +299,7 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
 
 EXPECTED_WORKSPACE_DEPENDENCIES = {
     "lumenplot": {"lumenplot-engine", "lumenplot-export"},
-    "lumenplot-bench": {"lumenplot"},
+    "lumenplot-bench": {"lumenplot", "lumenplot-engine", "lumenplot-render-api"},
     "lumenplot-engine": set(),
     "lumenplot-export": {"lumenplot-engine", "png", "tiny-skia"},
     "lumenplot-python": {"lumenplot", "numpy", "png", "pyo3", "tiny-skia"},

@@ -559,7 +559,7 @@ EXPECTED_EDGES = {
     "lumenplot-runtime": {"lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
     "lumenplot-python": {"lumenplot"},
-    "lumenplot-bench": {"lumenplot"},
+    "lumenplot-bench": {"lumenplot", "lumenplot-engine", "lumenplot-render-api"},
 }
 EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES = {
     "tiny-skia": {
@@ -3182,6 +3182,71 @@ def _bench_activation_reason(root: Path) -> str | None:
     return None
 
 
+def _render_api_activation_reason(root: Path) -> str | None:
+    """Return why the render-api seam static contract activates for *root*.
+
+    The sentinel mirrors the Phase-3A2/3B and bench precedents: the M1 frame
+    seam allowance activates only while the crate carries Rust source beyond
+    the documentation-only Phase-0 stub (`src/frame.rs` today), and it stays
+    fail-closed in both directions.  Removing that source reactivates the
+    plain stub rules unchanged.
+    """
+
+    source_dir = root / "crates" / "lumenplot-render-api" / "src"
+    if any(path.suffix == ".rs" for path in source_dir.glob("*.rs") if path.name != "lib.rs"):
+        return "crates/lumenplot-render-api/src/*.rs beyond src/lib.rs"
+    return None
+
+
+RENDER_API_FORBIDDEN_CODE_PATTERNS = (
+    FORBIDDEN_CODE_PATTERNS[0],
+    FORBIDDEN_CODE_PATTERNS[1],
+    (
+        "concrete frontend/backend code",
+        re.compile(
+            r"\b(?:wgpu|winit|window|surface|device|python|matplotlib|numpy|pyo3"
+            r"|metal|mtl|objc2)\b",
+            re.I,
+        ),
+    ),
+)
+
+
+def _check_render_api_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the M1 frame-seam contract while the sentinel is active.
+
+    The accepted seam keeps the boundary backend-agnostic: real source in
+    this crate must stay free of unsafe code, serialization vocabulary, and
+    every concrete frontend/backend name — including whole-word Metal naming,
+    which the generic Phase-0 pattern set does not cover.  Unlike the stub
+    rules, public items in `src/lib.rs` are expected once the seam activates
+    (the re-export surface *is* the seam); `#[no_mangle]`/`#[export_name]`
+    stay banned so the crate never grows an exported ABI.
+    """
+
+    lib_path = package_dir / "src" / "lib.rs"
+    try:
+        lib_source = lib_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        errors.append(f"package lumenplot-render-api: cannot read {_logical_path(lib_path, root)}")
+        return
+    code = _strip_rust_comments_and_literals(lib_source)
+    if NO_MANGLE_RE.search(code):
+        errors.append("package lumenplot-render-api: exported ABI is not allowed")
+    for module_path in sorted((package_dir / "src").rglob("*.rs")):
+        try:
+            module_source = module_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            errors.append(
+                f"package lumenplot-render-api: cannot read {_logical_path(module_path, root)}"
+            )
+            continue
+        module_code = _strip_rust_comments_and_literals(module_source)
+        for label, pattern in RENDER_API_FORBIDDEN_CODE_PATTERNS:
+            if pattern.search(module_code):
+                errors.append(f"package lumenplot-render-api: {label} is not allowed")
+
+
 def _metal_activation_reason(root: Path) -> str | None:
     """Return why the B2-P Metal-lane static contract activates, or None.
 
@@ -4216,6 +4281,11 @@ def _check_package_source(
         _check_python_bridge_source(package_dir, root, errors)
     elif package_name == "lumenplot-bench" and _bench_activation_reason(root) is not None:
         _check_bench_source(package_dir, root, errors)
+    elif (
+        package_name == "lumenplot-render-api"
+        and _render_api_activation_reason(root) is not None
+    ):
+        _check_render_api_source(package_dir, root, errors)
     elif package_name == "lumenplot-render-metal" and _metal_activation_reason(root) is not None:
         _check_metal_source(package_dir, root, errors)
     else:

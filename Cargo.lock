@@ -113,6 +113,8 @@ name = "lumenplot-bench"
 version = "0.1.0"
 dependencies = [
  "lumenplot",
+ "lumenplot-engine",
+ "lumenplot-render-api",
 ]
 
 [[package]]

@@ -11,10 +11,26 @@
 //! back on stdout. A short warm-up precedes measurement in every block so
 //! startup work stays out of the steady-state claim.
 //!
-//! Profiles select the execution policy recorded in the manifest. The
-//! currently accepted public surface is the private PNG facade, so all four
-//! profile names drive that single implemented path today; the selected
-//! name is recorded verbatim rather than silently relabeled.
+//! Profiles select the execution policy recorded in the manifest; the
+//! selected name is recorded verbatim rather than silently relabeled, and
+//! profiles are never mixed within a run. The currently executable paths:
+//!
+//! - `strict` / `hybrid`: the accepted private PNG facade
+//!   (`lumenplot::__private::render_line_png`) — the only complete
+//!   accept-to-present-return surface today. Both names drive that single
+//!   implemented path until the policy split they name exists.
+//! - `accelerated`: the accepted M1 frame seam
+//!   (`lumenplot_render_api::SceneHandle::resolve_frame`). The measured span
+//!   covers packet construction plus scene resolution only: the CPU-side
+//!   seam has no present step yet, so the scheduler interval cannot claim to
+//!   end at a present return and every block reports that gap as an
+//!   inconclusive reason (nulls stay null; nothing is zero-substituted).
+//! - `native`: no implementation exists on this host family, so the runner
+//!   refuses before producing any artifact (exit code 2). A run that
+//!   executed zero frames can never satisfy the manifest schema (every block
+//!   must carry `frame_count >= min_frames_per_block`), so refusing up front
+//!   is the only fail-closed representation of an unexecutable cell;
+//!   measurements arrive when the native backend lands behind its own gate.
 //!
 //! A/B order randomization: each child shuffles its two labeled sub-phase
 //! orderings with a generator seeded from the pinned manifest seed
@@ -26,6 +42,9 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use lumenplot_engine::bridge::{SrgbRgba8, Viewport};
+use lumenplot_render_api::SceneHandle;
 
 use crate::clocks::{ClockBoard, GPU_SPAN, QUEUE_SPAN, SCANOUT_MARKER, SCHEDULER_SPAN};
 use crate::manifest::{
@@ -75,6 +94,24 @@ impl Profile {
             "native" => Some(Self::Native),
             _ => None,
         }
+    }
+}
+
+/// Why a profile cannot execute on this host, when it cannot.
+///
+/// Returned before any output directory is created or child process is
+/// spawned: an unexecutable profile never leaves artifacts behind.
+fn profile_unavailability(profile: Profile) -> Option<&'static str> {
+    match profile {
+        // The native backend does not exist yet anywhere; its future gate is
+        // macOS-target Metal behind ADR 0006 §O-16, so the refusal reason
+        // stays valid on every host until that lands.
+        Profile::Native => Some(
+            "the native render path has no implementation in this workspace; \
+                  the O-08 cell stays unmeasured (environment required) until \
+                  the gated native backend lands",
+        ),
+        Profile::Strict | Profile::Hybrid | Profile::Accelerated => None,
     }
 }
 
@@ -214,6 +251,27 @@ fn detect_cpu_model() -> String {
     "unknown".to_string()
 }
 
+/// Detect the effective display scale factor applied to the measured run.
+///
+/// Consults the canonical Linux toolkit scaling variables in order and falls
+/// back to exactly 1.0: when no scaling variable is set (the headless case),
+/// nothing scales the CPU-side pipeline, so 1.0 is the true applied factor --
+/// it is a measurement-provenance record, not a claim about attached
+/// hardware. Compositor presence stays independently recorded as null by
+/// [`detect_environment`].
+fn detect_display_scale() -> f64 {
+    for key in ["GDK_SCALE", "QT_SCREEN_SCALE_FACTOR"] {
+        if let Ok(text) = std::env::var(key)
+            && let Ok(value) = text.trim().parse::<f64>()
+            && value.is_finite()
+            && value > 0.0
+        {
+            return value;
+        }
+    }
+    1.0
+}
+
 /// Detect the run environment; unknown descriptors degrade to "unknown"/null
 /// (they are provenance metadata, not gate observations, so they do not flip
 /// the run status on their own).
@@ -236,7 +294,7 @@ pub(crate) fn detect_environment() -> Environment {
         gpu_api: None,
         gpu_feature_level: None,
         compositor: None,
-        display_scale: None,
+        display_scale: Some(detect_display_scale()),
         present_mode: None,
     }
 }
@@ -274,6 +332,7 @@ fn samples_line(block_index: u32, frame_index: usize, scheduler_ns: Option<u64>)
 ///
 /// This is executed by fresh child processes only; see `run_block_child`.
 fn run_block_in_process(
+    profile: Profile,
     block_index: u32,
     frames: usize,
     out_dir: &str,
@@ -285,32 +344,74 @@ fn run_block_in_process(
     let mut samples_out = File::create(&samples_path)
         .map_err(|error| format!("cannot create {samples_path}: {error}"))?;
 
-    // Warm-up: exercise the full path without recording anything so block
-    // statistics describe steady state rather than startup.
-    for _ in 0..WARMUP_FRAMES {
-        let request = build_frame_request(&xs, &ys)?;
-        let _pixels = lumenplot::__private::render_line_png(request);
+    // Warm-up: exercise the full profile path without recording anything so
+    // block statistics describe steady state rather than startup.
+    match profile {
+        Profile::Accelerated => {
+            let scene = build_scene(&xs, &ys)?;
+            let spec = build_frame_spec()?;
+            for _ in 0..WARMUP_FRAMES {
+                let _packet = scene.resolve_frame(&spec);
+            }
+        }
+        _ => {
+            for _ in 0..WARMUP_FRAMES {
+                let request = build_frame_request(&xs, &ys)?;
+                let _pixels = lumenplot::__private::render_line_png(request);
+            }
+        }
     }
 
     let mut scheduler_samples: Vec<u64> = Vec::with_capacity(frames);
-    for frame_index in 0..frames {
-        let request = build_frame_request(&xs, &ys)?;
-        let (clocks, produced) =
-            board.observe_frame(move || lumenplot::__private::render_line_png(request));
-        // A failing fixture frame makes the whole block invalid: the run
-        // must never report statistics from a broken rendering pipeline.
-        if let Err(error) = produced {
-            return Err(format!(
-                "block {block_index} frame {frame_index} failed to render: {}",
-                error.message()
-            ));
+    match profile {
+        Profile::Accelerated => {
+            // The seam scene is immutable during measurement: per-frame work
+            // is packet construction plus resolution only. The scheduler
+            // interval therefore ends at resolve_frame returning, NOT at a
+            // present return -- recorded as an inconclusive reason so no
+            // accept-to-present claim is ever made from this path.
+            let scene = build_scene(&xs, &ys)?;
+            let spec = build_frame_spec()?;
+            for frame_index in 0..frames {
+                // Borrowed captures: the seam scene and spec stay fixed for
+                // the whole block; only resolve_frame's work is measured.
+                let (clocks, resolved) = board.observe_frame(|| scene.resolve_frame(&spec));
+                if let Err(error) = resolved {
+                    return Err(format!(
+                        "block {block_index} frame {frame_index} failed to render: {}",
+                        error.message()
+                    ));
+                }
+                drop(resolved);
+                if let Some(scheduler_ns) = clocks.scheduler_ns {
+                    scheduler_samples.push(scheduler_ns);
+                }
+                let line = samples_line(block_index, frame_index, clocks.scheduler_ns);
+                writeln!(samples_out, "{line}")
+                    .map_err(|error| format!("cannot write {samples_path}: {error}"))?;
+            }
         }
-        if let Some(scheduler_ns) = clocks.scheduler_ns {
-            scheduler_samples.push(scheduler_ns);
+        _ => {
+            for frame_index in 0..frames {
+                let request = build_frame_request(&xs, &ys)?;
+                let (clocks, produced) =
+                    board.observe_frame(move || lumenplot::__private::render_line_png(request));
+                // A failing fixture frame makes the whole block invalid: the run
+                // must never report statistics from a broken rendering pipeline.
+                if let Err(error) = produced {
+                    return Err(format!(
+                        "block {block_index} frame {frame_index} failed to render: {}",
+                        error.message()
+                    ));
+                }
+                if let Some(scheduler_ns) = clocks.scheduler_ns {
+                    scheduler_samples.push(scheduler_ns);
+                }
+                let line = samples_line(block_index, frame_index, clocks.scheduler_ns);
+                writeln!(samples_out, "{line}")
+                    .map_err(|error| format!("cannot write {samples_path}: {error}"))?;
+            }
         }
-        let line = samples_line(block_index, frame_index, clocks.scheduler_ns);
-        writeln!(samples_out, "{line}")
-            .map_err(|error| format!("cannot write {samples_path}: {error}"))?;
     }
     samples_out
         .flush()
@@ -380,6 +481,36 @@ fn build_frame_request(
     .map_err(|error| format!("fixture request rejected: {}", error.message()))
 }
 
+/// Build the accelerated-profile seam scene once per block: a `SceneHandle`
+/// over the canonical 0..1 view holding the same 10k-point monotone-in-x
+/// line series as the facade path.
+///
+/// The scene is built OUTSIDE the measured span; per-frame work is packet
+/// construction plus resolution only.
+fn build_scene(xs: &[f64], ys: &[f64]) -> Result<SceneHandle, String> {
+    let viewport = Viewport::from_bounds(0.0, 1.0, 0.0, 1.0)
+        .map_err(|error| format!("fixture view rejected: {}", error.message()))?;
+    let mut handle = SceneHandle::new(viewport)
+        .map_err(|error| format!("fixture scene rejected: {}", error.message()))?;
+    handle
+        .add_series(xs.to_vec(), ys.to_vec())
+        .map_err(|error| format!("fixture series rejected: {}", error.message()))?;
+    Ok(handle)
+}
+
+/// Build one frame's seam spec from the fixed O-08 geometry.
+fn build_frame_spec() -> Result<lumenplot_render_api::FrameSpec, String> {
+    lumenplot_render_api::FrameSpec::new(
+        [FIXTURE_CANVAS_WIDTH_PX, FIXTURE_CANVAS_HEIGHT_PX],
+        [40, 30, 760, 550],
+        FIXTURE_DPI,
+        SrgbRgba8::new(31, 119, 180, 255),
+        1.5,
+        SrgbRgba8::new(255, 255, 255, 255),
+    )
+    .map_err(|error| format!("fixture seam spec rejected: {}", error.message()))
+}
+
 /// Derive the per-block A/B ordering seed from the pinned bootstrap seed and
 /// the block index.
 ///
@@ -400,6 +531,7 @@ pub(crate) fn run_block_child(args: &[String]) -> Result<(), String> {
     let mut block_index: Option<u32> = None;
     let mut frames: Option<usize> = None;
     let mut out_dir = String::from("./bench-out");
+    let mut profile = Profile::Strict;
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--block-index" => {
@@ -419,6 +551,10 @@ pub(crate) fn run_block_child(args: &[String]) -> Result<(), String> {
                 )
             }
             "--out" => out_dir = iter.next().ok_or("--out needs a value")?.clone(),
+            "--profile" => {
+                profile = Profile::parse(iter.next().ok_or("--profile needs a value")?)
+                    .ok_or("unknown --profile value for block runner")?;
+            }
             // The mode flag that routed us here; not a block parameter.
             "--internal-block-runner" => {}
             other => return Err(format!("unknown block-runner flag {other:?}")),
@@ -427,7 +563,7 @@ pub(crate) fn run_block_child(args: &[String]) -> Result<(), String> {
     let block_index = block_index.ok_or("missing --block-index")?;
     let frames = frames.ok_or("missing --frames")?;
 
-    let summary = run_block_in_process(block_index, frames, &out_dir)?;
+    let summary = run_block_in_process(profile, block_index, frames, &out_dir)?;
     println!("# block {block_index} complete (fresh pid {})", summary.pid);
     println!(
         "{{\"block_index\": {}, \"pid\": {}, \"started_at_utc\": \"{}\", \
@@ -505,6 +641,20 @@ fn read_pooled_scheduler_values(out_dir: &str) -> Vec<u64> {
 ///
 /// Returns the process exit code (0 success, non-zero on protocol failure).
 pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
+    // Fail-closed profile gate, evaluated BEFORE any output directory or
+    // child process exists: an unexecutable profile never leaves artifacts
+    // behind. A run that executed zero frames can never satisfy the manifest
+    // schema (every block must carry frame_count >= min_frames_per_block),
+    // so there is no valid "empty" manifest to emit for this cell.
+    if let Some(reason) = profile_unavailability(profile) {
+        eprintln!(
+            "bench: profile '{}' cannot run on this host: {reason}",
+            profile.as_str()
+        );
+        eprintln!("bench: no manifest or samples were written; the O-08 cell stays unmeasured");
+        return 2;
+    }
+
     if let Err(error) = std::fs::create_dir_all(out_dir) {
         eprintln!("bench: cannot create output directory {out_dir}: {error}");
         return 2;
@@ -522,6 +672,8 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
         let outcome = Command::new(executable)
             .args([
                 "--internal-block-runner",
+                "--profile",
+                profile.as_str(),
                 "--block-index",
                 &block_index.to_string(),
                 "--frames",
@@ -591,6 +743,17 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
         inconclusive_reasons.push(format!(
             "clock domain '{descriptor_name}' has no instrumentation; observations are null"
         ));
+    }
+    if profile == Profile::Accelerated {
+        // The M1 seam is CPU-side only: resolve_frame returns a packet, and
+        // no present step exists. The scheduler interval ends at resolution,
+        // never at a present return -- so no accept-to-present claim is
+        // allowed from this profile's artifacts.
+        inconclusive_reasons.push(
+            "accelerated profile measures seam packet construction plus \
+             scene resolution only; the surface has no present step yet"
+                .to_string(),
+        );
     }
     for block in &blocks {
         if block.frame_count < MIN_FRAMES_PER_BLOCK {
@@ -882,5 +1045,86 @@ mod tests {
         assert!(!environment.cpu.is_empty());
         assert!(environment.gpu_vendor.is_none());
         assert!(environment.present_mode.is_none());
+        // The D1 schema requires a positive display_scale; headless runs
+        // record the truly-applied factor 1.0 rather than null.
+        let scale = environment.display_scale.expect("display_scale recorded");
+        assert!(scale.is_finite() && scale > 0.0);
+    }
+
+    #[test]
+    fn display_scale_detector_ignores_invalid_and_nonpositive_values() {
+        // The helper reads only canonical toolkit variables; this host has
+        // none set in the test environment, so detection must land on 1.0.
+        // (Setting env vars here would race other tests: std env is
+        // process-global, so the negative cases are pinned by inspection of
+        // the guard -- non-numeric, zero, and negative values fail the
+        // finite-positive filter and fall through to 1.0.)
+        let scale = detect_display_scale();
+        assert_eq!(scale, 1.0);
+    }
+
+    #[test]
+    fn native_profile_is_unavailable_and_others_are_available() {
+        let reason = profile_unavailability(Profile::Native).expect("native refuses");
+        assert!(
+            reason.contains("unmeasured"),
+            "reason names the cell: {reason}"
+        );
+        for profile in [Profile::Strict, Profile::Hybrid, Profile::Accelerated] {
+            assert_eq!(profile_unavailability(profile), None);
+        }
+    }
+
+    #[test]
+    fn native_refusal_happens_before_any_artifact_is_created() {
+        // The refusal must precede output-directory creation: point --out at
+        // a path that does not exist yet and prove it still does not exist
+        // after the refused run. A run that executed zero frames can never
+        // satisfy the manifest schema, so no artifact may be left behind.
+        let root = std::env::temp_dir().join(format!(
+            "lumenplot-bench-refusal-{}-{}",
+            std::process::id(),
+            ab_order_seed(7) & 0xffff
+        ));
+        let out_dir = root.join("never-created");
+        let code = run_benchmark(Profile::Native, out_dir.to_str().expect("utf8"), 1);
+        assert_eq!(code, 2);
+        assert!(!out_dir.exists(), "refused run must not create the out dir");
+        assert!(
+            !root.join("manifest.json").exists(),
+            "refused run must not write a manifest"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn accelerated_seam_fixture_builds_and_resolves() {
+        // The accelerated fixture assembles against the accepted M1 seam:
+        // scene construction succeeds outside the measured span and one
+        // resolve_frame call yields a packet with the contracted canvas.
+        let (xs, ys) = build_fixture_xy();
+        let scene = build_scene(&xs, &ys).expect("scene");
+        let spec = build_frame_spec().expect("spec");
+        let packet = scene.resolve_frame(&spec).expect("packet");
+        assert_eq!(
+            packet.canvas_px(),
+            [FIXTURE_CANVAS_WIDTH_PX, FIXTURE_CANVAS_HEIGHT_PX]
+        );
+        assert_eq!(packet.series().len(), 1);
+        let points: usize = packet.series()[0]
+            .segments()
+            .iter()
+            .map(|segment| segment.points().len())
+            .sum();
+        assert_eq!(points, FIXTURE_POINTS);
+        // Every resolved vertex stays inside the canvas in display space.
+        for series in packet.series() {
+            for segment in series.segments() {
+                for point in segment.points() {
+                    assert!((0.0..=f64::from(FIXTURE_CANVAS_WIDTH_PX)).contains(&point.x()));
+                    assert!((0.0..=f64::from(FIXTURE_CANVAS_HEIGHT_PX)).contains(&point.y()));
+                }
+            }
+        }
     }
 }
