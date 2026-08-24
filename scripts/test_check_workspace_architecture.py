@@ -1771,6 +1771,127 @@ fn body_macro_is_below_root_scope() {
             "encode_line_frame_png has an unexpected signature",
         )
 
+
+    def add_bench_module_files(self, root: Path) -> None:
+        """Write the exact accepted bench inventory except ``src/lib.rs``."""
+
+        source_dir = root / "crates/lumenplot-bench/src"
+        bodies = {
+            "main.rs": "#![forbid(unsafe_code)]\n\nfn main() {}\n",
+            "clocks.rs": "pub(crate) fn scheduler_now_ns() -> u64 {\n    0\n}\n",
+            "manifest.rs": "pub(crate) fn emit() -> String {\n    String::new()\n}\n",
+            "runner.rs": "pub(crate) fn blocks() -> usize {\n    5\n}\n",
+        }
+        for name, body in bodies.items():
+            (source_dir / name).write_text(body, encoding="utf-8")
+
+    def write_bench_lib(self, root: Path, source: str) -> None:
+        path = root / "crates/lumenplot-bench/src/lib.rs"
+        path.write_text(source, encoding="utf-8")
+
+    def activate_bench_lane(self, root: Path) -> None:
+        self.add_bench_module_files(root)
+        self.write_bench_lib(
+            root,
+            "//! Private O-08 benchmark harness documentation stub.\n"
+            "//!\n"
+            "//! The runner lives in the binary target modules.\n",
+        )
+
+    def test_bench_stub_source_still_enforced_without_sentinel(self) -> None:
+        def mutate(root: Path) -> None:
+            self.write_bench_lib(
+                root,
+                "//! stub\n\nfn hidden() {}\n",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: source must be documentation-only",
+        )
+
+    def test_bench_active_inventory_accepts_the_exact_file_set(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.activate_bench_lane(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_bench_active_inventory_rejects_missing_module_file(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            (root / "crates/lumenplot-bench/src/clocks.rs").unlink()
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: source must contain exactly",
+        )
+
+    def test_bench_active_inventory_rejects_extra_module_file(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            path = root / "crates/lumenplot-bench/src/extra.rs"
+            path.write_text("pub(crate) fn stray() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: source must contain exactly",
+        )
+
+    def test_bench_active_inventory_rejects_nested_module_directory(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            nested = root / "crates/lumenplot-bench/src/util"
+            nested.mkdir()
+            (nested / "mod.rs").write_text("pub(crate) fn deep() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: source must contain exactly",
+        )
+
+    def test_bench_active_lib_rs_public_item_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_bench_module_files(root)
+            self.write_bench_lib(
+                root,
+                "//! stub\n\npub fn exported() {}\n",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: public item is not allowed",
+        )
+
+    def test_bench_active_dependency_edge_drift_remains_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = "[dependencies]\n"
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, marker + 'serde = "1"\n'), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external dependency 'serde' is not allowed",
+        )
+
+    def test_bench_active_dev_dependency_table_remains_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8") + '\n[dev-dependencies]\ntrybuild = "1"\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "only runtime path dependencies are allowed",
+        )
+
+
     def test_export_public_field_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-export/src/png.rs"
