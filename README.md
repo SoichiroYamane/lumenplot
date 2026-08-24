@@ -29,6 +29,101 @@ implementations are not promised to be fully compatible. A capability that is
 not implemented or verified must be reported explicitly rather than presented
 as equivalent behavior.
 
+## Getting started (pre-alpha)
+
+This section gets you from source checkout to a first rendered PNG. It is
+kept consistent with the `examples/quickstart.py` script in this
+repository, which performs the same steps and can be run directly after
+installing (`python examples/quickstart.py`); if this section and that
+example ever disagree, treat the example as the source of truth and this
+README as stale.
+
+### Prerequisites
+
+- Python 3.11–3.14 (the packaged range of `lumenplot-mpl`)
+- `numpy==2.4.6` (pinned dependency)
+- A Rust toolchain (the extension module is built from source via
+  [maturin](https://www.maturin.rs); there are no binary wheels yet)
+
+LumenPlot is **not published to PyPI**. Installation is from a clone of this
+repository only:
+
+```bash
+git clone https://github.com/SoichiroYamane/lumenplot.git
+cd lumenplot
+pip install .
+```
+
+The install builds the Rust engine locally and registers the Matplotlib
+backend entry point.
+
+### Minimal example (strict mode, the default)
+
+```python
+import matplotlib
+
+matplotlib.use("module://lumenplot_mpl.backend")  # before any figure work
+from lumenplot_mpl.backend import FigureCanvasLumenPlot
+from matplotlib import figure
+from matplotlib.lines import Line2D
+
+fig = figure.Figure(figsize=(4.0, 3.0), dpi=100)
+canvas = FigureCanvasLumenPlot(fig)
+ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+ax.axison = False         # strict mode requires axes decorations off
+ax.add_line(
+    Line2D(
+        [0.0, 2.5, 5.0, 7.5, 10.0],
+        [1.0, 3.0, 2.0, 4.0, 3.5],
+        color="red",
+        linewidth=2.0,
+        solid_capstyle="butt",
+        solid_joinstyle="miter",
+    )
+)
+ax.set_xlim(0.0, 10.0)
+ax.set_ylim(0.0, 5.0)
+fig.savefig("quickstart.png", dpi=144)
+```
+
+Notes:
+
+- The backend must be selected before any figure work (and before the stock
+  Agg backend would be picked).
+- Strict mode accepts exactly butt caps and miter joins; Matplotlib's
+  defaults (`projecting`/`round`) are rejected rather than approximated,
+  so the stroke style above is set explicitly.
+- A successful native render leaves `fig.canvas.last_diagnostics` empty.
+
+### What strict mode supports today
+
+Strict mode (default) renders supported figures through the LumenPlot engine
+and raises an explicit `LumenPlotUnsupportedError` for anything else. The
+supported surface is deliberately narrow: `Line2D` artists on linear axes
+with axes decorations off, solid (non-dashed) strokes without markers, and
+the fixed style surface shown above (`butt` cap, `miter` join). PNG output
+at the requested DPI.
+
+Hybrid mode is opt-in per figure: it attempts the same native path first and,
+only on an explicit unsupported-capability failure, falls back to the whole
+frame with Matplotlib Agg, recording a diagnostic:
+
+```python
+from lumenplot_mpl.backend import FigureCanvasLumenPlot
+
+canvas = FigureCanvasLumenPlot(fig, mode="hybrid")
+```
+
+Each render attempt republishes `fig.canvas.last_diagnostics`: a
+fallback leaves the single whole-frame diagnostic there; nothing degrades
+silently.
+
+Anything beyond this surface — other artist types, log axes, titles, ticks,
+text, markers, dashes — is out of scope for v1 and fails explicitly in
+strict mode rather than rendering approximately. The authoritative contract
+is [API-0005: Phase-3B public Matplotlib backend
+surface](docs/architecture/api-0005-phase3b-public-matplotlib-backend-surface.md).
+
 ## Goals
 
 - Establish an independent engine boundary for scientific visualization.
