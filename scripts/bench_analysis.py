@@ -112,6 +112,12 @@ class InputError(Exception):
     """Raised when an input file cannot be read or parsed."""
 
 
+# Sentinel for "key absent from its container": lets the container validators
+# tell a missing field (already reported by the required-field loops) apart
+# from an explicit JSON null (rejected by finding B).
+_ABSENT = object()
+
+
 def is_number(value: Any) -> bool:
     """Return True for real JSON numbers (bool excluded)."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -203,28 +209,51 @@ def validate_manifest(manifest: Any) -> list[str]:
         if field not in manifest:
             add(field, "required field is missing")
 
+    # Round-4 finding B: an explicit JSON null satisfies neither the
+    # required-field loop above nor the type checks (every guard reads
+    # ``value is not None and ...``), so each non-nullable field rejects
+    # null ahead of its type check. Absent fields keep reporting only
+    # "required field is missing". The D1-nullable fields -- pooled,
+    # max_block_p99_ns, inconclusive_reasons, environment.gpu,
+    # environment.compositor, environment.present_mode, clock
+    # unit/available/description, and block quantiles while inconclusive --
+    # keep accepting null.
     version = manifest.get("schema_version")
-    if version is not None and (not is_int(version) or version != SCHEMA_VERSION):
-        add("schema_version", f"expected int {SCHEMA_VERSION}, got {version!r}")
+    if "schema_version" in manifest:
+        if version is None:
+            add("schema_version", f"expected int {SCHEMA_VERSION}, got null")
+        elif not is_int(version) or version != SCHEMA_VERSION:
+            add("schema_version", f"expected int {SCHEMA_VERSION}, got {version!r}")
 
     run_id = manifest.get("run_id")
-    if run_id is not None and not is_uuid4(run_id):
-        add("run_id", f"expected a uuid4 string, got {run_id!r}")
+    if "run_id" in manifest:
+        if run_id is None:
+            add("run_id", "expected a uuid4 string, got null")
+        elif not is_uuid4(run_id):
+            add("run_id", f"expected a uuid4 string, got {run_id!r}")
 
     generated_at = manifest.get("generated_at_utc")
-    if generated_at is not None and not is_rfc3339_utc(generated_at):
-        add("generated_at_utc", f"expected an RFC3339 UTC timestamp, got {generated_at!r}")
+    if "generated_at_utc" in manifest:
+        if generated_at is None:
+            add("generated_at_utc", "expected an RFC3339 UTC timestamp, got null")
+        elif not is_rfc3339_utc(generated_at):
+            add("generated_at_utc", f"expected an RFC3339 UTC timestamp, got {generated_at!r}")
 
     profile = manifest.get("profile")
-    if profile is not None and profile not in PROFILES:
-        add("profile", f"expected one of {list(PROFILES)}, got {profile!r}")
+    if "profile" in manifest:
+        if profile is None:
+            add("profile", f"expected one of {list(PROFILES)}, got null")
+        elif profile not in PROFILES:
+            add("profile", f"expected one of {list(PROFILES)}, got {profile!r}")
 
-    _validate_fixture(manifest.get("fixture"), add)
-    _validate_environment(manifest.get("environment"), add)
-    _validate_protocol(manifest.get("protocol"), add)
-    _validate_clocks(manifest.get("clocks"), add)
+    _validate_fixture(manifest.get("fixture", _ABSENT), add)
+    _validate_environment(manifest.get("environment", _ABSENT), add)
+    _validate_protocol(manifest.get("protocol", _ABSENT), add)
+    _validate_clocks(manifest.get("clocks", _ABSENT), add)
     min_frames = _protocol_min_frames(manifest.get("protocol"))
-    _validate_blocks(manifest.get("blocks"), min_frames, add, manifest.get("status"))
+    _validate_blocks(
+        manifest.get("blocks", _ABSENT), min_frames, add, manifest.get("status")
+    )
 
     pooled = manifest.get("pooled")
     if pooled is not None and not isinstance(pooled, dict):
@@ -236,48 +265,75 @@ def validate_manifest(manifest: Any) -> list[str]:
     ):
         add("max_block_p99_ns", "expected a non-negative number or null")
 
-    _validate_status(manifest.get("status"), manifest.get("inconclusive_reasons"), add)
+    _validate_status(
+        manifest.get("status", _ABSENT), manifest.get("inconclusive_reasons"), add
+    )
     return errors
 
 
 def _validate_fixture(fixture: Any, add: Any) -> None:
+    if fixture is _ABSENT:
+        return
+    if fixture is None:
+        add("fixture", "expected a JSON object, got null")
+        return
     if not isinstance(fixture, dict):
-        if fixture is not None:
-            add("fixture", "expected a JSON object")
+        add("fixture", "expected a JSON object")
         return
     for field in REQUIRED_FIXTURE_FIELDS:
         if field not in fixture:
             add(f"fixture.{field}", "required field is missing")
-    if "id" in fixture and not is_nonempty_str(fixture["id"]):
-        add("fixture.id", "expected a non-empty string")
+    if "id" in fixture:
+        if fixture["id"] is None:
+            add("fixture.id", "expected a non-empty string, got null")
+        elif not is_nonempty_str(fixture["id"]):
+            add("fixture.id", "expected a non-empty string")
     points = fixture.get("points")
-    if points is not None and (not is_int(points) or points <= 0):
-        add("fixture.points", "expected a positive int")
+    if "points" in fixture:
+        if points is None:
+            add("fixture.points", "expected a positive int, got null")
+        elif not is_int(points) or points <= 0:
+            add("fixture.points", "expected a positive int")
     canvas = fixture.get("canvas_px")
-    if canvas is not None:
-        if not isinstance(canvas, list) or len(canvas) != 2 or not all(
+    if "canvas_px" in fixture:
+        if canvas is None:
+            add("fixture.canvas_px", "expected [width, height] positive ints, got null")
+        elif not isinstance(canvas, list) or len(canvas) != 2 or not all(
             is_int(side) and side > 0 for side in canvas
         ):
             add("fixture.canvas_px", "expected [width, height] positive ints")
     dpi = fixture.get("dpi")
-    if dpi is not None and (not is_number(dpi) or dpi <= 0):
-        add("fixture.dpi", "expected a positive number")
+    if "dpi" in fixture:
+        if dpi is None:
+            add("fixture.dpi", "expected a positive number, got null")
+        elif not is_number(dpi) or dpi <= 0:
+            add("fixture.dpi", "expected a positive number")
 
 
 def _validate_environment(environment: Any, add: Any) -> None:
+    if environment is _ABSENT:
+        return
+    if environment is None:
+        add("environment", "expected a JSON object, got null")
+        return
     if not isinstance(environment, dict):
-        if environment is not None:
-            add("environment", "expected a JSON object")
+        add("environment", "expected a JSON object")
         return
     for field in REQUIRED_ENVIRONMENT_FIELDS:
         if field not in environment:
             add(f"environment.{field}", "required field is missing")
     for field in ENV_STRING_FIELDS:
-        if field in environment and not is_nonempty_str(environment[field]):
-            add(f"environment.{field}", "expected a non-empty string")
+        if field in environment:
+            if environment[field] is None:
+                add(f"environment.{field}", "expected a non-empty string, got null")
+            elif not is_nonempty_str(environment[field]):
+                add(f"environment.{field}", "expected a non-empty string")
     scale = environment.get("display_scale")
-    if scale is not None and (not is_number(scale) or scale <= 0):
-        add("environment.display_scale", "expected a positive number")
+    if "display_scale" in environment:
+        if scale is None:
+            add("environment.display_scale", "expected a positive number, got null")
+        elif not is_number(scale) or scale <= 0:
+            add("environment.display_scale", "expected a positive number")
     for field in ("compositor", "present_mode"):
         if field in environment and environment[field] is not None and not is_nonempty_str(
             environment[field]
@@ -290,61 +346,100 @@ def _validate_environment(environment: Any, add: Any) -> None:
         add("environment.gpu", "expected a JSON object or null")
         return
     for field in GPU_FIELDS:
-        if field in gpu and not is_nonempty_str(gpu[field]):
-            add(f"environment.gpu.{field}", "expected a non-empty string")
+        if field in gpu:
+            if gpu[field] is None:
+                add(f"environment.gpu.{field}", "expected a non-empty string, got null")
+            elif not is_nonempty_str(gpu[field]):
+                add(f"environment.gpu.{field}", "expected a non-empty string")
 
 
 def _validate_protocol(protocol: Any, add: Any) -> None:
+    if protocol is _ABSENT:
+        return
+    if protocol is None:
+        add("protocol", "expected a JSON object, got null")
+        return
     if not isinstance(protocol, dict):
-        if protocol is not None:
-            add("protocol", "expected a JSON object")
+        add("protocol", "expected a JSON object")
         return
     for field in REQUIRED_PROTOCOL_FIELDS:
         if field not in protocol:
             add(f"protocol.{field}", "required field is missing")
     blocks = protocol.get("blocks")
-    if blocks is not None and (not is_int(blocks) or blocks != BLOCK_COUNT):
-        add("protocol.blocks", f"expected int {BLOCK_COUNT}, got {blocks!r}")
+    if "blocks" in protocol:
+        if blocks is None:
+            add("protocol.blocks", f"expected int {BLOCK_COUNT}, got null")
+        elif not is_int(blocks) or blocks != BLOCK_COUNT:
+            add("protocol.blocks", f"expected int {BLOCK_COUNT}, got {blocks!r}")
     min_frames = protocol.get("min_frames_per_block")
-    if min_frames is not None and (
-        not is_int(min_frames) or min_frames != MIN_FRAMES_PER_BLOCK
-    ):
-        add(
-            "protocol.min_frames_per_block",
-            f"expected int {MIN_FRAMES_PER_BLOCK}, got {min_frames!r}",
-        )
-    if protocol.get("quantile_method") not in (None, QUANTILE_METHOD):
-        add(
-            "protocol.quantile_method",
-            f"expected \"{QUANTILE_METHOD}\", got {protocol['quantile_method']!r}",
-        )
-    if protocol.get("trimming") not in (None, TRIMMING):
-        add("protocol.trimming", f"expected \"{TRIMMING}\", got {protocol['trimming']!r}")
+    if "min_frames_per_block" in protocol:
+        if min_frames is None:
+            add(
+                "protocol.min_frames_per_block",
+                f"expected int {MIN_FRAMES_PER_BLOCK}, got null",
+            )
+        elif not is_int(min_frames) or min_frames != MIN_FRAMES_PER_BLOCK:
+            add(
+                "protocol.min_frames_per_block",
+                f"expected int {MIN_FRAMES_PER_BLOCK}, got {min_frames!r}",
+            )
+    if "quantile_method" in protocol:
+        if protocol.get("quantile_method") is None:
+            add("protocol.quantile_method", f"expected \"{QUANTILE_METHOD}\", got null")
+        elif protocol["quantile_method"] != QUANTILE_METHOD:
+            add(
+                "protocol.quantile_method",
+                f"expected \"{QUANTILE_METHOD}\", got {protocol['quantile_method']!r}",
+            )
+    if "trimming" in protocol:
+        if protocol.get("trimming") is None:
+            add("protocol.trimming", f"expected \"{TRIMMING}\", got null")
+        elif protocol["trimming"] != TRIMMING:
+            add("protocol.trimming", f"expected \"{TRIMMING}\", got {protocol['trimming']!r}")
     bootstrap = protocol.get("bootstrap")
+    if "bootstrap" not in protocol:
+        return
+    if bootstrap is None:
+        add("protocol.bootstrap", "expected a JSON object, got null")
+        return
     if not isinstance(bootstrap, dict):
-        if bootstrap is not None:
-            add("protocol.bootstrap", "expected a JSON object")
+        add("protocol.bootstrap", "expected a JSON object")
         return
     for field in REQUIRED_BOOTSTRAP_FIELDS:
         if field not in bootstrap:
             add("protocol.bootstrap." + field, "required field is missing")
     resamples = bootstrap.get("resamples")
-    if resamples is not None and (not is_int(resamples) or resamples != BOOTSTRAP_RESAMPLES):
-        add(
-            "protocol.bootstrap.resamples",
-            f"expected int {BOOTSTRAP_RESAMPLES}, got {resamples!r}",
-        )
+    if "resamples" in bootstrap:
+        if resamples is None:
+            add(
+                "protocol.bootstrap.resamples",
+                f"expected int {BOOTSTRAP_RESAMPLES}, got null",
+            )
+        elif not is_int(resamples) or resamples != BOOTSTRAP_RESAMPLES:
+            add(
+                "protocol.bootstrap.resamples",
+                f"expected int {BOOTSTRAP_RESAMPLES}, got {resamples!r}",
+            )
     ci = bootstrap.get("ci")
-    if ci is not None and (not is_number(ci) or ci != BOOTSTRAP_CI):
-        add("protocol.bootstrap.ci", f"expected {BOOTSTRAP_CI}, got {ci!r}")
+    if "ci" in bootstrap:
+        if ci is None:
+            add("protocol.bootstrap.ci", f"expected {BOOTSTRAP_CI}, got null")
+        elif not is_number(ci) or ci != BOOTSTRAP_CI:
+            add("protocol.bootstrap.ci", f"expected {BOOTSTRAP_CI}, got {ci!r}")
     seed = bootstrap.get("seed")
-    if seed is not None and (not is_int(seed) or seed != BOOTSTRAP_SEED):
-        add("protocol.bootstrap.seed", f"expected int {BOOTSTRAP_SEED}, got {seed!r}")
-    if bootstrap.get("method") not in (None, BOOTSTRAP_METHOD):
-        add(
-            "protocol.bootstrap.method",
-            f"expected \"{BOOTSTRAP_METHOD}\", got {bootstrap['method']!r}",
-        )
+    if "seed" in bootstrap:
+        if seed is None:
+            add("protocol.bootstrap.seed", f"expected int {BOOTSTRAP_SEED}, got null")
+        elif not is_int(seed) or seed != BOOTSTRAP_SEED:
+            add("protocol.bootstrap.seed", f"expected int {BOOTSTRAP_SEED}, got {seed!r}")
+    if "method" in bootstrap:
+        if bootstrap.get("method") is None:
+            add("protocol.bootstrap.method", f"expected \"{BOOTSTRAP_METHOD}\", got null")
+        elif bootstrap["method"] != BOOTSTRAP_METHOD:
+            add(
+                "protocol.bootstrap.method",
+                f"expected \"{BOOTSTRAP_METHOD}\", got {bootstrap['method']!r}",
+            )
 
 
 def _protocol_min_frames(protocol: Any) -> int:
@@ -356,9 +451,13 @@ def _protocol_min_frames(protocol: Any) -> int:
 
 
 def _validate_clocks(clocks: Any, add: Any) -> None:
-    if clocks is None or not isinstance(clocks, list):
-        if clocks is not None:
-            add("clocks", "expected a non-empty JSON array")
+    if clocks is _ABSENT:
+        return
+    if clocks is None:
+        add("clocks", "expected a non-empty JSON array, got null")
+        return
+    if not isinstance(clocks, list):
+        add("clocks", "expected a non-empty JSON array")
         return
     if not clocks:
         add("clocks", "expected at least one clock entry")
@@ -371,18 +470,29 @@ def _validate_clocks(clocks: Any, add: Any) -> None:
         name = clock.get("name")
         if "name" not in clock:
             add(f"{path}.name", "required field is missing")
-        if name is not None:
-            if not is_nonempty_str(name):
-                add(f"{path}.name", "expected a non-empty string")
-            elif name in seen_names:
-                add(f"{path}.name", f"duplicate clock name {name!r}")
-            else:
-                seen_names.add(name)
+        elif name is None:
+            add(f"{path}.name", "expected a non-empty string, got null")
+        elif not is_nonempty_str(name):
+            add(f"{path}.name", "expected a non-empty string")
+        elif name in seen_names:
+            add(f"{path}.name", f"duplicate clock name {name!r}")
+        else:
+            seen_names.add(name)
         if "domain" not in clock:
             add(f"{path}.domain", "required field is missing")
-        domain = clock.get("domain")
-        if domain is not None and domain not in CLOCK_DOMAINS:
-            add(f"{path}.domain", f"expected one of {list(CLOCK_DOMAINS)}, got {domain!r}")
+            domain = None
+        else:
+            domain = clock.get("domain")
+            if domain is None:
+                add(
+                    f"{path}.domain",
+                    f"expected one of {list(CLOCK_DOMAINS)}, got null",
+                )
+            elif domain not in CLOCK_DOMAINS:
+                add(
+                    f"{path}.domain",
+                    f"expected one of {list(CLOCK_DOMAINS)}, got {domain!r}",
+                )
         if clock.get("unit") not in (None, "ns"):
             add(f"{path}.unit", f"expected \"ns\", got {clock['unit']!r}")
         available = clock.get("available")
@@ -407,9 +517,13 @@ def _validate_blocks(
     add: Any,
     status: Any = None,
 ) -> None:
+    if blocks is _ABSENT:
+        return
+    if blocks is None:
+        add("blocks", f"expected a JSON array of {BLOCK_COUNT} blocks, got null")
+        return
     if not isinstance(blocks, list):
-        if blocks is not None:
-            add("blocks", f"expected a JSON array of {BLOCK_COUNT} blocks")
+        add("blocks", f"expected a JSON array of {BLOCK_COUNT} blocks")
         return
     if len(blocks) != BLOCK_COUNT:
         add("blocks", f"expected exactly {BLOCK_COUNT} blocks, got {len(blocks)}")
@@ -419,24 +533,38 @@ def _validate_blocks(
         if not isinstance(block, dict):
             add(path, "expected a JSON object")
             continue
-        block_index = block.get("block_index")
-        if block_index is not None:
-            if not is_int(block_index):
+        # Missing required fields are reported by the REQUIRED_BLOCK_FIELDS
+        # loop below; the branches here only classify values that are
+        # present (null vs wrong-typed).
+        if "block_index" in block:
+            block_index = block["block_index"]
+            if block_index is None:
+                add(f"{path}.block_index", "expected an int, got null")
+            elif not is_int(block_index):
                 add(f"{path}.block_index", "expected an int")
             else:
                 indexes.append(block_index)
-        pid = block.get("pid")
-        if pid is not None and (not is_int(pid) or pid <= 0):
-            add(f"{path}.pid", "expected a positive int")
+        if "pid" in block:
+            pid = block["pid"]
+            if pid is None:
+                add(f"{path}.pid", "expected a positive int, got null")
+            elif not is_int(pid) or pid <= 0:
+                add(f"{path}.pid", "expected a positive int")
         started_at = block.get("started_at_utc")
-        if started_at is not None and not is_rfc3339_utc(started_at):
-            add(f"{path}.started_at_utc", f"expected an RFC3339 UTC timestamp, got {started_at!r}")
+        if "started_at_utc" in block:
+            if started_at is None:
+                add(f"{path}.started_at_utc", "expected an RFC3339 UTC timestamp, got null")
+            elif not is_rfc3339_utc(started_at):
+                add(f"{path}.started_at_utc", f"expected an RFC3339 UTC timestamp, got {started_at!r}")
         for field in REQUIRED_BLOCK_FIELDS:
             if field not in block:
                 add(f"{path}.{field}", "required field is missing")
         frame_count = block.get("frame_count")
-        if frame_count is not None and (not is_int(frame_count) or frame_count < min_frames):
-            add(f"{path}.frame_count", f"expected int >= {min_frames}, got {frame_count!r}")
+        if "frame_count" in block:
+            if frame_count is None:
+                add(f"{path}.frame_count", f"expected int >= {min_frames}, got null")
+            elif not is_int(frame_count) or frame_count < min_frames:
+                add(f"{path}.frame_count", f"expected int >= {min_frames}, got {frame_count!r}")
         quantiles: list[float] = []
         for field in ("p50_ns", "p95_ns", "p99_ns"):
             value = block.get(field)
@@ -454,8 +582,11 @@ def _validate_blocks(
         ):
             add(path, "expected p50_ns <= p95_ns <= p99_ns")
         raw_path = block.get("raw_samples_path")
-        if raw_path is not None and not is_nonempty_str(raw_path):
-            add(f"{path}.raw_samples_path", "expected a non-empty string")
+        if "raw_samples_path" in block:
+            if raw_path is None:
+                add(f"{path}.raw_samples_path", "expected a non-empty string, got null")
+            elif not is_nonempty_str(raw_path):
+                add(f"{path}.raw_samples_path", "expected a non-empty string")
     if indexes and sorted(indexes) != list(range(BLOCK_COUNT)):
         add(
             "blocks[].block_index",
@@ -464,7 +595,11 @@ def _validate_blocks(
 
 
 def _validate_status(status: Any, reasons: Any, add: Any) -> None:
-    if status is not None and status not in STATUSES:
+    if status is _ABSENT:
+        return
+    if status is None:
+        add("status", f"expected one of {list(STATUSES)}, got null")
+    elif status not in STATUSES:
         add("status", f"expected one of {list(STATUSES)}, got {status!r}")
     # inconclusive_reasons is a nullable field: null means "nothing was
     # recorded", which is acceptable only while the run is not inconclusive.

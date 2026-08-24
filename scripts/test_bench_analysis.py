@@ -479,6 +479,109 @@ class ManifestValidationTests(unittest.TestCase):
             "null quantile under a complete run must be rejected",
         )
 
+    def test_present_but_null_fields_are_rejected(self) -> None:
+        # Round-4 finding B: an explicit JSON null satisfies neither the
+        # required-field loop nor the type checks (``value is not None and
+        # ...``), so every non-nullable field must reject null ahead of its
+        # type check. Absent fields keep reporting only "required field is
+        # missing"; the D1-nullable set keeps accepting null (pinned below).
+        top_level_cases = [
+            ("schema_version", "expected int 1"),
+            ("run_id", "expected a uuid4 string"),
+            ("generated_at_utc", "expected an RFC3339 UTC timestamp"),
+            ("profile", "expected one of"),
+            ("fixture", "expected a JSON object"),
+            ("environment", "expected a JSON object"),
+            ("protocol", "expected a JSON object"),
+            ("clocks", "expected a non-empty JSON array"),
+            ("blocks", "expected a JSON array"),
+            ("status", "expected one of"),
+        ]
+        for field, expected_text in top_level_cases:
+            with self.subTest(field=field):
+                manifest = make_manifest()
+                manifest[field] = None
+                errors = self.validate(manifest)
+                self.assertTrue(
+                    any(field in error and expected_text in error for error in errors),
+                    errors,
+                )
+
+        nested_cases = [
+            (("fixture",), "points"),
+            (("fixture",), "canvas_px"),
+            (("fixture",), "dpi"),
+            (("environment",), "display_scale"),
+            (("protocol",), "blocks"),
+            (("protocol",), "min_frames_per_block"),
+            (("protocol",), "quantile_method"),
+            (("protocol",), "trimming"),
+            (("protocol",), "bootstrap"),
+            (("protocol", "bootstrap"), "resamples"),
+            (("protocol", "bootstrap"), "ci"),
+            (("protocol", "bootstrap"), "seed"),
+            (("protocol", "bootstrap"), "method"),
+        ]
+        for base, field in nested_cases:
+            with self.subTest(base=base, field=field):
+                manifest = make_manifest()
+                target = manifest
+                for key in base:
+                    target = target[key]
+                target[field] = None
+                label = ".".join((*base, field))
+                errors = self.validate(manifest)
+                self.assertTrue(
+                    any(label in error and "got null" in error for error in errors),
+                    errors,
+                )
+
+        block_scalar_fields = (
+            "block_index",
+            "pid",
+            "started_at_utc",
+            "frame_count",
+            "raw_samples_path",
+        )
+        for index, field in enumerate(block_scalar_fields):
+            with self.subTest(where=f"blocks[{index}]", field=field):
+                manifest = make_manifest()
+                manifest["blocks"][index][field] = None
+                errors = self.validate(manifest)
+                self.assertTrue(
+                    any(
+                        f"blocks[{index}].{field}" in e and "got null" in e
+                        for e in errors
+                    ),
+                    errors,
+                )
+
+        # Null quantiles stay rejected under a complete run.
+        manifest = make_manifest()
+        manifest["blocks"][2]["p99_ns"] = None
+        self.assertTrue(any("p99_ns" in e for e in self.validate(manifest)))
+
+        # Clock name/domain nulls are rejected per entry.
+        manifest = make_manifest()
+        manifest["clocks"][0]["name"] = None
+        manifest["clocks"][1]["domain"] = None
+        errors = self.validate(manifest)
+        self.assertTrue(any("clocks[0].name" in e and "got null" in e for e in errors))
+        self.assertTrue(any("clocks[1].domain" in e and "got null" in e for e in errors))
+
+    def test_absent_fields_still_report_missing_not_null(self) -> None:
+        manifest = make_manifest()
+        del manifest["fixture"]
+        del manifest["protocol"]["bootstrap"]
+        del manifest["status"]
+        del manifest["blocks"][0]["pid"]
+        errors = self.validate(manifest)
+        self.assertIn("fixture: required field is missing", errors)
+        self.assertIn("protocol.bootstrap: required field is missing", errors)
+        self.assertIn("status: required field is missing", errors)
+        self.assertIn("blocks[0].pid: required field is missing", errors)
+        self.assertFalse(any("got null" in error for error in errors), errors)
+
     def test_environment_and_fixture_shapes(self) -> None:
         manifest = make_manifest()
         manifest["environment"]["gpu"]["driver"] = ""
@@ -824,6 +927,22 @@ class CompareCommandTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn("protocol: expected a JSON object", completed.stderr)
         self.assertNotIn("TypeError", completed.stderr)
+
+    def test_null_container_manifest_exits_two_not_crash(self) -> None:
+        # Round-4 finding B, CLI level: an explicit null where --compare
+        # needs an object (protocol.bootstrap on side A feeds
+        # _bootstrap_params directly) must exit 2 via the validator, never
+        # raise TypeError.
+        manifest = make_manifest()
+        manifest["protocol"]["bootstrap"] = None
+        path_bad = write_json(self.root / "null-bootstrap.json", manifest)
+        completed = run_cli("--compare", str(path_bad), str(self.path_b))
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn(
+            "protocol.bootstrap: expected a JSON object, got null", completed.stderr
+        )
+        self.assertNotIn("TypeError", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
 
     def test_missing_input_file_exits_two(self) -> None:
         completed = run_cli(
