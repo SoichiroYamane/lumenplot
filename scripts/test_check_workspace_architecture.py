@@ -1917,6 +1917,165 @@ fn body_macro_is_below_root_scope() {
             "only runtime path dependencies are allowed",
         )
 
+    # ------------------------------------------------------------------
+    # B2-P Metal prototype lane (workstream-manager decision on task
+    # t_50138c06): quarantine crate plus activation-gated static contract.
+    # ------------------------------------------------------------------
+
+    def add_metal_module_files(self, root: Path) -> None:
+        """Write prototype-lane module files beyond the documentation-only stub."""
+
+        source_dir = root / "crates/lumenplot-render-metal/src"
+        (source_dir / "command.rs").write_text(
+            "pub(crate) fn encode() -> usize {\n    0\n}\n",
+            encoding="utf-8",
+        )
+
+    def activate_metal_lane(self, root: Path) -> None:
+        self.add_metal_module_files(root)
+
+    def strip_metal_target_dependencies(self, root: Path) -> None:
+        """Restore the plain Phase-0 stub manifest without the pinned gate."""
+
+        path = root / "crates/lumenplot-render-metal/Cargo.toml"
+        source = path.read_text(encoding="utf-8")
+        marker = '[target.\'cfg(target_os = "macos")\'.dependencies]'
+        self.assertIn(marker, source)
+        path.write_text(source[: source.index(marker)].rstrip() + "\n", encoding="utf-8")
+
+    def test_metal_stub_source_still_enforced_without_sentinel(self) -> None:
+        def mutate(root: Path) -> None:
+            self.strip_metal_target_dependencies(root)
+            path = root / "crates/lumenplot-render-metal/src/lib.rs"
+            path.write_text("//! stub\n\nfn hidden() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: source must be documentation-only",
+        )
+
+    def test_metal_active_inventory_accepts_extra_module_file(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.activate_metal_lane(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_metal_stub_rules_apply_without_pinned_edges(self) -> None:
+        def mutate(root: Path) -> None:
+            self.strip_metal_target_dependencies(root)
+            self.add_metal_module_files(root)
+
+        # The source sentinel alone does not unlock external dependencies:
+        # the exact inventory expectation still fires (fail-closed).
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: exact external dependency "
+            "inventory mismatch (missing objc2,objc2-foundation,objc2-metal)",
+        )
+
+    def test_metal_active_public_item_in_lib_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/lib.rs"
+            path.write_text("//! stub\n\npub fn exported() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: public item is not allowed in src/lib.rs",
+        )
+
+    def test_metal_active_dependency_edge_drift_remains_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = "[dependencies]\n"
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, marker + 'serde = "1"\n'), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external dependency 'serde' is not allowed",
+        )
+
+    def test_metal_pin_drift_deactivates_allowance_fail_closed(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace('=0.6.2', "=0.6.1"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "only runtime path dependencies are allowed",
+        )
+
+    def test_metal_active_wrong_specification_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace('=0.6.2', "=0.6.1"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external dependency 'objc2' has an unexpected specification",
+        )
+
+    def test_metal_active_dev_dependency_table_remains_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8") + '\n[dev-dependencies]\ntrybuild = "1"\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "only runtime path dependencies are allowed",
+        )
+
+    def test_render_api_metal_naming_pattern_semantics(self) -> None:
+        # The stub-level "documentation-only" rule short-circuits before the
+        # forbidden-code scan, so pin the scan semantics directly: once the
+        # accepted M1 seam lands in lumenplot-render-api, whole-word backend
+        # naming must stay rejected there, while substring look-alikes
+        # ("metallic", identifiers embedding the word) must not trip it.
+        import re
+
+        pattern = re.compile(r"\b(?:metal|mtl|objc2)\b", re.I)
+        # Whole-word backend naming is rejected...
+        self.assertIsNotNone(pattern.search("use objc2;"))
+        self.assertIsNotNone(pattern.search("use objc2_metal as mtl;"))
+        self.assertIsNotNone(pattern.search("// renders via Metal"))
+        # ...while substring look-alikes inside larger identifiers are not.
+        self.assertIsNone(pattern.search("fn metal_hint() {}"))
+        self.assertIsNone(pattern.search("// metallic sheen"))
+
+    def test_render_metal_to_wgpu_edge_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = "[dependencies]\n"
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(
+                    marker,
+                    marker
+                    + 'lumenplot-render-wgpu = { path = "../lumenplot-render-wgpu", version = "0.1.0" }\n',
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: dependency edge 'lumenplot-render-wgpu' is not allowed",
+        )
 
     def test_export_public_field_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
