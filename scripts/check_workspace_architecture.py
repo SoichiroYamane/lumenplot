@@ -65,6 +65,13 @@ EXPECTED_EXPORT_SOURCE_FILES = {
     "src/compositor.rs",
     "src/png.rs",
 }
+EXPECTED_BENCH_SOURCE_FILES = {
+    "src/lib.rs",
+    "src/main.rs",
+    "src/clocks.rs",
+    "src/manifest.rs",
+    "src/runner.rs",
+}
 EXPORT_TYPES = {"ExportErrorKind", "ExportError", "PngSpec"}
 EXPORT_ENUM_VARIANTS = {
     "ExportErrorKind": {
@@ -3134,6 +3141,21 @@ def _phase3b_activation_reason(root: Path) -> str | None:
     return None
 
 
+def _bench_activation_reason(root: Path) -> str | None:
+    """Return why the bench-crate static contract activates for *root*, or None.
+
+    The sentinel mirrors the Phase-3A2/3B precedent: the bench lane activates
+    only when the bench crate carries Rust source beyond the documentation-only
+    Phase-0 stub, and it stays fail-closed in both directions.  While the
+    sentinel is absent the stub rules keep applying unchanged.
+    """
+
+    source_dir = root / "crates" / "lumenplot-bench" / "src"
+    if any(path.suffix == ".rs" for path in source_dir.glob("*.rs") if path.name != "lib.rs"):
+        return "crates/lumenplot-bench/src/*.rs beyond src/lib.rs"
+    return None
+
+
 def _phase3a2_phase3b_matplotlib_forbidden(source: str) -> bool:
     """Detect pyplot-import regressions in the two phase3b-owned files."""
     return any(
@@ -4056,6 +4078,38 @@ def _check_phase3a2(
         _phase3a2_check_evidence_manifest(root, errors)
 
 
+def _check_bench_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the exact bench-crate inventory once the bench sentinel is active.
+
+    The accepted O-08 contract (ADR 0006, workstream decision D3) pins the
+    source inventory to exactly five files; missing and extra files both fail
+    closed.  `src/lib.rs` stays documentation-only with no public items so the
+    crate remains an internal bin-only harness.
+    """
+
+    source_dir = package_dir / "src"
+    rust_files = sorted(
+        path.relative_to(source_dir.parent).as_posix() for path in source_dir.rglob("*.rs")
+    )
+    if rust_files != sorted(EXPECTED_BENCH_SOURCE_FILES):
+        errors.append(
+            "package lumenplot-bench: source must contain exactly "
+            f"{', '.join(sorted(EXPECTED_BENCH_SOURCE_FILES))}"
+        )
+        return
+    lib_path = source_dir / "lib.rs"
+    try:
+        lib_source = lib_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        errors.append(f"package lumenplot-bench: cannot read {_logical_path(lib_path, root)}")
+        return
+    code = _strip_rust_comments_and_literals(lib_source)
+    if code.strip():
+        errors.append("package lumenplot-bench: src/lib.rs must remain documentation-only")
+    if PUBLIC_ITEM_RE.search(code):
+        errors.append("package lumenplot-bench: public item is not allowed in src/lib.rs")
+
+
 def _check_package_source(
     package_name: str,
     package_dir: Path,
@@ -4071,6 +4125,8 @@ def _check_package_source(
         _check_facade_source(package_dir, root, errors)
     elif package_name == "lumenplot-python" and phase3a2_active:
         _check_python_bridge_source(package_dir, root, errors)
+    elif package_name == "lumenplot-bench" and _bench_activation_reason(root) is not None:
+        _check_bench_source(package_dir, root, errors)
     else:
         _check_stub_source(package_name, package_dir / "src", root, errors)
 
