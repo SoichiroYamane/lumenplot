@@ -5,6 +5,7 @@ members = [
     "crates/lumenplot-engine",
     "crates/lumenplot-export",
     "crates/lumenplot-render-api",
+    "crates/lumenplot-render-metal",
     "crates/lumenplot-render-wgpu",
     "crates/lumenplot-runtime",
     "crates/lumenplot-viewer",
