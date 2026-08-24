@@ -115,7 +115,11 @@ pub(crate) fn select_monotonic(
 /// repaired, reordered, or decimated. Equal adjacent x values (duplicate-x
 /// runs) remain valid MonotonicX samples.
 fn ensure_nondecreasing(points: &[Point]) -> Result<(), SceneError> {
-    let _ = points;
+    for pair in points.windows(2) {
+        if pair[1].x < pair[0].x {
+            return Err(SceneError::new(SceneErrorKind::TopologyViolation));
+        }
+    }
     Ok(())
 }
 
@@ -793,10 +797,7 @@ mod tests {
     /// precedent). Membership, extrema ties, and ordering are recomputed
     /// with plain linear scans — deliberately nothing like the production
     /// index path. Production never calls this.
-    fn naive_bucket_extrema_sources(
-        series: &SeriesStorage,
-        boundaries: &[f64],
-    ) -> Vec<u64> {
+    fn naive_bucket_extrema_sources(series: &SeriesStorage, boundaries: &[f64]) -> Vec<u64> {
         let mut expected = Vec::new();
         let points = series.points();
         for segment in series.segments() {
@@ -820,13 +821,17 @@ mod tests {
                 let min = members
                     .iter()
                     .min_by(|left, right| {
-                        left.y.total_cmp(&right.y).then(left.source.cmp(&right.source))
+                        left.y
+                            .total_cmp(&right.y)
+                            .then(left.source.cmp(&right.source))
                     })
                     .expect("minimum");
                 let max = members
                     .iter()
                     .max_by(|left, right| {
-                        left.y.total_cmp(&right.y).then(right.source.cmp(&left.source))
+                        left.y
+                            .total_cmp(&right.y)
+                            .then(right.source.cmp(&left.source))
                     })
                     .expect("maximum");
                 expected.push(members.first().expect("first").source);
@@ -948,7 +953,11 @@ mod tests {
                     }
                 })
                 .collect();
-            assert_eq!(split_selection.segments.len(), 2, "case {case}: gap must split runs");
+            assert_eq!(
+                split_selection.segments.len(),
+                2,
+                "case {case}: gap must split runs"
+            );
             // Dropping interior samples can only remove candidates, never add
             // or reorder them: the split selection is a subset of the
             // contiguous one, and anything lost must be one of the two
@@ -987,9 +996,21 @@ mod tests {
         // rather than repairing, reordering, or stride-decimating them.
         // Exercised directly on the precondition check over a queried slice.
         let points = [
-            Point { source: 0, x: 0.0, y: 0.0 },
-            Point { source: 1, x: 2.0, y: 1.0 },
-            Point { source: 2, x: 1.0, y: 2.0 },
+            Point {
+                source: 0,
+                x: 0.0,
+                y: 0.0,
+            },
+            Point {
+                source: 1,
+                x: 2.0,
+                y: 1.0,
+            },
+            Point {
+                source: 2,
+                x: 1.0,
+                y: 2.0,
+            },
         ];
         assert_eq!(
             ensure_nondecreasing(&points)
@@ -998,9 +1019,21 @@ mod tests {
             SceneErrorKind::TopologyViolation
         );
         let duplicates = [
-            Point { source: 0, x: 1.0, y: 0.0 },
-            Point { source: 1, x: 1.0, y: 1.0 },
-            Point { source: 2, x: 1.0, y: 2.0 },
+            Point {
+                source: 0,
+                x: 1.0,
+                y: 0.0,
+            },
+            Point {
+                source: 1,
+                x: 1.0,
+                y: 1.0,
+            },
+            Point {
+                source: 2,
+                x: 1.0,
+                y: 2.0,
+            },
         ];
         assert!(ensure_nondecreasing(&duplicates).is_ok());
         assert!(ensure_nondecreasing(&points[..2]).is_ok());
