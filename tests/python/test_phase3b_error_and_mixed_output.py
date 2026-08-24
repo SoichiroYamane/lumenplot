@@ -13,7 +13,10 @@ Covers two requirement lanes the existing backend suite does not yet pin:
   PNG-only: every vector target is therefore rejected explicitly before any
   write, and the only fallback representation is one whole-frame raster
   record. These pins hold the adapter to exactly that declared segment until
-  the Phase-2 vector-export lanes land.
+  the Phase-2 vector-export lanes land. The PNG-only ``filetypes`` declaration
+  itself is pinned by ``TestModuleSurface.test_exports_and_identity`` in
+  ``tests/python/test_phase3b_backend.py`` and is cross-referenced here rather
+  than duplicated.
 
 All fixtures exercise the public ``lumenplot_mpl.backend`` surface with a
 stubbed ``lumenplot_mpl._native`` seam, exactly like
@@ -283,6 +286,86 @@ class TestStrictErrorFixtures(unittest.TestCase):
                 fig.savefig(target, format="png")
             self.assertFalse(os.path.exists(target))
 
+    def test_strict_raises_before_write_for_every_negative_fixture(self):
+        """Every negative fixture raises ``unsupported-capability`` before a
+        single byte reaches the target: driving each one through a BytesIO
+        savefig leaves the buffer empty (LP-MPL-006 / API-0002). The marker,
+        dash, drawstyle, and text negatives duplicate the raise coverage in
+        ``test_phase3b_backend.py``; the new part here is the empty-target
+        assertion across all of them. usetex fails pre-render, so no TeX
+        installation is required."""
+
+        def build_marker(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 10], [0, 5], color="red", marker="o",
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
+
+        def build_dash(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 10], [0, 5], color="red", linestyle="--"))
+
+        def build_drawstyle(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 10], [0, 5], color="red",
+                               drawstyle="steps-mid",
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
+
+        def build_text(ax):
+            ax.axison = False
+            ax.text(0.5, 0.5, "annotation")
+            ax.add_line(Line2D([0, 10], [0, 5], color="red",
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
+
+        class _CustomTrace(Line2D):
+            pass
+
+        def build_custom_artist(ax):
+            ax.axison = False
+            ax.add_line(_CustomTrace([0, 10], [0, 5], color="red"))
+
+        def build_path_effect(ax):
+            from matplotlib import patheffects
+
+            ax.axison = False
+            line = Line2D([0, 10], [0, 5], color="red",
+                          solid_capstyle="butt", solid_joinstyle="miter")
+            line.set_path_effects([patheffects.withStroke(
+                linewidth=3.0, foreground="black")])
+            ax.add_line(line)
+
+        def build_usetex(ax):
+            from matplotlib import rc_context
+
+            ax.axison = False
+            ax.add_line(Line2D([0, 10], [0, 5], color="red",
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
+            with rc_context({"text.usetex": True}):
+                ax.set_title(r"$\int_0^\infty e^{-x}\,dx$")
+
+        for name, build in (
+            ("marker", build_marker),
+            ("dash", build_dash),
+            ("drawstyle", build_drawstyle),
+            ("text", build_text),
+            ("custom artist", build_custom_artist),
+            ("path effect", build_path_effect),
+            ("usetex", build_usetex),
+        ):
+            with self.subTest(fixture=name):
+                fig, canvas = self._canvas_with(build)
+                buffer = io.BytesIO()
+                with self.assertRaises(
+                    backend_mod.LumenPlotUnsupportedError
+                ) as ctx:
+                    fig.savefig(buffer, format="png")
+                self.assertEqual(ctx.exception.code, "unsupported-capability")
+                self.assertEqual(buffer.getvalue(), b"")
+                self.assertIs(_StubNativeModule.last_spec, None)
+
 
 # ---------------------------------------------------------------------------
 # LP-MPL-009 mixed-output structural pins: PNG-only surface, whole-frame
@@ -345,26 +428,66 @@ class TestMixedOutputRasterLimit(unittest.TestCase):
     def test_hybrid_fallback_is_one_whole_frame_raster_record(self):
         """Hybrid degradation publishes exactly one structured record whose
         scope is the whole frame and whose representation is raster PNG --
-        never a subtree or per-primitive substitution."""
-        def build(ax):
-            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+        never a subtree or per-primitive substitution. The card-named hybrid
+        counterparts of the strict negatives (unknown custom Artist, path
+        effects) each succeed via whole-frame Agg with exactly that record;
+        generation is the canvas counter spent once for the attempt."""
+        from matplotlib import patheffects
+
+        class _CustomTrace(Line2D):
+            pass
+
+        def build_custom_artist(ax):
+            ax.axison = False
+            ax.add_line(_CustomTrace([0, 10], [0, 5], color="red"))
             ax.set_xlim(0, 10)
             ax.set_ylim(0, 5)
 
-        fig, canvas = _hybrid_canvas_with(build)
-        result = canvas.render_png()
-        self.assertEqual(len(result.diagnostics), 1)
-        diagnostic = result.diagnostics[0]
-        self.assertIsInstance(
-            diagnostic, backend_mod.LumenPlotFallbackDiagnostic
-        )
-        self.assertEqual(diagnostic.kind, "unsupported-capability")
-        self.assertEqual(diagnostic.scope, "whole-frame")
-        self.assertEqual(diagnostic.representation, "raster")
-        self.assertEqual(diagnostic.output_format, "png")
-        self.assertEqual(diagnostic.fallback_type, "matplotlib-agg")
-        self.assertEqual(canvas.last_diagnostics, result.diagnostics)
-        del fig
+        def build_path_effect(ax):
+            ax.axison = False
+            line = Line2D([0, 10], [0, 5], color="red",
+                          solid_capstyle="butt", solid_joinstyle="miter")
+            line.set_path_effects([patheffects.withStroke(
+                linewidth=3.0, foreground="black")])
+            ax.add_line(line)
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        for name, build in (
+            ("custom artist", build_custom_artist),
+            ("path effect", build_path_effect),
+        ):
+            with self.subTest(fixture=name):
+                fig, canvas = _hybrid_canvas_with(build)
+                before_generation = canvas._generation
+                result = canvas.render_png()
+                self.assertEqual(
+                    canvas._generation, before_generation + 1
+                )
+                self.assertEqual(len(result.diagnostics), 1)
+                diagnostic = result.diagnostics[0]
+                self.assertIsInstance(
+                    diagnostic,
+                    backend_mod.LumenPlotFallbackDiagnostic,
+                )
+                self.assertEqual(
+                    diagnostic.kind, "unsupported-capability"
+                )
+                self.assertEqual(diagnostic.scope, "whole-frame")
+                self.assertEqual(diagnostic.representation, "raster")
+                self.assertEqual(diagnostic.output_format, "png")
+                self.assertEqual(
+                    diagnostic.fallback_type, "matplotlib-agg"
+                )
+                self.assertIsInstance(diagnostic.generation, int)
+                self.assertGreaterEqual(diagnostic.generation, 1)
+                self.assertEqual(
+                    diagnostic.generation, canvas._generation
+                )
+                self.assertEqual(
+                    canvas.last_diagnostics, result.diagnostics
+                )
+                del fig
 
     def test_no_subtree_or_segment_fallback_surface_exists(self):
         """Structural pin: the declared diagnostic envelope carries exactly
