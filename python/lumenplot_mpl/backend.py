@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import io
 import math
+import numbers
 import os
 from typing import Any
 
@@ -295,7 +296,12 @@ def _rgba8(color: Any, alpha: float | None = None) -> tuple[int, int, int, int]:
 
 
 def _finite(value: Any) -> bool:
-    return isinstance(value, (int, float)) and math.isfinite(float(value))
+    # numpy integer/floating scalars (what Line2D.get_{x,y}data returns for
+    # int or float input) are not Python int/float instances, so accept any
+    # numbers.Real except bool.
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return False
+    return math.isfinite(float(value))
 
 
 class _EligibilityPreflight:
