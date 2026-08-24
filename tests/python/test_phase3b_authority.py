@@ -7,9 +7,10 @@ retain only a revisioned derived LumenPlot Scene snapshot or cache"
 
 Boundary of this lane (orchestrator-scoped decision, coordinated with lanes
 B/C): the Figure/Artist-authority consequences already pinned elsewhere stay
-out of scope here — ``test_phase3b_figure_authority.py`` (pending merge,
-branch wt/t_5d9ddefd) owns fingerprint/one-shot-snapshot/writeback/DPI-
-restore families, and ``test_phase3b_native_authority.py`` (merged, PR #41)
+out of scope here — fingerprint/one-shot-snapshot/writeback/DPI-restore
+families belong to a separate figure-authority fixture lane that has not
+landed yet (no such test file exists on any branch at this time), and
+``test_phase3b_native_authority.py`` (merged, PR #41)
 owns the PlotScene-side seam consequences for LP-MPL-005. This module pins
 the four card-mandated REPEAT-ATTEMPT authority properties at the public
 canvas surface (:class:`lumenplot_mpl.backend.FigureCanvasLumenPlot`), none
