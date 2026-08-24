@@ -338,4 +338,172 @@ mod tests {
             .collect();
         assert_eq!(sources, vec![0, 1, 2]);
     }
+
+    #[test]
+    fn arbitrary_selection_is_invariant_under_source_permutation() {
+        // LP-LOD-006: reordering the same logical samples must not change
+        // which geometry is retained. Each retained run keeps its own
+        // relative order; runs that fall outside the viewport are culled in
+        // every permutation.
+        // Logical content: three runs, the last outside the viewport.
+        let runs: [&[(f64, f64)]; 3] = [
+            &[(3.0, 30.0), (1.0, 10.0)],
+            &[(2.0, -20.0), (5.0, 50.0), (4.0, 40.0)],
+            &[(-9.0, -9.0), (-8.0, -8.0)],
+        ];
+        let build = |orders: [&[usize]; 3]| {
+            let mut x = Vec::new();
+            let mut y = Vec::new();
+            let mut valid_segments = Vec::new();
+            for (run, order) in runs.iter().zip(orders) {
+                if !valid_segments.is_empty() {
+                    // One uncovered gap slot between runs keeps them
+                    // structurally separate.
+                    x.push(f64::NAN);
+                    y.push(f64::NAN);
+                }
+                let start = x.len();
+                for &source_slot in order {
+                    let (px, py) = run[source_slot];
+                    x.push(px);
+                    y.push(py);
+                }
+                valid_segments.push(start..x.len());
+            }
+            SeriesStorage::from_normalized(
+                SeriesInput::from_owned_xy(Topology::ArbitraryXY, x, y, Some(valid_segments))
+                    .expect("input")
+                    .into_normalized(),
+                DataEpoch(1),
+                crate::data::ChunkRevision(1),
+            )
+            .expect("storage")
+        };
+        let identity = build([&[0usize, 1][..], &[0, 1, 2], &[0, 1]]);
+        let shuffled = build([&[1usize, 0][..], &[2, 0, 1], &[1, 0]]);
+        let viewport = Viewport::from_bounds(0.0, 6.0, -25.0, 55.0).expect("viewport");
+        let scales = AxisScales::new(AxisScale::Linear, AxisScale::Linear);
+        let select = |series: &SeriesStorage| {
+            let selection = crate::lod::arbitrary::select_arbitrary(series, &viewport, &scales)
+                .expect("selection");
+            // Compare geometry sets with within-run order normalized: a
+            // permutation may legitimately store a run in a different
+            // internal order, but the retained point multiset must match.
+            let mut runs: Vec<Vec<(u64, u64)>> = selection
+                .segments
+                .iter()
+                .map(|segment| {
+                    let mut points: Vec<(u64, u64)> = segment
+                        .points
+                        .iter()
+                        .map(|point| (point.x.to_bits(), point.y.to_bits()))
+                        .collect();
+                    points.sort();
+                    points
+                })
+                .collect();
+            runs.sort();
+            runs
+        };
+        assert_eq!(select(&identity), select(&shuffled));
+        // Both permutations retain exactly the two in-view runs, in stored
+        // order, and drop the out-of-view run entirely.
+        let expected_geometry = vec![
+            vec![
+                (1.0_f64.to_bits(), 10.0_f64.to_bits()),
+                (3.0_f64.to_bits(), 30.0_f64.to_bits()),
+            ],
+            vec![
+                (2.0_f64.to_bits(), (-20.0_f64).to_bits()),
+                (4.0_f64.to_bits(), 40.0_f64.to_bits()),
+                (5.0_f64.to_bits(), 50.0_f64.to_bits()),
+            ],
+        ];
+        assert_eq!(select(&identity), expected_geometry);
+    }
+
+    #[test]
+    fn culling_is_exact_at_viewport_edges_and_epsilon_outside() {
+        // LP-LOD-006 negative/positive boundary fixture: a run touching the
+        // viewport only at an edge intersects inclusively and stays; a run
+        // just outside by one ULP of x is culled completely.
+        let next_after_zero = f64::from_bits(0.0_f64.to_bits() + 1);
+        let x = vec![0.0, 1.0, f64::NAN, -next_after_zero, -1.0];
+        let y = vec![2.0, 3.0, f64::NAN, 0.0, 1.0];
+        let series = SeriesStorage::from_normalized(
+            SeriesInput::from_owned_xy(Topology::ArbitraryXY, x, y, Some(vec![0..2, 3..5]))
+                .expect("input")
+                .into_normalized(),
+            DataEpoch(1),
+            crate::data::ChunkRevision(1),
+        )
+        .expect("storage");
+        let selection = crate::lod::arbitrary::select_arbitrary(
+            &series,
+            &Viewport::from_bounds(0.0, 2.0, -1.0, 4.0).expect("viewport"),
+            &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+        )
+        .expect("selection");
+        assert_eq!(selection.segments.len(), 1);
+        let sources: Vec<_> = selection.segments[0]
+            .points
+            .iter()
+            .map(|point| point.source)
+            .collect();
+        assert_eq!(sources, vec![0, 1]);
+    }
+
+    #[test]
+    fn mixed_order_multi_segment_runs_keep_source_order() {
+        // LP-LOD-006: neither gaps nor chunk cuts may sort or reconnect
+        // arbitrary-order runs; output equals stored source order per run.
+        let count = 65_536;
+        let first_run: Vec<f64> = (0..count)
+            .map(|index| count as f64 - index as f64)
+            .collect();
+        let tail_x = vec![7.5, 1.5, 9.5];
+        let tail_y = vec![70.0, 10.0, 90.0];
+        let mut x = first_run.clone();
+        let mut y: Vec<f64> = first_run.iter().rev().copied().collect();
+        x.extend([f64::NAN]);
+        y.extend([f64::NAN]);
+        x.extend(tail_x);
+        y.extend(tail_y);
+        let series = SeriesStorage::from_normalized(
+            SeriesInput::from_owned_xy(
+                Topology::ArbitraryXY,
+                x,
+                y,
+                Some(vec![0..count, count + 1..count + 4]),
+            )
+            .expect("input")
+            .into_normalized(),
+            DataEpoch(1),
+            crate::data::ChunkRevision(1),
+        )
+        .expect("storage");
+        let selection = crate::lod::arbitrary::select_arbitrary(
+            &series,
+            &Viewport::from_bounds(0.0, 10.0, -1.0, 100_000.0).expect("viewport"),
+            &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+        )
+        .expect("selection");
+        assert_eq!(selection.segments.len(), 2);
+        let tail_sources: Vec<_> = selection.segments[1]
+            .points
+            .iter()
+            .map(|point| point.source)
+            .collect();
+        assert_eq!(
+            tail_sources,
+            vec![(count + 1) as u64, (count + 2) as u64, (count + 3) as u64]
+        );
+        let tail_pairs: Vec<_> = selection.segments[1]
+            .points
+            .iter()
+            .map(|point| (point.x, point.y))
+            .collect();
+        assert_eq!(tail_pairs, vec![(7.5, 70.0), (1.5, 10.0), (9.5, 90.0)]);
+        assert!(selection.full_resolution);
+    }
 }

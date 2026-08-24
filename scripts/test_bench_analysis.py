@@ -361,16 +361,42 @@ class ManifestValidationTests(unittest.TestCase):
         manifest["inconclusive_reasons"] = ["stale"]
         self.assertTrue(any("forbids" in e for e in self.validate(manifest)))
 
-        # Null reasons mean "nothing recorded": acceptable while not
-        # inconclusive, rejected when the run claims an inconclusive outcome.
+        # Round-5 finding 2: an explicit null is a validation error under
+        # every status (null is not absent); absence and [] both count as
+        # "nothing recorded".
         manifest = make_manifest()
         manifest["status"] = "complete"
         manifest["inconclusive_reasons"] = None
-        self.assertEqual(self.validate(manifest), [])
+        errors = self.validate(manifest)
+        self.assertTrue(
+            any("inconclusive_reasons" in e and "got null" in e for e in errors),
+            errors,
+        )
 
         manifest = make_manifest()
         manifest["status"] = "inconclusive"
         manifest["inconclusive_reasons"] = None
+        errors = self.validate(manifest)
+        self.assertTrue(
+            any("inconclusive_reasons" in e and "got null" in e for e in errors),
+            errors,
+        )
+
+        manifest = make_manifest()
+        del manifest["inconclusive_reasons"]
+        # Required-top-level membership: absence keeps reporting the plain
+        # missing-field error, never a null message.
+        self.assertIn(
+            "inconclusive_reasons: required field is missing", self.validate(manifest)
+        )
+
+        manifest = make_manifest()
+        manifest["inconclusive_reasons"] = []
+        self.assertEqual(self.validate(manifest), [])
+
+        manifest = make_manifest()
+        manifest["status"] = "inconclusive"
+        manifest["inconclusive_reasons"] = []
         self.assertTrue(
             any("requires at least one reason" in e for e in self.validate(manifest))
         )
@@ -434,14 +460,15 @@ class ManifestValidationTests(unittest.TestCase):
         errors = self.validate(manifest)
         self.assertTrue(any("blocks[0]" in error for error in errors), errors)
 
-        # Null stays accepted exactly where D1 marks |null.
+        # Null stays accepted exactly where D1 marks |null. inconclusive_
+        # reasons is deliberately absent here: since round-5 finding 2 an
+        # explicit null there is a validation error under every status.
         manifest = make_manifest()
         manifest["environment"]["gpu"] = None
         manifest["environment"]["compositor"] = None
         manifest["environment"]["present_mode"] = None
         manifest["max_block_p99_ns"] = None
         manifest["pooled"] = None
-        manifest["inconclusive_reasons"] = None
         self.assertEqual(self.validate(manifest), [])
 
     def test_nullable_fields_accept_none(self) -> None:
@@ -478,6 +505,121 @@ class ManifestValidationTests(unittest.TestCase):
             any("p99_ns" in e for e in self.validate(manifest)),
             "null quantile under a complete run must be rejected",
         )
+
+    def test_present_but_null_fields_are_rejected(self) -> None:
+        # Round-4 finding B: an explicit JSON null satisfies neither the
+        # required-field loop nor the type checks (``value is not None and
+        # ...``), so every non-nullable field must reject null ahead of its
+        # type check. Absent fields keep reporting only "required field is
+        # missing"; the D1-nullable set keeps accepting null (pinned below).
+        top_level_cases = [
+            ("schema_version", "expected int 1"),
+            ("run_id", "expected a uuid4 string"),
+            ("generated_at_utc", "expected an RFC3339 UTC timestamp"),
+            ("profile", "expected one of"),
+            ("fixture", "expected a JSON object"),
+            ("environment", "expected a JSON object"),
+            ("protocol", "expected a JSON object"),
+            ("clocks", "expected a non-empty JSON array"),
+            ("blocks", "expected a JSON array"),
+            ("status", "expected one of"),
+        ]
+        for field, expected_text in top_level_cases:
+            with self.subTest(field=field):
+                manifest = make_manifest()
+                manifest[field] = None
+                errors = self.validate(manifest)
+                self.assertTrue(
+                    any(field in error and expected_text in error for error in errors),
+                    errors,
+                )
+
+        nested_cases = [
+            (("fixture",), "points"),
+            (("fixture",), "canvas_px"),
+            (("fixture",), "dpi"),
+            (("environment",), "display_scale"),
+            (("protocol",), "blocks"),
+            (("protocol",), "min_frames_per_block"),
+            (("protocol",), "quantile_method"),
+            (("protocol",), "trimming"),
+            (("protocol",), "bootstrap"),
+            (("protocol", "bootstrap"), "resamples"),
+            (("protocol", "bootstrap"), "ci"),
+            (("protocol", "bootstrap"), "seed"),
+            (("protocol", "bootstrap"), "method"),
+        ]
+        for base, field in nested_cases:
+            with self.subTest(base=base, field=field):
+                manifest = make_manifest()
+                target = manifest
+                for key in base:
+                    target = target[key]
+                target[field] = None
+                label = ".".join((*base, field))
+                errors = self.validate(manifest)
+                self.assertTrue(
+                    any(label in error and "got null" in error for error in errors),
+                    errors,
+                )
+
+        block_scalar_fields = (
+            "block_index",
+            "pid",
+            "started_at_utc",
+            "frame_count",
+            "raw_samples_path",
+        )
+        for index, field in enumerate(block_scalar_fields):
+            with self.subTest(where=f"blocks[{index}]", field=field):
+                manifest = make_manifest()
+                manifest["blocks"][index][field] = None
+                errors = self.validate(manifest)
+                self.assertTrue(
+                    any(
+                        f"blocks[{index}].{field}" in e and "got null" in e
+                        for e in errors
+                    ),
+                    errors,
+                )
+
+        # Null quantiles stay rejected under a complete run.
+        manifest = make_manifest()
+        manifest["blocks"][2]["p99_ns"] = None
+        self.assertTrue(any("p99_ns" in e for e in self.validate(manifest)))
+
+        # Clock name/domain nulls are rejected per entry.
+        manifest = make_manifest()
+        manifest["clocks"][0]["name"] = None
+        manifest["clocks"][1]["domain"] = None
+        errors = self.validate(manifest)
+        self.assertTrue(any("clocks[0].name" in e and "got null" in e for e in errors))
+        self.assertTrue(any("clocks[1].domain" in e and "got null" in e for e in errors))
+
+        # Round-5 finding 1: an explicit unit=null is rejected while the
+        # missing key keeps the field optional.
+        manifest = make_manifest()
+        manifest["clocks"][0]["unit"] = None
+        errors = self.validate(manifest)
+        self.assertTrue(
+            any("clocks[0].unit" in e and 'got null' in e for e in errors), errors
+        )
+        manifest = make_manifest()
+        del manifest["clocks"][0]["unit"]
+        self.assertEqual(self.validate(manifest), [])
+
+    def test_absent_fields_still_report_missing_not_null(self) -> None:
+        manifest = make_manifest()
+        del manifest["fixture"]
+        del manifest["protocol"]["bootstrap"]
+        del manifest["status"]
+        del manifest["blocks"][0]["pid"]
+        errors = self.validate(manifest)
+        self.assertIn("fixture: required field is missing", errors)
+        self.assertIn("protocol.bootstrap: required field is missing", errors)
+        self.assertIn("status: required field is missing", errors)
+        self.assertIn("blocks[0].pid: required field is missing", errors)
+        self.assertFalse(any("got null" in error for error in errors), errors)
 
     def test_environment_and_fixture_shapes(self) -> None:
         manifest = make_manifest()
@@ -775,13 +917,16 @@ class CompareCommandTests(unittest.TestCase):
         self.assertNotIn("None", report)
 
     def test_compare_survives_null_reasons_and_sparse_blocks(self) -> None:
-        # Round-2 finding 2 repros 2 and 3: null inconclusive_reasons on an
-        # otherwise complete pair, and sparse-but-valid blocks (missing
-        # pooled), both used to crash; both stay total and deterministic.
-        self.manifest_a["inconclusive_reasons"] = None
-        self.manifest_b["inconclusive_reasons"] = None
-        path_a = write_json(self.root / "a-null-reasons.json", self.manifest_a)
-        path_b = write_json(self.root / "b-null-reasons.json", self.manifest_b)
+        # Round-2 finding 2 repro 3: sparse-but-valid blocks (missing pooled,
+        # null compositor) used to crash; they stay total and deterministic.
+        # Since round-5 finding 2 an explicit inconclusive_reasons=null no
+        # longer validates, so this CLI totality repro uses [] instead —
+        # semantically identical ("nothing recorded") and still exercises
+        # the falsy-reasons report path end to end.
+        self.manifest_a["inconclusive_reasons"] = []
+        self.manifest_b["inconclusive_reasons"] = []
+        path_a = write_json(self.root / "a-empty-reasons.json", self.manifest_a)
+        path_b = write_json(self.root / "b-empty-reasons.json", self.manifest_b)
         completed = run_cli("--compare", str(path_a), str(path_b))
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout, run_cli("--compare", str(path_a), str(path_b)).stdout)
@@ -794,7 +939,7 @@ class CompareCommandTests(unittest.TestCase):
         manifest_b["max_block_p99_ns"] = 113_000_000.0
         for manifest in (manifest_a, manifest_b):
             manifest["pooled"] = None
-            manifest["inconclusive_reasons"] = None
+            manifest["inconclusive_reasons"] = []
             manifest["environment"]["compositor"] = None
         sparse_a = write_json(self.root / "sparse-a.json", manifest_a)
         sparse_b = write_json(self.root / "sparse-b.json", manifest_b)
@@ -802,6 +947,21 @@ class CompareCommandTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("| 0 | 1000 | 1000 | 100000000 | 85000000 | -15000000 | -15.00% |", completed.stdout)
         self.assertIn("n/a", completed.stdout)  # pooled section renders null
+
+    def test_null_reasons_manifest_exits_two_not_crash(self) -> None:
+        # Round-5 finding 2, CLI level: an explicit inconclusive_reasons=null
+        # on a complete pair must exit 2 via the validator, never reach the
+        # compare code paths that used to consume it.
+        self.manifest_a["inconclusive_reasons"] = None
+        path_bad = write_json(self.root / "a-null-reasons.json", self.manifest_a)
+        completed = run_cli("--compare", str(path_bad), str(self.path_b))
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn(
+            "A: inconclusive_reasons: expected an array of non-empty strings, got null",
+            completed.stderr,
+        )
+        self.assertNotIn("TypeError", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
 
     def test_invalid_side_manifest_exits_two_with_label(self) -> None:
         manifest = make_manifest()
@@ -824,6 +984,22 @@ class CompareCommandTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn("protocol: expected a JSON object", completed.stderr)
         self.assertNotIn("TypeError", completed.stderr)
+
+    def test_null_container_manifest_exits_two_not_crash(self) -> None:
+        # Round-4 finding B, CLI level: an explicit null where --compare
+        # needs an object (protocol.bootstrap on side A feeds
+        # _bootstrap_params directly) must exit 2 via the validator, never
+        # raise TypeError.
+        manifest = make_manifest()
+        manifest["protocol"]["bootstrap"] = None
+        path_bad = write_json(self.root / "null-bootstrap.json", manifest)
+        completed = run_cli("--compare", str(path_bad), str(self.path_b))
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn(
+            "protocol.bootstrap: expected a JSON object, got null", completed.stderr
+        )
+        self.assertNotIn("TypeError", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
 
     def test_missing_input_file_exits_two(self) -> None:
         completed = run_cli(
