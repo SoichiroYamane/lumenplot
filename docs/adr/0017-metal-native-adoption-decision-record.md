@@ -1,4 +1,4 @@
-# ADR 0016: Metal native adoption decision record (O-16 gate disposition)
+# ADR 0017: Metal native adoption decision record (O-16 gate disposition)
 
 - Status: **Proposal — decision record draft for the architecture-authority; nothing here is Go, and no support, dependency, or implementation claim is made**
 - Date: 2026-08-25
@@ -37,7 +37,7 @@ It applies verbatim, without reinterpreting, the thresholds fixed by
 [ADR 0006 §O-16](0006-support-benchmark-native-gates.md#o-16-native-adoption-gate)
 and [O-16](../architecture/open-decisions.md#o-16-native-backend-adoption-and-retirement-gates),
 and the measurement protocol fixed by
-[ADR 0006 §O-08](0006-support-benchmark-native-gates.md#o-08-benchmark-protocol-and-performance-accounting).
+[ADR 0006 §O-08](0006-support-benchmark-native-gates.md#o-08-timing-and-clock-boundaries).
 It also exercises the comparison dimensions of `LP-PLAT-011` (frame time,
 CPU overhead, present latency, memory, feature availability) to the extent
 the current harness instruments them, and respects `LP-PLAT-006`
