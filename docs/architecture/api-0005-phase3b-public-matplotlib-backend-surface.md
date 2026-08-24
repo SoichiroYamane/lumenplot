@@ -1,6 +1,6 @@
 # API 0005: Phase-3B public Matplotlib backend surface
 
-- Status: **Accepted staged surface contract — Phase-3B public backend surface recorded; implementation, public-backend evidence, and full-v1 traceability pending**
+- Status: **Accepted staged surface contract — Phase-3B first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence pending**
 - Date: 2026-08-23
 - Decision owner: architecture-authority
 - Recorded by: engineering-worker

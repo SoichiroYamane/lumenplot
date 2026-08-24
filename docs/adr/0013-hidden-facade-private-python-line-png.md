@@ -1,6 +1,6 @@
 # ADR 0013: Phase-3A hidden line/PNG facade and private Python helper
 
-- Status: **Accepted staged contract — Phase-3A2 private helper/package/builder same-wheel evidence is recorded (CI-local manifest; GIL CPython 3.11–3.14); Phase-3B public adapter implementation and evidence remain pending**
+- Status: **Accepted staged contract — Phase-3A2 private helper/package/builder same-wheel evidence is recorded (CI-local manifest; GIL CPython 3.11–3.14); Phase-3B first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence pending**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
