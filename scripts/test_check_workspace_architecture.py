@@ -1864,6 +1864,66 @@ fn body_macro_is_below_root_scope() {
             "package lumenplot-bench: source must contain exactly",
         )
 
+    def test_bench_accepted_dependency_edges_pass(self) -> None:
+        # The accelerated lane's accepted edge set {lumenplot,
+        # lumenplot-engine, lumenplot-render-api} must satisfy the exact
+        # DAG expectation while the bench sentinel is active.
+        with self.fixture() as temporary:
+            root = Path(temporary)
+            self.activate_bench_lane(root)
+            manifest = root / "crates/lumenplot-bench/Cargo.toml"
+            manifest.write_text(
+                "[package]\n"
+                'name = "lumenplot-bench"\n'
+                "edition.workspace = true\n"
+                "version.workspace = true\n"
+                "publish = false\n"
+                "license.workspace = true\n"
+                "repository.workspace = true\n"
+                "readme.workspace = true\n"
+                "\n"
+                "[dependencies]\n"
+                'lumenplot = { path = "../lumenplot", version = "0.1.0" }\n'
+                'lumenplot-engine = { path = "../lumenplot-engine", version = "0.1.0" }\n'
+                'lumenplot-render-api = { path = "../lumenplot-render-api", version = "0.1.0" }\n',
+                encoding="utf-8",
+            )
+            returncode, output = self.run_checker(root)
+            self.assertEqual(returncode, 0, output)
+            self.assertIn("workspace architecture: OK", output)
+
+    def test_bench_unexpected_edge_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "[dependencies]\n",
+                    '[dependencies]\nlumenplot-viewer = { path = "../lumenplot-viewer", version = "0.1.0" }\n',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: dependency edge 'lumenplot-viewer' is not allowed",
+        )
+
+    def test_bench_missing_accelerated_edge_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = 'lumenplot-render-api = { path = "../lumenplot-render-api"'
+            lines = [line for line in text.splitlines(keepends=True) if marker not in line]
+            path.write_text("".join(lines), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: exact dependency graph mismatch (missing lumenplot-render-api)",
+        )
+
     def test_bench_active_inventory_rejects_nested_module_directory(self) -> None:
         def mutate(root: Path) -> None:
             self.activate_bench_lane(root)

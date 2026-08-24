@@ -559,7 +559,7 @@ EXPECTED_EDGES = {
     "lumenplot-runtime": {"lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
     "lumenplot-python": {"lumenplot"},
-    "lumenplot-bench": {"lumenplot"},
+    "lumenplot-bench": {"lumenplot", "lumenplot-engine", "lumenplot-render-api"},
 }
 EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES = {
     "tiny-skia": {

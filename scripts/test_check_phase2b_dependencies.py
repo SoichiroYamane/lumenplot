@@ -52,6 +52,65 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
             self.assertIn("phase2b dependency graph: OK", output)
             self.assertIn("dependency build-script evidence: crc32fast", output)
 
+    def test_bench_workspace_edge_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            # Remove the render-api edge from the bench manifest AND its
+            # lockfile entry: the exact workspace-edge expectation must fire.
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = 'lumenplot-render-api = { path = "../lumenplot-render-api"'
+            self.assertIn(marker, text)
+            lines = [line for line in text.splitlines(keepends=True) if marker not in line]
+            path.write_text("".join(lines), encoding="utf-8")
+
+            lock = root / "Cargo.lock"
+            source = lock.read_text(encoding="utf-8")
+            start = source.index('name = "lumenplot-bench"')
+            end = source.index("[[package]]", start)
+            block = source[start:end]
+            dependency = ' "lumenplot-render-api",\n'
+            self.assertIn(dependency, block)
+            lock.write_text(
+                source[:start] + block.replace(dependency, "") + source[end:],
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(
+            mutate,
+            "dependency graph drift for workspace package lumenplot-bench",
+        )
+
+    def test_bench_unexpected_extra_edge_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            # Add an undeclared extra internal edge to the bench manifest and
+            # mirror it into the lockfile so metadata stays resolvable; the
+            # exact inventory must reject it closed.
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            text = text.replace(
+                "[dependencies]\n",
+                '[dependencies]\nlumenplot-viewer = { path = "../lumenplot-viewer", version = "0.1.0" }\n',
+                1,
+            )
+            path.write_text(text, encoding="utf-8")
+
+            lock = root / "Cargo.lock"
+            source = lock.read_text(encoding="utf-8")
+            start = source.index('name = "lumenplot-bench"')
+            end = source.index("[[package]]", start)
+            block = source[start:end]
+            block = block.replace(
+                'dependencies = [\n',
+                'dependencies = [\n "lumenplot-viewer",\n',
+                1,
+            )
+            lock.write_text(source[:start] + block + source[end:], encoding="utf-8")
+
+        self.assert_rejected(
+            mutate,
+            "dependency graph drift for workspace package lumenplot-bench",
+        )
+
     def test_checksum_drift_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "Cargo.lock"
