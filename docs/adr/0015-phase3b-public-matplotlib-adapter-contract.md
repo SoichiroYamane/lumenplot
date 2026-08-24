@@ -1,6 +1,6 @@
 # ADR 0015: Phase-3B public Matplotlib adapter contract
 
-- Status: **Accepted contract — Phase-3B public adapter slice boundary recorded; implementation, public-backend evidence, and full-v1 traceability pending**
+- Status: **Accepted contract — Phase-3B first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence pending**
 - Date: 2026-08-23
 - Decision owner: architecture-authority
 - Recorded by: engineering-worker
