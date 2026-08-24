@@ -245,6 +245,26 @@ class TestRenderPng(unittest.TestCase):
         stroke = spec["commands"][0]["stroke_rgba"]
         self.assertEqual(stroke[3], 0)
 
+    def test_integer_data_points_are_not_dropped(self):
+        """numpy integer scalars from get_xdata must survive _finite().
+
+        np.int64/np.float64 are neither Python int nor float instances; the
+        vertex filter silently dropped every point of integer-data lines and
+        produced a fully transparent canvas.
+        """
+        import numpy
+
+        fig, canvas = _eligible_canvas()
+        line = fig.get_axes()[0].get_lines()[0]
+        line.set_data(numpy.array([0, 10]), numpy.array([0, 5]))
+        result = canvas.render_png(dpi=100)
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        commands = spec["commands"]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(len(commands[0]["vertices"]), 2)
+        self.assertGreater(len(result.png_bytes), 0)
+
 
 # ---------------------------------------------------------------------------
 # Effective savefig DPI and fractional-figsize geometry matrix (API 0005 §5/§6)
