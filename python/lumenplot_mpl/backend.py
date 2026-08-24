@@ -22,8 +22,17 @@ Implements the accepted public surface contract recorded in
   module.
 
 Mode policy: the constructor kwarg ``mode`` selects ``"strict"`` (default)
-or ``"hybrid"``. Hybrid mode is a later slice per ADR-0015 ordered delivery;
-constructing a hybrid canvas raises ``NotImplementedError``.
+or ``"hybrid"`` (ADR 0015 §12 ordered delivery). Strict mode renders only
+the whitelisted eligible trace and raises
+:class:`LumenPlotUnsupportedError` before any target write otherwise.
+Hybrid mode first attempts exactly the strict native path and, only when
+that raises the stable ``unsupported-capability`` failure, succeeds with a
+whole-frame Agg fallback: stock public ``FigureCanvasAgg`` PNG output plus
+one structured :class:`LumenPlotFallbackDiagnostic` (reason, type,
+generation, output format, raster/vector scope per API 0002). Missing
+native infrastructure (``backend-unavailable``) and internal engine
+failures are never converted into a visual fallback; nothing degrades
+silently.
 
 The native seam is the private extension module ``lumenplot_mpl._native``.
 This slice consumes the frozen ``render_line_png`` signature from Phase-3A
@@ -279,6 +288,9 @@ def _rgba8(color: Any, alpha: float | None = None) -> tuple[int, int, int, int]:
         int(round(min(max(b, 0.0), 1.0) * 255)),
         int(round(min(max(a, 0.0), 1.0) * 255)),
     )
+    if channel[3] == 0:
+        # ADR-0015 §5: fully transparent strokes encode RGB as zero.
+        return (0, 0, 0, 0)
     return channel
 
 
@@ -311,6 +323,8 @@ class _EligibilityPreflight:
         self.background_seen = False
         self.background_rgbface: Any = None
         self.line_paths = 0
+        self._clip_points: Any = None
+        self._height_px = 0
 
     def unsupported(self, reason: str, type_context: str | None = None) -> None:
         self.reasons.append((type_context, reason))
@@ -375,6 +389,24 @@ class _EligibilityPreflight:
             self.unsupported("explicit snap is unsupported", name)
         if line.get_url() is not None:
             self.unsupported("hyperlinks are unsupported", name)
+        # ADR-0015 §5: the native request supports exactly Butt cap and
+        # Miter join. Effective styles outside that set are rejected, not
+        # approximated; Matplotlib's defaults (projecting/round) must be
+        # overridden explicitly by strict-mode callers.
+        cap = str(line.get_solid_capstyle())
+        join = str(line.get_solid_joinstyle())
+        if cap != "butt":
+            self.unsupported(
+                f"solid cap style {cap!r} is unsupported; "
+                "strict mode requires 'butt'",
+                name,
+            )
+        if join != "miter":
+            self.unsupported(
+                f"solid join style {join!r} is unsupported; "
+                "strict mode requires 'miter'",
+                name,
+            )
         if line.get_gid() is None:
             return
 
@@ -475,10 +507,12 @@ class _EligibilityPreflight:
                 self.unsupported("non-finite clip rectangle")
         if gc.get_clip_path() != (None, None):
             self.unsupported("non-rectangular custom clip is unsupported")
-
-
-        if gc.get_clip_path() != (None, None):
-            self.unsupported("non-rectangular custom clip is unsupported")
+        elif clip_rect is not None:
+            # Remember the validated rectangular clip so the request can
+            # carry an explicit clip_rect. Every eligible stroke of this
+            # slice shares one axes rectangle.
+            if self._clip_points is None:
+                self._clip_points = points
 
     # -- geometry assembly -----------------------------------------------
 
@@ -499,6 +533,7 @@ class _EligibilityPreflight:
         """
         commands: list[dict] = []
         background_rgba = _RGBA_BLACK
+        self._height_px = int(height_px)
         for ax in figure.get_axes():
             if bool(getattr(ax, "axison", True)):
                 # Preflight already recorded this as unsupported.
@@ -518,6 +553,9 @@ class _EligibilityPreflight:
 
             def to_px_y(y: Any, _y0=y0, _h=h, _lim=ylim) -> Any:
                 return _y0 + (float(y) - _lim[0]) / (_lim[1] - _lim[0]) * _h
+
+            if self._clip_points is None:
+                self._clip_points = ((x0, y0), (x0 + w, y0 + h))
 
             for line in ax.get_lines():
                 spec = self._line_command(line, to_px_x, to_px_y)
@@ -555,8 +593,30 @@ class _EligibilityPreflight:
         stroke = _rgba8(line.get_color(), line.get_alpha())
         cap = str(line.get_solid_capstyle())
         join = str(line.get_solid_joinstyle())
-        if cap == "projecting":
-            cap = "projecting"
+        if cap != "butt" or join != "miter":
+            # Stage one already rejected non-Butt/Miter effective styles
+            # (ADR-0015 §5); reaching here means the collector trace and
+            # static whitelist disagreed, which is an internal fault.
+            self.unsupported(
+                f"effective cap/join {cap!r}/{join!r} outside the fixed "
+                "strict-mode style set",
+                name,
+            )
+        # The validated rectangular clip, in top-left pixel space with
+        # exclusive right/bottom edges (frozen seam contract).
+        clip_rect: list[float] | None = None
+        if self._clip_points is not None:
+            (cx0, cy0), (cx1, cy1) = self._clip_points
+            left = min(cx0, cx1)
+            right = max(cx0, cx1)
+            bottom = min(cy0, cy1)
+            top = max(cy0, cy1)
+            clip_rect = [
+                float(left),
+                float(self._height_px - top),
+                float(right - left),
+                float(top - bottom),
+            ]
         return {
             "kind": "path",
             "vertices": [[float(vx), float(vy)] for vx, vy in vertices],
@@ -570,7 +630,7 @@ class _EligibilityPreflight:
             "dashes": None,
             "fill_rule": "nonzero",
             "antialias": True,
-            "clip_rect": None,
+            "clip_rect": clip_rect,
         }
 
 
@@ -596,11 +656,6 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
             raise ValueError(
                 f"mode must be 'strict' or 'hybrid', got {mode!r}"
             )
-        if mode == "hybrid":
-            raise NotImplementedError(
-                "hybrid mode is a later slice per ADR-0015 ordered delivery; "
-                "only strict mode exists in this build"
-            )
         self._mode = mode
         self._generation = 0
         self._last_diagnostics: tuple = ()
@@ -608,7 +663,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
 
     @property
     def mode(self) -> str:
-        """Selected profile mode: ``'strict'`` in this slice."""
+        """Selected profile mode: ``'strict'`` or ``'hybrid'``."""
         return self._mode
 
     @property
@@ -634,7 +689,15 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         """
         result = self._render(dpi=dpi, **kwargs)
         if target is not None:
-            self._write_target(target, result.png_bytes)
+            try:
+                self._write_target(target, result.png_bytes)
+            except BaseException:
+                # The render succeeded but publication failed. ADR-0015 §9:
+                # a failed attempt must not leave previously published
+                # diagnostics behind, so stale fallback state is never
+                # reported.
+                self._last_diagnostics = ()
+                raise
         return result
 
     # -- Matplotlib-compatible output methods -----------------------------
@@ -677,7 +740,15 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         del facecolor, edgecolor
         result = self._render(dpi=dpi)
         if filename_or_obj is not None:
-            self._write_target(filename_or_obj, result.png_bytes)
+            try:
+                self._write_target(filename_or_obj, result.png_bytes)
+            except BaseException:
+                # The render succeeded but publication failed (e.g. an
+                # OSError from the target). ADR-0015 §9: a failed attempt
+                # must not leave previously published diagnostics behind,
+                # so stale fallback state is never reported.
+                self._last_diagnostics = ()
+                raise
 
     def print_figure(self, filename, dpi=None, facecolor=None, edgecolor=None,
                      orientation="portrait", format=None, *,
@@ -756,57 +827,94 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
 
     def _render(self, *, dpi: float | str | None = None,
                 **kwargs: Any) -> LumenPlotPngResult:
-        """Run preflight, build the spec, call the native seam once."""
+        """Run preflight, build the spec, call the native seam once.
+
+        In hybrid mode a stable ``unsupported-capability`` failure of the
+        strict path is replaced by the whole-frame Agg fallback result; the
+        generation counter is spent exactly once for the whole attempt so
+        the diagnostic names the same attempt as the output. Any other
+        failure (missing native seam, internal errors) propagates in both
+        modes.
+        """
         generation = self._generation + 1
         self._generation = generation
         self._last_diagnostics = ()
 
+        try:
+            return self._render_strict(generation=generation, dpi=dpi,
+                                       **kwargs)
+        except LumenPlotUnsupportedError as error:
+            if error.code != _UNSUPPORTED_TOKEN or self._mode != "hybrid":
+                raise
+            reason = str(error)
+            type_context = error.type_context
+            return self._render_hybrid_fallback(
+                generation=generation,
+                dpi=self._resolve_dpi(dpi),
+                reason=reason,
+                type_context=type_context,
+            )
+
+    def _render_strict(self, *, generation: int,
+                       dpi: float | str | None = None,
+                       **kwargs: Any) -> LumenPlotPngResult:
+        """Run one strict native attempt at an already-spent generation."""
+
         output_dpi = self._resolve_dpi(dpi)
         figure = self.figure
 
-        width_in, height_in = figure.get_size_inches()
-        width_px = int(round(float(width_in) * output_dpi))
-        height_px = int(round(float(height_in) * output_dpi))
-        if width_px <= 0 or height_px <= 0:
-            raise LumenPlotUnsupportedError("non-positive canvas size")
-
+        # API 0005 §5 / ADR-0015 §6: the whole attempt -- eligibility
+        # traversal and geometry assembly alike -- runs under the effective
+        # savefig DPI, and the temporary effective-DPI state is restored
+        # afterwards whatever the outcome.
+        original_figure_dpi = float(figure.dpi)
+        figure.dpi = output_dpi
         try:
-            preflight = _EligibilityPreflight()
-            preflight.check_static(figure)
-            preflight.collect(figure)
-            if preflight.reasons:
-                type_context, reason = preflight.reasons[0]
-                raise LumenPlotUnsupportedError(
-                    f"unsupported content in strict mode: {reason}",
-                    type_context=type_context,
-                    generation=generation,
-                )
-            if not preflight.background_seen:
-                raise LumenPlotUnsupportedError(
-                    "figure background was not observed",
-                    generation=generation,
-                )
-            if preflight.line_paths == 0:
-                # An eligible frame still needs at least one line stroke;
-                # a bare background renders fine though.
-                pass
-            spec = preflight.build_frame_spec(
-                figure,
-                width_px=width_px,
-                height_px=height_px,
-                output_dpi=output_dpi,
-            )
-        except LumenPlotUnsupportedError as error:
-            if error.generation is None:
-                error.generation = generation
-            raise
-        except (ValueError, TypeError, RuntimeError) as error:
-            raise LumenPlotUnsupportedError(
-                f"preflight traversal failed: {error}",
-                generation=generation,
-            ) from error
+            width_in, height_in = figure.get_size_inches()
+            width_px = int(round(float(width_in) * output_dpi))
+            height_px = int(round(float(height_in) * output_dpi))
+            if width_px <= 0 or height_px <= 0:
+                raise LumenPlotUnsupportedError("non-positive canvas size")
 
-        png_bytes = self._call_native(spec, generation)
+            try:
+                preflight = _EligibilityPreflight()
+                preflight.check_static(figure)
+                preflight.collect(figure)
+                if preflight.reasons:
+                    type_context, reason = preflight.reasons[0]
+                    raise LumenPlotUnsupportedError(
+                        f"unsupported content in strict mode: {reason}",
+                        type_context=type_context,
+                        generation=generation,
+                    )
+                if not preflight.background_seen:
+                    raise LumenPlotUnsupportedError(
+                        "figure background was not observed",
+                        generation=generation,
+                    )
+                if preflight.line_paths == 0:
+                    # An eligible frame still needs at least one line stroke;
+                    # a bare background renders fine though.
+                    pass
+                spec = preflight.build_frame_spec(
+                    figure,
+                    width_px=width_px,
+                    height_px=height_px,
+                    output_dpi=output_dpi,
+                )
+            except LumenPlotUnsupportedError as error:
+                if error.generation is None:
+                    error.generation = generation
+                raise
+            except (ValueError, TypeError, RuntimeError) as error:
+                raise LumenPlotUnsupportedError(
+                    f"preflight traversal failed: {error}",
+                    generation=generation,
+                ) from error
+
+            png_bytes = self._call_native(spec, generation)
+        finally:
+            figure.dpi = original_figure_dpi
         return LumenPlotPngResult(png_bytes, ())
 
     def _call_native(self, spec: dict, generation: int) -> bytes:
@@ -816,8 +924,16 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
             try:
                 data = render_frame_png(spec)
             except ValueError as error:
+                # The frozen seam contract (crates/lumenplot-python
+                # ``FrameError``) raises bare ValueError only for Rust-side
+                # spec-validation failures, which include capacity budgets
+                # (e.g. the per-path point cap). ADR-0015 §9 makes capacity
+                # and overflow terminal: this must NOT carry the default
+                # unsupported-capability token, or hybrid mode would convert
+                # it into a whole-frame Agg fallback.
                 raise LumenPlotUnsupportedError(
                     f"native seam rejected the frame spec: {error}",
+                    code="internal",
                     generation=generation,
                 ) from error
             except RuntimeError as error:
@@ -842,6 +958,46 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
             code="backend-unavailable",
             generation=generation,
         )
+
+    def _render_hybrid_fallback(
+        self,
+        *,
+        generation: int,
+        dpi: float,
+        reason: str,
+        type_context: str | None,
+    ) -> LumenPlotPngResult:
+        """Produce the whole-frame Agg fallback result (API 0002/0005).
+
+        Renders the complete frame through stock public ``FigureCanvasAgg``
+        PNG output at the requested effective DPI, then restores any
+        temporary canvas state even on failure. Success publishes exactly
+        one structured diagnostic describing reason, type context,
+        generation, output format, and raster/vector scope; a failed
+        fallback attempt publishes nothing.
+        """
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        buffer = io.BytesIO()
+        previous_canvas = self.figure.canvas
+        try:
+            FigureCanvasAgg(self.figure)
+            self.figure.savefig(buffer, format="png", dpi=dpi)
+        finally:
+            previous_canvas.figure = self.figure
+            self.figure.canvas = previous_canvas
+        png_bytes = buffer.getvalue()
+        diagnostic = LumenPlotFallbackDiagnostic(
+            kind=_UNSUPPORTED_TOKEN,
+            type=type_context,
+            generation=generation,
+            output_format="png",
+            scope="whole-frame",
+            representation="raster",
+            fallback_type="matplotlib-agg",
+        )
+        self._last_diagnostics = (diagnostic,)
+        return LumenPlotPngResult(png_bytes, self._last_diagnostics)
 
     def _write_target(self, target: Any, data: bytes) -> None:
         """Write finished bytes to path-like or binary file-like targets.
