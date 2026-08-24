@@ -371,6 +371,38 @@ class TestDpiAndFigsizeMatrix(unittest.TestCase):
         self.assertEqual(fig.dpi, 100)
         del fig
 
+    def test_dpi_none_uses_numeric_savefig_rcparam(self):
+        # ADR-0015 §6 / API 0005 §5: dpi=None resolves through rcParams
+        # ``savefig.dpi``; a numeric rc value drives pixel geometry and the
+        # native ``output_dpi`` exactly like an explicit dpi override.
+        fig = None
+        try:
+            with matplotlib.rc_context({"savefig.dpi": 150.0}):
+                fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+                result = canvas.render_png()
+            self.assertEqual(_ihdr_dimensions(result.png_bytes), (300, 150))
+            spec = _StubNativeModule.last_spec
+            assert spec is not None
+            self.assertEqual(spec["output_dpi"], 150.0)
+        finally:
+            del fig
+
+    def test_dpi_none_chains_figure_rcparam_to_original_dpi(self):
+        # ``savefig.dpi='figure'`` chains: None -> rc 'figure' -> the
+        # figure's original construction DPI (never the temporary
+        # effective-DPI state left by another render).
+        fig = None
+        try:
+            with matplotlib.rc_context({"savefig.dpi": "figure"}):
+                fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=175)
+                result = canvas.render_png()
+            self.assertEqual(_ihdr_dimensions(result.png_bytes), (350, 175))
+            spec = _StubNativeModule.last_spec
+            assert spec is not None
+            self.assertEqual(spec["output_dpi"], 175.0)
+        finally:
+            del fig
+
 
 # ---------------------------------------------------------------------------
 # Structural Agg-parity smoke (public-API geometry oracle, not byte equality)
@@ -1562,6 +1594,163 @@ class TestHybridTerminalFailures(unittest.TestCase):
         self.assertEqual(len(third.diagnostics), 1)
         self.assertEqual(third.diagnostics[0].generation, 3)
         self.assertEqual(canvas.last_diagnostics, third.diagnostics)
+        del fig
+
+
+# ---------------------------------------------------------------------------
+# Hybrid whole-frame fallback boundary (ADR-0015 §8): the capability fallback
+# renders the ENTIRE original Figure through public Agg exactly once and the
+# native seam never runs after an unsupported verdict, so a partial
+# native+Agg composite is structurally impossible.
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestHybridWholeFrameFallback(unittest.TestCase):
+    """§8: one whole-frame Agg render; zero native invocations."""
+
+    def setUp(self):
+        self._patcher = _install_stub_native()
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+        # The stub records specs on a CLASS attribute shared by every test
+        # case in the process; reset it so "the seam never ran" is checkable
+        # regardless of which sibling tests executed first.
+        _StubNativeModule.last_spec = None
+
+    def test_fallback_is_whole_frame_agg_without_partial_native_render(self):
+        # Unsupported content must produce exactly one public Agg render of
+        # the entire original figure object. The native stub must never see
+        # a spec: a partial native render followed by an Agg composite would
+        # violate ADR-0015 §8 ("native and Agg pixels are never composited;
+        # there is no partial subtree fallback").
+        agg_calls = []
+        real_savefig = figure.Figure.savefig
+
+        def spy_savefig(fig, *args, **kwargs):
+            agg_calls.append(("savefig", fig))
+            return real_savefig(fig, *args, **kwargs)
+
+        def build(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+        with unittest.mock.patch.object(
+            figure.Figure, "savefig", spy_savefig
+        ):
+            result = canvas.render_png()
+        # Exactly one Agg invocation, targeting the original figure itself.
+        self.assertEqual(
+            [(name, target is fig) for name, target in agg_calls],
+            [("savefig", True)],
+        )
+        # The native seam stayed completely out of this attempt. The stub
+        # records the last spec as a CLASS attribute (shared across test
+        # cases), so the assertion is meaningful only because this is the
+        # first render attempt executed inside this test case.
+        self.assertIsNone(_StubNativeModule.last_spec)
+        # One structured whole-frame diagnostic names this single attempt.
+        self.assertEqual(len(result.diagnostics), 1)
+        diagnostic = result.diagnostics[0]
+        self.assertEqual(diagnostic.kind, "unsupported-capability")
+        self.assertEqual(diagnostic.scope, "whole-frame")
+        self.assertEqual(diagnostic.representation, "raster")
+        self.assertEqual(diagnostic.fallback_type, "matplotlib-agg")
+        self.assertEqual(diagnostic.generation, canvas._generation)
+        self.assertEqual(canvas.last_diagnostics, result.diagnostics)
+        del fig
+
+
+# ---------------------------------------------------------------------------
+# Terminal BaseException failures (ADR-0015 §9): the frozen Rust seam raises
+# panics as a BaseException-derived type (the PyO3 PanicException surface),
+# which must propagate redacted and terminal in BOTH modes -- never wrapped
+# into an unsupported-capability token, and therefore never convertible into
+# a hybrid whole-frame Agg fallback.
+# ---------------------------------------------------------------------------
+
+
+class _PanicException(BaseException):
+    """Mirrors PyO3's panic surface: BaseException-derived, not RuntimeError."""
+
+
+class _PanicNativeModule(types.SimpleNamespace):
+    """Stub seam whose render call panics like the real PyO3 extension."""
+
+    @staticmethod
+    def render_frame_png(spec):  # noqa: N802 - mirrors native name
+        del spec  # the panic happens before any rendering work
+        raise _PanicException("panicked at crates/lumenplot-render: boom")
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestPanicIsTerminalFailure(unittest.TestCase):
+    """§9: redacted Rust panics stay explicit terminal errors, both modes."""
+
+    def _install(self, module):
+        import lumenplot_mpl.backend as real_backend
+
+        patcher = unittest.mock.patch.object(
+            real_backend, "_native", lambda: module
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_seam_panic_propagates_unchanged_in_strict_mode(self):
+        # A BaseException-derived seam failure is neither a ValueError nor a
+        # RuntimeError, so the adapter must re-raise it unchanged instead of
+        # mapping it onto the unsupported-capability envelope.
+        self._install(_PanicNativeModule())
+        fig, canvas = _eligible_canvas()
+        first_generation = canvas._generation
+        with self.assertRaises(_PanicException) as ctx:
+            canvas.render_png()
+        self.assertIn("boom", str(ctx.exception))
+        # The failed attempt spent exactly one generation and published
+        # nothing (no stale diagnostics).
+        self.assertEqual(canvas._generation, first_generation + 1)
+        self.assertEqual(canvas.last_diagnostics, ())
+        del fig
+
+    def test_seam_panic_is_terminal_in_hybrid_mode_no_agg_fallback(self):
+        # Same event in hybrid mode: a panic is NOT an unsupported-capability
+        # verdict, so the whole-frame Agg fallback must never run. Agg is
+        # instrumented to fail the test if it is invoked at all.
+        agg_calls = []
+        real_savefig = figure.Figure.savefig
+
+        def forbidden_savefig(fig, *args, **kwargs):
+            agg_calls.append("savefig")
+            return real_savefig(fig, *args, **kwargs)
+
+        def build(ax):
+            ax.axison = False
+            # Strict-eligible fixed-style surface so the hybrid attempt
+            # reaches the panicked seam instead of failing unsupported at
+            # preflight (ADR-0015 §5).
+            ax.add_line(Line2D([0, 10], [0, 5], color="red",
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        self._install(_PanicNativeModule())
+        fig, canvas = _hybrid_canvas_with(build)
+        first_generation = canvas._generation
+        with unittest.mock.patch.object(
+            figure.Figure, "savefig", forbidden_savefig
+        ):
+            with self.assertRaises(_PanicException):
+                canvas.render_png()
+        # No fallback ran; nothing was published; the attempt still spent
+        # exactly one generation.
+        self.assertEqual(agg_calls, [])
+        self.assertEqual(canvas._generation, first_generation + 1)
+        self.assertEqual(canvas.last_diagnostics, ())
+        self.assertIs(canvas.figure, fig)
+        self.assertIs(fig.canvas, canvas)
         del fig
 
 
