@@ -78,12 +78,16 @@ def _path_command(**overrides):
     return command
 
 
-def _frame_spec(width_px: int = 64, height_px: int = 48) -> dict:
+def _frame_spec(
+    width_px: int = 64,
+    height_px: int = 48,
+    commands: list[dict] | None = None,
+) -> dict:
     return {
         "width_px": width_px,
         "height_px": height_px,
         "output_dpi": 100.0,
-        "commands": [_path_command()],
+        "commands": [_path_command()] if commands is None else commands,
     }
 
 
