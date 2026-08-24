@@ -266,7 +266,9 @@ def validate_manifest(manifest: Any) -> list[str]:
         add("max_block_p99_ns", "expected a non-negative number or null")
 
     _validate_status(
-        manifest.get("status", _ABSENT), manifest.get("inconclusive_reasons"), add
+        manifest.get("status", _ABSENT),
+        manifest.get("inconclusive_reasons", _ABSENT),
+        add,
     )
     return errors
 
@@ -493,8 +495,12 @@ def _validate_clocks(clocks: Any, add: Any) -> None:
                     f"{path}.domain",
                     f"expected one of {list(CLOCK_DOMAINS)}, got {domain!r}",
                 )
-        if clock.get("unit") not in (None, "ns"):
-            add(f"{path}.unit", f"expected \"ns\", got {clock['unit']!r}")
+        unit = clock.get("unit")
+        if "unit" in clock and unit != "ns":
+            # Null is not absent: an explicit unit=null is rejected, while a
+            # missing key keeps the field optional (D1 record-only set).
+            detail = "null" if unit is None else repr(unit)
+            add(f"{path}.unit", f"expected \"ns\", got {detail}")
         available = clock.get("available")
         if available is not None and not isinstance(available, bool):
             add(f"{path}.available", "expected a bool")
@@ -601,17 +607,21 @@ def _validate_status(status: Any, reasons: Any, add: Any) -> None:
         add("status", f"expected one of {list(STATUSES)}, got null")
     elif status not in STATUSES:
         add("status", f"expected one of {list(STATUSES)}, got {status!r}")
-    # inconclusive_reasons is a nullable field: null means "nothing was
-    # recorded", which is acceptable only while the run is not inconclusive.
+    # inconclusive_reasons is nullable only as "nothing recorded": an absent
+    # field and an empty array are equivalent, but an explicit null is a
+    # validation error under every status (null is not absent).
     # An empty array counts as "nothing recorded"; a non-empty array counts
     # as recorded reasons and must match the status exactly.
-    shape_ok = reasons is None or (
-        isinstance(reasons, list) and all(is_nonempty_str(r) for r in reasons)
-    )
-    if not shape_ok:
+    if reasons is _ABSENT or (isinstance(reasons, list) and not reasons):
+        has_reasons = False
+    elif reasons is None:
+        add("inconclusive_reasons", "expected an array of non-empty strings, got null")
+        return
+    elif isinstance(reasons, list) and all(is_nonempty_str(r) for r in reasons):
+        has_reasons = True
+    else:
         add("inconclusive_reasons", "expected an array of non-empty strings")
         return
-    has_reasons = isinstance(reasons, list) and len(reasons) > 0
     if status == "inconclusive" and not has_reasons:
         add(
             "inconclusive_reasons",
