@@ -717,5 +717,89 @@ class TestBarPixelParity(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# 5. strict/hybrid mode behavior (contract addendum, review card item 5)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
+class TestBarModeBehavior(unittest.TestCase):
+    """Strict renders bars through the native path; hybrid degrades only
+    as the unchanged whole-frame Agg fallback (contract addendum pinned
+    for the bar lane by technical-manager)."""
+
+    def setUp(self):
+        _StubNativeModule.last_spec = None
+        self.patcher = _install_stub_native()
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+
+    def test_strict_bars_render_through_the_native_path(self):
+        fig, canvas, ax = _bar_canvas(
+            build=lambda ax: ax.bar([2, 8], [4, -2], width=1.0,
+                                    color="steelblue"),
+        )
+        result = canvas.render_png()
+        # The native seam was called and no fallback diagnostics exist.
+        self.assertIsNot(_StubNativeModule.last_spec, None)
+        self.assertEqual(result.diagnostics, ())
+        commands = [c for c in _StubNativeModule.last_spec["commands"]
+                    if not c.get("decoration")]
+        self.assertEqual(len(commands), 2)
+
+    def test_hybrid_bar_content_still_reaches_native_when_eligible(self):
+        """Hybrid is not a downgrade path for eligible content: eligible
+        bars still render natively with zero diagnostics."""
+        fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        canvas = _load_backend().FigureCanvasLumenPlot(fig, mode="hybrid")
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.axison = False
+        ax.bar([2, 8], [4, -2], width=1.0, color="steelblue")
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(-3.0, 5.0)
+        result = canvas.render_png()
+        self.assertIsNot(_StubNativeModule.last_spec, None)
+        self.assertEqual(result.diagnostics, ())
+        commands = [c for c in _StubNativeModule.last_spec["commands"]
+                    if not c.get("decoration")]
+        self.assertEqual(len(commands), 2)
+
+    def test_hybrid_fallback_is_whole_frame_for_ineligible_bars(self):
+        """An ineligible bar (hatched Rectangle) in hybrid mode yields
+        exactly one whole-frame raster Agg record -- never a per-bar or
+        subtree substitution; generation is spent once for the attempt."""
+
+        def build(ax):
+            ax.axison = False
+            ax.add_patch(matplotlib.patches.Rectangle(
+                (1.0, 0.0), 4.0, 3.0, facecolor="red", hatch="//"))
+            ax.set_xlim(0.0, 10.0)
+            ax.set_ylim(0.0, 5.0)
+
+        fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        canvas = _load_backend().FigureCanvasLumenPlot(fig, mode="hybrid")
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        build(ax)
+        before_generation = canvas._generation
+        result = canvas.render_png()
+        self.assertEqual(canvas._generation, before_generation + 1)
+        # Nothing reached the native seam: the whole frame fell back.
+        self.assertIsNone(_StubNativeModule.last_spec)
+        self.assertEqual(len(result.diagnostics), 1)
+        diagnostic = result.diagnostics[0]
+        self.assertIsInstance(
+            diagnostic, backend_mod.LumenPlotFallbackDiagnostic
+        )
+        self.assertEqual(diagnostic.kind, "unsupported-capability")
+        self.assertEqual(diagnostic.scope, "whole-frame")
+        self.assertEqual(diagnostic.representation, "raster")
+        self.assertEqual(diagnostic.output_format, "png")
+        self.assertEqual(diagnostic.fallback_type, "matplotlib-agg")
+        self.assertIsInstance(diagnostic.generation, int)
+        self.assertGreaterEqual(diagnostic.generation, 1)
+        self.assertEqual(diagnostic.generation, canvas._generation)
+        self.assertEqual(canvas.last_diagnostics, result.diagnostics)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
