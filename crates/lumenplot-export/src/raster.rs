@@ -116,9 +116,10 @@ impl RasterPlan {
         // Upper bound on the encoded PNG size. Since ADR-0018 (IDAT DEFLATE
         // `Balanced`), the encoder emits compressed blocks, so this stored-block
         // budget is intentionally conservative rather than tight: it still bounds
-        // any possible encoder output (compressed output is strictly smaller than
-        // the stored encoding) for the pre-flight ceiling check. `CappedWriter`
-        // independently enforces MAX_OUTPUT_BYTES while streaming.
+        // any possible encoder output for the pre-flight ceiling check, because
+        // every 65,535-byte block contributes at most 5 header bytes plus its
+        // (at most) 65,535 payload bytes, all of which are counted here.
+        // `CappedWriter` independently enforces MAX_OUTPUT_BYTES while streaming.
         let stored_blocks = rows_with_filter
             .checked_add(65_534)
             .ok_or_else(ExportError::capacity_exceeded)?

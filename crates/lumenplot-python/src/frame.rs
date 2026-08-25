@@ -940,8 +940,8 @@ impl Write for CappedWriter {
 }
 
 /// Encodes straight-alpha RGBA8 into the same PNG container shape used by the
-/// accepted line seam: RGBA8, sRGB perceptual intent, no compression, no
-/// filters, no ancillary chunks.
+/// accepted line seam: RGBA8, sRGB perceptual intent, DEFLATE-compressed IDAT
+/// per ADR 0018 as amended, no filters, no ancillary chunks.
 pub(crate) fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, FrameError> {
     let expected = usize::try_from(width)
         .ok()

@@ -10,9 +10,10 @@
 
 ## Requirement references
 
-Serves the public-documentation hygiene duty of `LP-SEC-008` (public docs stay
-accurate and free of misleading claims) and supports the transparency intent of
-`LP-QUAL-022` (no silent behavior).
+Serves `LP-SEC-008` (keep public documentation free of private task/session
+identifiers, local paths, host details, credentials, and raw internal artifact
+paths) and supports the transparency intent of `LP-MPL-008` (silent omission
+and unreported best-effort degradation are not allowed).
 It changes no requirement row, closes no gate, and adds no dependency.
 
 ## Context
