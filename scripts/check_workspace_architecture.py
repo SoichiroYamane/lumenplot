@@ -3343,7 +3343,15 @@ def _phase3a2_check_pyproject(root: Path, errors: list[str]) -> None:
     if project.get("requires-python") != ">=3.11,<3.15":
         errors.append("phase3a2 pyproject: Requires-Python must be >=3.11,<3.15")
     dependencies = project.get("dependencies", [])
-    if isinstance(dependencies, list) and any("matplotlib" in str(item).lower() for item in dependencies):
+    # Phase-3B: while the backend adapter exists, the distribution genuinely
+    # imports Matplotlib (backend.py and its Agg whole-frame fallback), so the
+    # historical rejection no longer applies to a declared runtime dependency;
+    # it keeps applying to the pre-Phase-3B baseline (fail-closed both ways).
+    if (
+        isinstance(dependencies, list)
+        and any("matplotlib" in str(item).lower() for item in dependencies)
+        and _phase3b_activation_reason(root) is None
+    ):
         errors.append("phase3a2 pyproject: Matplotlib dependency is forbidden")
     phase3b_active = _phase3b_activation_reason(root) is not None
     lowered_project = str(project).lower()

@@ -3589,6 +3589,87 @@ jobs:
 
         self.assert_rejected(mutate, "private path or credential text is not redacted", evidence=True)
 
+    # Matplotlib runtime dependency (workstream-manager decision on task
+    # t_6b45a197): admitted exactly while the Phase-3B backend allowance is
+    # active, because backend.py genuinely imports Matplotlib; the historical
+    # rejection keeps applying to the pre-Phase-3B baseline (fail-closed).
+    def test_matplotlib_dependency_is_admitted_under_phase3b_allowance(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "pyproject.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                .replace(
+                    'dependencies = ["numpy==2.4.6"]',
+                    'dependencies = ["numpy==2.4.6", "matplotlib>=3.11,<3.12"]',
+                )
+                # A Matplotlib mention activates the sanctioned-entry-point
+                # rule, so the Phase-3B identity table must be present too.
+                + '\n[project.entry-points."matplotlib.backend"]\n'
+                'lumenplot = "lumenplot_mpl.backend"\n',
+                encoding="utf-8",
+            )
+            # Activation sentinel for the Phase-3B allowance: the adapter file
+            # itself. Content mirrors the admitted shape (docstring only: no
+            # pyplot import, no public render_png surface).
+            (root / "python/lumenplot_mpl/backend.py").write_text(
+                '"""Phase-3B backend adapter sentinel."""\n',
+                encoding="utf-8",
+            )
+            # The remaining obligations of the active Phase-3B allowance: the
+            # raster-pipeline Cargo pins, the split bridge source layout, and
+            # the whole-frame seam alongside the private line seam.
+            manifest_path = root / "crates/lumenplot-python/Cargo.toml"
+            manifest_path.write_text(
+                manifest_path.read_text(encoding="utf-8").replace(
+                    'numpy = { version = "=0.29.0", default-features = false }',
+                    'numpy = { version = "=0.29.0", default-features = false }\n'
+                    'png = { version = "=0.18.1", default-features = false }\n'
+                    'tiny-skia = { version = "=0.12.0", default-features = false, features = ["std"] }',
+                ),
+                encoding="utf-8",
+            )
+            lib_path = root / "crates/lumenplot-python/src/lib.rs"
+            lib_path.write_text(
+                lib_path.read_text(encoding="utf-8").replace(
+                    "    module.add_function(wrap_pyfunction!(render_line_png, module)?)?;\n",
+                    "    module.add_function(wrap_pyfunction!(render_line_png, module)?)?;\n"
+                    "    module.add_function(wrap_pyfunction!(render_frame_png, module)?)?;\n",
+                ),
+                encoding="utf-8",
+            )
+            (root / "crates/lumenplot-python/src/frame.rs").write_text(
+                "//! Whole-frame rasterizer seam.\n"
+                "use pyo3::prelude::*;\n\n"
+                "#[pyfunction]\n"
+                "fn render_frame_png() -> PyResult<Vec<u8>> {\n"
+                "    Ok(Vec::new())\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+        with self.fixture() as temporary:
+            root = Path(temporary)
+            mutate(root)
+            returncode, output = self.run_checker(root)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(
+                output,
+                "workspace architecture: OK\nphase3a2 static contract: OK\n",
+            )
+
+    def test_matplotlib_dependency_stays_forbidden_without_phase3b(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "pyproject.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    'dependencies = ["numpy==2.4.6"]',
+                    'dependencies = ["numpy==2.4.6", "matplotlib>=3.11,<3.12"]',
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "phase3a2 pyproject: Matplotlib dependency is forbidden")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -41,7 +41,8 @@ README as stale.
 ### Prerequisites
 
 - Python 3.11–3.14 (the packaged range of `lumenplot-mpl`)
-- `numpy==2.4.6` (pinned dependency)
+- `numpy==2.4.6` and `matplotlib>=3.11,<3.12` (pinned-range dependencies;
+  `pip install .` resolves them automatically)
 - A Rust toolchain (the extension module is built from source via
   [maturin](https://www.maturin.rs); there are no binary wheels yet)
 
