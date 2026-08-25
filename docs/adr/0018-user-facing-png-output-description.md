@@ -10,8 +10,9 @@
 
 ## Requirement references
 
-Serves `LP-DOC-002` (user-facing documentation describes shipped behavior)
-and supports the transparency intent of `LP-QUAL-022` (no silent behavior).
+Serves the public-documentation hygiene duty of `LP-SEC-008` (public docs stay
+accurate and free of misleading claims) and supports the transparency intent of
+`LP-QUAL-022` (no silent behavior).
 It changes no requirement row, closes no gate, and adds no dependency.
 
 ## Context
