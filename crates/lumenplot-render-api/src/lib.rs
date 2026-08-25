@@ -1,3 +1,12 @@
-//! Private Phase-0 documentation stub for the internal render boundary.
+//! Private internal render boundary.
 //!
-//! Packet construction and validation are deferred to a later phase.
+//! The accepted M1 slice — the minimal synchronous, CPU-side frame seam —
+//! lives in [`crate::frame`] and is re-exported below. Packet construction
+//! beyond the line-frame path stays deferred to later phases.
+
+mod frame;
+
+pub use crate::frame::{
+    FramePacket, FrameSeamError, FrameSeamErrorKind, FrameSpec, PacketPoint, PacketRevision,
+    PacketSegment, PacketSeries, SceneHandle,
+};

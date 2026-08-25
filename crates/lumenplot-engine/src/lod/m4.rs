@@ -48,6 +48,13 @@ pub(crate) fn select_monotonic(
         .checked_mul(4)
         .ok_or_else(|| SceneError::new(SceneErrorKind::CapacityExceeded))?;
 
+    // Strict MonotonicX contract guard: the bucketing path only ever reasons
+    // over x-nondecreasing slices, and violations fail explicitly instead of
+    // degrading to stride sampling or reordered output.
+    for &(start, end) in &visible_ranges {
+        ensure_nondecreasing(&series.points()[start..end])?;
+    }
+
     if scales.x() == AxisScale::Log10 || scales.y() == AxisScale::Log10 {
         return full_resolution(series, &visible_ranges, scales, true);
     }
@@ -98,6 +105,22 @@ pub(crate) fn select_monotonic(
         full_resolution: false,
         effective_bins,
     })
+}
+
+/// Strict MonotonicX precondition check over one visible point run.
+///
+/// The O(W) extrema bucketing reasons about x-nondecreasing slices; a
+/// decreasing x pair is a caller contract violation and must surface as an
+/// explicit [`SceneErrorKind::TopologyViolation`] rather than being silently
+/// repaired, reordered, or decimated. Equal adjacent x values (duplicate-x
+/// runs) remain valid MonotonicX samples.
+fn ensure_nondecreasing(points: &[Point]) -> Result<(), SceneError> {
+    for pair in points.windows(2) {
+        if pair[1].x < pair[0].x {
+            return Err(SceneError::new(SceneErrorKind::TopologyViolation));
+        }
+    }
+    Ok(())
 }
 
 fn visible_ranges(series: &SeriesStorage, q0: f64, q1: f64) -> Vec<(usize, usize)> {
@@ -448,5 +471,614 @@ mod tests {
         .expect("log selection");
         assert_eq!(log.segments.len(), 3);
         assert!(log.full_resolution);
+    }
+
+    fn monotonic_series_from_xy(
+        x: Vec<f64>,
+        y: Vec<f64>,
+        segments: Option<Vec<std::ops::Range<usize>>>,
+    ) -> std::sync::Arc<SeriesStorage> {
+        SeriesStorage::from_normalized(
+            SeriesInput::from_owned_xy(Topology::MonotonicX, x, y, segments)
+                .expect("input")
+                .into_normalized(),
+            DataEpoch(1),
+            crate::data::ChunkRevision(1),
+        )
+        .expect("storage")
+    }
+
+    /// Brute-force model oracle: for every populated (segment, bin) select
+    /// first, last, minimum-y, and maximum-y exactly as the Phase-1A M4
+    /// contract defines them (ADR 0010 section 7). Non-final bins are
+    /// half-open; the final bin includes q1. Minimum and maximum use finite
+    /// y values with the earliest SourceIndex winning ties.
+    fn brute_force_selection_sources(series: &SeriesStorage, boundaries: &[f64]) -> Vec<u64> {
+        let mut expected = Vec::new();
+        let segment = &series.segments()[0];
+        let points = series.points();
+        let bisect = |value: f64, upper: bool| {
+            let mut left = segment.point_start;
+            let mut right = segment.point_end;
+            while left < right {
+                let middle = left + (right - left) / 2;
+                let goes_right = if upper {
+                    points[middle].x <= value
+                } else {
+                    points[middle].x < value
+                };
+                if goes_right {
+                    left = middle + 1;
+                } else {
+                    right = middle;
+                }
+            }
+            left
+        };
+        for bin in 0..boundaries.len() - 1 {
+            let start = bisect(boundaries[bin], false);
+            let end = if bin + 2 == boundaries.len() {
+                bisect(boundaries[bin + 1], true)
+            } else {
+                bisect(boundaries[bin + 1], false)
+            };
+            if start >= end {
+                continue;
+            }
+            let range = &points[start..end];
+            expected.push(range.first().expect("first").source);
+            expected.push(
+                range
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, left), (_, right)| {
+                        left.y
+                            .total_cmp(&right.y)
+                            .then(left.source.cmp(&right.source))
+                    })
+                    .map(|(_, point)| point.source)
+                    .expect("minimum"),
+            );
+            expected.push(
+                range
+                    .iter()
+                    .max_by(|left, right| {
+                        left.y
+                            .total_cmp(&right.y)
+                            .then(right.source.cmp(&left.source))
+                    })
+                    .map(|point| point.source)
+                    .expect("maximum"),
+            );
+            expected.push(range.last().expect("last").source);
+        }
+        expected.sort_unstable();
+        expected.dedup();
+        expected
+    }
+
+    #[test]
+    fn spike_extrema_survive_m4_decimation() {
+        // LP-LOD-003/LP-LOD-002 spike fixture: narrow one-sample extrema in
+        // interior bins must survive selection, which blind fixed-stride
+        // decimation cannot guarantee.
+        let count = 240usize;
+        let x: Vec<_> = (0..count).map(|value| value as f64).collect();
+        let mut y: Vec<_> = (0..count).map(|value| (value % 7) as f64).collect();
+        let spikes = [(37usize, 500.0f64), (118, -700.0), (201, 900.0)];
+        for &(index, value) in &spikes {
+            y[index] = value;
+        }
+        let series = monotonic_series_from_xy(x, y, None);
+        let bins = 8;
+        let selection = select_monotonic(
+            &series,
+            &Viewport::from_bounds(0.0, (count - 1) as f64, -1_000.0, 1_000.0).expect("viewport"),
+            &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+            bins,
+        )
+        .expect("selection");
+        assert!(!selection.full_resolution);
+        let actual: std::collections::BTreeSet<u64> = selection.segments[0]
+            .points
+            .iter()
+            .map(|point| point.source)
+            .collect();
+        for &(index, _) in &spikes {
+            assert!(
+                actual.contains(&(index as u64)),
+                "spike at {index} was dropped by LOD selection"
+            );
+        }
+        // Negative control: uniform fixed-stride decimation misses at least
+        // one spike, so the fixture genuinely distinguishes M4 from stride.
+        let stride_step = count / bins;
+        let stride_samples: std::collections::BTreeSet<usize> =
+            (0..count).step_by(stride_step).collect();
+        assert!(
+            spikes
+                .iter()
+                .any(|&(index, _)| !stride_samples.contains(&index)),
+            "fixture lost its discriminating power: stride would keep every spike"
+        );
+        // Every populated bin still contributes its first and last samples.
+        let boundaries = make_boundaries(0.0, (count - 1) as f64, bins).expect("boundaries");
+        let expected = brute_force_selection_sources(&series, &boundaries);
+        let actual_vec: Vec<_> = actual.into_iter().collect();
+        assert_eq!(actual_vec, expected);
+    }
+
+    #[test]
+    fn extrema_match_bruteforce_oracle_on_generated_series() {
+        // LP-LOD-003: first/min/max/last with source-index identity, order,
+        // earliest-source tie-breaking, duplicate-x runs, and interior spikes
+        // are compared against an independent brute-force scan.
+        for case in 0..10usize {
+            let count = 400 + case * 53;
+            let bins = 5 + case % 4;
+            let mut x: Vec<_> = (0..count).map(|value| value as f64).collect();
+            let mut y: Vec<_> = (0..count)
+                .map(|value| ((value * value) % 97) as f64 - 48.0)
+                .collect();
+            // Deterministic duplicate-x runs keep distinct samples distinct.
+            for duplicate_at in [50, 150, 250] {
+                if duplicate_at < count {
+                    x[duplicate_at] = x[duplicate_at - 1];
+                }
+            }
+            // Interior spikes far outside the background band.
+            let spike_positions = [
+                (40 + case * 11).min(count - 1),
+                count / 2 + (case % 17),
+                (310 + case * 3).min(count - 1),
+            ];
+            for (offset, position) in spike_positions.into_iter().enumerate() {
+                y[position] = if offset % 2 == 0 {
+                    300.0 + case as f64 * 7.0
+                } else {
+                    -(350.0 + case as f64 * 5.0)
+                };
+            }
+            let series = monotonic_series_from_xy(x, y, None);
+            let view =
+                Viewport::from_bounds(0.0, (count - 1) as f64, -1_000.0, 1_000.0).expect("view");
+            let selection = select_monotonic(
+                &series,
+                &view,
+                &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+                bins,
+            )
+            .expect("selection");
+            assert!(!selection.full_resolution, "case {case}");
+            let boundaries = make_boundaries(0.0, (count - 1) as f64, bins).expect("boundaries");
+            assert_eq!(selection.effective_bins, boundaries.len() - 1);
+            let mut actual: Vec<_> = selection.segments[0]
+                .points
+                .iter()
+                .map(|point| point.source)
+                .collect();
+            // Within a segment, candidates are ordered by SourceIndex.
+            assert!(
+                actual.windows(2).all(|pair| pair[0] < pair[1]),
+                "case {case}: candidates not source-ordered"
+            );
+            actual.sort_unstable();
+            actual.dedup();
+            assert_eq!(
+                actual,
+                brute_force_selection_sources(&series, &boundaries),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn topology_violation_rejects_cross_topology_selection() {
+        // LP-LOD-002 negative fixture: each selector refuses foreign topology.
+        let monotonic = monotonic_series_from_xy(vec![0.0, 1.0, 2.0], vec![1.0, 0.0, 2.0], None);
+        let arbitrary = {
+            let input = SeriesInput::from_owned_xy(
+                Topology::ArbitraryXY,
+                vec![2.0, 0.0, 1.0],
+                vec![2.0, 0.0, 1.0],
+                None,
+            )
+            .expect("input");
+            SeriesStorage::from_normalized(
+                input.into_normalized(),
+                DataEpoch(1),
+                crate::data::ChunkRevision(1),
+            )
+            .expect("storage")
+        };
+        let viewport = Viewport::from_bounds(0.0, 2.0, -1.0, 3.0).expect("viewport");
+        let scales = AxisScales::new(AxisScale::Linear, AxisScale::Linear);
+        assert_eq!(
+            select_monotonic(&arbitrary, &viewport, &scales, 4)
+                .expect_err("foreign topology must fail")
+                .kind(),
+            SceneErrorKind::TopologyViolation
+        );
+        assert_eq!(
+            crate::lod::arbitrary::select_arbitrary(&monotonic, &viewport, &scales)
+                .expect_err("foreign topology must fail")
+                .kind(),
+            SceneErrorKind::TopologyViolation
+        );
+    }
+
+    #[test]
+    fn zero_bins_are_rejected_before_selection() {
+        let series =
+            monotonic_series_from_xy(vec![0.0, 1.0, 2.0, 3.0], vec![0.0, 1.0, -1.0, 2.0], None);
+        assert_eq!(
+            select_monotonic(
+                &series,
+                &Viewport::from_bounds(0.0, 3.0, -2.0, 2.0).expect("viewport"),
+                &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+                0,
+            )
+            .expect_err("zero bins must fail")
+            .kind(),
+            SceneErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn log_scales_use_explicit_full_resolution_and_split_derived_gaps() {
+        // LP-LOD-002 policy fixture: Log10 never uses the accelerated binning
+        // decision; nonpositive coordinates become derived out-of-domain gaps
+        // and canonical data is not silently narrowed.
+        // x stays nondecreasing across the whole source, including gap
+        // slots; y carries nonpositive values that become derived gaps.
+        let x = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let y = vec![1.0, 2.0, -1.0, -3.0, 4.0, 5.0];
+        let series = monotonic_series_from_xy(x, y, None);
+        let scales = AxisScales::new(AxisScale::Log10, AxisScale::Log10);
+        let selection = select_monotonic(
+            &series,
+            &Viewport::from_bounds(1.0, 5.0, 0.1, 6.0).expect("viewport"),
+            &scales,
+            4,
+        )
+        .expect("selection");
+        assert!(selection.full_resolution);
+        assert_eq!(selection.effective_bins, 1);
+        let flattened: Vec<Vec<u64>> = selection
+            .segments
+            .iter()
+            .map(|segment| segment.points.iter().map(|point| point.source).collect())
+            .collect();
+        assert_eq!(flattened, vec![vec![1], vec![4, 5]]);
+    }
+
+    #[test]
+    fn collapsed_boundaries_keep_selection_exact_against_the_oracle() {
+        // Adjacent f64 boundaries may collapse deterministically into fewer
+        // effective bins; the selection must stay exact for the effective
+        // bins rather than degrading toward stride sampling.
+        let count = 96usize;
+        let x: Vec<_> = (0..count).map(|value| value as f64).collect();
+        let y: Vec<_> = (0..count)
+            .map(|value| {
+                if value == 61 {
+                    800.0
+                } else {
+                    (value % 5) as f64
+                }
+            })
+            .collect();
+        let series = monotonic_series_from_xy(x, y, None);
+        let next_after_zero = f64::from_bits(0.0_f64.to_bits() + 1);
+        let view = Viewport::from_bounds(0.0, next_after_zero, -1.0, 1_000.0).expect("viewport");
+        let selection = select_monotonic(
+            &series,
+            &view,
+            &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+            16,
+        )
+        .expect("selection");
+        let boundaries = make_boundaries(view.x().min(), view.x().max(), 16).expect("boundaries");
+        assert!(boundaries.len() <= 3, "boundaries failed to collapse");
+        assert_eq!(selection.effective_bins, boundaries.len() - 1);
+        let mut actual: Vec<_> = selection.segments[0]
+            .points
+            .iter()
+            .map(|point| point.source)
+            .collect();
+        actual.sort_unstable();
+        actual.dedup();
+        assert_eq!(actual, brute_force_selection_sources(&series, &boundaries));
+    }
+
+    /// Naive reference bucketing model over the accepted query-time
+    /// boundaries (the deterministic boundary construction has its own
+    /// dedicated fixtures; sharing it follows the LP-LOD-003 oracle
+    /// precedent). Membership, extrema ties, and ordering are recomputed
+    /// with plain linear scans — deliberately nothing like the production
+    /// index path. Production never calls this.
+    fn naive_bucket_extrema_sources(series: &SeriesStorage, boundaries: &[f64]) -> Vec<u64> {
+        let mut expected = Vec::new();
+        let points = series.points();
+        for segment in series.segments() {
+            for bin in 0..boundaries.len() - 1 {
+                let lower = boundaries[bin];
+                let upper_is_final = bin + 2 == boundaries.len();
+                let members: Vec<_> = points[segment.point_start..segment.point_end]
+                    .iter()
+                    .filter(|point| {
+                        point.x >= lower
+                            && (if upper_is_final {
+                                point.x <= boundaries[bin + 1]
+                            } else {
+                                point.x < boundaries[bin + 1]
+                            })
+                    })
+                    .collect();
+                if members.is_empty() {
+                    continue;
+                }
+                let min = members
+                    .iter()
+                    .min_by(|left, right| {
+                        left.y
+                            .total_cmp(&right.y)
+                            .then(left.source.cmp(&right.source))
+                    })
+                    .expect("minimum");
+                let max = members
+                    .iter()
+                    .max_by(|left, right| {
+                        left.y
+                            .total_cmp(&right.y)
+                            .then(right.source.cmp(&left.source))
+                    })
+                    .expect("maximum");
+                expected.push(members.first().expect("first").source);
+                expected.push(min.source);
+                expected.push(max.source);
+                expected.push(members.last().expect("last").source);
+            }
+        }
+        expected.sort_unstable();
+        expected.dedup();
+        expected
+    }
+
+    #[test]
+    fn bucketed_extrema_match_the_naive_per_bucket_model() {
+        // Local correctness fixture for the O(W)-intent bucketing regime
+        // (LP-LOD-001/LP-LOD-005): per x-domain bucket the accelerated path
+        // must retain exactly what a plain per-bucket scan retains — the
+        // first and last samples plus the minimum-y and maximum-y extrema
+        // with earliest-source tie-breaking — including interior spikes,
+        // duplicate-x runs, and chunk-cut splits of one logical segment.
+        for case in 0..12usize {
+            let count = 512 + case * 97;
+            let bins = 3 + case % 5;
+            let mut x: Vec<_> = (0..count).map(|value| value as f64 * 1.5).collect();
+            let mut y: Vec<_> = (0..count)
+                .map(|value| ((value * 37 + case * 13) % 251) as f64 - 120.0)
+                .collect();
+            // Interior spikes that only an extrema-preserving path survives.
+            let spikes = [
+                (case * 41 + 7).min(count - 1),
+                (count / 2 + case * 3).min(count - 1),
+                count - 1 - (case * 5).min(count - 2),
+            ];
+            for (offset, position) in spikes.into_iter().enumerate() {
+                y[position] = if offset % 2 == 0 {
+                    400.0 + case as f64
+                } else {
+                    -(450.0 + case as f64)
+                };
+            }
+            // Duplicate-x runs inside buckets must stay distinct samples.
+            for duplicate_at in [100usize, 300] {
+                x[duplicate_at] = x[duplicate_at - 1];
+            }
+            let series = monotonic_series_from_xy(x.clone(), y.clone(), None);
+            let q0 = 0.0;
+            let q1 = (count - 1) as f64 * 1.5;
+            let view = Viewport::from_bounds(q0, q1, -600.0, 600.0).expect("viewport");
+            assert!(
+                visible_count_of(&series, view) > 4 * bins,
+                "case {case}: fixture must exercise the bucketing regime"
+            );
+            let selection = select_monotonic(
+                &series,
+                &view,
+                &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+                bins,
+            )
+            .expect("selection");
+            assert!(!selection.full_resolution, "case {case}");
+            // One logical segment split across chunks must behave identically
+            // to the contiguous layout: same retained candidate set.
+            let cut = SeriesStorage::from_normalized(
+                {
+                    let (head, rest) = (0..count / 2, count / 2 + 2..count);
+                    let mut sx = Vec::new();
+                    let mut sy = Vec::new();
+                    for index in head {
+                        sx.push(x[index]);
+                        sy.push(y[index]);
+                    }
+                    sx.push(f64::NAN);
+                    sy.push(f64::NAN);
+                    for index in rest {
+                        sx.push(x[index]);
+                        sy.push(y[index]);
+                    }
+                    let gap_at = count / 2;
+                    let split_len = sx.len();
+                    SeriesInput::from_owned_xy(
+                        Topology::MonotonicX,
+                        sx,
+                        sy,
+                        Some(vec![0..gap_at, gap_at + 1..split_len]),
+                    )
+                    .expect("split input")
+                    .into_normalized()
+                },
+                DataEpoch(1),
+                crate::data::ChunkRevision(1),
+            )
+            .expect("split storage");
+            let actual: std::collections::BTreeSet<u64> = selection.segments[0]
+                .points
+                .iter()
+                .map(|point| point.source)
+                .collect();
+            let split_view = Viewport::from_bounds(q0, q1, -600.0, 600.0).expect("viewport");
+            let split_selection = select_monotonic(
+                &cut,
+                &split_view,
+                &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+                bins,
+            )
+            .expect("split selection");
+            let gap_at = count / 2;
+            // The structural gap slot consumes one source position, so split
+            // sources at or after the gap map back to original index + 1.
+            let split_actual: std::collections::BTreeSet<u64> = split_selection
+                .segments
+                .iter()
+                .flat_map(|segment| segment.points.iter().map(|point| point.source))
+                .map(|source| {
+                    if source >= gap_at as u64 {
+                        source + 1
+                    } else {
+                        source
+                    }
+                })
+                .collect();
+            assert_eq!(
+                split_selection.segments.len(),
+                2,
+                "case {case}: gap must split runs"
+            );
+            // Dropping interior samples can only remove candidates, never add
+            // or reorder them: the split selection is a subset of the
+            // contiguous one, and anything lost must be one of the two
+            // dropped samples.
+            let lost: Vec<_> = actual.difference(&split_actual).copied().collect();
+            assert!(
+                lost.iter().all(|&source| source == (count / 2) as u64 || source == (count / 2 + 1) as u64),
+                "case {case}: chunk cut changed retained candidates beyond the gap slots: {lost:?}"
+            );
+            let boundaries =
+                make_boundaries(view.x().min(), view.x().max(), bins).expect("boundaries");
+            let expected: std::collections::BTreeSet<u64> =
+                naive_bucket_extrema_sources(&series, &boundaries)
+                    .into_iter()
+                    .collect();
+            assert_eq!(actual, expected, "case {case}");
+            assert!(
+                actual.contains(&(spikes[0] as u64)),
+                "case {case}: interior spike dropped"
+            );
+        }
+    }
+
+    fn visible_count_of(series: &SeriesStorage, viewport: Viewport) -> usize {
+        visible_ranges(series, viewport.x().min(), viewport.x().max())
+            .iter()
+            .map(|&(start, end)| end - start)
+            .sum()
+    }
+
+    #[test]
+    fn decreasing_x_is_an_explicit_topology_violation_not_silent_repair() {
+        // Strict-contract negative (LP-LOD-004 model discipline): ingestion
+        // rejects decreasing MonotonicX input outright, and the selection
+        // contract itself must also refuse non-monotonic slices explicitly
+        // rather than repairing, reordering, or stride-decimating them.
+        // Exercised directly on the precondition check over a queried slice.
+        let points = [
+            Point {
+                source: 0,
+                x: 0.0,
+                y: 0.0,
+            },
+            Point {
+                source: 1,
+                x: 2.0,
+                y: 1.0,
+            },
+            Point {
+                source: 2,
+                x: 1.0,
+                y: 2.0,
+            },
+        ];
+        assert_eq!(
+            ensure_nondecreasing(&points)
+                .expect_err("decreasing x must fail")
+                .kind(),
+            SceneErrorKind::TopologyViolation
+        );
+        let duplicates = [
+            Point {
+                source: 0,
+                x: 1.0,
+                y: 0.0,
+            },
+            Point {
+                source: 1,
+                x: 1.0,
+                y: 1.0,
+            },
+            Point {
+                source: 2,
+                x: 1.0,
+                y: 2.0,
+            },
+        ];
+        assert!(ensure_nondecreasing(&duplicates).is_ok());
+        assert!(ensure_nondecreasing(&points[..2]).is_ok());
+    }
+
+    #[test]
+    fn bucketed_selection_keeps_f64_extrema_bit_exact_without_narrowing() {
+        // Canonical-data guard for the LOD path: the selected extrema carry
+        // their exact f64 payloads through selection. A hypothetical f32
+        // narrowing would round the near-maximum back onto the flat
+        // background value, so matching the full bit pattern proves the
+        // canonical precision survived (LP-DATA discipline applied here).
+        let count = 260usize;
+        let x: Vec<_> = (0..count).map(|value| value as f64).collect();
+        let near_max = 20.0_f64 + 20.0 * f64::EPSILON;
+        let near_min = -30.0_f64 - 30.0 * f64::EPSILON;
+        let mut y: Vec<_> = (0..count).map(|_| 10.0_f64).collect();
+        y[41] = near_max;
+        y[201] = near_min;
+        let series = monotonic_series_from_xy(x, y, None);
+        let selection = select_monotonic(
+            &series,
+            &Viewport::from_bounds(0.0, (count - 1) as f64, -100.0, 100.0).expect("viewport"),
+            &AxisScales::new(AxisScale::Linear, AxisScale::Linear),
+            8,
+        )
+        .expect("selection");
+        let selected: Vec<(u64, u64)> = selection.segments[0]
+            .points
+            .iter()
+            .map(|point| (point.source, point.y.to_bits()))
+            .collect();
+        assert!(
+            selected.contains(&(41, near_max.to_bits())),
+            "maximum lost bit-exact f64 identity through selection"
+        );
+        assert!(
+            selected.contains(&(201, near_min.to_bits())),
+            "minimum lost bit-exact f64 identity through selection"
+        );
+        let narrowed_max = (near_max as f32) as f64;
+        assert_ne!(
+            narrowed_max.to_bits(),
+            near_max.to_bits(),
+            "fixture lost discriminating power: f32 narrowing is lossless here"
+        );
     }
 }

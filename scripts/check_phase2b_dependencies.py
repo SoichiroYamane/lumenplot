@@ -129,6 +129,46 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "license": "MIT OR Apache-2.0",
         "dependencies": {"autocfg"},
     },
+    # B2-P Metal prototype lane (workstream-manager decision on task
+    # t_50138c06): transitive closure of the macOS-target-gated objc2 edges
+    # quarantined in lumenplot-render-metal.  Admitted only while the Metal
+    # static allowance is active; the pins must move with Cargo.lock.
+    "dispatch2": {
+        "version": "0.3.1",
+        "checksum": "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38",
+        "license": "Zlib OR Apache-2.0 OR MIT",
+        "dependencies": {"bitflags", "objc2"},
+    },
+    "objc2": {
+        "version": "0.6.2",
+        "checksum": "561f357ba7f3a2a61563a186a163d0a3a5247e1089524a3981d49adb775078bc",
+        "license": "MIT",
+        "dependencies": {"objc2-encode"},
+    },
+    "objc2-core-foundation": {
+        "version": "0.3.2",
+        "checksum": "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536",
+        "license": "Zlib OR Apache-2.0 OR MIT",
+        "dependencies": {"bitflags", "dispatch2", "objc2"},
+    },
+    "objc2-encode": {
+        "version": "4.1.0",
+        "checksum": "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33",
+        "license": "MIT",
+        "dependencies": set(),
+    },
+    "objc2-foundation": {
+        "version": "0.3.2",
+        "checksum": "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272",
+        "license": "MIT",
+        "dependencies": {"objc2", "objc2-core-foundation"},
+    },
+    "objc2-metal": {
+        "version": "0.3.2",
+        "checksum": "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794",
+        "license": "Zlib OR Apache-2.0 OR MIT",
+        "dependencies": {"objc2", "objc2-foundation"},
+    },
     "numpy": {
         "version": "0.29.0",
         "checksum": "6a5b15d63a5ff39e378daed0e1340d3a5964703ea9712eb09a0dc66fade996f4",
@@ -259,11 +299,12 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
 
 EXPECTED_WORKSPACE_DEPENDENCIES = {
     "lumenplot": {"lumenplot-engine", "lumenplot-export"},
-    "lumenplot-bench": {"lumenplot"},
+    "lumenplot-bench": {"lumenplot", "lumenplot-engine", "lumenplot-render-api"},
     "lumenplot-engine": set(),
     "lumenplot-export": {"lumenplot-engine", "png", "tiny-skia"},
     "lumenplot-python": {"lumenplot", "numpy", "png", "pyo3", "tiny-skia"},
     "lumenplot-render-api": {"lumenplot-engine"},
+    "lumenplot-render-metal": {"lumenplot-render-api", "objc2", "objc2-foundation", "objc2-metal"},
     "lumenplot-render-wgpu": {"lumenplot-render-api"},
     "lumenplot-runtime": {"lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
@@ -448,6 +489,7 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         "matrixmultiply",
         "num-traits",
         "numpy",
+        "objc2",
         "portable-atomic",
         "portable-atomic-util",
         "proc-macro2",

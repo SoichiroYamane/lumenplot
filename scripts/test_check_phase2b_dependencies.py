@@ -52,6 +52,65 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
             self.assertIn("phase2b dependency graph: OK", output)
             self.assertIn("dependency build-script evidence: crc32fast", output)
 
+    def test_bench_workspace_edge_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            # Remove the render-api edge from the bench manifest AND its
+            # lockfile entry: the exact workspace-edge expectation must fire.
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = 'lumenplot-render-api = { path = "../lumenplot-render-api"'
+            self.assertIn(marker, text)
+            lines = [line for line in text.splitlines(keepends=True) if marker not in line]
+            path.write_text("".join(lines), encoding="utf-8")
+
+            lock = root / "Cargo.lock"
+            source = lock.read_text(encoding="utf-8")
+            start = source.index('name = "lumenplot-bench"')
+            end = source.index("[[package]]", start)
+            block = source[start:end]
+            dependency = ' "lumenplot-render-api",\n'
+            self.assertIn(dependency, block)
+            lock.write_text(
+                source[:start] + block.replace(dependency, "") + source[end:],
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(
+            mutate,
+            "dependency graph drift for workspace package lumenplot-bench",
+        )
+
+    def test_bench_unexpected_extra_edge_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            # Add an undeclared extra internal edge to the bench manifest and
+            # mirror it into the lockfile so metadata stays resolvable; the
+            # exact inventory must reject it closed.
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            text = text.replace(
+                "[dependencies]\n",
+                '[dependencies]\nlumenplot-viewer = { path = "../lumenplot-viewer", version = "0.1.0" }\n',
+                1,
+            )
+            path.write_text(text, encoding="utf-8")
+
+            lock = root / "Cargo.lock"
+            source = lock.read_text(encoding="utf-8")
+            start = source.index('name = "lumenplot-bench"')
+            end = source.index("[[package]]", start)
+            block = source[start:end]
+            block = block.replace(
+                'dependencies = [\n',
+                'dependencies = [\n "lumenplot-viewer",\n',
+                1,
+            )
+            lock.write_text(source[:start] + block + source[end:], encoding="utf-8")
+
+        self.assert_rejected(
+            mutate,
+            "dependency graph drift for workspace package lumenplot-bench",
+        )
+
     def test_checksum_drift_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "Cargo.lock"
@@ -81,6 +140,105 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
             )
 
         self.assert_rejected(mutate, "Cargo.lock missing packages: tiny-skia-path@0.12.0")
+
+    # ------------------------------------------------------------------
+    # B2-P Metal prototype lane (workstream-manager decision on task
+    # t_50138c06): transitive closure of the macOS-target-gated objc2 edges.
+    # ------------------------------------------------------------------
+
+    def test_metal_objc2_checksum_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "Cargo.lock"
+            source = path.read_text(encoding="utf-8")
+            marker = 'checksum = "561f357ba7f3a2a61563a186a163d0a3a5247e1089524a3981d49adb775078bc"'
+            self.assertIn(marker, source)
+            path.write_text(
+                source.replace(
+                    marker,
+                    'checksum = "0000000000000000000000000000000000000000000000000000000000000000"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "Cargo.lock checksum drift for objc2")
+
+    def test_metal_transitive_package_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "Cargo.lock"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace('name = "objc2-encode"', 'name = "unexpected-package"', 1),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "Cargo.lock missing packages: objc2-encode@4.1.0")
+
+    def test_metal_workspace_edges_are_enforced_in_lockfile(self) -> None:
+        def mutate(root: Path) -> None:
+            # Strip the pinned gate from the manifest *and* its lock entry.
+            # The now-orphaned objc packages keep the lock stale for
+            # `--locked`, so the exact workspace-edge expectation surfaces
+            # through the lockfile check.
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = '[target.\'cfg(target_os = "macos")\'.dependencies]'
+            self.assertIn(marker, text)
+            path.write_text(text[: text.index(marker)].rstrip() + "\n", encoding="utf-8")
+
+            lock = root / "Cargo.lock"
+            source = lock.read_text(encoding="utf-8")
+            start = source.index('name = "lumenplot-render-metal"')
+            end = source.index("[[package]]", start)
+            block = source[start:end]
+            for dependency in (' "objc2",\n', ' "objc2-foundation",\n', ' "objc2-metal",\n'):
+                self.assertIn(dependency, block)
+                block = block.replace(dependency, "")
+            lock.write_text(source[:start] + block + source[end:], encoding="utf-8")
+
+        self.assert_rejected(
+            mutate,
+            "Cargo.lock dependency graph drift for workspace package lumenplot-render-metal",
+        )
+
+    def test_metal_workspace_edge_is_enforced_in_metadata(self) -> None:
+        def mutate(root: Path) -> None:
+            # Strip the pinned gate everywhere so `cargo metadata --locked`
+            # stays resolvable; the missing objc edges must then be caught by
+            # the exact metadata resolution expectation.
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = '[target.\'cfg(target_os = "macos")\'.dependencies]'
+            self.assertIn(marker, text)
+            path.write_text(text[: text.index(marker)].rstrip() + "\n", encoding="utf-8")
+
+            lock = root / "Cargo.lock"
+            source = lock.read_text(encoding="utf-8")
+            start = source.index('name = "lumenplot-render-metal"')
+            end = source.index("[[package]]", start)
+            block = source[start:end]
+            for dependency in (' "objc2",\n', ' "objc2-foundation",\n', ' "objc2-metal",\n'):
+                self.assertIn(dependency, block)
+                block = block.replace(dependency, "")
+            source = source[:start] + block + source[end:]
+            orphans = [
+                "dispatch2",
+                "objc2",
+                "objc2-core-foundation",
+                "objc2-encode",
+                "objc2-foundation",
+                "objc2-metal",
+            ]
+            for name in orphans:
+                head = source.index(f'\n[[package]]\nname = "{name}"')
+                tail = source.index("[[package]]", head + len("\n[[package]]"))
+                source = source[:head] + "\n" + source[tail:]
+            lock.write_text(source, encoding="utf-8")
+
+        self.assert_rejected(
+            mutate,
+            "metadata dependency graph drift for workspace package lumenplot-render-metal",
+        )
 
 
 if __name__ == "__main__":

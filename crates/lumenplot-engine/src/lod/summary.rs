@@ -355,4 +355,114 @@ mod tests {
         assert_eq!(summary.first.source, start as u64);
         assert_eq!(summary.last.source, (end - 1) as u64);
     }
+
+    /// Naive reference model of the eager block-summary index: recompute
+    /// first/last/min/max for every queried range with a plain linear scan
+    /// and identical tie rules. Production never calls this; it exists so
+    /// the dyadic decomposition is checked against something readable.
+    fn naive_summary_of(storage: &SeriesStorage, start: usize, end: usize) -> (u64, u64, u64, u64) {
+        let slice = &storage.points()[start..end];
+        let min = slice
+            .iter()
+            .min_by(|left, right| {
+                left.y
+                    .total_cmp(&right.y)
+                    .then(left.source.cmp(&right.source))
+            })
+            .expect("minimum");
+        let max = slice
+            .iter()
+            .max_by(|left, right| {
+                left.y
+                    .total_cmp(&right.y)
+                    .then(right.source.cmp(&left.source))
+            })
+            .expect("maximum");
+        (
+            slice.first().expect("first").source,
+            min.source,
+            max.source,
+            slice.last().expect("last").source,
+        )
+    }
+
+    #[test]
+    fn dyadic_block_index_matches_naive_scan_across_chunk_cuts_and_ties() {
+        // Local correctness fixture for the eager dyadic summary index that
+        // the O(W)-intent selection leans on: every queried sub-range —
+        // spanning block boundaries, chunk cuts, duplicate-y ties, and
+        // single-point ranges — must agree exactly with the plain linear
+        // model, including which sample wins an extrema tie.
+        let count = CHUNK_LIMIT * 2 + 129;
+        let x: Vec<_> = (0..count).map(|value| value as f64).collect();
+        // Duplicate-y plateaus make the earliest-source tie rule observable;
+        // interior spikes guarantee real extrema inside each probed window.
+        let mut y: Vec<_> = (0..count).map(|value| ((value / 3) % 29) as f64).collect();
+        for position in [CHUNK_LIMIT - 1usize, CHUNK_LIMIT, count - 2] {
+            y[position] = 5_000.0;
+        }
+        for position in [CHUNK_LIMIT + 1usize, count - 1] {
+            y[position] = -6_000.0;
+        }
+        let storage = SeriesStorage::from_normalized(
+            SeriesInput::from_owned_xy(Topology::MonotonicX, x, y.clone(), None)
+                .expect("input")
+                .into_normalized(),
+            DataEpoch(1),
+            crate::data::ChunkRevision(1),
+        )
+        .expect("storage");
+        assert!(storage.chunks().len() >= 2);
+
+        let probes = [
+            (0usize, count),
+            (CHUNK_LIMIT - 3, CHUNK_LIMIT + 4),
+            (CHUNK_LIMIT, CHUNK_LIMIT * 2),
+            (count - 1, count),
+            (17, 18),
+            (4095, 8192),
+            (8192, 8193),
+        ];
+        for &(start, end) in &probes {
+            let summary = storage
+                .indexed_summary_for_segment_range(0, start, end)
+                .unwrap_or_else(|| panic!("summary for {start}..{end}"));
+            assert_eq!(
+                (
+                    summary.first.source,
+                    summary.min_y.source,
+                    summary.max_y.source,
+                    summary.last.source
+                ),
+                naive_summary_of(&storage, start, end),
+                "index disagreed with the naive scan for {start}..{end}"
+            );
+            // f64 canonical payloads survive indexing bit-exactly.
+            assert_eq!(
+                summary.min_y.y.to_bits(),
+                y[summary.min_y.source as usize].to_bits()
+            );
+            assert_eq!(
+                summary.max_y.y.to_bits(),
+                y[summary.max_y.source as usize].to_bits()
+            );
+        }
+
+        // Out-of-range and empty queries stay explicit failures: an empty
+        // range is rejected outright, and an end past the segment is clamped
+        // to the valid window rather than silently reinterpreted.
+        assert!(storage.indexed_summary_for_segment_range(0, 5, 5).is_none());
+        let clamped = storage
+            .indexed_summary_for_segment_range(0, 10, count + 1)
+            .expect("end beyond the segment clamps to the valid window");
+        assert_eq!(
+            (
+                clamped.first.source,
+                clamped.min_y.source,
+                clamped.max_y.source,
+                clamped.last.source
+            ),
+            naive_summary_of(&storage, 10, count)
+        );
+    }
 }

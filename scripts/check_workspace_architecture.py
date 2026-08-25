@@ -31,6 +31,7 @@ EXPECTED_PACKAGE_PATHS = {
     "lumenplot-engine": "crates/lumenplot-engine",
     "lumenplot-export": "crates/lumenplot-export",
     "lumenplot-render-api": "crates/lumenplot-render-api",
+    "lumenplot-render-metal": "crates/lumenplot-render-metal",
     "lumenplot-render-wgpu": "crates/lumenplot-render-wgpu",
     "lumenplot-runtime": "crates/lumenplot-runtime",
     "lumenplot-viewer": "crates/lumenplot-viewer",
@@ -65,6 +66,33 @@ EXPECTED_EXPORT_SOURCE_FILES = {
     "src/compositor.rs",
     "src/png.rs",
 }
+EXPECTED_BENCH_SOURCE_FILES = {
+    "src/lib.rs",
+    "src/main.rs",
+    "src/clocks.rs",
+    "src/manifest.rs",
+    "src/runner.rs",
+}
+# B2-P Metal prototype lane (workstream-manager decision on task t_50138c06):
+# Apple-framework bindings stay quarantined in lumenplot-render-metal as
+# exact-pinned, default-feature-free, macOS-target-gated external edges.
+# The lane is activation-gated like Phase-3B/bench: the allowance exists only
+# while the crate carries Rust source beyond the documentation-only stub.
+METAL_TARGET_EXTERNAL_DEPENDENCIES = {
+    "objc2": {"version": "=0.6.2", "default-features": False, "features": ["std"]},
+    "objc2-foundation": {
+        "version": "=0.3.2",
+        "default-features": False,
+        "features": ["objc2-core-foundation"],
+    },
+    "objc2-metal": {
+        "version": "=0.3.2",
+        "default-features": False,
+        "features": ["std"],
+    },
+}
+# The exact Cargo target-gate expression the pinned edges live behind.
+METAL_TARGET_GATE = 'cfg(target_os = "macos")'
 EXPORT_TYPES = {"ExportErrorKind", "ExportError", "PngSpec"}
 EXPORT_ENUM_VARIANTS = {
     "ExportErrorKind": {
@@ -526,11 +554,12 @@ EXPECTED_EDGES = {
     "lumenplot-engine": set(),
     "lumenplot-export": {"lumenplot-engine"},
     "lumenplot-render-api": {"lumenplot-engine"},
+    "lumenplot-render-metal": {"lumenplot-render-api"},
     "lumenplot-render-wgpu": {"lumenplot-render-api"},
     "lumenplot-runtime": {"lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
     "lumenplot-python": {"lumenplot"},
-    "lumenplot-bench": {"lumenplot"},
+    "lumenplot-bench": {"lumenplot", "lumenplot-engine", "lumenplot-render-api"},
 }
 EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES = {
     "tiny-skia": {
@@ -670,6 +699,10 @@ FORBIDDEN_CODE_PATTERNS = (
     (
         "concrete frontend/backend code",
         re.compile(r"\b(?:wgpu|winit|window|surface|device|python|matplotlib|numpy|pyo3)\b", re.I),
+    ),
+    (
+        "Metal backend naming",
+        re.compile(r"\b(?:metal|mtl|objc2)\b", re.I),
     ),
 )
 FACADE_FORBIDDEN_CODE_PATTERNS = (
@@ -3134,6 +3167,116 @@ def _phase3b_activation_reason(root: Path) -> str | None:
     return None
 
 
+def _bench_activation_reason(root: Path) -> str | None:
+    """Return why the bench-crate static contract activates for *root*, or None.
+
+    The sentinel mirrors the Phase-3A2/3B precedent: the bench lane activates
+    only when the bench crate carries Rust source beyond the documentation-only
+    Phase-0 stub, and it stays fail-closed in both directions.  While the
+    sentinel is absent the stub rules keep applying unchanged.
+    """
+
+    source_dir = root / "crates" / "lumenplot-bench" / "src"
+    if any(path.suffix == ".rs" for path in source_dir.glob("*.rs") if path.name != "lib.rs"):
+        return "crates/lumenplot-bench/src/*.rs beyond src/lib.rs"
+    return None
+
+
+def _render_api_activation_reason(root: Path) -> str | None:
+    """Return why the render-api seam static contract activates for *root*.
+
+    The sentinel mirrors the Phase-3A2/3B and bench precedents: the M1 frame
+    seam allowance activates only while the crate carries Rust source beyond
+    the documentation-only Phase-0 stub (`src/frame.rs` today), and it stays
+    fail-closed in both directions.  Removing that source reactivates the
+    plain stub rules unchanged.
+    """
+
+    source_dir = root / "crates" / "lumenplot-render-api" / "src"
+    if any(path.suffix == ".rs" for path in source_dir.glob("*.rs") if path.name != "lib.rs"):
+        return "crates/lumenplot-render-api/src/*.rs beyond src/lib.rs"
+    return None
+
+
+RENDER_API_FORBIDDEN_CODE_PATTERNS = (
+    FORBIDDEN_CODE_PATTERNS[0],
+    FORBIDDEN_CODE_PATTERNS[1],
+    (
+        "concrete frontend/backend code",
+        re.compile(
+            r"\b(?:wgpu|winit|window|surface|device|python|matplotlib|numpy|pyo3"
+            r"|metal|mtl|objc2)\b",
+            re.I,
+        ),
+    ),
+)
+
+
+def _check_render_api_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the M1 frame-seam contract while the sentinel is active.
+
+    The accepted seam keeps the boundary backend-agnostic: real source in
+    this crate must stay free of unsafe code, serialization vocabulary, and
+    every concrete frontend/backend name — including whole-word Metal naming,
+    which the generic Phase-0 pattern set does not cover.  Unlike the stub
+    rules, public items in `src/lib.rs` are expected once the seam activates
+    (the re-export surface *is* the seam); `#[no_mangle]`/`#[export_name]`
+    stay banned so the crate never grows an exported ABI.
+    """
+
+    lib_path = package_dir / "src" / "lib.rs"
+    try:
+        lib_source = lib_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        errors.append(f"package lumenplot-render-api: cannot read {_logical_path(lib_path, root)}")
+        return
+    code = _strip_rust_comments_and_literals(lib_source)
+    if NO_MANGLE_RE.search(code):
+        errors.append("package lumenplot-render-api: exported ABI is not allowed")
+    for module_path in sorted((package_dir / "src").rglob("*.rs")):
+        try:
+            module_source = module_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            errors.append(
+                f"package lumenplot-render-api: cannot read {_logical_path(module_path, root)}"
+            )
+            continue
+        module_code = _strip_rust_comments_and_literals(module_source)
+        for label, pattern in RENDER_API_FORBIDDEN_CODE_PATTERNS:
+            if pattern.search(module_code):
+                errors.append(f"package lumenplot-render-api: {label} is not allowed")
+
+
+def _metal_activation_reason(root: Path) -> str | None:
+    """Return why the B2-P Metal-lane static contract activates, or None.
+
+    The sentinel mirrors the Phase-3A2/3B and bench precedents: the Metal
+    prototype lane activates only when the crate carries an accepted lane
+    artifact — Rust source beyond the documentation-only Phase-0 stub, or
+    the exact pinned macOS-target-gated objc2 dependency declaration — and
+    it stays fail-closed in both directions.  Removing the artifact
+    reactivates the plain stub rules unchanged.
+    """
+
+    source_dir = root / "crates" / "lumenplot-render-metal" / "src"
+    if any(path.suffix == ".rs" for path in source_dir.glob("*.rs") if path.name != "lib.rs"):
+        return "crates/lumenplot-render-metal/src/*.rs beyond src/lib.rs"
+    manifest = _read_toml(root / "crates/lumenplot-render-metal/Cargo.toml", root, [])
+    if isinstance(manifest, dict):
+        target = manifest.get("target")
+        gated = (
+            target.get(METAL_TARGET_GATE, {}).get("dependencies")
+            if isinstance(target, dict)
+            else None
+        )
+        if gated == METAL_TARGET_EXTERNAL_DEPENDENCIES:
+            return (
+                "crates/lumenplot-render-metal/Cargo.toml "
+                f"{METAL_TARGET_GATE} objc2 edges"
+            )
+    return None
+
+
 def _phase3a2_phase3b_matplotlib_forbidden(source: str) -> bool:
     """Detect pyplot-import regressions in the two phase3b-owned files."""
     return any(
@@ -4056,6 +4199,71 @@ def _check_phase3a2(
         _phase3a2_check_evidence_manifest(root, errors)
 
 
+def _check_bench_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the exact bench-crate inventory once the bench sentinel is active.
+
+    The accepted O-08 contract (ADR 0006, workstream decision D3) pins the
+    source inventory to exactly five files; missing and extra files both fail
+    closed.  `src/lib.rs` stays documentation-only with no public items so the
+    crate remains an internal bin-only harness.
+    """
+
+    source_dir = package_dir / "src"
+    rust_files = sorted(
+        path.relative_to(source_dir.parent).as_posix() for path in source_dir.rglob("*.rs")
+    )
+    if rust_files != sorted(EXPECTED_BENCH_SOURCE_FILES):
+        errors.append(
+            "package lumenplot-bench: source must contain exactly "
+            f"{', '.join(sorted(EXPECTED_BENCH_SOURCE_FILES))}"
+        )
+        return
+    lib_path = source_dir / "lib.rs"
+    try:
+        lib_source = lib_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        errors.append(f"package lumenplot-bench: cannot read {_logical_path(lib_path, root)}")
+        return
+    code = _strip_rust_comments_and_literals(lib_source)
+    if code.strip():
+        errors.append("package lumenplot-bench: src/lib.rs must remain documentation-only")
+    if PUBLIC_ITEM_RE.search(code):
+        errors.append("package lumenplot-bench: public item is not allowed in src/lib.rs")
+
+
+def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the B2-P Metal-lane stub contract while the sentinel is active.
+
+    The prototype lane may carry Rust source beyond `src/lib.rs` only while
+    `_metal_activation_reason` fires.  Unlike the accepted O-08 bench
+    inventory, the prototype module set is deliberately not pinned yet; the
+    follow-up prototype task owns that decision.  `src/lib.rs` itself must
+    remain documentation-only with no public items so the crate boundary
+    never widens from documentation.
+    """
+
+    source_dir = package_dir / "src"
+    rust_files = sorted(
+        path.relative_to(source_dir.parent).as_posix() for path in source_dir.rglob("*.rs")
+    )
+    if not rust_files:
+        errors.append(f"package lumenplot-render-metal: cannot read {_logical_path(source_dir, root)}")
+        return
+    lib_path = source_dir / "lib.rs"
+    try:
+        lib_source = lib_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        errors.append(f"package lumenplot-render-metal: cannot read {_logical_path(lib_path, root)}")
+        return
+    code = _strip_rust_comments_and_literals(lib_source)
+    if code.strip():
+        errors.append("package lumenplot-render-metal: src/lib.rs must remain documentation-only")
+    if PUBLIC_ITEM_RE.search(code):
+        errors.append("package lumenplot-render-metal: public item is not allowed in src/lib.rs")
+    if NO_MANGLE_RE.search(code):
+        errors.append("package lumenplot-render-metal: exported ABI is not allowed")
+
+
 def _check_package_source(
     package_name: str,
     package_dir: Path,
@@ -4071,6 +4279,15 @@ def _check_package_source(
         _check_facade_source(package_dir, root, errors)
     elif package_name == "lumenplot-python" and phase3a2_active:
         _check_python_bridge_source(package_dir, root, errors)
+    elif package_name == "lumenplot-bench" and _bench_activation_reason(root) is not None:
+        _check_bench_source(package_dir, root, errors)
+    elif (
+        package_name == "lumenplot-render-api"
+        and _render_api_activation_reason(root) is not None
+    ):
+        _check_render_api_source(package_dir, root, errors)
+    elif package_name == "lumenplot-render-metal" and _metal_activation_reason(root) is not None:
+        _check_metal_source(package_dir, root, errors)
     else:
         _check_stub_source(package_name, package_dir / "src", root, errors)
 
@@ -4078,6 +4295,7 @@ def _check_package_source(
 def _check_dependencies(
     package_name: str,
     manifest: dict[str, Any],
+    root: Path,
     errors: list[str],
     phase3a2_active: bool = False,
     phase3b_active: bool = False,
@@ -4085,6 +4303,13 @@ def _check_dependencies(
     expected_edges = EXPECTED_EDGES[package_name]
     if package_name == "lumenplot-export":
         expected_external = EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES
+    elif (
+        package_name == "lumenplot-render-metal"
+        # The B2-P lane admits its pinned macOS-gated objc2 table only while
+        # the activation sentinel fires; the gate stays fail-closed.
+        and _metal_activation_reason(root) is not None
+    ):
+        expected_external = METAL_TARGET_EXTERNAL_DEPENDENCIES
     elif package_name == "lumenplot-python" and phase3a2_active:
         expected_external = PHASE3A2_PYTHON_DEPENDENCIES
         if phase3b_active:
@@ -4096,11 +4321,32 @@ def _check_dependencies(
         expected_external = {}
     actual_edges: set[str] = set()
     actual_external: set[str] = set()
+    metal_gate_active = (
+        package_name == "lumenplot-render-metal"
+        # Same activation sentinel as the expected-inventory branch above;
+        # without it every extra dependency table fails closed.
+        and _metal_activation_reason(root) is not None
+    )
     for table_path, dependencies in _walk_tables(manifest):
         if not isinstance(dependencies, dict):
             errors.append(f"package {package_name}: dependency table is invalid")
             continue
         if table_path != ("dependencies",):
+            if metal_gate_active and table_path == ("target", METAL_TARGET_GATE, "dependencies"):
+                for dependency_name in sorted(dependencies):
+                    specification = dependencies[dependency_name]
+                    expected_specification = METAL_TARGET_EXTERNAL_DEPENDENCIES.get(dependency_name)
+                    if expected_specification is None:
+                        errors.append(
+                            f"package {package_name}: external dependency {dependency_name!r} is not allowed"
+                        )
+                    elif specification != expected_specification:
+                        errors.append(
+                            f"package {package_name}: external dependency {dependency_name!r} has an unexpected specification"
+                        )
+                    else:
+                        actual_external.add(dependency_name)
+                continue
             if dependencies:
                 errors.append(f"package {package_name}: only runtime path dependencies are allowed")
             continue
@@ -4254,6 +4500,7 @@ def check_workspace(root: Path, *, require_phase3a2_evidence: bool = False) -> l
         _check_dependencies(
             package_name,
             manifest,
+            root,
             errors,
             phase3a2_active=phase3a2_active,
             phase3b_active=bool(_phase3b_activation_reason(root)),

@@ -17,6 +17,8 @@ Modes (mutually exclusive):
 * ``--compare A.json B.json [--out REPORT.md]``
     Paired A/B report: per-block p99 deltas, descriptive summaries,
     max-block-p99 comparison, and a bootstrap CI over paired block deltas.
+    Block pairs whose p99 is unavailable (null) on either side are rendered
+    as ``n/a`` and excluded from the paired statistics instead of crashing.
 
 The manifest and JSONL formats are internal tooling contracts only; they are
 not public Scene, RenderPacket, project, or persistence formats.
@@ -74,6 +76,33 @@ REQUIRED_TOP_LEVEL = (
 GPU_FIELDS = ("vendor", "device", "driver", "api", "feature_level")
 ENV_STRING_FIELDS = ("os", "os_version", "arch", "kernel", "cpu")
 
+# Pinned D1 decision: every schema field below is mandatory. Fields absent
+# from these tuples are optional; the explicitly nullable fields are
+# environment.gpu, environment.compositor, environment.present_mode, and
+# max_block_p99_ns, plus block p50/p95/p99_ns when status is "inconclusive".
+REQUIRED_FIXTURE_FIELDS = ("id", "points", "canvas_px", "dpi")
+REQUIRED_ENVIRONMENT_FIELDS = ("os", "os_version", "arch", "kernel", "cpu", "display_scale")
+REQUIRED_PROTOCOL_FIELDS = (
+    "blocks",
+    "min_frames_per_block",
+    "quantile_method",
+    "trimming",
+    "bootstrap",
+)
+REQUIRED_BOOTSTRAP_FIELDS = ("resamples", "ci", "seed", "method")
+REQUIRED_CLOCK_FIELDS = ("name", "domain")
+REQUIRED_BLOCK_FIELDS = (
+    "block_index",
+    "pid",
+    "started_at_utc",
+    "frame_count",
+    "p50_ns",
+    "p95_ns",
+    "p99_ns",
+    "raw_samples_path",
+)
+NULLABLE_QUANTILE_STATUS = "inconclusive"
+
 RFC3339_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$"
 )
@@ -81,6 +110,12 @@ RFC3339_RE = re.compile(
 
 class InputError(Exception):
     """Raised when an input file cannot be read or parsed."""
+
+
+# Sentinel for "key absent from its container": lets the container validators
+# tell a missing field (already reported by the required-field loops) apart
+# from an explicit JSON null (rejected by finding B).
+_ABSENT = object()
 
 
 def is_number(value: Any) -> bool:
@@ -174,28 +209,51 @@ def validate_manifest(manifest: Any) -> list[str]:
         if field not in manifest:
             add(field, "required field is missing")
 
+    # Round-4 finding B: an explicit JSON null satisfies neither the
+    # required-field loop above nor the type checks (every guard reads
+    # ``value is not None and ...``), so each non-nullable field rejects
+    # null ahead of its type check. Absent fields keep reporting only
+    # "required field is missing". The D1-nullable fields -- pooled,
+    # max_block_p99_ns, inconclusive_reasons, environment.gpu,
+    # environment.compositor, environment.present_mode, clock
+    # unit/available/description, and block quantiles while inconclusive --
+    # keep accepting null.
     version = manifest.get("schema_version")
-    if version is not None and (not is_int(version) or version != SCHEMA_VERSION):
-        add("schema_version", f"expected int {SCHEMA_VERSION}, got {version!r}")
+    if "schema_version" in manifest:
+        if version is None:
+            add("schema_version", f"expected int {SCHEMA_VERSION}, got null")
+        elif not is_int(version) or version != SCHEMA_VERSION:
+            add("schema_version", f"expected int {SCHEMA_VERSION}, got {version!r}")
 
     run_id = manifest.get("run_id")
-    if run_id is not None and not is_uuid4(run_id):
-        add("run_id", f"expected a uuid4 string, got {run_id!r}")
+    if "run_id" in manifest:
+        if run_id is None:
+            add("run_id", "expected a uuid4 string, got null")
+        elif not is_uuid4(run_id):
+            add("run_id", f"expected a uuid4 string, got {run_id!r}")
 
     generated_at = manifest.get("generated_at_utc")
-    if generated_at is not None and not is_rfc3339_utc(generated_at):
-        add("generated_at_utc", f"expected an RFC3339 UTC timestamp, got {generated_at!r}")
+    if "generated_at_utc" in manifest:
+        if generated_at is None:
+            add("generated_at_utc", "expected an RFC3339 UTC timestamp, got null")
+        elif not is_rfc3339_utc(generated_at):
+            add("generated_at_utc", f"expected an RFC3339 UTC timestamp, got {generated_at!r}")
 
     profile = manifest.get("profile")
-    if profile is not None and profile not in PROFILES:
-        add("profile", f"expected one of {list(PROFILES)}, got {profile!r}")
+    if "profile" in manifest:
+        if profile is None:
+            add("profile", f"expected one of {list(PROFILES)}, got null")
+        elif profile not in PROFILES:
+            add("profile", f"expected one of {list(PROFILES)}, got {profile!r}")
 
-    _validate_fixture(manifest.get("fixture"), add)
-    _validate_environment(manifest.get("environment"), add)
-    _validate_protocol(manifest.get("protocol"), add)
-    _validate_clocks(manifest.get("clocks"), add)
+    _validate_fixture(manifest.get("fixture", _ABSENT), add)
+    _validate_environment(manifest.get("environment", _ABSENT), add)
+    _validate_protocol(manifest.get("protocol", _ABSENT), add)
+    _validate_clocks(manifest.get("clocks", _ABSENT), add)
     min_frames = _protocol_min_frames(manifest.get("protocol"))
-    _validate_blocks(manifest.get("blocks"), min_frames, add)
+    _validate_blocks(
+        manifest.get("blocks", _ABSENT), min_frames, add, manifest.get("status")
+    )
 
     pooled = manifest.get("pooled")
     if pooled is not None and not isinstance(pooled, dict):
@@ -207,42 +265,77 @@ def validate_manifest(manifest: Any) -> list[str]:
     ):
         add("max_block_p99_ns", "expected a non-negative number or null")
 
-    _validate_status(manifest.get("status"), manifest.get("inconclusive_reasons"), add)
+    _validate_status(
+        manifest.get("status", _ABSENT),
+        manifest.get("inconclusive_reasons", _ABSENT),
+        add,
+    )
     return errors
 
 
 def _validate_fixture(fixture: Any, add: Any) -> None:
-    if fixture is None or not isinstance(fixture, dict):
-        if fixture is not None:
-            add("fixture", "expected a JSON object")
+    if fixture is _ABSENT:
         return
-    if "id" in fixture and not is_nonempty_str(fixture["id"]):
-        add("fixture.id", "expected a non-empty string")
+    if fixture is None:
+        add("fixture", "expected a JSON object, got null")
+        return
+    if not isinstance(fixture, dict):
+        add("fixture", "expected a JSON object")
+        return
+    for field in REQUIRED_FIXTURE_FIELDS:
+        if field not in fixture:
+            add(f"fixture.{field}", "required field is missing")
+    if "id" in fixture:
+        if fixture["id"] is None:
+            add("fixture.id", "expected a non-empty string, got null")
+        elif not is_nonempty_str(fixture["id"]):
+            add("fixture.id", "expected a non-empty string")
     points = fixture.get("points")
-    if points is not None and (not is_int(points) or points <= 0):
-        add("fixture.points", "expected a positive int")
+    if "points" in fixture:
+        if points is None:
+            add("fixture.points", "expected a positive int, got null")
+        elif not is_int(points) or points <= 0:
+            add("fixture.points", "expected a positive int")
     canvas = fixture.get("canvas_px")
-    if canvas is not None:
-        if not isinstance(canvas, list) or len(canvas) != 2 or not all(
+    if "canvas_px" in fixture:
+        if canvas is None:
+            add("fixture.canvas_px", "expected [width, height] positive ints, got null")
+        elif not isinstance(canvas, list) or len(canvas) != 2 or not all(
             is_int(side) and side > 0 for side in canvas
         ):
             add("fixture.canvas_px", "expected [width, height] positive ints")
     dpi = fixture.get("dpi")
-    if dpi is not None and (not is_number(dpi) or dpi <= 0):
-        add("fixture.dpi", "expected a positive number")
+    if "dpi" in fixture:
+        if dpi is None:
+            add("fixture.dpi", "expected a positive number, got null")
+        elif not is_number(dpi) or dpi <= 0:
+            add("fixture.dpi", "expected a positive number")
 
 
 def _validate_environment(environment: Any, add: Any) -> None:
-    if environment is None or not isinstance(environment, dict):
-        if environment is not None:
-            add("environment", "expected a JSON object")
+    if environment is _ABSENT:
         return
+    if environment is None:
+        add("environment", "expected a JSON object, got null")
+        return
+    if not isinstance(environment, dict):
+        add("environment", "expected a JSON object")
+        return
+    for field in REQUIRED_ENVIRONMENT_FIELDS:
+        if field not in environment:
+            add(f"environment.{field}", "required field is missing")
     for field in ENV_STRING_FIELDS:
-        if field in environment and not is_nonempty_str(environment[field]):
-            add(f"environment.{field}", "expected a non-empty string")
+        if field in environment:
+            if environment[field] is None:
+                add(f"environment.{field}", "expected a non-empty string, got null")
+            elif not is_nonempty_str(environment[field]):
+                add(f"environment.{field}", "expected a non-empty string")
     scale = environment.get("display_scale")
-    if scale is not None and (not is_number(scale) or scale <= 0):
-        add("environment.display_scale", "expected a positive number")
+    if "display_scale" in environment:
+        if scale is None:
+            add("environment.display_scale", "expected a positive number, got null")
+        elif not is_number(scale) or scale <= 0:
+            add("environment.display_scale", "expected a positive number")
     for field in ("compositor", "present_mode"):
         if field in environment and environment[field] is not None and not is_nonempty_str(
             environment[field]
@@ -255,56 +348,100 @@ def _validate_environment(environment: Any, add: Any) -> None:
         add("environment.gpu", "expected a JSON object or null")
         return
     for field in GPU_FIELDS:
-        if field in gpu and not is_nonempty_str(gpu[field]):
-            add(f"environment.gpu.{field}", "expected a non-empty string")
+        if field in gpu:
+            if gpu[field] is None:
+                add(f"environment.gpu.{field}", "expected a non-empty string, got null")
+            elif not is_nonempty_str(gpu[field]):
+                add(f"environment.gpu.{field}", "expected a non-empty string")
 
 
 def _validate_protocol(protocol: Any, add: Any) -> None:
-    if protocol is None or not isinstance(protocol, dict):
-        if protocol is not None:
-            add("protocol", "expected a JSON object")
+    if protocol is _ABSENT:
         return
+    if protocol is None:
+        add("protocol", "expected a JSON object, got null")
+        return
+    if not isinstance(protocol, dict):
+        add("protocol", "expected a JSON object")
+        return
+    for field in REQUIRED_PROTOCOL_FIELDS:
+        if field not in protocol:
+            add(f"protocol.{field}", "required field is missing")
     blocks = protocol.get("blocks")
-    if blocks is not None and (not is_int(blocks) or blocks != BLOCK_COUNT):
-        add("protocol.blocks", f"expected int {BLOCK_COUNT}, got {blocks!r}")
+    if "blocks" in protocol:
+        if blocks is None:
+            add("protocol.blocks", f"expected int {BLOCK_COUNT}, got null")
+        elif not is_int(blocks) or blocks != BLOCK_COUNT:
+            add("protocol.blocks", f"expected int {BLOCK_COUNT}, got {blocks!r}")
     min_frames = protocol.get("min_frames_per_block")
-    if min_frames is not None and (
-        not is_int(min_frames) or min_frames != MIN_FRAMES_PER_BLOCK
-    ):
-        add(
-            "protocol.min_frames_per_block",
-            f"expected int {MIN_FRAMES_PER_BLOCK}, got {min_frames!r}",
-        )
-    if protocol.get("quantile_method") not in (None, QUANTILE_METHOD):
-        add(
-            "protocol.quantile_method",
-            f"expected \"{QUANTILE_METHOD}\", got {protocol['quantile_method']!r}",
-        )
-    if protocol.get("trimming") not in (None, TRIMMING):
-        add("protocol.trimming", f"expected \"{TRIMMING}\", got {protocol['trimming']!r}")
+    if "min_frames_per_block" in protocol:
+        if min_frames is None:
+            add(
+                "protocol.min_frames_per_block",
+                f"expected int {MIN_FRAMES_PER_BLOCK}, got null",
+            )
+        elif not is_int(min_frames) or min_frames != MIN_FRAMES_PER_BLOCK:
+            add(
+                "protocol.min_frames_per_block",
+                f"expected int {MIN_FRAMES_PER_BLOCK}, got {min_frames!r}",
+            )
+    if "quantile_method" in protocol:
+        if protocol.get("quantile_method") is None:
+            add("protocol.quantile_method", f"expected \"{QUANTILE_METHOD}\", got null")
+        elif protocol["quantile_method"] != QUANTILE_METHOD:
+            add(
+                "protocol.quantile_method",
+                f"expected \"{QUANTILE_METHOD}\", got {protocol['quantile_method']!r}",
+            )
+    if "trimming" in protocol:
+        if protocol.get("trimming") is None:
+            add("protocol.trimming", f"expected \"{TRIMMING}\", got null")
+        elif protocol["trimming"] != TRIMMING:
+            add("protocol.trimming", f"expected \"{TRIMMING}\", got {protocol['trimming']!r}")
     bootstrap = protocol.get("bootstrap")
+    if "bootstrap" not in protocol:
+        return
     if bootstrap is None:
+        add("protocol.bootstrap", "expected a JSON object, got null")
         return
     if not isinstance(bootstrap, dict):
         add("protocol.bootstrap", "expected a JSON object")
         return
+    for field in REQUIRED_BOOTSTRAP_FIELDS:
+        if field not in bootstrap:
+            add("protocol.bootstrap." + field, "required field is missing")
     resamples = bootstrap.get("resamples")
-    if resamples is not None and (not is_int(resamples) or resamples != BOOTSTRAP_RESAMPLES):
-        add(
-            "protocol.bootstrap.resamples",
-            f"expected int {BOOTSTRAP_RESAMPLES}, got {resamples!r}",
-        )
+    if "resamples" in bootstrap:
+        if resamples is None:
+            add(
+                "protocol.bootstrap.resamples",
+                f"expected int {BOOTSTRAP_RESAMPLES}, got null",
+            )
+        elif not is_int(resamples) or resamples != BOOTSTRAP_RESAMPLES:
+            add(
+                "protocol.bootstrap.resamples",
+                f"expected int {BOOTSTRAP_RESAMPLES}, got {resamples!r}",
+            )
     ci = bootstrap.get("ci")
-    if ci is not None and (not is_number(ci) or ci != BOOTSTRAP_CI):
-        add("protocol.bootstrap.ci", f"expected {BOOTSTRAP_CI}, got {ci!r}")
+    if "ci" in bootstrap:
+        if ci is None:
+            add("protocol.bootstrap.ci", f"expected {BOOTSTRAP_CI}, got null")
+        elif not is_number(ci) or ci != BOOTSTRAP_CI:
+            add("protocol.bootstrap.ci", f"expected {BOOTSTRAP_CI}, got {ci!r}")
     seed = bootstrap.get("seed")
-    if seed is not None and (not is_int(seed) or seed != BOOTSTRAP_SEED):
-        add("protocol.bootstrap.seed", f"expected int {BOOTSTRAP_SEED}, got {seed!r}")
-    if bootstrap.get("method") not in (None, BOOTSTRAP_METHOD):
-        add(
-            "protocol.bootstrap.method",
-            f"expected \"{BOOTSTRAP_METHOD}\", got {bootstrap['method']!r}",
-        )
+    if "seed" in bootstrap:
+        if seed is None:
+            add("protocol.bootstrap.seed", f"expected int {BOOTSTRAP_SEED}, got null")
+        elif not is_int(seed) or seed != BOOTSTRAP_SEED:
+            add("protocol.bootstrap.seed", f"expected int {BOOTSTRAP_SEED}, got {seed!r}")
+    if "method" in bootstrap:
+        if bootstrap.get("method") is None:
+            add("protocol.bootstrap.method", f"expected \"{BOOTSTRAP_METHOD}\", got null")
+        elif bootstrap["method"] != BOOTSTRAP_METHOD:
+            add(
+                "protocol.bootstrap.method",
+                f"expected \"{BOOTSTRAP_METHOD}\", got {bootstrap['method']!r}",
+            )
 
 
 def _protocol_min_frames(protocol: Any) -> int:
@@ -316,9 +453,13 @@ def _protocol_min_frames(protocol: Any) -> int:
 
 
 def _validate_clocks(clocks: Any, add: Any) -> None:
-    if clocks is None or not isinstance(clocks, list):
-        if clocks is not None:
-            add("clocks", "expected a non-empty JSON array")
+    if clocks is _ABSENT:
+        return
+    if clocks is None:
+        add("clocks", "expected a non-empty JSON array, got null")
+        return
+    if not isinstance(clocks, list):
+        add("clocks", "expected a non-empty JSON array")
         return
     if not clocks:
         add("clocks", "expected at least one clock entry")
@@ -329,18 +470,37 @@ def _validate_clocks(clocks: Any, add: Any) -> None:
             add(path, "expected a JSON object")
             continue
         name = clock.get("name")
-        if name is not None:
-            if not is_nonempty_str(name):
-                add(f"{path}.name", "expected a non-empty string")
-            elif name in seen_names:
-                add(f"{path}.name", f"duplicate clock name {name!r}")
-            else:
-                seen_names.add(name)
-        domain = clock.get("domain")
-        if domain is not None and domain not in CLOCK_DOMAINS:
-            add(f"{path}.domain", f"expected one of {list(CLOCK_DOMAINS)}, got {domain!r}")
-        if clock.get("unit") not in (None, "ns"):
-            add(f"{path}.unit", f"expected \"ns\", got {clock['unit']!r}")
+        if "name" not in clock:
+            add(f"{path}.name", "required field is missing")
+        elif name is None:
+            add(f"{path}.name", "expected a non-empty string, got null")
+        elif not is_nonempty_str(name):
+            add(f"{path}.name", "expected a non-empty string")
+        elif name in seen_names:
+            add(f"{path}.name", f"duplicate clock name {name!r}")
+        else:
+            seen_names.add(name)
+        if "domain" not in clock:
+            add(f"{path}.domain", "required field is missing")
+            domain = None
+        else:
+            domain = clock.get("domain")
+            if domain is None:
+                add(
+                    f"{path}.domain",
+                    f"expected one of {list(CLOCK_DOMAINS)}, got null",
+                )
+            elif domain not in CLOCK_DOMAINS:
+                add(
+                    f"{path}.domain",
+                    f"expected one of {list(CLOCK_DOMAINS)}, got {domain!r}",
+                )
+        unit = clock.get("unit")
+        if "unit" in clock and unit != "ns":
+            # Null is not absent: an explicit unit=null is rejected, while a
+            # missing key keeps the field optional (D1 record-only set).
+            detail = "null" if unit is None else repr(unit)
+            add(f"{path}.unit", f"expected \"ns\", got {detail}")
         available = clock.get("available")
         if available is not None and not isinstance(available, bool):
             add(f"{path}.available", "expected a bool")
@@ -357,10 +517,19 @@ def _validate_clocks(clocks: Any, add: Any) -> None:
                 add(f"{path}.name", "queue-domain clock names must start with \"queue_\"")
 
 
-def _validate_blocks(blocks: Any, min_frames: int, add: Any) -> None:
-    if blocks is None or not isinstance(blocks, list):
-        if blocks is not None:
-            add("blocks", f"expected a JSON array of {BLOCK_COUNT} blocks")
+def _validate_blocks(
+    blocks: Any,
+    min_frames: int,
+    add: Any,
+    status: Any = None,
+) -> None:
+    if blocks is _ABSENT:
+        return
+    if blocks is None:
+        add("blocks", f"expected a JSON array of {BLOCK_COUNT} blocks, got null")
+        return
+    if not isinstance(blocks, list):
+        add("blocks", f"expected a JSON array of {BLOCK_COUNT} blocks")
         return
     if len(blocks) != BLOCK_COUNT:
         add("blocks", f"expected exactly {BLOCK_COUNT} blocks, got {len(blocks)}")
@@ -370,25 +539,45 @@ def _validate_blocks(blocks: Any, min_frames: int, add: Any) -> None:
         if not isinstance(block, dict):
             add(path, "expected a JSON object")
             continue
-        block_index = block.get("block_index")
-        if block_index is not None:
-            if not is_int(block_index):
+        # Missing required fields are reported by the REQUIRED_BLOCK_FIELDS
+        # loop below; the branches here only classify values that are
+        # present (null vs wrong-typed).
+        if "block_index" in block:
+            block_index = block["block_index"]
+            if block_index is None:
+                add(f"{path}.block_index", "expected an int, got null")
+            elif not is_int(block_index):
                 add(f"{path}.block_index", "expected an int")
             else:
                 indexes.append(block_index)
-        pid = block.get("pid")
-        if pid is not None and (not is_int(pid) or pid <= 0):
-            add(f"{path}.pid", "expected a positive int")
+        if "pid" in block:
+            pid = block["pid"]
+            if pid is None:
+                add(f"{path}.pid", "expected a positive int, got null")
+            elif not is_int(pid) or pid <= 0:
+                add(f"{path}.pid", "expected a positive int")
         started_at = block.get("started_at_utc")
-        if started_at is not None and not is_rfc3339_utc(started_at):
-            add(f"{path}.started_at_utc", f"expected an RFC3339 UTC timestamp, got {started_at!r}")
+        if "started_at_utc" in block:
+            if started_at is None:
+                add(f"{path}.started_at_utc", "expected an RFC3339 UTC timestamp, got null")
+            elif not is_rfc3339_utc(started_at):
+                add(f"{path}.started_at_utc", f"expected an RFC3339 UTC timestamp, got {started_at!r}")
+        for field in REQUIRED_BLOCK_FIELDS:
+            if field not in block:
+                add(f"{path}.{field}", "required field is missing")
         frame_count = block.get("frame_count")
-        if frame_count is not None and (not is_int(frame_count) or frame_count < min_frames):
-            add(f"{path}.frame_count", f"expected int >= {min_frames}, got {frame_count!r}")
+        if "frame_count" in block:
+            if frame_count is None:
+                add(f"{path}.frame_count", f"expected int >= {min_frames}, got null")
+            elif not is_int(frame_count) or frame_count < min_frames:
+                add(f"{path}.frame_count", f"expected int >= {min_frames}, got {frame_count!r}")
         quantiles: list[float] = []
         for field in ("p50_ns", "p95_ns", "p99_ns"):
             value = block.get(field)
             if value is None:
+                if status == NULLABLE_QUANTILE_STATUS:
+                    continue
+                add(f"{path}.{field}", "expected a non-negative number or null when inconclusive")
                 continue
             if not is_number(value) or value < 0:
                 add(f"{path}.{field}", "expected a non-negative number")
@@ -399,8 +588,11 @@ def _validate_blocks(blocks: Any, min_frames: int, add: Any) -> None:
         ):
             add(path, "expected p50_ns <= p95_ns <= p99_ns")
         raw_path = block.get("raw_samples_path")
-        if raw_path is not None and not is_nonempty_str(raw_path):
-            add(f"{path}.raw_samples_path", "expected a non-empty string")
+        if "raw_samples_path" in block:
+            if raw_path is None:
+                add(f"{path}.raw_samples_path", "expected a non-empty string, got null")
+            elif not is_nonempty_str(raw_path):
+                add(f"{path}.raw_samples_path", "expected a non-empty string")
     if indexes and sorted(indexes) != list(range(BLOCK_COUNT)):
         add(
             "blocks[].block_index",
@@ -409,23 +601,37 @@ def _validate_blocks(blocks: Any, min_frames: int, add: Any) -> None:
 
 
 def _validate_status(status: Any, reasons: Any, add: Any) -> None:
-    if status is not None and status not in STATUSES:
+    if status is _ABSENT:
+        return
+    if status is None:
+        add("status", f"expected one of {list(STATUSES)}, got null")
+    elif status not in STATUSES:
         add("status", f"expected one of {list(STATUSES)}, got {status!r}")
-    if reasons is not None:
-        if not isinstance(reasons, list) or not all(is_nonempty_str(r) for r in reasons):
-            add("inconclusive_reasons", "expected an array of non-empty strings")
-    if status == "inconclusive":
-        if isinstance(reasons, list) and not reasons:
-            add(
-                "inconclusive_reasons",
-                "status \"inconclusive\" requires at least one reason string",
-            )
-    if status == "complete":
-        if isinstance(reasons, list) and reasons:
-            add(
-                "inconclusive_reasons",
-                "status \"complete\" forbids inconclusive reasons",
-            )
+    # inconclusive_reasons is nullable only as "nothing recorded": an absent
+    # field and an empty array are equivalent, but an explicit null is a
+    # validation error under every status (null is not absent).
+    # An empty array counts as "nothing recorded"; a non-empty array counts
+    # as recorded reasons and must match the status exactly.
+    if reasons is _ABSENT or (isinstance(reasons, list) and not reasons):
+        has_reasons = False
+    elif reasons is None:
+        add("inconclusive_reasons", "expected an array of non-empty strings, got null")
+        return
+    elif isinstance(reasons, list) and all(is_nonempty_str(r) for r in reasons):
+        has_reasons = True
+    else:
+        add("inconclusive_reasons", "expected an array of non-empty strings")
+        return
+    if status == "inconclusive" and not has_reasons:
+        add(
+            "inconclusive_reasons",
+            "status \"inconclusive\" requires at least one reason string",
+        )
+    if status == "complete" and has_reasons:
+        add(
+            "inconclusive_reasons",
+            "status \"complete\" forbids inconclusive reasons",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -567,24 +773,40 @@ def command_compare(args: argparse.Namespace) -> int:
         )
         return EXIT_CROSS_PROFILE
 
+    # Totality: block p99 is nullable when a run is inconclusive, so either
+    # side can be None. Unavailable pairs are excluded from the paired
+    # statistics and rendered as n/a instead of crashing.
+    blocks_a = sorted(manifest_a["blocks"], key=lambda b: b["block_index"])
+    blocks_b = sorted(manifest_b["blocks"], key=lambda b: b["block_index"])
     deltas = [
         float(block_b["p99_ns"]) - float(block_a["p99_ns"])
-        for block_a, block_b in zip(
-            sorted(manifest_a["blocks"], key=lambda b: b["block_index"]),
-            sorted(manifest_b["blocks"], key=lambda b: b["block_index"]),
-        )
+        for block_a, block_b in zip(blocks_a, blocks_b)
+        if block_a.get("p99_ns") is not None and block_b.get("p99_ns") is not None
     ]
-    bootstrap = manifest_a["protocol"]["bootstrap"]
-    point_estimate, ci_low, ci_high = paired_bootstrap_ci(
-        deltas,
-        seed=bootstrap["seed"],
-        resamples=bootstrap["resamples"],
-        ci_level=bootstrap["ci"],
-    )
+    bootstrap = _bootstrap_params(manifest_a)
+    if deltas:
+        point_estimate, ci_low, ci_high = paired_bootstrap_ci(
+            deltas,
+            seed=bootstrap["seed"],
+            resamples=bootstrap["resamples"],
+            ci_level=bootstrap["ci"],
+        )
+    else:
+        # No comparable block pair exists (every p99 unavailable on at least
+        # one side); the report stays total and renders n/a statistics.
+        point_estimate = ci_low = ci_high = None
 
     report = build_report(
-        args.compare_a, args.compare_b, manifest_a, manifest_b,
-        deltas, point_estimate, ci_low, ci_high,
+        args.compare_a,
+        args.compare_b,
+        manifest_a,
+        manifest_b,
+        list(zip(blocks_a, blocks_b)),
+        deltas,
+        point_estimate,
+        ci_low,
+        ci_high,
+        bootstrap,
     )
     out_path: Path | None = args.out
     if out_path is not None:
@@ -609,8 +831,15 @@ def _fmt_delta_percent(base: Any, delta: Any) -> str:
     return f"{(float(delta) / float(base)) * 100.0:+.2f}%"
 
 
-def _block_by_index(manifest: dict[str, Any]) -> dict[int, dict[str, Any]]:
-    return {block["block_index"]: block for block in manifest["blocks"]}
+def _bootstrap_params(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Bootstrap parameters for the paired CI, taken from A's protocol block."""
+    bootstrap = manifest["protocol"]["bootstrap"]
+    return {
+        "seed": bootstrap["seed"],
+        "resamples": bootstrap["resamples"],
+        "ci": bootstrap["ci"],
+        "method": bootstrap["method"],
+    }
 
 
 def build_report(
@@ -618,17 +847,21 @@ def build_report(
     path_b: str,
     manifest_a: dict[str, Any],
     manifest_b: dict[str, Any],
+    block_pairs: list[tuple[dict[str, Any], dict[str, Any]]],
     deltas: list[float],
-    point_estimate: float,
-    ci_low: float,
-    ci_high: float,
+    point_estimate: float | None,
+    ci_low: float | None,
+    ci_high: float | None,
+    bootstrap: dict[str, Any] | None = None,
 ) -> str:
     """Render the deterministic paired A/B markdown report.
 
     The report embeds no wall-clock time: two invocations over the same
-    manifest pair produce byte-identical output.
+    manifest pair produce byte-identical output. Unavailable (null) block
+    quantiles render as ``n/a``; the paired statistics cover only the
+    comparable pairs and are ``n/a`` when no pair is comparable.
     """
-    bootstrap = manifest_a["protocol"]["bootstrap"]
+    params = _bootstrap_params(manifest_a) if bootstrap is None else bootstrap
     lines: list[str] = []
     lines.append("# O-08 paired benchmark comparison (A/B)")
     lines.append("")
@@ -651,11 +884,12 @@ def build_report(
         f"B id=`{fixture_b['id']}` (points={fixture_b['points']}, "
         f"canvas_px={fixture_b['canvas_px']}, dpi={fixture_b['dpi']})"
     )
+    protocol_a = manifest_a["protocol"]
     lines.append(
         "- Protocol: blocks=5, min_frames_per_block="
-        f"{manifest_a['protocol']['min_frames_per_block']}, "
-        f"quantile_method={manifest_a['protocol']['quantile_method']}, "
-        f"trimming={manifest_a['protocol']['trimming']}"
+        f"{protocol_a.get('min_frames_per_block', MIN_FRAMES_PER_BLOCK)}, "
+        f"quantile_method={protocol_a.get('quantile_method', QUANTILE_METHOD)}, "
+        f"trimming={protocol_a.get('trimming', TRIMMING)}"
     )
     lines.append("")
 
@@ -663,9 +897,13 @@ def build_report(
     lines.append("")
     reasons: list[str] = []
     for label, manifest in (("A", manifest_a), ("B", manifest_b)):
-        if manifest["status"] == "inconclusive":
-            lines.append(f"- {label}: **inconclusive** — reasons: {manifest['inconclusive_reasons']}")
-            reasons.extend(f"{label}: {reason}" for reason in manifest["inconclusive_reasons"])
+        if manifest.get("status") == "inconclusive":
+            side_reasons = manifest.get("inconclusive_reasons") or [
+                "(no reason recorded)",
+            ]
+            rendered = ", ".join(f'"{reason}"' for reason in side_reasons)
+            lines.append(f"- {label}: **inconclusive** — reasons: {rendered}")
+            reasons.extend(f"{label}: {reason}" for reason in side_reasons)
         else:
             lines.append(f"- {label}: complete")
     if reasons:
@@ -680,37 +918,32 @@ def build_report(
     lines.append("")
     lines.append("| block | frames A | frames B | A p99 | B p99 | delta | delta % |")
     lines.append("| --- | --- | --- | --- | --- | --- | --- |")
-    blocks_a = _block_by_index(manifest_a)
-    blocks_b = _block_by_index(manifest_b)
-    for index, delta in enumerate(deltas):
-        block_a, block_b = blocks_a[index], blocks_b[index]
+    for index, (block_a, block_b) in enumerate(block_pairs):
+        p99_a, p99_b = block_a.get("p99_ns"), block_b.get("p99_ns")
+        delta = (
+            float(p99_b) - float(p99_a)
+            if p99_a is not None and p99_b is not None
+            else None
+        )
         lines.append(
-            f"| {index} | {block_a['frame_count']} | {block_b['frame_count']} "
-            f"| {_fmt(block_a['p99_ns'])} | {_fmt(block_b['p99_ns'])} "
-            f"| {_fmt(delta)} | {_fmt_delta_percent(block_a['p99_ns'], delta)} |"
+            f"| {index} | {_fmt(block_a.get('frame_count'))} "
+            f"| {_fmt(block_b.get('frame_count'))} "
+            f"| {_fmt(p99_a)} | {_fmt(p99_b)} "
+            f"| {_fmt(delta)} | {_fmt_delta_percent(p99_a, delta)} |"
         )
     lines.append("")
 
     lines.append("## Block aggregates (descriptive, ns)")
     lines.append("")
+    lines.append("Computed over blocks with an available value; n/a when none.")
+    lines.append("")
     lines.append("| statistic | A | B |")
     lines.append("| --- | --- | --- |")
     for field in ("p50_ns", "p95_ns", "p99_ns"):
-        agg_a = (
-            statistics.fmean([float(block[field]) for block in manifest_a["blocks"]]),
-            min(float(block[field]) for block in manifest_a["blocks"]),
-            max(float(block[field]) for block in manifest_a["blocks"]),
-        )
-        agg_b = (
-            statistics.fmean([float(block[field]) for block in manifest_b["blocks"]]),
-            min(float(block[field]) for block in manifest_b["blocks"]),
-            max(float(block[field]) for block in manifest_b["blocks"]),
-        )
-        lines.append(
-            f"| {field} mean of blocks | {_fmt(agg_a[0])} | {_fmt(agg_b[0])} |"
-        )
-        lines.append(f"| {field} min block | {_fmt(agg_a[1])} | {_fmt(agg_b[1])} |")
-        lines.append(f"| {field} max block | {_fmt(agg_a[2])} | {_fmt(agg_b[2])} |")
+        agg_a = _block_field_aggregates(manifest_a["blocks"], field)
+        agg_b = _block_field_aggregates(manifest_b["blocks"], field)
+        for name, index in (("mean of blocks", 0), ("min block", 1), ("max block", 2)):
+            lines.append(f"| {field} {name} | {_fmt(agg_a[index])} | {_fmt(agg_b[index])} |")
     lines.append("")
 
     lines.append("## Pooled descriptive summary")
@@ -724,12 +957,16 @@ def build_report(
         lines.append(f"### {label} pooled")
         lines.append("")
         lines.append("```json")
-        lines.append(json.dumps(manifest["pooled"], indent=2, sort_keys=True))
+        pooled = manifest.get("pooled")
+        if isinstance(pooled, dict):
+            lines.append(json.dumps(pooled, indent=2, sort_keys=True))
+        else:
+            lines.append(json.dumps(None))
         lines.append("```")
         lines.append("")
 
-    max_a = manifest_a["max_block_p99_ns"]
-    max_b = manifest_b["max_block_p99_ns"]
+    max_a = manifest_a.get("max_block_p99_ns")
+    max_b = manifest_b.get("max_block_p99_ns")
     max_delta = None if max_a is None or max_b is None else float(max_b) - float(max_a)
     lines.append("## Max block p99 (gate statistic, ns)")
     lines.append("")
@@ -741,21 +978,41 @@ def build_report(
 
     lines.append("## Paired bootstrap over block p99 deltas")
     lines.append("")
-    lines.append(
-        f"Statistic: mean of the 5 paired block p99 deltas; point estimate "
-        f"{_fmt(point_estimate)} ns."
-    )
-    lines.append(
-        f"95% CI (percentile method, seed={bootstrap['seed']}, "
-        f"resamples={bootstrap['resamples']}, nearest-rank bounds): "
-        f"[{_fmt(ci_low)}, {_fmt(ci_high)}] ns."
-    )
+    if point_estimate is None or ci_low is None or ci_high is None:
+        lines.append(
+            "n/a — no block pair has p99 available on both sides, so the "
+            "paired bootstrap has no sample."
+        )
+    else:
+        lines.append(
+            f"Statistic: mean of the {len(deltas)} paired block p99 deltas; point estimate "
+            f"{_fmt(point_estimate)} ns."
+        )
+        lines.append(
+            f"95% CI (percentile method, seed={params['seed']}, "
+            f"resamples={params['resamples']}, nearest-rank bounds): "
+            f"[{_fmt(ci_low)}, {_fmt(ci_high)}] ns."
+        )
     lines.append(
         "Interpretation: the interval is descriptive evidence only; native "
         "adoption gates remain governed by the accepted decision record."
     )
     lines.append("")
     return "\n".join(lines)
+
+
+def _block_field_aggregates(
+    blocks: list[dict[str, Any]], field: str
+) -> tuple[float | None, float | None, float | None]:
+    """Return (mean, min, max) over available numeric values of one field.
+
+    Blocks whose value is null (inconclusive) are skipped; aggregates are
+    n/a when no block carries an available value.
+    """
+    values = [float(block[field]) for block in blocks if block.get(field) is not None]
+    if not values:
+        return None, None, None
+    return statistics.fmean(values), min(values), max(values)
 
 
 # ---------------------------------------------------------------------------

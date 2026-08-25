@@ -56,6 +56,31 @@ def reset_python_bridge_to_baseline(root: Path) -> None:
     source.write_text(BASELINE_PYTHON_SOURCE, encoding="utf-8")
 
 
+BASELINE_BENCH_SOURCE = """//! Private Phase-0 documentation stub for benchmark evidence tooling.
+//!
+//! Benchmark implementation is deferred until product behavior exists.
+"""
+
+
+def reset_bench_crate_to_baseline(root: Path) -> None:
+    source = root / "crates/lumenplot-bench/src/lib.rs"
+    source_dir = root / "crates/lumenplot-bench/src"
+    # Fixtures model the Phase-0 baseline: the working tree may carry the
+    # accepted O-08 bench modules (src/main.rs, src/clocks.rs, ...) alongside
+    # lib.rs, but the baseline bench crate ships documentation-only
+    # src/lib.rs.  Tests that exercise the bench-active contract re-add the
+    # sentinel files explicitly.
+    if source_dir.is_dir():
+        for stale in sorted(source_dir.iterdir()):
+            if stale.name == "lib.rs":
+                continue
+            if stale.is_dir():
+                shutil.rmtree(stale)
+            else:
+                stale.unlink()
+    source.write_text(BASELINE_BENCH_SOURCE, encoding="utf-8")
+
+
 class WorkspaceArchitectureMutationTests(unittest.TestCase):
     def fixture(self) -> tempfile.TemporaryDirectory[str]:
         temporary = tempfile.TemporaryDirectory(prefix="lumenplot-architecture-")
@@ -67,6 +92,7 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
         shutil.copy2(ROOT / "Cargo.lock", fixture_root / "Cargo.lock")
         shutil.copytree(ROOT / "crates", fixture_root / "crates")
         reset_python_bridge_to_baseline(fixture_root)
+        reset_bench_crate_to_baseline(fixture_root)
         scripts_dir = fixture_root / "scripts"
         scripts_dir.mkdir()
         shutil.copy2(CHECKER, scripts_dir / CHECKER.name)
@@ -1769,6 +1795,446 @@ fn body_macro_is_below_root_scope() {
         self.assert_mutation_rejected(
             mutate,
             "encode_line_frame_png has an unexpected signature",
+        )
+
+
+    def add_bench_module_files(self, root: Path) -> None:
+        """Write the exact accepted bench inventory except ``src/lib.rs``."""
+
+        source_dir = root / "crates/lumenplot-bench/src"
+        bodies = {
+            "main.rs": "#![forbid(unsafe_code)]\n\nfn main() {}\n",
+            "clocks.rs": "pub(crate) fn scheduler_now_ns() -> u64 {\n    0\n}\n",
+            "manifest.rs": "pub(crate) fn emit() -> String {\n    String::new()\n}\n",
+            "runner.rs": "pub(crate) fn blocks() -> usize {\n    5\n}\n",
+        }
+        for name, body in bodies.items():
+            (source_dir / name).write_text(body, encoding="utf-8")
+
+    def write_bench_lib(self, root: Path, source: str) -> None:
+        path = root / "crates/lumenplot-bench/src/lib.rs"
+        path.write_text(source, encoding="utf-8")
+
+    def activate_bench_lane(self, root: Path) -> None:
+        self.add_bench_module_files(root)
+        self.write_bench_lib(
+            root,
+            "//! Private O-08 benchmark harness documentation stub.\n"
+            "//!\n"
+            "//! The runner lives in the binary target modules.\n",
+        )
+
+    def test_bench_stub_source_still_enforced_without_sentinel(self) -> None:
+        def mutate(root: Path) -> None:
+            self.write_bench_lib(
+                root,
+                "//! stub\n\nfn hidden() {}\n",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: source must be documentation-only",
+        )
+
+    def test_bench_active_inventory_accepts_the_exact_file_set(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.activate_bench_lane(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_bench_active_inventory_rejects_missing_module_file(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            (root / "crates/lumenplot-bench/src/clocks.rs").unlink()
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: source must contain exactly",
+        )
+
+    def test_bench_active_inventory_rejects_extra_module_file(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            path = root / "crates/lumenplot-bench/src/extra.rs"
+            path.write_text("pub(crate) fn stray() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: source must contain exactly",
+        )
+
+    def test_bench_accepted_dependency_edges_pass(self) -> None:
+        # The accelerated lane's accepted edge set {lumenplot,
+        # lumenplot-engine, lumenplot-render-api} must satisfy the exact
+        # DAG expectation while the bench sentinel is active.
+        with self.fixture() as temporary:
+            root = Path(temporary)
+            self.activate_bench_lane(root)
+            manifest = root / "crates/lumenplot-bench/Cargo.toml"
+            manifest.write_text(
+                "[package]\n"
+                'name = "lumenplot-bench"\n'
+                "edition.workspace = true\n"
+                "version.workspace = true\n"
+                "publish = false\n"
+                "license.workspace = true\n"
+                "repository.workspace = true\n"
+                "readme.workspace = true\n"
+                "\n"
+                "[dependencies]\n"
+                'lumenplot = { path = "../lumenplot", version = "0.1.0" }\n'
+                'lumenplot-engine = { path = "../lumenplot-engine", version = "0.1.0" }\n'
+                'lumenplot-render-api = { path = "../lumenplot-render-api", version = "0.1.0" }\n',
+                encoding="utf-8",
+            )
+            returncode, output = self.run_checker(root)
+            self.assertEqual(returncode, 0, output)
+            self.assertIn("workspace architecture: OK", output)
+
+    def test_bench_unexpected_edge_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "[dependencies]\n",
+                    '[dependencies]\nlumenplot-viewer = { path = "../lumenplot-viewer", version = "0.1.0" }\n',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: dependency edge 'lumenplot-viewer' is not allowed",
+        )
+
+    def test_bench_missing_accelerated_edge_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = 'lumenplot-render-api = { path = "../lumenplot-render-api"'
+            lines = [line for line in text.splitlines(keepends=True) if marker not in line]
+            path.write_text("".join(lines), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: exact dependency graph mismatch (missing lumenplot-render-api)",
+        )
+
+    def test_bench_active_inventory_rejects_nested_module_directory(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            nested = root / "crates/lumenplot-bench/src/util"
+            nested.mkdir()
+            (nested / "mod.rs").write_text("pub(crate) fn deep() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: source must contain exactly",
+        )
+
+    def test_bench_active_lib_rs_public_item_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.add_bench_module_files(root)
+            self.write_bench_lib(
+                root,
+                "//! stub\n\npub fn exported() {}\n",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: public item is not allowed",
+        )
+
+    def test_bench_active_dependency_edge_drift_remains_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = "[dependencies]\n"
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, marker + 'serde = "1"\n'), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external dependency 'serde' is not allowed",
+        )
+
+    def test_bench_active_dev_dependency_table_remains_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8") + '\n[dev-dependencies]\ntrybuild = "1"\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "only runtime path dependencies are allowed",
+        )
+
+    # ------------------------------------------------------------------
+    # B2-P Metal prototype lane (workstream-manager decision on task
+    # t_50138c06): quarantine crate plus activation-gated static contract.
+    # ------------------------------------------------------------------
+
+    def add_metal_module_files(self, root: Path) -> None:
+        """Write prototype-lane module files beyond the documentation-only stub."""
+
+        source_dir = root / "crates/lumenplot-render-metal/src"
+        (source_dir / "command.rs").write_text(
+            "pub(crate) fn encode() -> usize {\n    0\n}\n",
+            encoding="utf-8",
+        )
+
+    def activate_metal_lane(self, root: Path) -> None:
+        self.add_metal_module_files(root)
+
+    def strip_metal_target_dependencies(self, root: Path) -> None:
+        """Restore the plain Phase-0 stub manifest without the pinned gate."""
+
+        path = root / "crates/lumenplot-render-metal/Cargo.toml"
+        source = path.read_text(encoding="utf-8")
+        marker = '[target.\'cfg(target_os = "macos")\'.dependencies]'
+        self.assertIn(marker, source)
+        path.write_text(source[: source.index(marker)].rstrip() + "\n", encoding="utf-8")
+
+    def test_metal_stub_source_still_enforced_without_sentinel(self) -> None:
+        def mutate(root: Path) -> None:
+            self.strip_metal_target_dependencies(root)
+            path = root / "crates/lumenplot-render-metal/src/lib.rs"
+            path.write_text("//! stub\n\nfn hidden() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: source must be documentation-only",
+        )
+
+    def test_metal_active_inventory_accepts_extra_module_file(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.activate_metal_lane(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_metal_stub_rules_apply_without_pinned_edges(self) -> None:
+        def mutate(root: Path) -> None:
+            self.strip_metal_target_dependencies(root)
+            self.add_metal_module_files(root)
+
+        # The source sentinel alone does not unlock external dependencies:
+        # the exact inventory expectation still fires (fail-closed).
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: exact external dependency "
+            "inventory mismatch (missing objc2,objc2-foundation,objc2-metal)",
+        )
+
+    def test_metal_active_public_item_in_lib_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/lib.rs"
+            path.write_text("//! stub\n\npub fn exported() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: public item is not allowed in src/lib.rs",
+        )
+
+    def test_metal_active_dependency_edge_drift_remains_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = "[dependencies]\n"
+            self.assertIn(marker, text)
+            path.write_text(text.replace(marker, marker + 'serde = "1"\n'), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external dependency 'serde' is not allowed",
+        )
+
+    def test_metal_pin_drift_deactivates_allowance_fail_closed(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace('=0.6.2', "=0.6.1"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "only runtime path dependencies are allowed",
+        )
+
+    def test_metal_active_wrong_specification_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace('=0.6.2', "=0.6.1"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external dependency 'objc2' has an unexpected specification",
+        )
+
+    def test_metal_active_dev_dependency_table_remains_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8") + '\n[dev-dependencies]\ntrybuild = "1"\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "only runtime path dependencies are allowed",
+        )
+
+    # ------------------------------------------------------------------
+    # M1 render-api frame seam (workstream decision on task t_50138c06):
+    # real source activates the seam static contract; backend vocabulary
+    # stays banned against that real source, fail-closed both directions.
+    # ------------------------------------------------------------------
+
+    def test_render_api_seam_source_passes_checker(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_render_api_backend_naming_in_seam_source_is_rejected(self) -> None:
+        # Whole-word backend vocabulary in real code is rejected. Substring
+        # look-alikes inside larger identifiers (`mtl_vertex_descriptor`,
+        # `metal_hint`) stay admitted per the pinned whole-word semantics.
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-api/src/frame.rs"
+            source = path.read_text(encoding="utf-8")
+            marker = "pub(crate) const MAX_FRAME_SERIES: usize = 65_536;"
+            self.assertIn(marker, source)
+            path.write_text(
+                source.replace(
+                    marker,
+                    marker + "\nconst METAL: u32 = 0;\nconst mtl_vertex_descriptor: u32 = 0;",
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-api: concrete frontend/backend code is not allowed",
+        )
+
+    def test_render_api_metal_word_in_lib_code_is_rejected(self) -> None:
+        # Doc prose is stripped by design (comment stripping matches every
+        # other lane), so the ban is exercised against lib.rs code instead.
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-api/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            suffix = '\n\n#[allow(dead_code)]\nfn backend_probe(mtl: u32) -> u32 {\n    mtl\n}\n'
+            path.write_text(source + suffix, encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-api: concrete frontend/backend code is not allowed",
+        )
+
+    def test_render_api_unsafe_in_seam_source_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-api/src/frame.rs"
+            source = path.read_text(encoding="utf-8")
+            marker = "pub(crate) const MAX_FRAME_SERIES: usize = 65_536;"
+            self.assertIn(marker, source)
+            path.write_text(
+                source.replace(marker, marker + "\nfn raw() { let _ = 4; }"),
+                encoding="utf-8",
+            )
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("fn raw()", "unsafe fn raw()"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-api: unsafe code is not allowed",
+        )
+
+    def test_render_api_no_mangle_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-api/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            suffix = "\n\n#[no_mangle]\nextern \"C\" fn seam_entry() {}\n"
+            path.write_text(source + suffix, encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-api: exported ABI is not allowed",
+        )
+
+    def test_render_api_stub_rules_return_when_seam_source_is_removed(self) -> None:
+        def mutate(root: Path) -> None:
+            crate_dir = root / "crates/lumenplot-render-api"
+            shutil.rmtree(crate_dir / "src")
+            (crate_dir / "src").mkdir()
+            (crate_dir / "src" / "lib.rs").write_text(
+                "//! stub\n\nfn hidden() {}\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-api: source must be documentation-only",
+        )
+
+    def test_render_api_stub_public_item_still_enforced_without_sentinel(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-api/src/frame.rs"
+            # Remove the sentinel file; the stub rules must apply unchanged.
+            path.unlink()
+            lib_path = root / "crates/lumenplot-render-api/src/lib.rs"
+            source = lib_path.read_text(encoding="utf-8")
+            lib_path.write_text(
+                "\n".join(
+                    line
+                    for line in source.splitlines()
+                    if not line.startswith(("mod frame;", "pub use crate::frame"))
+                ).strip()
+                + "\n\npub fn leaked() {}\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-api: public item is not allowed in Phase-0 stub",
+        )
+
+    def test_render_metal_to_wgpu_edge_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-metal/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = "[dependencies]\n"
+            self.assertIn(marker, text)
+            path.write_text(
+                text.replace(
+                    marker,
+                    marker
+                    + 'lumenplot-render-wgpu = { path = "../lumenplot-render-wgpu", version = "0.1.0" }\n',
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: dependency edge 'lumenplot-render-wgpu' is not allowed",
         )
 
     def test_export_public_field_is_rejected(self) -> None:
