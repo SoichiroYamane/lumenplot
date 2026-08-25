@@ -12,6 +12,11 @@
 - Adoption makes these rows *requirements*, not results: every new row's traceability result
   is honestly `Not implemented` until bounded product evidence exists (release-honesty rule
   `LP-REL-014`).
+- Quality oracle: on 2026-08-25 the maintainer additionally fixed the acceptance quality bar
+  for every adopted row as **"implemented to the same quality as the current Matplotlib
+  backend (Agg)"** — Agg output is the quality oracle, and near-looking output is not
+  acceptance. Section 5.4 records the binding parity criteria each row's evidence gate must
+  demonstrate.
 - The reconciliation inventory (Sections 3–4), priority rationale (Section 6), wave placement
   (Section 7), and flagged contract impacts (Section 8) remain the recorded adoption rationale;
   they are context, not additional requirements.
@@ -230,6 +235,45 @@ column (`Not implemented`) and are the machine-checkable source of truth.
 - **Axes decorations, tick/label text surface, multi-axes/subplot spec** — owned by the
   active practical-expansion planning lane; duplicated IDs here would fork ownership.
 
+### 5.4 Quality oracle and equivalence criteria (fixed 2026-08-25, all adopted rows)
+
+The maintainer fixed the acceptance quality bar for every adopted row: **native rendering is
+accepted only when it matches what the current Matplotlib backend (Agg) produces for the same
+Figure — visually and numerically.** Agg is therefore the *quality oracle* for every gate in
+Section 5; "plausible" or "approximately right" output never passes. The criteria below define
+what each row's evidence fixture must demonstrate. They fix the acceptance standard only; they
+change no accepted decision, add no implementation, and leave every row's honest
+`Not implemented` result untouched.
+
+- **Geometry parity** — vertex/rectangle geometry must equal Agg's transform result:
+  data-space points pass through the same effective transform (axes limits → display space at
+  the fixture's DPI) with agreement to sub-pixel rounding only. For fills this includes span
+  baselines (`fill_between` y1/y2 semantics); for bars the anchored baseline including negative
+  and stacked cases; for steps the exact generated vertex sequence.
+- **Pixel parity** — on representative workloads per row, the decoded native PNG must differ
+  from the same-frame Agg PNG by no more than a declared threshold: exact match where the
+  pipeline is deterministic end-to-end, otherwise a numerically defined antialiasing tolerance.
+  Thresholds are not assumed: they are measured when the fixtures are built, recorded in the
+  evidence artifact, and re-measured if the renderer changes. Byte identity with Agg is never
+  asserted (ADR 0015 §5 keeps semantic tolerance for unprovable corner cases).
+- **Style semantics** — face color, edge color, alpha, line width, cap/join, and dash state
+  must resolve to the same values Agg resolves for the same Figure graph (same declared style
+  contract, same defaults), not merely similar-looking values.
+- **Text** — where a row renders text (date/unit tick labels under `LP-FUNC-037`), glyphs come
+  from the TextPath-derived outline module (`LP-TEXT` family), so font resolution and hinting
+  differences versus rasterized Agg text are handled by comparing outline geometry against
+  Matplotlib's own `TextPath` output for the same `FontProperties`; hinting/rasterization-stage
+  differences are excluded from pixel parity and their allowed magnitude recorded with the
+  fixture.
+
+Each wave's definition of done inherits these criteria directly:
+
+| Wave | Rows | Oracle requirement added to the DoD |
+| --- | --- | --- |
+| W1 | LP-FUNC-032/033/034 | Agg parity fixtures green: geometry parity + pixel parity + style semantics per §5.4, before any row's result leaves `Not implemented`. |
+| W2 | LP-FUNC-035/037 | Same oracle bar, plus compositing order validated against Agg layering and label text via the TextPath comparison above. |
+| W3 | LP-FUNC-036/038 (+039 when adopted) | Same oracle bar fixed now so future Phase-5 work cannot lower it: polar/quiver fixtures compare against Agg under the identical criteria. |
+
 ## 6. Priority rationale ("major feature" test)
 
 A feature qualifies as *major* — and its row's level — by scoring all four criteria; no
@@ -260,11 +304,11 @@ Aligned with actual implementation state: Phase-3B public backend merged; backgr
 dependency, README/IDAT correction lanes in flight; axes-decoration / text-minimal /
 multi-axes lanes planned; native benchmark gate untouched.
 
-| Wave | Content | Rationale |
-| --- | --- | --- |
-| **W1 — "static geometry" (Phase 3B continuation, adapter + engine seam)** | LP-FUNC-032 (fill), LP-FUNC-033 (bar), LP-FUNC-034 (steps); LP-MPL-020 governs each slice | largest coverage-per-cost; pure geometry; each lands as an eligibility extension per the governance row; prerequisite: background-compositing fix merged so decoded-pixel assertions stay meaningful |
-| **W2 — "correct composition" (after W1 + axes-on stabilizes)** | LP-FUNC-035 (cross-primitive compositing), LP-FUNC-037 (date tick labels) | compositing needs ≥2 primitive classes to exist; label formatting needs the axes-decoration text surface |
-| **W3 — "expansion" (Phase 5 train, beside existing FUNC-017–020)** | LP-FUNC-036 (polar), LP-FUNC-038 (quiver); LP-FUNC-039 held pending topology decision | matches the existing Phase-5 expansion bundle placement; no competition with v1 native gate lanes |
+| Wave | Content | Rationale | Definition of done |
+| --- | --- | --- | --- |
+| **W1 — "static geometry" (Phase 3B continuation, adapter + engine seam)** | LP-FUNC-032 (fill), LP-FUNC-033 (bar), LP-FUNC-034 (steps); LP-MPL-020 governs each slice | largest coverage-per-cost; pure geometry; each lands as an eligibility extension per the governance row; prerequisite: background-compositing fix merged so decoded-pixel assertions stay meaningful | Agg parity fixtures green per §5.4: geometry parity, pixel parity within recorded thresholds, and style semantics for representative workloads per row |
+| **W2 — "correct composition" (after W1 + axes-on stabilizes)** | LP-FUNC-035 (cross-primitive compositing), LP-FUNC-037 (date tick labels) | compositing needs ≥2 primitive classes to exist; label formatting needs the axes-decoration text surface | Same oracle bar per §5.4; compositing order validated against Agg layering; label glyphs compared as TextPath outline geometry per the text criterion |
+| **W3 — "expansion" (Phase 5 train, beside existing FUNC-017–020)** | LP-FUNC-036 (polar), LP-FUNC-038 (quiver); LP-FUNC-039 held pending topology decision | matches the existing Phase-5 expansion bundle placement; no competition with v1 native gate lanes | Same oracle bar per §5.4, fixed in advance so later Phase-5 work cannot lower it |
 
 Native-viewer parity follows the same waves where the capability is engine-side; the adapter
 profile separation rules (`LP-MPL-011`, `LP-QUAL-021`) apply unchanged — nothing here moves
@@ -321,3 +365,9 @@ document; until then `traceability-v1.0.md` is the canonical registry copy.
 - Behavior statements about the merged Phase-3B slice (eligible trace, strict rejections,
   hybrid whole-frame fallback, PNG-only surface) reflect `python/lumenplot_mpl/backend.py`
   and the Phase-3B contract-test suite as merged at the time of drafting.
+- On 2026-08-25 the maintainer fixed the quality oracle ("same quality as the current
+  Matplotlib backend (Agg)") for all adopted rows; on 2026-08-26 Section 5.4 was added to
+  record the binding equivalence criteria (geometry parity, pixel parity with recorded
+  thresholds, style semantics, TextPath-based text comparison) and the wave DoD column in
+  Section 7. Docs-only canonization: no requirement row's meaning, level, or result was
+  changed.
