@@ -318,6 +318,60 @@ def _finite(value: Any) -> bool:
     return math.isfinite(float(value))
 
 
+#: Step drawstyles admitted by the LP-FUNC-034 eligibility extension
+#: (LP-MPL-020: whitelist entry unchanged, collector-trace expectation
+#: unchanged, style contract, and fixtures landed in one commit). Each
+#: value names the exact vertex-generation semantics Matplotlib's own
+#: ``cbook`` step functions apply before projection; the bare ``steps``
+#: alias is Matplotlib's historical spelling of ``steps-pre``.
+_STEP_DRASTYLES = frozenset(
+    {"steps", "steps-pre", "steps-post", "steps-mid"}
+)
+
+
+def _expand_step_vertices(xdata: list, ydata: list, drawstyle: str):
+    """Expand sampled data per Matplotlib's step semantics.
+
+    The formulas mirror ``matplotlib.cbook.pts_to_{pre,post,mid}step``
+    exactly (Agg quality oracle, parity draft §5.4): N samples become
+    2N-1 vertices for pre/post and 2N vertices for mid, so the emitted
+    polyline is the same geometry Agg strokes for the same Figure.
+    Callers refuse non-finite samples before reaching here (see
+    ``_line_command``): Agg's path cleaning re-pairs risers around NaN
+    gaps, so no expansion of masked data reproduces that oracle.
+    """
+    count = len(xdata)
+    if drawstyle == "steps-mid":
+        expanded_x: list = [xdata[0]]
+        expanded_y: list = [ydata[0]]
+        for index in range(count - 1):
+            midpoint = (xdata[index] + xdata[index + 1]) / 2.0
+            expanded_x.append(midpoint)
+            expanded_y.append(ydata[index])
+            expanded_x.append(midpoint)
+            expanded_y.append(ydata[index + 1])
+        expanded_x.append(xdata[-1])
+        expanded_y.append(ydata[-1])
+        return expanded_x, expanded_y
+    # steps / steps-pre / steps-post share the 2N-1 shape; only which
+    # side of each interval carries the vertical riser differs.
+    expanded_x = [0.0] * (2 * count - 1)
+    expanded_y = [0.0] * (2 * count - 1)
+    for index in range(count):
+        expanded_x[2 * index] = xdata[index]
+        expanded_y[2 * index] = ydata[index]
+        if index == count - 1:
+            break
+        if drawstyle == "steps-post":
+            expanded_x[2 * index + 1] = xdata[index + 1]
+            expanded_y[2 * index + 1] = ydata[index]
+        else:
+            # steps / steps-pre: riser sits at the left sample.
+            expanded_x[2 * index + 1] = xdata[index]
+            expanded_y[2 * index + 1] = ydata[index + 1]
+    return expanded_x, expanded_y
+
+
 class _SpineStroke:
     """Line2D-style view over one Spine for the decoration builder.
 
@@ -590,7 +644,15 @@ class _EligibilityPreflight:
         name = type(line).__name__
         if line.get_marker() != "None":
             self.unsupported("markers are unsupported in strict mode", name)
-        if line.get_drawstyle() != "default":
+        # LP-FUNC-034: the step drawstyles are exact vertex-generation
+        # semantics, not approximations -- the line path is expanded to
+        # Matplotlib's own step polyline before projection, so eligibility
+        # extends only to this family. Every other non-default drawstyle
+        # (and any future value) is still refused explicitly.
+        if (
+            line.get_drawstyle() != "default"
+            and line.get_drawstyle() not in _STEP_DRASTYLES
+        ):
             self.unsupported("non-default drawstyle is unsupported", name)
         if line.is_dashed():
             self.unsupported("dashed strokes are unsupported in strict mode", name)
@@ -1929,10 +1991,41 @@ class _EligibilityPreflight:
         if len(xdata) != len(ydata) or not xdata:
             self.unsupported("mismatched or empty line data", name)
             return None
-        vertices = [
-            [to_px_x(x), to_px_y(y)]
+        # LP-FUNC-034: the step family expands the SAMPLED data exactly.
+        # A non-finite sample has no step semantics (Agg's own path
+        # cleaning re-pairs the risers around the gap, so neither dropping
+        # the row nor bridging it reproduces the oracle), therefore
+        # stepped lines refuse explicitly instead of approximating --
+        # LP-MPL-020 forbids silent approximation. The default drawstyle
+        # keeps its historical row-filtering behavior untouched.
+        finite_rows = [
+            (x, y)
             for x, y in zip(xdata, ydata)
             if _finite(x) and _finite(y)
+        ]
+        drawstyle = line.get_drawstyle()
+        if drawstyle in _STEP_DRASTYLES:
+            if len(finite_rows) != len(xdata):
+                self.unsupported(
+                    "non-finite samples are unsupported under step "
+                    "drawstyles",
+                    name,
+                )
+                return None
+            base_x, base_y = xdata, ydata
+        else:
+            base_x = [x for x, _ in finite_rows]
+            base_y = [y for _, y in finite_rows]
+        if drawstyle in _STEP_DRASTYLES and len(base_x) >= 1:
+            expanded_x, expanded_y = _expand_step_vertices(
+                base_x, base_y,
+                "steps-pre" if drawstyle == "steps" else drawstyle,
+            )
+        else:
+            expanded_x, expanded_y = base_x, base_y
+        vertices = [
+            [to_px_x(x), to_px_y(y)]
+            for x, y in zip(expanded_x, expanded_y)
         ]
         if len(vertices) < 2:
             self.unsupported("fewer than two finite points", name)
@@ -2258,6 +2351,19 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
                     height_px=height_px,
                     output_dpi=output_dpi,
                 )
+                # Geometry assembly records its own refusals
+                # (``_line_command``: mismatched/empty data, fewer than
+                # two finite points -- LP-FUNC-034 fixtures exercise the
+                # all-non-finite row case). They must gate the render
+                # exactly like collector-stage reasons, still before any
+                # seam call.
+                if preflight.reasons:
+                    type_context, reason = preflight.reasons[0]
+                    raise LumenPlotUnsupportedError(
+                        f"unsupported content in strict mode: {reason}",
+                        type_context=type_context,
+                        generation=generation,
+                    )
             except LumenPlotUnsupportedError as error:
                 if error.generation is None:
                     error.generation = generation

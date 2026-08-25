@@ -786,11 +786,22 @@ class TestStrictUnsupported(unittest.TestCase):
             canvas.render_png()
 
     def test_drawstyle_unsupported(self):
-        canvas = self._canvas_with(
-            lambda ax: ax.add_line(Line2D([0, 1], [0, 1], drawstyle="steps-pre"))
-        )
+        """Non-whitelisted drawstyles stay refused. Since LP-FUNC-034 the
+        step family (steps-pre/post/mid + the ``steps`` alias) is eligible
+        via exact vertex generation (test_phase3b_steps.py), so this
+        negative pins a value outside that family. Line2D validates
+        spellings at construction; the unknown value is injected through
+        the private attribute backing ``get_drawstyle()``."""
+        canvas = self._canvas_with(self._build_unknown_drawstyle)
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
             canvas.render_png()
+
+    @staticmethod
+    def _build_unknown_drawstyle(ax):
+        # Inject after add_line: Axes autolim walks the expanded path,
+        # so the unknown drawstyle must not exist yet.
+        ax.add_line(Line2D([0, 1], [0, 1], color="red"))
+        ax.lines[0]._drawstyle = "steps-diagonal"
 
     def test_text_unsupported(self):
         def build(ax):
