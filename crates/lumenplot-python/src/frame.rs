@@ -9,7 +9,9 @@
 //! this module.
 //!
 //! Rendering model (frozen for this slice):
-//! - the canvas starts fully transparent;
+//! - the canvas is seeded with the validated `background_rgba` from the spec
+//!   (fully transparent when the key is absent, preserving the accepted
+//!   no-key behavior of the first slice);
 //! - `path` commands contribute coverage generated with `tiny-skia` (the same
 //!   pinned rasterizer version used by `lumenplot-export`) and are composited
 //!   with the exact linear-light source-over math used by the Phase-2 line
@@ -275,6 +277,10 @@ pub(crate) struct FrameSpec {
     width_px: u32,
     height_px: u32,
     output_dpi: f64,
+    /// Straight-alpha sRGB8 `[r, g, b, a]` canvas seed. Transparent `[0, 0,
+    /// 0, 0]` unless the caller supplies `background_rgba`, preserving the
+    /// frozen no-key behavior of the accepted slice.
+    background_rgba: [u8; 4],
     commands: Vec<Command>,
 }
 
@@ -310,8 +316,19 @@ impl FrameSpec {
             width_px,
             height_px,
             output_dpi,
+            background_rgba: [0, 0, 0, 0],
             commands: Vec::new(),
         })
+    }
+
+    /// Sets the canvas seed color. Channels are canonicalized exactly like
+    /// path paints: a fully transparent seed stores RGB zero.
+    pub(crate) fn set_background_rgba(&mut self, rgba: [u8; 4]) {
+        self.background_rgba = canonical_rgba(rgba);
+    }
+
+    pub(crate) fn background_rgba(&self) -> [u8; 4] {
+        self.background_rgba
     }
 
     pub(crate) fn push_command(&mut self, command: Command) -> Result<(), FrameError> {
@@ -819,13 +836,11 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
     if pixels.try_reserve_exact(pixel_count).is_err() {
         return Err(FrameError::OutOfMemory);
     }
-    pixels.resize(
-        pixel_count,
-        LinearPixel {
-            premultiplied: [0.0; 3],
-            alpha: 0.0,
-        },
-    );
+    // Seed every pixel with the validated canvas background. The default is
+    // fully transparent (frozen behavior of the accepted slice); a caller
+    // supplied `background_rgba` fills the frame before any command runs,
+    // and path/image commands composite over it with source-over.
+    pixels.resize(pixel_count, linear_pixel_from_rgba(spec.background_rgba()));
     let scale = spec.scale();
 
     for command in &spec.commands {
@@ -1283,6 +1298,82 @@ mod tests {
         let rendered = rasterize(&spec).expect("rasterize");
         assert_ne!(&rendered[0..8], [0u8; 8].as_slice());
         assert_eq!(&rendered[8..16], [0u8; 8].as_slice());
+    }
+
+    #[test]
+    fn opaque_background_fills_every_pixel_with_the_requested_rgba() {
+        let mut spec = frame(3, 2);
+        spec.set_background_rgba([250, 240, 230, 255]);
+        let rgba = rasterize(&spec).expect("rasterize");
+        assert_eq!(rgba.len(), 3 * 2 * 4);
+        for pixel in rgba.chunks_exact(4) {
+            assert_eq!(
+                pixel,
+                &[250, 240, 230, 255],
+                "background seed lost at {:?}",
+                pixel
+            );
+        }
+    }
+
+    #[test]
+    fn background_survives_srgb_round_trip_for_extreme_channels() {
+        // sRGB encode/decode is exactly inverse on the seeded channels; 0,
+        // 13 (the largest value whose linear decode is below the encode
+        // threshold), and 255 pin both curve branches.
+        for [r, g, b] in [[0u8, 0, 0], [13, 13, 13], [255, 255, 255]] {
+            let mut spec = frame(1, 1);
+            spec.set_background_rgba([r, g, b, 255]);
+            let rgba = rasterize(&spec).expect("rasterize");
+            assert_eq!(&rgba[..4], &[r, g, b, 255]);
+        }
+    }
+
+    #[test]
+    fn semi_transparent_background_keeps_alpha_and_rgb() {
+        let mut spec = frame(1, 1);
+        spec.set_background_rgba([10, 20, 30, 128]);
+        let rgba = rasterize(&spec).expect("rasterize");
+        assert_eq!(rgba[0], 10);
+        assert_eq!(rgba[1], 20);
+        assert_eq!(rgba[2], 30);
+        assert_eq!(rgba[3], 128);
+    }
+
+    #[test]
+    fn transparent_background_stays_canonical_zero_rgb() {
+        // A caller-supplied fully transparent seed canonicalizes RGB to
+        // zero (same rule as path paints), keeping "transparent output has
+        // zero RGB" true.
+        let mut spec = frame(1, 1);
+        spec.set_background_rgba([9, 8, 7, 0]);
+        let rgba = rasterize(&spec).expect("rasterize");
+        assert_eq!(rgba, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn default_frame_without_background_stays_transparent() {
+        let rgba = rasterize(&frame(2, 1)).expect("rasterize");
+        assert_eq!(rgba, vec![0u8; 8]);
+    }
+
+    #[test]
+    fn strokes_composite_over_the_background_seed() {
+        let mut spec = frame(4, 4);
+        spec.set_background_rgba([255, 255, 255, 255]);
+        spec.push_command(Command::Path(filled_square(
+            1.0,
+            1.0,
+            2.0,
+            [0, 0, 255, 255],
+        )))
+        .expect("push");
+        let rgba = rasterize(&spec).expect("rasterize");
+        let at = |x: usize, y: usize| &rgba[(y * 4 + x) * 4..(y * 4 + x) * 4 + 4];
+        // Inside the square: opaque blue wins over the white seed.
+        assert_eq!(at(2, 2), &[0, 0, 255, 255]);
+        // Outside it: untouched background.
+        assert_eq!(at(0, 0), &[255, 255, 255, 255]);
     }
 
     #[test]

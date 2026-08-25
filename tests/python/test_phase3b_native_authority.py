@@ -44,6 +44,7 @@ from __future__ import annotations
 import copy
 import struct
 import unittest
+import zlib
 
 try:
     from lumenplot_mpl import _native as _native_seam
@@ -285,6 +286,162 @@ class TestNativeAuthorityConsequences(unittest.TestCase):
                     f"{name}: observed {seen.__name__}, suite pins "
                     f"{pinned.__name__} (lib.rs binding-contract comment)",
                 )
+
+
+# ---------------------------------------------------------------------------
+# Background preservation at the real seam (D2 fix lane)
+#
+# The adapter always sends ``background_rgba`` (ADR 0015 §6); before the D2
+# fix the frame seam silently dropped it and every rendered PNG was fully
+# transparent. These checks decode actual pixels from the emitted PNG.
+# ---------------------------------------------------------------------------
+
+
+def _decode_idat_rows(png_bytes: bytes) -> tuple[int, int, list[bytes]]:
+    """Decode an RGBA8 PNG to per-row byte strings (stdlib only).
+
+    Supports the frozen container's filter set (None only today, but the
+    reconstruction loop covers all five filters so a future filter change
+    fails on content, not on the decoder).
+    """
+    assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n", "PNG magic missing"
+    pos = 8
+    idat = b""
+    width = height = None
+    while pos < len(png_bytes):
+        length = struct.unpack(">I", png_bytes[pos:pos + 4])[0]
+        chunk_type = png_bytes[pos + 4:pos + 8]
+        data = png_bytes[pos + 8:pos + 8 + length]
+        if chunk_type == b"IHDR":
+            width, height, bit_depth, color_type = struct.unpack(
+                ">IIBB", data[:10]
+            )
+            assert bit_depth == 8 and color_type == 6, "expected 8-bit RGBA"
+        elif chunk_type == b"IDAT":
+            idat += data
+        pos += 12 + length
+    assert width is not None and height is not None
+    raw = zlib.decompress(idat)
+    stride = width * 4 + 1
+    rows: list[bytes] = []
+    previous = bytes(width * 4)
+    for index in range(height):
+        block = raw[index * stride:(index + 1) * stride]
+        filter_kind = block[0]
+        current = bytearray(block[1:])
+        bpp = 4
+        for offset in range(len(current)):
+            a = current[offset - bpp] if offset >= bpp else 0
+            b = previous[offset]
+            c = previous[offset - bpp] if offset >= bpp else 0
+            if filter_kind == 0:
+                pass
+            elif filter_kind == 1:
+                current[offset] = (current[offset] + a) & 0xFF
+            elif filter_kind == 2:
+                current[offset] = (current[offset] + b) & 0xFF
+            elif filter_kind == 3:
+                current[offset] = (current[offset] + (a + b) // 2) & 0xFF
+            elif filter_kind == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                predictor = a if (pa <= pb and pa <= pc) else (
+                    b if pb <= pc else c
+                )
+                current[offset] = (current[offset] + predictor) & 0xFF
+            else:
+                raise AssertionError(f"unknown PNG filter {filter_kind}")
+        rows.append(bytes(current))
+        previous = bytes(current)
+    return width, height, rows
+
+
+@unittest.skipUnless(
+    HAS_REAL_NATIVE_SEAM, "compiled lumenplot_mpl._native seam not available"
+)
+class TestNativeBackgroundPreservation(unittest.TestCase):
+    """Pixel-level proof that spec ``background_rgba`` reaches the output."""
+
+    def _rendered_pixel(self, spec):
+        png = _native_seam.render_frame_png(spec)
+        width, height, rows = _decode_idat_rows(png)
+        self.assertEqual((width, height), (spec["width_px"], spec["height_px"]))
+        return width, height, rows
+
+    def test_opaque_background_fills_the_whole_canvas(self):
+        spec = _frame_spec(commands=[])
+        spec["background_rgba"] = [250, 240, 230, 255]
+        width, height, rows = self._rendered_pixel(spec)
+        expected = bytes([250, 240, 230, 255] * width)
+        for row in rows:
+            self.assertEqual(row, expected)
+
+    def test_absent_background_keeps_transparent_canvas(self):
+        # Frozen no-key behavior of the accepted slice: no seed key means
+        # the historical transparent canvas.
+        spec = _frame_spec(commands=[])
+        width, _height, rows = self._rendered_pixel(spec)
+        transparent = bytes(width * 4)
+        for row in rows:
+            self.assertEqual(row, transparent)
+
+    def test_semitransparent_background_preserves_alpha_and_rgb(self):
+        spec = _frame_spec(commands=[])
+        spec["background_rgba"] = [10, 20, 30, 128]
+        _width, _height, rows = self._rendered_pixel(spec)
+        for row in rows:
+            for offset in range(0, len(row), 4):
+                self.assertEqual(
+                    list(row[offset:offset + 4]), [10, 20, 30, 128]
+                )
+
+    def test_strokes_composite_over_an_opaque_background(self):
+        spec = _frame_spec()
+        spec["width_px"] = 64
+        spec["height_px"] = 48
+        spec["background_rgba"] = [255, 255, 255, 255]
+        png = _native_seam.render_frame_png(spec)
+        _width, _height, rows = _decode_idat_rows(png)
+
+        def opaque_red(pixel):
+            # Core ink of _frame_spec's default stroke is (200, 30, 30);
+            # near-full-coverage blends stay close to it.
+            return (
+                pixel[3] == 255
+                and pixel[0] >= 190
+                and pixel[1] < 60
+                and pixel[2] < 60
+            )
+
+        red_seen = False
+        white_seen = False
+        for row in rows:
+            for offset in range(0, len(row), 4):
+                pixel = row[offset:offset + 4]
+                if opaque_red(pixel):
+                    red_seen = True
+                elif list(pixel) == [255, 255, 255, 255]:
+                    white_seen = True
+        self.assertTrue(red_seen, "stroke ink missing over the background")
+        self.assertTrue(
+            white_seen, "seeded background pixels missing around the stroke"
+        )
+
+    def test_background_is_part_of_deterministic_bytes(self):
+        # Same spec twice stays identical (existing authority property),
+        # and changing only the seed changes the bytes.
+        spec_a = _frame_spec(commands=[])
+        spec_a["background_rgba"] = [250, 240, 230, 255]
+        self.assertEqual(
+            _native_seam.render_frame_png(copy.deepcopy(spec_a)),
+            _native_seam.render_frame_png(copy.deepcopy(spec_a)),
+        )
+        spec_b = copy.deepcopy(spec_a)
+        spec_b["background_rgba"] = [12, 34, 56, 78]
+        self.assertNotEqual(
+            _native_seam.render_frame_png(copy.deepcopy(spec_a)),
+            _native_seam.render_frame_png(copy.deepcopy(spec_b)),
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

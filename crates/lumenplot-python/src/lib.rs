@@ -834,6 +834,14 @@ fn extract_spec(spec: &Bound<'_, PyAny>) -> PyResult<FrameSpec> {
     let mut frame_spec =
         FrameSpec::new(width_px, height_px, output_dpi).map_err(frame_error_to_pyerr)?;
 
+    // Optional canvas seed. The adapter (ADR 0015 §6) always sends
+    // `background_rgba`; the seam treats it as additive so an absent key
+    // keeps the frozen transparent-canvas behavior of the accepted slice.
+    if let Some(background) = optional_key(dict, "background_rgba")? {
+        let background_rgba = extract_rgba(&background, "background_rgba")?;
+        frame_spec.set_background_rgba(background_rgba);
+    }
+
     if frame_spec.reserve_commands(commands_list.len()).is_err() {
         return Err(internal_error("allocation failed"));
     }

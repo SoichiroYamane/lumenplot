@@ -267,6 +267,72 @@ class TestRenderPng(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Figure background reaches the native seam (API 0005 §6, D2 fix lane)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestSpecBackgroundRgba(unittest.TestCase):
+    """The spec must carry the collected figure facecolor as RGBA.
+
+    The adapter collects one figure-background ``draw_path`` whose
+    ``rgbFace`` is the effective figure RGBA (ADR 0015 §6) and sends it as
+    ``background_rgba``; the native seam seeds its canvas with it. Before
+    the D2 fix the key was silently dropped and strict-mode output lost
+    the figure background entirely.
+    """
+
+    def setUp(self):
+        self._patcher = _install_stub_native()
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def test_default_figure_facecolor_reaches_spec_as_opaque_white(self):
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        self.assertIn("background_rgba", spec)
+        self.assertEqual(list(spec["background_rgba"]), [255, 255, 255, 255])
+
+    def test_explicit_facecolor_is_converted_to_rgba8(self):
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        fig.set_facecolor((0.5, 0.8, 0.25))
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        self.assertEqual(
+            list(spec["background_rgba"]),
+            [128, 204, 64, 255],
+        )
+
+    def test_transparent_figure_facecolor_is_unsupported_strict(self):
+        """A fully transparent figure patch never yields an rgbFace.
+
+        Matplotlib skips the fill entirely, so the collector sees no filled
+        background ``draw_path`` and strict mode rejects the frame before
+        any spec exists. Alpha-0 seed canonicalization itself is pinned
+        Rust-side (``transparent_background_stays_canonical_zero_rgb``).
+        """
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        fig.set_facecolor((1.0, 0.0, 0.0, 0.0))
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
+            canvas.render_png()
+
+    def test_background_rgba_channels_are_ints_in_range(self):
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        channels = list(spec["background_rgba"])
+        self.assertEqual(len(channels), 4)
+        for channel in channels:
+            self.assertIsInstance(channel, int)
+            self.assertGreaterEqual(channel, 0)
+            self.assertLessEqual(channel, 255)
+
+
+# ---------------------------------------------------------------------------
 # Effective savefig DPI and fractional-figsize geometry matrix (API 0005 §5/§6)
 # ---------------------------------------------------------------------------
 
@@ -1082,6 +1148,17 @@ class TestStrokeWidths(unittest.TestCase):
         if not hasattr(_native, "render_frame_png"):
             self.skipTest("render_frame_png not present yet")
 
+        def has_red_influence(pixel: bytes) -> bool:
+            """Any pixel the red stroke visibly tinted.
+
+            With the opaque white canvas seed (D2 fix) a thin stroke never
+            reaches full pixel coverage, so blends run toward white and a
+            pure-red predicate would miss them; red-dominance survives at
+            every positive coverage.
+            """
+            r, g, b = pixel[0], pixel[1], pixel[2]
+            return bool(r > g and r > b)
+
         covered_rows = {}
         for width_pt in (0.5, 1.0, 2.0):
             fig, canvas = _eligible_canvas(
@@ -1099,16 +1176,21 @@ class TestStrokeWidths(unittest.TestCase):
             result = canvas.render_png()
             del fig, canvas
             _, height, rows = _decode_rgba8(result.png_bytes)
-            # Alpha-weighted coverage of one mid column: proportional to
-            # physical thickness and strictly growing, because each wider
+            # Ink-weighted coverage of one mid column. With the opaque
+            # white canvas seed (D2 fix) every pixel is alpha-saturated,
+            # so the historical alpha sum cannot discriminate widths;
+            # the pure-red stroke over white shows up as a green-channel
+            # deficit proportional to physical thickness, and each wider
             # stroke contains the narrower one around the same centerline.
             mid_x = 50
-            coverage = sum(rows[y][mid_x * 4 + 3] for y in range(height))
+            coverage = sum(
+                255 - rows[y][mid_x * 4 + 1] for y in range(height)
+            )
             self.assertGreater(coverage, 0,
                                f"no stroke ink at {width_pt} pt")
             ys = [
                 y for y in range(height)
-                if _is_red(rows[y][mid_x * 4:mid_x * 4 + 4])
+                if has_red_influence(rows[y][mid_x * 4:mid_x * 4 + 4])
             ]
             self.assertTrue(ys, f"no opaque ink at {width_pt} pt")
             # All ink stays within the axes band around the mid row.
