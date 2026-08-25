@@ -26,7 +26,7 @@ def render_frame_png(spec: Mapping[str, Any]) -> bytes:
     the canvas fully transparent. The optional ``blend_mode`` key selects
     the compositing color model: ``"linear"`` (default) composites in
     premultiplied linear-sRGB per ADR 0012; ``"agg_srgb"`` composites in
-    encoded sRGB to match matplotlib Agg (architecture ruling
+    encoded sRGB to match the Agg quality oracle (architecture ruling
     2026-08-25).
     """
     ...

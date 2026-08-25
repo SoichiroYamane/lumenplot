@@ -1546,6 +1546,64 @@ mod tests {
     }
 
     #[test]
+    fn default_blend_mode_is_linear_and_byte_stable() {
+        // The ruling keeps ADR-0012's frozen model authoritative unless a
+        // spec opts in: the default selector is Linear, and a spec that
+        // never names a mode renders byte-identically to one that picks
+        // Linear explicitly.
+        assert_eq!(BlendMode::default(), BlendMode::Linear);
+        assert_eq!(frame(4, 4).blend_mode(), BlendMode::Linear);
+
+        let build = |explicit: bool| {
+            let mut spec = frame(8, 8);
+            spec.set_background_rgba([255, 255, 255, 255]);
+            if explicit {
+                spec.set_blend_mode(BlendMode::Linear);
+            }
+            spec.push_command(Command::Path(filled_square(
+                2.0,
+                2.0,
+                3.0,
+                [200, 60, 30, 140],
+            )))
+            .expect("push");
+            spec
+        };
+        assert_eq!(
+            rasterize(&build(false)).expect("default render"),
+            rasterize(&build(true)).expect("explicit linear render")
+        );
+    }
+
+    #[test]
+    fn agg_srgb_mode_blends_in_encoded_space_like_agg() {
+        // Black at style alpha 128/255 over an opaque white seed. Encoded
+        // sRGB source-over -- the arithmetic matplotlib Agg runs -- keeps
+        // the white at encoded 255 and yields 1 - 128/255 = 127/255, i.e.
+        // exactly 127 after quantization; linear-light compositing decodes
+        // white to 1.0, accumulates 127/255 of linear light, and re-encodes
+        // to 187. One fully covered interior pixel pins each model, and the
+        // same geometry must render differently under the two selectors so
+        // the opt-in cannot silently no-op.
+        for (mode, expected_gray) in [(BlendMode::AggSrgb, 127u8), (BlendMode::Linear, 187)] {
+            let mut spec = frame(4, 4);
+            spec.set_background_rgba([255, 255, 255, 255]);
+            spec.set_blend_mode(mode);
+            spec.push_command(Command::Path(filled_square(1.0, 1.0, 2.0, [0, 0, 0, 128])))
+                .expect("push");
+            let rgba = rasterize(&spec).expect("rasterize");
+            let at = |x: usize, y: usize| &rgba[(y * 4 + x) * 4..(y * 4 + x) * 4 + 4];
+            assert_eq!(
+                at(2, 2),
+                &[expected_gray, expected_gray, expected_gray, 255],
+                "{mode:?} blend diverged from the pinned arithmetic"
+            );
+            // Outside the square the untouched white seed survives.
+            assert_eq!(at(0, 3), &[255, 255, 255, 255]);
+        }
+    }
+
+    #[test]
     fn same_spec_renders_identical_bytes() {
         let build = || {
             let mut spec = frame(12, 12);
