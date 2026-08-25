@@ -87,6 +87,57 @@ jobs:
           /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 -r /tmp/wheelhouse-numpy313.txt
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:a2c306dea656c12c68f51f4cea133cbe78ca7435eb28c735eac1d3ebe73be6e8' > /tmp/wheelhouse-numpy314.txt
           /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 -r /tmp/wheelhouse-numpy314.txt
+          # Matplotlib runtime stack (Phase-3B backend dependency): one
+          # requirements file per supported CPython minor version, each with
+          # the full eight-wheel tree (matplotlib + contourpy + cycler +
+          # fonttools + kiwisolver + pillow + pyparsing + python-dateutil).
+          # cp311-cp313 compiled wheels publish under the manylinux2014 tag,
+          # so those downloads accept both platform tags; digests probed from
+          # the PyPI release pages and re-verified by local pip downloads.
+          printf '%s\n' 'matplotlib==3.11.1 --hash=sha256:aee55e9041211bf84302ab55ec3965df18dd90ae19f8b58332a7feaf208bfe83' > /tmp/wheelhouse-mpl311.txt
+          printf '%s\n' 'contourpy==1.3.3 --hash=sha256:51e79c1f7470158e838808d4a996fa9bac72c498e93d8ebe5119bc1e6becb0db' >> /tmp/wheelhouse-mpl311.txt
+          printf '%s\n' 'cycler==0.12.1 --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30' >> /tmp/wheelhouse-mpl311.txt
+          printf '%s\n' 'fonttools==4.63.0 --hash=sha256:d76ac49f929aecaf82d83250b8347e099d7aecba0f4726c1d9b6df3b8bb5fe18' >> /tmp/wheelhouse-mpl311.txt
+          printf '%s\n' 'kiwisolver==1.5.0 --hash=sha256:2517e24d7315eb51c10664cdb865195df38ab74456c677df67bb47f12d088a27' >> /tmp/wheelhouse-mpl311.txt
+          printf '%s\n' 'pillow==12.3.0 --hash=sha256:23d27a3e0307ec2244cc51e7287b919aa68d097504ebe19df4e76a98a3eea5bd' >> /tmp/wheelhouse-mpl311.txt
+          printf '%s\n' 'pyparsing==3.3.2 --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d' >> /tmp/wheelhouse-mpl311.txt
+          printf '%s\n' 'python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427' >> /tmp/wheelhouse-mpl311.txt
+          printf '%s\n' 'packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c' >> /tmp/wheelhouse-mpl311.txt
+          printf '%s\n' 'six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274' >> /tmp/wheelhouse-mpl311.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --implementation cp --python-version 311 --abi cp311 -r /tmp/wheelhouse-mpl311.txt
+          printf '%s\n' 'matplotlib==3.11.1 --hash=sha256:ba8f811b8ddfac493734d6af0b2dff96919d0c28ca0d641858dab4262777c6ea' > /tmp/wheelhouse-mpl312.txt
+          printf '%s\n' 'contourpy==1.3.3 --hash=sha256:4d00e655fcef08aba35ec9610536bfe90267d7ab5ba944f7032549c55a146da1' >> /tmp/wheelhouse-mpl312.txt
+          printf '%s\n' 'cycler==0.12.1 --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30' >> /tmp/wheelhouse-mpl312.txt
+          printf '%s\n' 'fonttools==4.63.0 --hash=sha256:58dc6bb86a78d782f00f9190ca02c119cf5bbe2807536e361e18d42019f877d8' >> /tmp/wheelhouse-mpl312.txt
+          printf '%s\n' 'kiwisolver==1.5.0 --hash=sha256:bb5136fb5352d3f422df33f0c879a1b0c204004324150cc3b5e3c4f310c9049f' >> /tmp/wheelhouse-mpl312.txt
+          printf '%s\n' 'pillow==12.3.0 --hash=sha256:78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91' >> /tmp/wheelhouse-mpl312.txt
+          printf '%s\n' 'pyparsing==3.3.2 --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d' >> /tmp/wheelhouse-mpl312.txt
+          printf '%s\n' 'python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427' >> /tmp/wheelhouse-mpl312.txt
+          printf '%s\n' 'packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c' >> /tmp/wheelhouse-mpl312.txt
+          printf '%s\n' 'six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274' >> /tmp/wheelhouse-mpl312.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --implementation cp --python-version 312 --abi cp312 -r /tmp/wheelhouse-mpl312.txt
+          printf '%s\n' 'matplotlib==3.11.1 --hash=sha256:b0a19dcf73406d3746d25a5ed42d713604c9a3e024d129b102852b0d941cb9f3' > /tmp/wheelhouse-mpl313.txt
+          printf '%s\n' 'contourpy==1.3.3 --hash=sha256:4debd64f124ca62069f313a9cb86656ff087786016d76927ae2cf37846b006c9' >> /tmp/wheelhouse-mpl313.txt
+          printf '%s\n' 'cycler==0.12.1 --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30' >> /tmp/wheelhouse-mpl313.txt
+          printf '%s\n' 'fonttools==4.63.0 --hash=sha256:22135da48a348785c5e2d5d2d9d6bec5ed44adacbaeb9db12d9493bf6c6bfa68' >> /tmp/wheelhouse-mpl313.txt
+          printf '%s\n' 'kiwisolver==1.5.0 --hash=sha256:332b4f0145c30b5f5ad9374881133e5aa64320428a57c2c2b61e9d891a51c2f3' >> /tmp/wheelhouse-mpl313.txt
+          printf '%s\n' 'pillow==12.3.0 --hash=sha256:0847a763afefb695bc912d7c131e7e0632d4edc1d8698f58ddabec8e46b8b6d3' >> /tmp/wheelhouse-mpl313.txt
+          printf '%s\n' 'pyparsing==3.3.2 --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d' >> /tmp/wheelhouse-mpl313.txt
+          printf '%s\n' 'python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427' >> /tmp/wheelhouse-mpl313.txt
+          printf '%s\n' 'packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c' >> /tmp/wheelhouse-mpl313.txt
+          printf '%s\n' 'six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274' >> /tmp/wheelhouse-mpl313.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --implementation cp --python-version 313 --abi cp313 -r /tmp/wheelhouse-mpl313.txt
+          printf '%s\n' 'matplotlib==3.11.1 --hash=sha256:5af0dcda57d471440a7b5b623e70e0a61003518443d9098f211a96ecfbbc25be' > /tmp/wheelhouse-mpl314.txt
+          printf '%s\n' 'contourpy==1.3.3 --hash=sha256:f64836de09927cba6f79dcd00fdd7d5329f3fccc633468507079c829ca4db4e3' >> /tmp/wheelhouse-mpl314.txt
+          printf '%s\n' 'cycler==0.12.1 --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30' >> /tmp/wheelhouse-mpl314.txt
+          printf '%s\n' 'fonttools==4.63.0 --hash=sha256:445af2eab030a16b9171ea8bdda7ebf7d96bda2df88ee182a464252f6e05e20d' >> /tmp/wheelhouse-mpl314.txt
+          printf '%s\n' 'kiwisolver==1.5.0 --hash=sha256:80aa065ffd378ff784822a6d7c3212f2d5f5e9c3589614b5c228b311fd3063ac' >> /tmp/wheelhouse-mpl314.txt
+          printf '%s\n' 'pillow==12.3.0 --hash=sha256:251bf95b67017e27b13d82f5b326234ca62d70f9cf4c2b9032de2358a3b12c7b' >> /tmp/wheelhouse-mpl314.txt
+          printf '%s\n' 'pyparsing==3.3.2 --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d' >> /tmp/wheelhouse-mpl314.txt
+          printf '%s\n' 'python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427' >> /tmp/wheelhouse-mpl314.txt
+          printf '%s\n' 'packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c' >> /tmp/wheelhouse-mpl314.txt
+          printf '%s\n' 'six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274' >> /tmp/wheelhouse-mpl314.txt
+          /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --implementation cp --python-version 314 --abi cp314 -r /tmp/wheelhouse-mpl314.txt
           /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0
           sha256sum /cache/wheelhouse/auditwheel-6.8.0-*.whl > /cache/wheelhouse/auditwheel-sha256.txt
           /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26
@@ -260,6 +311,20 @@ jobs:
           /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/work/venv311
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93' > /tmp/numpy311.txt
           /tmp/work/venv311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy311.txt
+          # The Phase-3B dependency `matplotlib>=3.11,<3.12` must resolve
+          # offline, so the exact reviewed Matplotlib stack is installed
+          # before the helper wheel; digests mirror the prefetch review.
+          printf '%s\n' 'matplotlib==3.11.1 --hash=sha256:aee55e9041211bf84302ab55ec3965df18dd90ae19f8b58332a7feaf208bfe83' > /tmp/mpl311.txt
+          printf '%s\n' 'contourpy==1.3.3 --hash=sha256:51e79c1f7470158e838808d4a996fa9bac72c498e93d8ebe5119bc1e6becb0db' >> /tmp/mpl311.txt
+          printf '%s\n' 'cycler==0.12.1 --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30' >> /tmp/mpl311.txt
+          printf '%s\n' 'fonttools==4.63.0 --hash=sha256:d76ac49f929aecaf82d83250b8347e099d7aecba0f4726c1d9b6df3b8bb5fe18' >> /tmp/mpl311.txt
+          printf '%s\n' 'kiwisolver==1.5.0 --hash=sha256:2517e24d7315eb51c10664cdb865195df38ab74456c677df67bb47f12d088a27' >> /tmp/mpl311.txt
+          printf '%s\n' 'pillow==12.3.0 --hash=sha256:23d27a3e0307ec2244cc51e7287b919aa68d097504ebe19df4e76a98a3eea5bd' >> /tmp/mpl311.txt
+          printf '%s\n' 'pyparsing==3.3.2 --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d' >> /tmp/mpl311.txt
+          printf '%s\n' 'python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427' >> /tmp/mpl311.txt
+          printf '%s\n' 'packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c' >> /tmp/mpl311.txt
+          printf '%s\n' 'six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274' >> /tmp/mpl311.txt
+          /tmp/work/venv311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/mpl311.txt
           # pip's --hash option only exists inside requirements files, so the
           # helper wheel carries its recomputed pin through the same channel.
           printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel311.txt
@@ -278,6 +343,17 @@ jobs:
           /opt/python/cp312-cp312/bin/python -m venv --clear /tmp/work/venv312
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853' > /tmp/numpy312.txt
           /tmp/work/venv312/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy312.txt
+          printf '%s\n' 'matplotlib==3.11.1 --hash=sha256:ba8f811b8ddfac493734d6af0b2dff96919d0c28ca0d641858dab4262777c6ea' > /tmp/mpl312.txt
+          printf '%s\n' 'contourpy==1.3.3 --hash=sha256:4d00e655fcef08aba35ec9610536bfe90267d7ab5ba944f7032549c55a146da1' >> /tmp/mpl312.txt
+          printf '%s\n' 'cycler==0.12.1 --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30' >> /tmp/mpl312.txt
+          printf '%s\n' 'fonttools==4.63.0 --hash=sha256:58dc6bb86a78d782f00f9190ca02c119cf5bbe2807536e361e18d42019f877d8' >> /tmp/mpl312.txt
+          printf '%s\n' 'kiwisolver==1.5.0 --hash=sha256:bb5136fb5352d3f422df33f0c879a1b0c204004324150cc3b5e3c4f310c9049f' >> /tmp/mpl312.txt
+          printf '%s\n' 'pillow==12.3.0 --hash=sha256:78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91' >> /tmp/mpl312.txt
+          printf '%s\n' 'pyparsing==3.3.2 --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d' >> /tmp/mpl312.txt
+          printf '%s\n' 'python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427' >> /tmp/mpl312.txt
+          printf '%s\n' 'packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c' >> /tmp/mpl312.txt
+          printf '%s\n' 'six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274' >> /tmp/mpl312.txt
+          /tmp/work/venv312/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/mpl312.txt
           # pip's --hash option only exists inside requirements files, so the
           # helper wheel carries its recomputed pin through the same channel.
           printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel312.txt
@@ -296,6 +372,17 @@ jobs:
           /opt/python/cp313-cp313/bin/python -m venv --clear /tmp/work/venv313
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:a7830bab239b79cda9c08c2da014761cafb48da6150e1da17ac06283f43b6089' > /tmp/numpy313.txt
           /tmp/work/venv313/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy313.txt
+          printf '%s\n' 'matplotlib==3.11.1 --hash=sha256:b0a19dcf73406d3746d25a5ed42d713604c9a3e024d129b102852b0d941cb9f3' > /tmp/mpl313.txt
+          printf '%s\n' 'contourpy==1.3.3 --hash=sha256:4debd64f124ca62069f313a9cb86656ff087786016d76927ae2cf37846b006c9' >> /tmp/mpl313.txt
+          printf '%s\n' 'cycler==0.12.1 --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30' >> /tmp/mpl313.txt
+          printf '%s\n' 'fonttools==4.63.0 --hash=sha256:22135da48a348785c5e2d5d2d9d6bec5ed44adacbaeb9db12d9493bf6c6bfa68' >> /tmp/mpl313.txt
+          printf '%s\n' 'kiwisolver==1.5.0 --hash=sha256:332b4f0145c30b5f5ad9374881133e5aa64320428a57c2c2b61e9d891a51c2f3' >> /tmp/mpl313.txt
+          printf '%s\n' 'pillow==12.3.0 --hash=sha256:0847a763afefb695bc912d7c131e7e0632d4edc1d8698f58ddabec8e46b8b6d3' >> /tmp/mpl313.txt
+          printf '%s\n' 'pyparsing==3.3.2 --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d' >> /tmp/mpl313.txt
+          printf '%s\n' 'python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427' >> /tmp/mpl313.txt
+          printf '%s\n' 'packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c' >> /tmp/mpl313.txt
+          printf '%s\n' 'six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274' >> /tmp/mpl313.txt
+          /tmp/work/venv313/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/mpl313.txt
           # pip's --hash option only exists inside requirements files, so the
           # helper wheel carries its recomputed pin through the same channel.
           printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel313.txt
@@ -314,6 +401,17 @@ jobs:
           /opt/python/cp314-cp314/bin/python -m venv --clear /tmp/work/venv314
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:a2c306dea656c12c68f51f4cea133cbe78ca7435eb28c735eac1d3ebe73be6e8' > /tmp/numpy314.txt
           /tmp/work/venv314/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy314.txt
+          printf '%s\n' 'matplotlib==3.11.1 --hash=sha256:5af0dcda57d471440a7b5b623e70e0a61003518443d9098f211a96ecfbbc25be' > /tmp/mpl314.txt
+          printf '%s\n' 'contourpy==1.3.3 --hash=sha256:f64836de09927cba6f79dcd00fdd7d5329f3fccc633468507079c829ca4db4e3' >> /tmp/mpl314.txt
+          printf '%s\n' 'cycler==0.12.1 --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30' >> /tmp/mpl314.txt
+          printf '%s\n' 'fonttools==4.63.0 --hash=sha256:445af2eab030a16b9171ea8bdda7ebf7d96bda2df88ee182a464252f6e05e20d' >> /tmp/mpl314.txt
+          printf '%s\n' 'kiwisolver==1.5.0 --hash=sha256:80aa065ffd378ff784822a6d7c3212f2d5f5e9c3589614b5c228b311fd3063ac' >> /tmp/mpl314.txt
+          printf '%s\n' 'pillow==12.3.0 --hash=sha256:251bf95b67017e27b13d82f5b326234ca62d70f9cf4c2b9032de2358a3b12c7b' >> /tmp/mpl314.txt
+          printf '%s\n' 'pyparsing==3.3.2 --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d' >> /tmp/mpl314.txt
+          printf '%s\n' 'python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427' >> /tmp/mpl314.txt
+          printf '%s\n' 'packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c' >> /tmp/mpl314.txt
+          printf '%s\n' 'six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274' >> /tmp/mpl314.txt
+          /tmp/work/venv314/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/mpl314.txt
           # pip's --hash option only exists inside requirements files, so the
           # helper wheel carries its recomputed pin through the same channel.
           printf '%s\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel314.txt
