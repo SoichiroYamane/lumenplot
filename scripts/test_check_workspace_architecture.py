@@ -3590,5 +3590,120 @@ jobs:
         self.assert_rejected(mutate, "private path or credential text is not redacted", evidence=True)
 
 
+class Phase3BTextPathAllowanceTests(Phase3A2WheelEvidenceMutationTests):
+    """PRAC-A-T lane (task t_1c790b2b): the package-file allowance set.
+
+    python/lumenplot_mpl/textpath.py consumes the documented public
+    matplotlib.textpath/matplotlib.path APIs for the O-12 TextToPath
+    boundary. The substring ban must therefore admit exactly that third
+    file while the Phase-3B activation sentinel fires and keep rejecting
+    it everywhere else (fail-closed both directions), mirroring the
+    backend.py/__init__.py precedent.
+
+    The rich Phase-3A2 wheel-evidence fixture is reused via composition
+    of its setUp helpers so the activated Phase-3A2 obligations
+    (pyproject, workflow, pinned-actions inventory) are all present; the
+    tests only add or remove the pieces under audit.
+    """
+
+    TEXTPATH_SOURCE = '''"""Sentinel mirroring the admitted shape (docstring only)."""
+
+from matplotlib.path import Path
+from matplotlib.textpath import TextPath
+
+X = 1
+'''
+
+    def _phase3b_fixture(self, textpath_source: str | None) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        """Return ``(temporary, root)`` with the wheel-evidence baseline
+        plus an optional textpath.py, and with the Phase-3B allowance made
+        active exactly as D1's admitted-dependency test does (sentinel
+        backend.py, raster pins, split bridge sources, frame seam)."""
+        temporary = self.fixture()
+        root = Path(temporary.name)
+        package = root / "python/lumenplot_mpl"
+        if textpath_source is not None:
+            (package / "textpath.py").write_text(textpath_source, encoding="utf-8")
+        # Phase-3B activation sentinel plus its remaining static
+        # obligations, mirroring D1's admitted-shape recipe.
+        (package / "backend.py").write_text(
+            '"""Phase-3B backend adapter sentinel."""\n', encoding="utf-8"
+        )
+        manifest_path = root / "crates/lumenplot-python/Cargo.toml"
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(
+                'numpy = { version = "=0.29.0", default-features = false }',
+                'numpy = { version = "=0.29.0", default-features = false }\n'
+                'png = { version = "=0.18.1", default-features = false }\n'
+                'tiny-skia = { version = "=0.12.0", default-features = false, features = ["std"] }',
+            ),
+            encoding="utf-8",
+        )
+        lib_path = root / "crates/lumenplot-python/src/lib.rs"
+        lib_path.write_text(
+            lib_path.read_text(encoding="utf-8").replace(
+                "    module.add_function(wrap_pyfunction!(render_line_png, module)?)?;\n",
+                "    module.add_function(wrap_pyfunction!(render_line_png, module)?)?;\n"
+                "    module.add_function(wrap_pyfunction!(render_frame_png, module)?)?;\n",
+            ),
+            encoding="utf-8",
+        )
+        (root / "crates/lumenplot-python/src/frame.rs").write_text(
+            "//! Whole-frame rasterizer seam.\n"
+            "use pyo3::prelude::*;\n\n"
+            "#[pyfunction]\n"
+            "fn render_frame_png() -> PyResult<Vec<u8>> {\n"
+            "    Ok(Vec::new())\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        return temporary, root
+
+    def test_textpath_matplotlib_imports_admitted_while_phase3b_active(self) -> None:
+        temporary, root = self._phase3b_fixture(self.TEXTPATH_SOURCE)
+        try:
+            returncode, output = self.run_checker(root)
+            self.assertEqual(returncode, 0, output)
+        finally:
+            temporary.cleanup()
+
+    def test_textpath_matplotlib_imports_stay_forbidden_without_phase3b(self) -> None:
+        temporary = self.fixture()
+        try:
+            root = Path(temporary.name)
+            package = root / "python/lumenplot_mpl"
+            (package / "textpath.py").write_text(
+                self.TEXTPATH_SOURCE, encoding="utf-8"
+            )
+            returncode, output = self.run_checker(root, evidence=True)
+            self.assertNotEqual(returncode, 0)
+            self.assertIn("Matplotlib/backend surface is forbidden", output)
+        finally:
+            temporary.cleanup()
+
+    def test_pyplot_import_stays_forbidden_inside_textpath(self) -> None:
+        temporary, root = self._phase3b_fixture(
+            self.TEXTPATH_SOURCE + "import matplotlib.pyplot\n"
+        )
+        try:
+            returncode, output = self.run_checker(root)
+            self.assertNotEqual(returncode, 0)
+            self.assertIn("Matplotlib/backend surface is forbidden", output)
+        finally:
+            temporary.cleanup()
+
+    def test_unrelated_new_package_file_stays_forbidden_even_when_phase3b_active(self) -> None:
+        temporary, root = self._phase3b_fixture(None)
+        try:
+            (root / "python/lumenplot_mpl/other.py").write_text(
+                "# mentions matplotlib in prose\n", encoding="utf-8"
+            )
+            returncode, output = self.run_checker(root)
+            self.assertNotEqual(returncode, 0)
+            self.assertIn("Matplotlib/backend surface is forbidden", output)
+        finally:
+            temporary.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()
