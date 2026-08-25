@@ -160,15 +160,15 @@ class TestStrictErrorFixtures(unittest.TestCase):
         return fig
 
     def test_stock_nonwhitelisted_artist_rejected(self):
-        """A stock Patch outside the Line2D whitelist is named and refused."""
-        from matplotlib.patches import Rectangle
+        """A stock Patch outside the artist whitelist is named and refused."""
+        from matplotlib.patches import Ellipse
 
         def build(ax):
             ax.axison = False
-            ax.add_patch(Rectangle((1.0, 1.0), 2.0, 1.0))
+            ax.add_patch(Ellipse((1.0, 1.0), 2.0, 1.0))
             _eligible_axes(ax)
 
-        self._assert_explicitly_unsupported(build, expected_type="Rectangle")
+        self._assert_explicitly_unsupported(build, expected_type="Ellipse")
 
     def test_user_defined_artist_subclass_rejected(self):
         """A user-defined Line2D subclass is unknown content: the whitelist

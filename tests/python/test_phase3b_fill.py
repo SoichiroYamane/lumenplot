@@ -169,17 +169,18 @@ class TestFillWhitelist(unittest.TestCase):
         self.assertEqual(result.diagnostics, ())
 
     def test_unsupported_patch_class_still_rejected(self):
-        # The whitelist grows by class, not by inheritance accident: a
-        # Rectangle (bar-lane surface) must stay outside this slice.
-        from matplotlib.patches import Rectangle
+        # The whitelist grows by class, not by inheritance accident: an
+        # Ellipse (outside every adopted slice) must stay refused. The
+        # Rectangle bar surface itself moved inside under LP-FUNC-033.
+        from matplotlib.patches import Ellipse
 
         def build(ax):
-            ax.add_patch(Rectangle((1, 0), 4, 3, facecolor="red"))
+            ax.add_patch(Ellipse((1, 0), 4.0, 3.0, facecolor="red"))
 
         fig, canvas, ax = _fill_canvas(build=build)
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
             canvas.render_png()
-        self.assertIn("Rectangle", str(ctx.exception))
+        self.assertIn("Ellipse", str(ctx.exception))
 
 
 # ---------------------------------------------------------------------------
