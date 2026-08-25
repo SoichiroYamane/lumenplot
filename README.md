@@ -71,7 +71,8 @@ from matplotlib.lines import Line2D
 fig = figure.Figure(figsize=(4.0, 3.0), dpi=100)
 canvas = FigureCanvasLumenPlot(fig)
 ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
-ax.axison = False         # strict mode requires axes decorations off
+ax.axison = False         # this example keeps the frame undecorated (a fixture
+                          # choice — decorated axes are strict-eligible too)
 ax.add_line(
     Line2D(
         [0.0, 2.5, 5.0, 7.5, 10.0],
@@ -100,10 +101,18 @@ Notes:
 
 Strict mode (default) renders supported figures through the LumenPlot engine
 and raises an explicit `LumenPlotUnsupportedError` for anything else. The
-supported surface is deliberately narrow: `Line2D` artists on linear axes
-with axes decorations off, solid (non-dashed) strokes without markers, and
-the fixed style surface shown above (`butt` cap, `miter` join), producing
-PNG output at the requested DPI.
+supported surface is deliberately narrow: `Line2D` artists on linear axes,
+solid (non-dashed) strokes without markers, and the fixed style surface shown
+above (`butt` cap, `miter` join), producing PNG output at the requested DPI.
+
+Since [PR #63](https://github.com/SoichiroYamane/lumenplot/pull/63)
+(ADR-0015 §4a), a standard `Axes` with decorations enabled (`axison=True`)
+is also strict-eligible and renders natively: solid major gridlines, major
+tick strokes (`markersize * dpi_eff / 72` px), and visible spines in the same
+fixed `butt`/`miter` style. Decorated axes require `facecolor='none'` and
+label-less ticks; minor ticks/gridlines, non-solid grids, titles, axis
+labels, offset text, subplotspec/gridspec children, and non-exact `Axes`
+subclasses are still refused with an explicit unsupported reason.
 
 Hybrid mode is opt-in per figure: it attempts the same native path first and,
 only on an explicit unsupported-capability failure, falls back to the whole
@@ -119,8 +128,8 @@ Each render attempt republishes `fig.canvas.last_diagnostics`: a
 fallback leaves the single whole-frame diagnostic there; nothing degrades
 silently.
 
-Anything beyond this surface — other artist types, log axes, titles, ticks,
-text, markers, dashes — is out of scope for v1 and fails explicitly in
+Anything beyond this surface — other artist types, log axes, titles, tick
+label text, markers, dashes — is out of scope for v1 and fails explicitly in
 strict mode rather than rendering approximately. The authoritative contract
 is [API-0005: Phase-3B public Matplotlib backend
 surface](docs/architecture/api-0005-phase3b-public-matplotlib-backend-surface.md).
