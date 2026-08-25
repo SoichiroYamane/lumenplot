@@ -184,7 +184,10 @@ panic.
 The sink uses `device_scale = output_dpi / logical_units_per_inch`, tiny-skia
 only for bounded A8 coverage, and the ADR 0012 linear-sRGB source-over
 compositor. Final output is straight RGBA8 PNG with the locked sRGB intent,
-non-interlaced `NoCompression`/`NoFilter` settings, and no metadata chunks.
+non-interlaced output with `Filter::NoFilter` and the IDAT compression level
+pinned by [ADR 0018](0018-user-facing-png-output-description.md) (DEFLATE
+`Balanced`, amending ADR 0012 §5's original `NoCompression` on this single
+point), and no metadata chunks.
 Transparent output has zero RGB. The determinism statement remains limited to
 the same semantic frame bytes, locked dependency/features/checksums,
 compiler/toolchain, target, CPU feature selection, and host; no cross-target
