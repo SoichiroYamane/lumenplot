@@ -2499,7 +2499,7 @@ jobs:
             printf '%s\\n' 'python-dateutil==2.9.0.post0 --hash=sha256:{self.PYTHON_DATEUTIL_HASH}' >> /tmp/wheelhouse-mpl314.txt
             printf '%s\\n' 'packaging==26.3 --hash=sha256:{self.PACKAGING_HASH}' >> /tmp/wheelhouse-mpl314.txt
             printf '%s\\n' 'six==1.17.0 --hash=sha256:{self.SIX_HASH}' >> /tmp/wheelhouse-mpl314.txt
-            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 -r /tmp/wheelhouse-mpl314.txt
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --implementation cp --python-version 314 --abi cp314 -r /tmp/wheelhouse-mpl314.txt
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0
             sha256sum /cache/wheelhouse/auditwheel-6.8.0-*.whl > /cache/wheelhouse/auditwheel-sha256.txt
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26

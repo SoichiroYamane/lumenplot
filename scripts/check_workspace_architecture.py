@@ -3038,16 +3038,15 @@ def _phase3a2_expected_prefetch_downloads() -> list[str]:
             f"--abi {version} -r /tmp/wheelhouse-numpy{python_version}.txt"
         )
     # Matplotlib runtime stack: same requirements-file hash-pin channel as
-    # NumPy, one cell per supported CPython minor version.  The cp311-cp313
-    # compiled wheels publish under the manylinux2014 alias, so those
-    # downloads also accept the manylinux2014_x86_64 platform tag; the
-    # manylinux_2_28 tag stays listed so pure-Python wheels keep resolving.
+    # NumPy, one cell per supported CPython minor version.  The compiled
+    # wheels publish under the manylinux2014 alias (including the cp314
+    # fonttools/kiwisolver builds), so every download also accepts the
+    # manylinux2014_x86_64 platform tag; the manylinux_2_28 tag stays listed
+    # so pure-Python and newer-tagged wheels keep resolving.
     for version in PHASE3A2_MATPLOTLIB_WHEEL_SHA256:
         python_version = version.removeprefix("cp")
         platforms = (
             "--platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64"
-            if version != "cp314"
-            else "--platform manylinux_2_28_x86_64"
         )
         downloads.append(
             f"{interpreter} -m pip download --no-deps --only-binary=:all: --require-hashes "
