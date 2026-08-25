@@ -527,6 +527,199 @@ class TestStructuralParity(unittest.TestCase):
 
 
 @unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestDecoratedAxesSpec(unittest.TestCase):
+    """Spec-level geometry of the decoration path commands (PRAC-A-D).
+
+    These tests pin the adapter's public-getter geometry contract: tick and
+    spine endpoints are computed from documented getters exactly as an
+    independent reimplementation would compute them.
+    """
+
+    def setUp(self):
+        self._patcher = _install_stub_native()
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def _render(self, build, figsize=(2.0, 1.0)):
+        fig = figure.Figure(figsize=figsize, dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
+        build(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        return fig, ax, spec
+
+    @staticmethod
+    def _deco_commands(spec):
+        return [c for c in (spec["commands"] or []) if "decoration" in c]
+
+    def test_command_order_and_line_last(self):
+        """Decorations precede content lines in every axes group."""
+        _, _, spec = self._render(lambda ax: ax.grid(True))
+        commands = spec["commands"] or []
+        deco_idx = [i for i, c in enumerate(commands) if "decoration" in c]
+        line_idx = [i for i, c in enumerate(commands) if "decoration" not in c]
+        self.assertTrue(deco_idx)
+        self.assertTrue(line_idx)
+        self.assertLess(max(deco_idx), min(line_idx))
+
+    def test_grid_geometry_matches_public_getters(self):
+        """Gridline endpoints equal the public window-extent computation."""
+        import numpy as np
+
+        fig, ax, spec = self._render(
+            lambda ax: ax.grid(True, color="#123456", linewidth=1.5)
+        )
+        bbox = ax.get_window_extent()
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        grids = [c for c in self._deco_commands(spec)
+                 if c["decoration"] == "gridline"]
+        # One vertical line per in-view major x tick plus one horizontal
+        # line per in-view major y tick (which='major' slice).
+        xlocs = [float(x) for x in ax.xaxis.get_ticklocs()
+                 if xlim[0] <= float(x) <= xlim[1]]
+        ylocs = [float(y) for y in ax.yaxis.get_ticklocs()
+                 if ylim[0] <= float(y) <= ylim[1]]
+        self.assertEqual(len(grids), len(xlocs) + len(ylocs))
+
+        def px(x):
+            return bbox.x0 + (x - xlim[0]) / (xlim[1] - xlim[0]) * bbox.width
+
+        def py(y):
+            return bbox.y0 + (y - ylim[0]) / (ylim[1] - ylim[0]) * bbox.height
+
+        expected = set()
+        for x in xlocs:
+            expected.add((round(px(x), 9), round(bbox.y0, 9),
+                          round(px(x), 9), round(bbox.y1, 9)))
+        for y in ylocs:
+            expected.add((round(bbox.x0, 9), round(py(y), 9),
+                          round(bbox.x1, 9), round(py(y), 9)))
+        got = set()
+        for c in grids:
+            v = c["vertices"]
+            self.assertEqual(len(v), 2)
+            got.add((round(v[0][0], 9), round(v[0][1], 9),
+                     round(v[1][0], 9), round(v[1][1], 9)))
+        self.assertEqual(len(got), len(grids))  # no duplicated commands
+        self.assertEqual(got, expected)
+        for c in grids:
+            self.assertEqual(c["stroke_rgba"], [0x12, 0x34, 0x56, 255])
+            self.assertEqual(c["line_width_pt"], 1.5)
+            self.assertIsNotNone(c["clip_rect"])
+
+    def test_tick_geometry_matches_public_getters(self):
+        """Bottom/left major ticks: outward length pt -> px at edges."""
+        import numpy as np
+
+        fig, ax, spec = self._render(lambda ax: None)
+        dpi_scale = fig.dpi / 72.0
+        bbox = ax.get_window_extent()
+        height_px = fig.bbox.height
+        ticks = [c for c in self._deco_commands(spec)
+                 if c["decoration"] == "tick"]
+        # Default rc: bottom and left only.
+        self.assertGreater(len(ticks), 0)
+        for c in ticks:
+            v = c["vertices"]
+            self.assertEqual(len(v), 2)
+            self.assertEqual(c["cap"], "butt")
+            self.assertEqual(c["clip_rect"][0], bbox.x0)
+            self.assertAlmostEqual(c["clip_rect"][1], height_px - bbox.y1)
+        # Every tick touches an axes edge; the other endpoint sits
+        # length_pt * dpi/72 pixels away along x or y (outward).
+        for c in ticks:
+            (x0, y0), (x1, y1) = c["vertices"]
+            on_edge = (
+                abs(y0 - bbox.y0) < 1e-6 or abs(y0 - bbox.y1) < 1e-6
+                or abs(x0 - bbox.x0) < 1e-6 or abs(x0 - bbox.x1) < 1e-6
+            )
+            self.assertTrue(on_edge, f"tick not anchored: {c['vertices']}")
+            dx, dy = abs(x1 - x0), abs(y1 - y0)
+            self.assertTrue(
+                (dx > 0) != (dy > 0), f"tick not axis-aligned: {c['vertices']}"
+            )
+            length = dx or dy
+            self.assertAlmostEqual(length, 3.5 * dpi_scale, places=6)
+
+    def test_spine_commands_cover_the_axes_rectangle(self):
+        """Visible default spines draw the four rectangle edges exactly."""
+        fig, ax, spec = self._render(lambda ax: None)
+        bbox = ax.get_window_extent()
+        height_px = fig.bbox.height
+        spines = [c for c in self._deco_commands(spec)
+                  if c["decoration"] == "spine"]
+        self.assertEqual(len(spines), 4)
+        edges = set()
+        for c in spines:
+            v = c["vertices"]
+            self.assertEqual(len(v), 2)
+            self.assertEqual(c["cap"], "butt")
+            self.assertEqual(c["join"], "miter")
+            self.assertEqual(c["clip_rect"], [
+                bbox.x0, height_px - bbox.y1,
+                bbox.width, bbox.height,
+            ])
+            (x0, y0), (x1, y1) = v
+            edges.add((round(x0, 6), round(y0, 6),
+                       round(x1, 6), round(y1, 6)))
+        expected = {
+            (bbox.x0, bbox.y0, bbox.x1, bbox.y0),      # bottom
+            (bbox.x0, bbox.y1, bbox.x1, bbox.y1),      # top
+            (bbox.x0, bbox.y0, bbox.x0, bbox.y1),      # left
+            (bbox.x1, bbox.y0, bbox.x1, bbox.y1),      # right
+        }
+        normalized = {
+            tuple(sorted([(e[0], e[1]), (e[2], e[3])]))
+            for e in edges
+        }
+        expected_normalized = {
+            tuple(sorted([(x0, y0), (x1, y1)]))
+            for (x0, y0, x1, y1) in expected
+        }
+        self.assertEqual(normalized, expected_normalized)
+
+    def test_two_axes_figure_groups_decorations_per_axes(self):
+        """A 2x1 figure emits two axes groups; decorations stay clipped to
+        their own axes rectangle and precede their own lines."""
+        fig = figure.Figure(figsize=(2.0, 2.0), dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        ax0 = fig.add_axes([0.1, 0.55, 0.8, 0.35])
+        ax1 = fig.add_axes([0.1, 0.1, 0.8, 0.35])
+        for ax in (ax0, ax1):
+            ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
+            ax.grid(True)
+            ax.set_xlim(0.0, 10.0)
+            ax.set_ylim(0.0, 5.0)
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None and spec["commands"] is not None
+
+        clips = []
+        for c in spec["commands"]:
+            clip = c["clip_rect"]
+            self.assertIsNotNone(clip)
+            clips.append((clip[0], clip[1]))
+        # Each axes' commands share its own clip origin; the two origins differ.
+        unique = sorted(set(clips))
+        self.assertEqual(len(unique), 2)
+        deco_idx = [i for i, c in enumerate(spec["commands"])
+                    if "decoration" in c]
+        line_idx = [i for i, c in enumerate(spec["commands"])
+                    if "decoration" not in c]
+        self.assertLess(max(deco_idx[: len(deco_idx) // 2]),
+                        min(line_idx[: len(line_idx) // 2]))
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestStrictUnsupported(unittest.TestCase):
     """Strict mode: unsupported features must NOT silently render."""
 
@@ -543,16 +736,20 @@ class TestStrictUnsupported(unittest.TestCase):
         ax.set_ylim(0.0, 5.0)
         return canvas
 
-    def test_axes_decorations_unsupported(self):
+    def test_decorated_axes_are_strict_eligible(self):
+        """A plain axison=True axes is accepted since the PRAC-A-D contract
+        amendment (ADR 0015 §4): spines, major ticks, and solid major
+        gridlines render natively as path commands (LP-FUNC-003)."""
         fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
         canvas = backend_mod.FigureCanvasLumenPlot(fig)
-        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])  # axison stays True
-        ax.add_line(Line2D([0, 1], [0, 1]))
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])  # decorations on (default)
+        ax.add_line(Line2D([0, 1], [0, 1], color="red", linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
         ax.set_xlim(0, 10)
         ax.set_ylim(0, 5)
-        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
-            canvas.render_png()
-        self.assertEqual(ctx.exception.code, "unsupported-capability")
+        result = canvas.render_png()
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        self.assertEqual(result.diagnostics, ())
 
     def test_dashed_line_unsupported(self):
         canvas = self._canvas_with(
@@ -587,12 +784,131 @@ class TestStrictUnsupported(unittest.TestCase):
         """Strict failure must raise even though Agg is importable."""
         fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
         canvas = backend_mod.FigureCanvasLumenPlot(fig)
-        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])  # decorations on
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.set_facecolor("0.9")  # axes background outside the whitelist
         ax.add_line(Line2D([0, 1], [0, 1]))
         ax.set_xlim(0, 10)
         ax.set_ylim(0, 5)
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
             fig.savefig(io.BytesIO(), format="png")
+
+
+# ---------------------------------------------------------------------------
+# Decorated axes: spines / major ticks / major gridlines (PRAC-A-D,
+# ADR 0015 §4 amendment, LP-FUNC-003)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestDecoratedAxesEligibility(unittest.TestCase):
+    """Static whitelist surface of the decorated-axes amendment."""
+
+    def _canvas_with(self, build, figsize=(2.0, 1.0)):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        fig = figure.Figure(figsize=figsize, dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        build(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        return canvas
+
+    @staticmethod
+    def _plain_line(ax):
+        ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
+
+    def test_decorated_axes_render_strict(self):
+        """AC (a): a default decorated axes is strict-eligible."""
+        canvas = self._canvas_with(self._plain_line)
+        result = canvas.render_png()
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        self.assertEqual(result.diagnostics, ())
+
+    def test_decorated_axes_render_hybrid_without_diagnostic(self):
+        """The decorated path is native, so hybrid must not fall back."""
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="hybrid")
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        self._plain_line(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        spec = _StubNativeModule.last_spec
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec["commands"])
+
+    def test_minor_ticks_unsupported(self):
+        """AC (b): any visible minor tick content is explicitly refused."""
+        def build(ax):
+            self._plain_line(ax)
+            ax.minorticks_on()
+
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+            self._canvas_with(build).render_png()
+        self.assertIn("minor tick", str(ctx.exception))
+
+    def test_minor_gridlines_unsupported(self):
+        """Minor gridlines are outside the which='major' slice."""
+        def build(ax):
+            self._plain_line(ax)
+            ax.minorticks_on()
+            ax.grid(True, which="minor")
+
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
+            self._canvas_with(build).render_png()
+
+    def test_non_solid_gridline_style_unsupported(self):
+        """AC (c): non-solid major grid linestyle is explicitly refused."""
+        def build(ax):
+            self._plain_line(ax)
+            ax.grid(True, linestyle="--")
+
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+            self._canvas_with(build).render_png()
+        self.assertIn("solid", str(ctx.exception))
+
+    def test_axes_background_patch_unsupported(self):
+        """AC (d): an opaque axes facecolor is explicitly refused."""
+        def build(ax):
+            ax.set_facecolor("lightblue")
+            self._plain_line(ax)
+
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+            self._canvas_with(build).render_png()
+        self.assertIn("background", str(ctx.exception))
+
+    def test_hidden_spines_are_not_drawn_but_visible_ones_are(self):
+        """Hiding all spines stays eligible; the spec then carries no
+        spine commands (visibility is honored per spine)."""
+        def build(ax):
+            for side in ax.spines:
+                ax.spines[side].set_visible(False)
+            self._plain_line(ax)
+
+        canvas = self._canvas_with(build)
+        result = canvas.render_png()
+        commands = _StubNativeModule.last_spec["commands"]
+        self.assertIsNotNone(commands)
+        kinds = [c.get("decoration") for c in commands]
+        self.assertNotIn("spine", kinds)
+        self.assertEqual(result.diagnostics, ())
+
+    def test_tick_label_text_is_still_unsupported(self):
+        """Tick labels/titles/axis labels stay outside this lane: text is
+        the T-lane deliverable and must not silently disappear."""
+        def build(ax):
+            self._plain_line(ax)
+            ax.set_title("hello")
+
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
+            self._canvas_with(build).render_png()
 
 
 # ---------------------------------------------------------------------------
