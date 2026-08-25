@@ -102,8 +102,8 @@ Strict mode (default) renders supported figures through the LumenPlot engine
 and raises an explicit `LumenPlotUnsupportedError` for anything else. The
 supported surface is deliberately narrow: `Line2D` artists on linear axes
 with axes decorations off, solid (non-dashed) strokes without markers, and
-the fixed style surface shown above (`butt` cap, `miter` join). PNG output
-at the requested DPI.
+the fixed style surface shown above (`butt` cap, `miter` join), producing
+PNG output at the requested DPI.
 
 Hybrid mode is opt-in per figure: it attempts the same native path first and,
 only on an explicit unsupported-capability failure, falls back to the whole
@@ -124,6 +124,23 @@ text, markers, dashes — is out of scope for v1 and fails explicitly in
 strict mode rather than rendering approximately. The authoritative contract
 is [API-0005: Phase-3B public Matplotlib backend
 surface](docs/architecture/api-0005-phase3b-public-matplotlib-backend-surface.md).
+
+### PNG output
+
+Successful native renders produce the deterministic PNG stream defined in
+[ADR 0012: private line frame and deterministic PNG
+contract](docs/adr/0012-private-line-frame-and-png-contract.md) as amended by
+[ADR 0018](docs/adr/0018-user-facing-png-output-description.md): 8-bit RGBA,
+non-interlaced, with an sRGB Perceptual chunk and contiguous `IDAT` chunks
+compressed with DEFLATE. The stream contains exactly the PNG signature,
+`IHDR`, `sRGB`, the `IDAT` chunks, and `IEND`; no `pHYs`, `gAMA`, `cHRM`,
+`iCCP`, text, time, palette, or animation metadata is emitted. Dots-per-inch
+metadata is deliberately absent, so pixel dimensions are set at render time
+from the requested DPI rather than recorded in the file. Row filters stay
+disabled so each pixel's bytes remain directly auditable after decompression.
+Repeated encoding of the same figure on the same machine produces identical
+bytes. Byte identity against Agg output is neither claimed nor expected, and
+any standard PNG decoder can read the file.
 
 ## Goals
 
@@ -147,18 +164,22 @@ surface](docs/architecture/api-0005-phase3b-public-matplotlib-backend-surface.md
 
 ## Current implementation status
 
-The current source snapshot contains a nine-package, dependency-free Rust
-workspace at version `0.1.0`. Phase-1A implements the native semantic kernel and
-Phase-1B implements the minimum Rust facade, with local contract, visibility,
-and repository-gate evidence. These are pre-alpha implementation slices, not a
-completed v1 product, support matrix, or release. `crates/lumenplot` remains the
-sole facade; the later packages remain private documentation-only stubs
-following the accepted [facade and crate dependency graph](docs/adr/0003-facade-and-crate-dag.md).
-Each package records the dual license, project repository, root README, and
-`publish = false`. The current source contains no Python package,
-first-class Matplotlib adapter, GPU renderer, separate raster package,
-examples, or release packaging. Therefore those later components, and the full
-v1 output/runtime behavior, are not described as implemented or supported.
+The current source snapshot contains a ten-crate Rust workspace at version
+`0.1.0` plus a `python/lumenplot_mpl` package shipped by the
+`lumenplot-mpl` distribution. Phase-1A implements the native semantic kernel;
+Phase-1B the minimum Rust facade; Phase-2A/2B the private line-frame seam and the
+deterministic CPU raster/PNG sink in `crates/lumenplot-export`; Phase-3A/3A2 the
+hidden facade, private Python helper, and pinned manylinux wheel evidence; and
+the first Phase-3B slice ships the strict-mode public Matplotlib backend with an
+opt-in hybrid fallback, as documented in [Getting started](#getting-started-pre-alpha).
+These are pre-alpha implementation slices with local contract evidence — not a
+completed v1 product, support matrix, or release. The GPU render lanes remain
+documentation-only stubs: `lumenplot-render-api` holds a minimal CPU-side frame
+seam while `lumenplot-runtime`, `lumenplot-viewer`, `lumenplot-render-metal`,
+and `lumenplot-render-wgpu` are placeholder crates. `crates/lumenplot` remains
+the sole public Rust facade, following the accepted [facade and crate dependency
+graph](docs/adr/0003-facade-and-crate-dag.md). Each package records the dual
+license, project repository, root README, and `publish = false`.
 
 No minimum supported Rust version (MSRV) is committed in this baseline. A local
 edition or CI toolchain is not a public MSRV promise.
