@@ -306,11 +306,21 @@ class TestStrictErrorFixtures(unittest.TestCase):
             ax.add_line(Line2D([0, 10], [0, 5], color="red", linestyle="--"))
 
         def build_drawstyle(ax):
+            # LP-FUNC-034 moved the step family inside; the negative now
+            # carries a drawstyle value that stays outside the whitelist.
+            # Line2D validates spellings at construction, so the unknown
+            # value is set afterwards through the private attribute that
+            # backs get_drawstyle().
             ax.axison = False
-            ax.add_line(Line2D([0, 10], [0, 5], color="red",
-                               drawstyle="steps-mid",
-                               solid_capstyle="butt",
-                               solid_joinstyle="miter"))
+            line = Line2D([0, 10], [0, 5], color="red",
+                          solid_capstyle="butt",
+                          solid_joinstyle="miter")
+            ax.add_line(line)
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+            # Inject after add_line: Axes autolim walks the expanded
+            # path, so the unknown drawstyle must not exist yet.
+            line._drawstyle = "steps-diagonal"
 
         def build_text(ax):
             ax.axison = False
