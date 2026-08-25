@@ -1,0 +1,4 @@
+native: 200x100 ch4; agg: 200x100 ch4
+rgb samples beyond tol(40): 3491 of 60000 (5.818%); max channel delta: 255
+red-line ink bbox  native: (20, 10, 179, 89)  agg: (21, 11, 179, 89)
+dark deco ink bbox native: (16, 9, 180, 93)  agg: (16, 10, 180, 94)

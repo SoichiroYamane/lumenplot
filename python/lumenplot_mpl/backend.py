@@ -362,6 +362,7 @@ class _EligibilityPreflight:
         self.line_paths = 0
         self._clip_points: Any = None
         self._height_px = 0
+        self._canvas_width_px = 0
         self._effective_dpi = 100.0
 
     def unsupported(self, reason: str, type_context: str | None = None) -> None:
@@ -971,6 +972,7 @@ class _EligibilityPreflight:
         commands: list[dict] = []
         background_rgba = _RGBA_BLACK
         self._height_px = int(height_px)
+        self._canvas_width_px = int(width_px)
         self._effective_dpi = float(output_dpi)
         for ax in figure.get_axes():
             xlim = ax.get_xlim()
@@ -1026,21 +1028,28 @@ class _EligibilityPreflight:
         Geometry comes from documented public getters only: major tick
         locations from ``Axis.get_ticklocs`` filtered into view, tick
         stroke style from the edge ``Line2D`` markers, and spine edges
-        from the axes rectangle with the fixed §5 stroke surface. The
-        axes rectangle clips every decoration command.
+        from the axes rectangle with the fixed §5 stroke surface.
+        Gridlines and spines clip to their own axes rectangle; tick
+        strokes protrude outside it, so they clip to the full canvas
+        like Agg (which does not clip tick marks).
         """
-        clip_rect = [
-            float(x0),
-            float(self._height_px - (y0 + h)),
-            float(w),
-            float(h),
+        # The frozen seam clip is bottom-left-origin (x, y, w, h). Gridlines
+        # and spines stay inside the axes rectangle; tick strokes protrude
+        # outside it, so they carry a full-canvas clip like Agg.
+        axes_clip = [float(x0), float(y0), float(w), float(h)]
+        canvas_clip = [
+            0.0,
+            0.0,
+            float(self._canvas_width_px),
+            float(self._height_px),
         ]
         commands: list[dict] = []
         xaxis, yaxis = ax.xaxis, ax.yaxis
         xlim, ylim = ax.get_xlim(), ax.get_ylim()
 
         def seg(p0: tuple[float, float], p1: tuple[float, float],
-                line: matplotlib.lines.Line2D, deco: str) -> dict:
+                line: matplotlib.lines.Line2D, deco: str,
+                clip: list[float]) -> dict:
             return {
                 "kind": "path",
                 "decoration": deco,
@@ -1057,7 +1066,7 @@ class _EligibilityPreflight:
                 "dashes": None,
                 "fill_rule": "nonzero",
                 "antialias": True,
-                "clip_rect": list(clip_rect),
+                "clip_rect": list(clip),
             }
 
         # -- solid major gridlines (which='major') ------------------------
@@ -1090,7 +1099,8 @@ class _EligibilityPreflight:
                     at = y0 + fraction * h
                     p0 = (float(x0), at)
                     p1 = (float(x0 + w), at)
-                commands.append(seg(p0, p1, representative, "gridline"))
+                commands.append(seg(p0, p1, representative, "gridline",
+                                    axes_clip))
 
         # -- major tick strokes --------------------------------------------
         # One outward stroke per drawn tick position on each visible edge,
@@ -1122,19 +1132,21 @@ class _EligibilityPreflight:
                     if not line.get_visible():
                         continue
                     length_px = float(line.get_markersize()) * dpi_scale
-                    direction = 1.0 if side in ("bottom", "left") else -1.0
+                    # Bottom-left pixel space (matching the content-line
+                    # geometry): outward means downward from the bottom
+                    # edge and leftward from the left edge.
+                    direction = -1.0 if side in ("bottom", "left") else 1.0
                     if horizontal:
                         p0 = (base, float(y0))
                         p1 = (base, float(y0 + direction * length_px))
                     else:
                         p0 = (float(x0), base)
                         p1 = (float(x0 + direction * length_px), base)
-                    commands.append(seg(p0, p1, line, "tick"))
+                    commands.append(seg(p0, p1, line, "tick", canvas_clip))
 
         # -- spine edges -----------------------------------------------------
         # Visible spines draw the axes rectangle edges with the fixed §5
         # stroke surface; width and color come from the spine getters.
-        height_px_f = float(self._height_px)
         for side, p0, p1 in (
             ("bottom", (x0, y0), (x0 + w, y0)),
             ("top", (x0, y0 + h), (x0 + w, y0 + h)),
@@ -1144,14 +1156,13 @@ class _EligibilityPreflight:
             spine = ax.spines[side]
             if not spine.get_visible():
                 continue
-            top_px = min(p0[1], p1[1])
             command = seg(
-                (float(p0[0]), height_px_f - float(p0[1])),
-                (float(p1[0]), height_px_f - float(p1[1])),
+                (float(p0[0]), float(p0[1])),
+                (float(p1[0]), float(p1[1])),
                 _SpineStroke(spine),
                 "spine",
+                axes_clip,
             )
-            del top_px
             commands.append(command)
 
         return commands

@@ -637,8 +637,9 @@ class TestDecoratedAxesSpec(unittest.TestCase):
             v = c["vertices"]
             self.assertEqual(len(v), 2)
             self.assertEqual(c["cap"], "butt")
-            self.assertEqual(c["clip_rect"][0], bbox.x0)
-            self.assertAlmostEqual(c["clip_rect"][1], height_px - bbox.y1)
+            # Ticks protrude outside the axes rectangle, so their clip is
+            # the full canvas (Agg does not clip tick marks either).
+            self.assertEqual(c["clip_rect"][0], 0.0)
         # Every tick touches an axes edge; the other endpoint sits
         # length_pt * dpi/72 pixels away along x or y (outward).
         for c in ticks:
@@ -717,6 +718,10 @@ class TestDecoratedAxesSpec(unittest.TestCase):
         for c in spec["commands"]:
             clip = c["clip_rect"]
             self.assertIsNotNone(clip)
+            # Tick strokes carry the canvas clip; everything else carries
+            # its own axes rectangle.
+            if c.get("decoration") == "tick":
+                continue
             clips.append((clip[0], clip[1]))
         # Each axes' commands share its own clip origin; the two origins differ.
         unique = sorted(set(clips))
