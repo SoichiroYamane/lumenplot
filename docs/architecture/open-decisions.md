@@ -193,6 +193,7 @@ The following are fixed by the accepted architecture and must not be returned to
 - Decision owner: architecture-authority
 - Needed before: Phase 4 prototype merge
 - Record: [ADR 0006 — support cells, benchmark protocol, and native gates](../adr/0006-support-benchmark-native-gates.md)
+- First disposition recorded: No-Go ([ADR 0017](../adr/0017-metal-native-adoption-decision-record.md), 2026-08-25) — zero gate conjuncts satisfiable until the declared-hardware evidence pass exists; the gate itself stays open
 - Accepted scope: no native fan-out before portable/O-07/O-08 evidence; Go at the accepted two-cell/three-comparison/15% thresholds with regression and memory limits; quarantine and two-cycle retirement review recorded in ADR 0006.
 - Constraints: Metal, D3D12/DXGI, and Vulkan remain conditional prototypes; adoption is never based solely on API novelty.
 - Evidence: A/B frame/CPU/present/memory/features report and an explicit decision record.

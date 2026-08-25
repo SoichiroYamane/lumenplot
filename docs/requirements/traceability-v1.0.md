@@ -1,6 +1,6 @@
 # LumenPlot v1.0 requirement traceability
 
-- Status: pre-alpha publication; Phase-1A/B, bounded Phase-2A/2B implementation/local contract evidence, and the Phase-3A2 private-helper one-wheel build with same-wheel CPython 3.11–3.14 runtime evidence exist, while the Phase-3B first strict-slice implementation (public strict-mode Matplotlib backend over the private whole-frame render seam, with local contract-test evidence) exists and the merged hybrid-explicit fallback slice plus its strict-style fixture reconciliation add bounded local contract-test evidence (PRs #26/#28/#29/#32), extended by bounded profile-selection and canvas-authority contract tests (`test_phase3b_profiles.py`, `test_phase3b_authority.py`), the merged native-authority seam suite (PR #41), and the merged PRAC-A-D decorated-axes lane (PR #63), which adds bounded native rendering of `axison=True` axes decorations per ADR 0015 §4a (`TestDecoratedAxesSpec`, `TestDecoratedAxesEligibility`) — accelerated-native delivery, hybrid-explicit-as-default, adapter authority/revision closure, the full strict error-fixture set, mixed vector/raster output, packaged public-backend runtime evidence, benchmark, support, or release completion remain pending and are claimed for nothing.
+- Status: pre-alpha publication; Phase-1A/B, bounded Phase-2A/2B implementation/local contract evidence, and the Phase-3A2 private-helper one-wheel build with same-wheel CPython 3.11–3.14 runtime evidence exist, while the Phase-3B first strict-slice implementation (public strict-mode Matplotlib backend over the private whole-frame render seam, with local contract-test evidence) exists and the merged hybrid-explicit fallback slice plus its strict-style fixture reconciliation add bounded local contract-test evidence (PRs #26/#28/#29/#32), extended by bounded profile-selection and canvas-authority contract tests (`test_phase3b_profiles.py`, `test_phase3b_authority.py`), the merged native-authority seam suite (PR #41), and the merged PRAC-A-D decorated-axes lane (PR #63), which adds bounded native rendering of `axison=True` axes decorations per ADR 0015 §4a (`TestDecoratedAxesSpec`, `TestDecoratedAxesEligibility`) — accelerated-native delivery, hybrid-explicit-as-default, adapter authority/revision closure, the full strict error-fixture set, mixed vector/raster output, packaged public-backend runtime evidence, benchmark, support, or release completion remain pending and are claimed for nothing. On 2026-08-25 the architecture authority (maintainer) adopted nine additional requirement rows (`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`) from [`matplotlib-parity-requirements-draft.md`](matplotlib-parity-requirements-draft.md); they are recorded below with honestly pending results (`Not implemented`), and their adoption is not an implementation result.
 - Source of truth: `docs/requirements/lumenplot-v1.0.md` and its Appendix A coverage matrix.
 - This document maps every stable requirement entry to an evidence type and records the current result separately from its target. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md), its narrow [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) amendment, and the updated [API 0001](../architecture/api-0001-native-scene-state.md)/[API 0002](../architecture/api-0002-errors-capabilities-fallback.md) record the accepted Phase-1 native core/facade contract; [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and PNG contract; [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) records the staged Phase-3A hidden facade/private helper contract. They do not change any product result below.
 
@@ -30,6 +30,20 @@
 | `AT-RELEASE-*` | Release checklist evidence review. |
 | `AT-REVIEW-*` | Architecture, scope, dependency, UX, phase, or documentation review. |
 
+Adopted 2026-08-25 with the Matplotlib major-feature rows ([`matplotlib-parity-requirements-draft.md`](matplotlib-parity-requirements-draft.md)):
+
+| Gate family | Evidence expected |
+| --- | --- |
+| `AT-FUNC-FILL` | Deterministic functional test of polygon fill rendering (`fill` / `fill_between` / `stackplot`) and its state transitions. |
+| `AT-FUNC-BAR` | Deterministic functional test of rectangle bar/histogram rendering (fill + stroke semantics). |
+| `AT-FUNC-DRAWSTYLE` | Deterministic functional test of `steps-pre`/`steps-post`/`steps-mid` drawstyle geometry. |
+| `AT-SEM-COMPOSITING` | Cross-primitive z-order and alpha compositing invariant test. |
+| `AT-FUNC-POLAR` | Deterministic functional test of polar-projection transform and clip behavior. |
+| `AT-FUNC-DATE-AXIS` | Deterministic functional test of unit/date-aware tick locator and formatter behavior. |
+| `AT-FUNC-QUIVER` | Deterministic functional test of quiver arrow glyph geometry. |
+| `AT-SEM-SCALE-EXT` | Scale-extension property/invariant test (symlog/logit transforms). |
+| `AT-MPL-ELIGIBILITY` | Matplotlib strict-mode eligibility whitelist governance and growth-boundary test. |
+
 ## Accepted bounded contract records
 
 The following records are accepted architecture/API contracts. Phase-1A/B and
@@ -51,11 +65,15 @@ or `environment required` results.
 
 ## Coverage summary
 
-- Requirement entries: **223**.
-- Normative `MUST`/`MUST NOT` entries requiring closure: **150**.
-- Classification counts: MAY=8, MUST=113, MUST NOT=37, NON-GOAL=6, PHASE=6, REFERENCE=13, SHOULD=40.
-- Stable families: `DATA` (10), `EXPORT` (10), `FUNC` (31), `LOD` (7), `MPL` (19), `PERF` (16), `PLAT` (12), `PROD` (18), `QUAL` (28), `REL` (14), `RENDER` (10), `SEC` (8), `TEXT` (7), `UX` (33).
-- Evidence gates referenced: **92**.
+- Requirement entries: **232**.
+- Normative `MUST`/`MUST NOT` entries requiring closure: **153**.
+- Classification counts: MAY=9, MUST=116, MUST NOT=37, NON-GOAL=6, PHASE=6, REFERENCE=13, SHOULD=45.
+- Stable families: `DATA` (10), `EXPORT` (10), `FUNC` (39), `LOD` (7), `MPL` (20), `PERF` (16), `PLAT` (12), `PROD` (18), `QUAL` (28), `REL` (14), `RENDER` (10), `SEC` (8), `TEXT` (7), `UX` (33).
+- Evidence gates referenced: **101**.
+
+The 2026-08-25 adoption of the Matplotlib major-feature rows added nine entries
+(`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`; three normative, six advisory) and nine gate names;
+the pre-adoption baseline was 223 entries / 150 normative / 92 gates.
 
 Every `MUST` and `MUST NOT` entry appears in the registry below with at least one acceptance gate. The `Result` column is not a pass/fail claim; it is the honest status of the full requirement. A bounded Phase-1 implementation does not automatically promote a row to closure.
 
@@ -286,6 +304,15 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-PROD-016` | `REFERENCE` | product and export review | 2 | v1 principle | `AT-EXPORT-STATE` | Reference only — no support or implementation claim |
 | `LP-PROD-017` | `REFERENCE` | product and benchmark review | 0-3 | v1 principle | `AT-BENCH-LOD-10M` | Reference only — no support or implementation claim |
 | `LP-PROD-018` | `REFERENCE` | architecture review | 0-4 | v1 principle | `AT-REVIEW-CORE-DAG`, `AT-BENCH-NATIVE-AB` | Reference only — no support or implementation claim |
+| `LP-FUNC-032` | `MUST` | fill geometry and span fixtures | 3B-cont. | v1 | `AT-FUNC-FILL` | Not implemented |
+| `LP-FUNC-033` | `MUST` | bar geometry and stacking fixtures | 3B-cont. | v1 | `AT-FUNC-BAR` | Not implemented |
+| `LP-FUNC-034` | `MUST` | drawstyle equivalence fixtures against Agg | 3B-cont. | v1 | `AT-FUNC-DRAWSTYLE` | Not implemented |
+| `LP-FUNC-035` | `SHOULD` | cross-primitive ordering and alpha golden tests | 3B-cont.+1 | v1 quality | `AT-SEM-COMPOSITING` | Not implemented |
+| `LP-FUNC-036` | `SHOULD` | polar transform fixtures | 5 | v1 non-blocking | `AT-FUNC-POLAR` | Not implemented |
+| `LP-FUNC-037` | `SHOULD` | date-tick formatting fixtures | 3B-cont.+1 | v1 quality | `AT-FUNC-DATE-AXIS` | Not implemented |
+| `LP-FUNC-038` | `SHOULD` | quiver geometry and scaling fixtures | 5 | v1 non-blocking | `AT-FUNC-QUIVER` | Not implemented |
+| `LP-FUNC-039` | `MAY` | scale-extension decision record | future | future | `AT-SEM-SCALE-EXT` | Not implemented |
+| `LP-MPL-020` | `SHOULD` | eligibility-extension process review | continuous | v1 governance | `AT-MPL-ELIGIBILITY` | Not implemented |
 
 ## Normative closure: every MUST and MUST NOT
 
@@ -434,6 +461,9 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-REL-002` | `MUST` | `AT-REVIEW-RELEASE` | Not implemented |
 | `LP-MPL-018` | `MUST` | `AT-FUNC-VIEWER`, `AT-REVIEW-DAG` | Not implemented |
 | `LP-MPL-019` | `MUST NOT` | `AT-REVIEW-DAG` | Not implemented |
+| `LP-FUNC-032` | `MUST` | `AT-FUNC-FILL` | Not implemented |
+| `LP-FUNC-033` | `MUST` | `AT-FUNC-BAR` | Not implemented |
+| `LP-FUNC-034` | `MUST` | `AT-FUNC-DRAWSTYLE` | Not implemented |
 | `LP-REL-009` | `MUST` | `AT-REVIEW-TRACEABILITY` | Not implemented |
 | `LP-REL-010` | `MUST` | `AT-RELEASE-FUNCTIONAL` | Not implemented |
 | `LP-REL-011` | `MUST` | `AT-RELEASE-CORRECTNESS` | Not implemented |
@@ -448,9 +478,9 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | --- | --- | --- |
 | `LP-DATA` | f64 authority, sealed chunk ownership, local-f32 conversion, and residency | Phase-1 owned-data/chunk implementation and local evidence exist under [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); full v1 local-f32, residency, and scale evidence remains pending. |
 | `LP-EXPORT` | PNG/PDF blockers, SVG non-blocking path, state snapshots, and fallback scope | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the private line/PNG boundary and its bounded implementation/local evidence; full-v1 export, state, vector, and fallback evidence remain pending. |
-| `LP-FUNC` | native functional interaction, annotations, viewer, and optional capability scope | Phase-1 view/scale implementation and local evidence are recorded in [API 0001](../architecture/api-0001-native-scene-state.md); interaction, annotations, viewer, and v1 evidence remain pending. |
+| `LP-FUNC` | native functional interaction, annotations, viewer, optional capability scope, and the adopted Matplotlib major-feature rows | Phase-1 view/scale implementation and local evidence are recorded in [API 0001](../architecture/api-0001-native-scene-state.md); interaction, annotations, viewer, and v1 evidence remain pending. The 2026-08-25 adoption added `LP-FUNC-032`–`LP-FUNC-039` (polygon fill, bars/histograms, step drawstyles, cross-primitive compositing, polar, date/unit axes, quiver, scale extensions) from [`matplotlib-parity-requirements-draft.md`](matplotlib-parity-requirements-draft.md); all eight added rows remain `Not implemented`, and the flagged contract impacts in that document's Section 8 are hand-off notes for the architecture authority, not designs. |
 | `LP-LOD` | MonotonicX dyadic extrema and ArbitraryXY correctness/culling | Phase-1 selection implementation and local evidence are recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); the MonotonicX negative/spike/extrema fixtures (`LP-LOD-002`/`LP-LOD-003`, brute-force oracle plus stride negative control), the ArbitraryXY order-invariance/exact-culling/source-order fixtures (`LP-LOD-006`), the bucketed-extrema oracle over spikes/duplicate-x/chunk-cut splits, the strict x-nondecreasing selection guard, and the topology-model fixtures (`LP-LOD-004`) now carry bounded implemented results naming their test functions; the dyadic block index is additionally pinned against a naive linear scan across chunk cuts and ties. All benchmark claims (`LP-LOD-001`/`LP-LOD-005`) remain unmeasured — no performance evidence is claimed by these local fixtures. |
-| `LP-MPL` | loader, profiles, authority, fallback diagnostics, FFI, and separated performance claims | Phase-1 public error mapping is recorded in [API 0002](../architecture/api-0002-errors-capabilities-fallback.md); [API 0003](../architecture/api-0003-python-numpy-matplotlib.md), [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md), and [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) record the staged Phase-3A helper and Phase-3A2 pinned wheel/evidence boundaries; the Phase-3A2 private-helper one-wheel build and same-wheel CPython 3.11–3.14 runtime evidence exist as CI-local evidence; the Phase-3B first strict slice (whole-frame seam plus public strict-mode backend) is merged with local contract-test evidence, PRs #26/#28/#29 add the entry-point manifest, the standing Python contract gate, and the wheel/entry-point evidence job (green on `main`), and PR #32 adds hybrid-explicit whole-frame fallback with terminal-failure guards and reconciled strict-style fixtures; loader/packaging identity (`LP-MPL-002`) and the fallback-fixture/diagnostic-schema rows (`LP-MPL-007`/`LP-MPL-008`) now carry bounded implemented results naming their merged test classes, while profile selection, adapter authority/revision fixtures, the full strict error-fixture set, mixed vector/raster output, packaged public-backend runtime evidence, and all benchmark claims remain open. |
+| `LP-MPL` | loader, profiles, authority, fallback diagnostics, eligibility governance, FFI, and separated performance claims | Phase-1 public error mapping is recorded in [API 0002](../architecture/api-0002-errors-capabilities-fallback.md); [API 0003](../architecture/api-0003-python-numpy-matplotlib.md), [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md), and [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) record the staged Phase-3A helper and Phase-3A2 pinned wheel/evidence boundaries; the Phase-3A2 private-helper one-wheel build and same-wheel CPython 3.11–3.14 runtime evidence exist as CI-local evidence; the Phase-3B first strict slice (whole-frame seam plus public strict-mode backend) is merged with local contract-test evidence, PRs #26/#28/#29 add the entry-point manifest, the standing Python contract gate, and the wheel/entry-point evidence job (green on `main`), and PR #32 adds hybrid-explicit whole-frame fallback with terminal-failure guards and reconciled strict-style fixtures; loader/packaging identity (`LP-MPL-002`) and the fallback-fixture/diagnostic-schema rows (`LP-MPL-007`/`LP-MPL-008`) now carry bounded implemented results naming their merged test classes, while profile selection, adapter authority/revision fixtures, the full strict error-fixture set, mixed vector/raster output, packaged public-backend runtime evidence, and all benchmark claims remain open. The 2026-08-25 adoption added `LP-MPL-020` (`AT-MPL-ELIGIBILITY`): a `SHOULD` governance row fixing how the strict-mode whitelist may grow for future artist classes per the accepted O-10 boundary mechanics — it is pending like every other open row and adds no implementation claim. |
 | `LP-PERF` | 10M native gate, workload fixtures, warm-up, segments, quantiles, and manifests | Pending implementation and evidence; no completion is claimed. |
 | `LP-PLAT` | capability selection, main-thread runtime, surfaces, device loss, and platform matrix | Pending implementation and evidence; no completion is claimed. |
 | `LP-PROD` | product independence, shared semantic frame, and core dependency direction | Phase-1 native core/facade implementation and local evidence are recorded in [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md); the shared v1 frame and product evidence remain pending. |
@@ -477,6 +507,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 - ArbitraryXY topology/correctness/culling is a v1 model/correctness lane; advanced simplification and picking performance are Phase 5.
 - SVG is a v1 `SHOULD` and non-blocking; PNG and PDF are v1 `MUST` outputs.
 - Reference dependency versions are non-normative and are not counted as support evidence.
+- The Matplotlib major-feature rows (`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`) were adopted on 2026-08-25 from [`matplotlib-parity-requirements-draft.md`](matplotlib-parity-requirements-draft.md); their wave placement (3B-cont. / 3B-cont.+1 / Phase 5 / future / continuous) is recorded per row, and 3D stays excluded per `LP-FUNC-025`.
 
 ## Honest evidence boundary
 
