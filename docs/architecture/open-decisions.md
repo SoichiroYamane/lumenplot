@@ -135,6 +135,12 @@ The following are fixed by the accepted architecture and must not be returned to
   collections, mesh/Gouraud, custom artists, and every other renderer callback
   are excluded and must cause explicit unsupported handling.
 - Constraints: the public Figure/Artist authority and high-level profile roles from ADR 0002 remain; their exact public result, diagnostic, canvas, generation, fallback, and file/path schema is fixed by API 0005/ADR 0015.
+- Quality oracle (maintainer decision, 2026-08-25; canonized 2026-08-26): every requirement
+  row adopted from [the Matplotlib major-feature requirements](../requirements/matplotlib-parity-requirements-draft.md)
+  (`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`) accepts only output matching the current
+  Matplotlib backend (Agg) for the same Figure — see that document's Section 5.4 for the
+  binding geometry/pixel/style/text parity criteria each evidence gate must demonstrate.
+  This reference records an accepted quality policy; it opens no new decision.
 - Evidence: Phase-3A helper/wheel/runtime same-wheel evidence is recorded (CI-local manifest; GIL CPython 3.11–3.14); the accepted [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md)/[API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md) contract is exercised by the merged strict-mode and hybrid-explicit slices with local loader/entry-point, public API, strict unsupported, hybrid whole-frame Agg, and diagnostic evidence, while packaged public-backend runtime evidence remains gated on the wheel-install lane.
 
 ### O-11 — Coordinate, unit, color, alpha, and ICC policy
