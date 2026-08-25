@@ -87,6 +87,21 @@ pub(crate) enum FillRuleSelector {
     EvenOdd,
 }
 
+/// Compositing color model of a frame (architecture ruling 2026-08-25,
+/// amending ADR 0012 additively).
+///
+/// - `Linear`: premultiplied linear-sRGB source-over, the frozen ADR 0012
+///   contract. The default; export and every existing consumer keep it.
+/// - `AggSrgb`: encoded-sRGB source-over, matching matplotlib Agg's blend
+///   arithmetic for the adapter's parity path. Opt-in via the spec key
+///   ``blend_mode: "agg_srgb"``; an absent key stays `Linear` byte-for-byte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum BlendMode {
+    #[default]
+    Linear,
+    AggSrgb,
+}
+
 /// One validated `kind: "path"` command in device-independent form.
 #[derive(Clone, Debug)]
 pub(crate) struct PathCommand {
