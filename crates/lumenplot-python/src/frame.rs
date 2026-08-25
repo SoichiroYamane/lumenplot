@@ -973,7 +973,11 @@ pub(crate) fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>
         encoder.set_color(ColorType::Rgba);
         encoder.set_depth(BitDepth::Eight);
         encoder.set_source_srgb(SrgbRenderingIntent::Perceptual);
-        encoder.set_compression(Compression::NoCompression);
+        // ADR-0018: IDAT payloads use DEFLATE (Balanced). Measured on the
+        // quickstart fixture (576x432): 995,916 bytes uncompressed ->
+        // 2,445 bytes compressed (~407x smaller), versus a 4,367-byte Agg
+        // reference for the same figure.
+        encoder.set_compression(Compression::Balanced);
         encoder.set_filter(Filter::NoFilter);
         let mut writer = encoder
             .write_header()

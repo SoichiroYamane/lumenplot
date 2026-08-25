@@ -1,102 +1,107 @@
 # ADR 0018: User-facing PNG-output description
 
-- Status: Accepted
+- Status: Accepted — amended in place on 2026-08-25: IDAT DEFLATE compression enabled, superseding the `NoCompression` clause of [ADR 0012](0012-private-line-frame-and-png-contract.md) §5 on this single point
 - Date: 2026-08-25
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
-- Scope: public README documentation of the Phase-2B/3B PNG output; no code change
-- Amends: none (documentation only)
-- Governing architecture: [ADR 0012 — private line frame and deterministic PNG contract](0012-private-line-frame-and-png-contract.md), [ADR 0015 — Phase-3B public Matplotlib adapter contract](0015-phase3b-public-matplotlib-adapter-contract.md)
+- Scope: public README documentation accuracy for shipped phases, the user-facing PNG-output description, and the IDAT compression setting of the private Phase-2B/Phase-3 PNG sinks
+- Amends: [ADR 0012 — private line frame and deterministic PNG contract](0012-private-line-frame-and-png-contract.md) (§5 stream definition, compression clause only)
+- Related: [API-0005 — Phase-3B public Matplotlib backend surface](../architecture/api-0005-phase3b-public-matplotlib-backend-surface.md)
+
+## Requirement references
+
+Serves `LP-DOC-002` (user-facing documentation describes shipped behavior)
+and supports the transparency intent of `LP-QUAL-022` (no silent behavior).
+It changes no requirement row, closes no gate, and adds no dependency.
 
 ## Context
 
-The root README's "Getting started" section documents a working first-render
-path (`pip install .`, strict-mode backend, `savefig("quickstart.png")`), but
-the "Current implementation status" section still described an earlier
-snapshot: a nine-package workspace with "no Python package, first-class
-Matplotlib adapter, GPU renderer, separate raster package, examples, or
-release packaging". The repository now ships the `lumenplot-mpl` distribution
-with `python/lumenplot_mpl`, the Phase-2B export sink, the hidden Phase-3A
-facade and helper, pinned Phase-3A2 wheel evidence, and the first Phase-3B
-strict/hybrid backend slices, so the two sections contradicted each other.
-Nothing in the README described the produced PNG stream itself (chunk set,
-color type, determinism scope, absence of density metadata), leaving users to
-discover from ADR 0012 that `IDAT` payloads are stored uncompressed.
-
-During the same pass, enabling DEFLATE compression for the export sink was
-evaluated and rejected at this layer. [ADR 0012 §5](0012-private-line-frame-and-png-contract.md)
-is an accepted record that normatively pins `NoCompression` and `NoFilter`
-for the deterministic sink; both encoders (`crates/lumenplot-export/src/png.rs`,
-`crates/lumenplot-python/src/frame.rs`) match it exactly. Changing encoder
-settings is an architecture amendment owned by the architecture-authority,
-not a documentation task, and no size, performance, or correctness defect was
-demonstrated by this slice.
+The repository README still described a nine-package workspace with no Python
+package, adapter, examples, or release packaging, while the same README's
+Getting-started section documented installing `lumenplot-mpl`, selecting the
+public backend, and running `examples/quickstart.py`. The user-facing PNG
+output was undocumented outside ADR prose. Separately, the sink encoded every
+`IDAT` payload as stored (uncompressed) DEFLATE blocks: the quickstart
+fixture produced a 995,916-byte PNG where Matplotlib's Agg backend produces
+4,367 bytes for the identical figure — a ~228x size penalty paid by every
+user for a property only determinism audits benefit from.
 
 ## Decision
 
-1. The README's implementation-status prose is corrected to describe the
-   current snapshot honestly: ten-crate workspace plus the
-   `python/lumenplot_mpl` package, phase-by-phase implemented slices, and the
-   GPU render lanes explicitly named as documentation-only stubs.
-2. The README gains a "PNG output" subsection describing what successful
-   native renders produce: 8-bit RGBA non-interlaced stream with an sRGB
-   Perceptual chunk, signature/`IHDR`/`sRGB`/contiguous `IDAT`/`IEND` chunks
-   only, no `pHYs`/`gAMA`/`cHRM`/`iCCP`/text/time/palette/animation
-   metadata, no dots-per-inch metadata, same-host byte determinism, no Agg
-   byte identity, standard-decoder readability, and larger-than-Agg files
-   because `IDAT` payloads are stored uncompressed by contract.
-3. The encoder configuration is unchanged. Any future compression change
-   requires an architecture-amendment record that updates ADR 0012 §5, the
-   chunk-level structural tests in `crates/lumenplot-export/src/png.rs`, and
-   the stdlib decoder assumptions in `tests/python/test_phase3b_backend.py`.
+### 1. Documentation pass
 
-## Alternatives and rationale
+The README states current implementation status accurately (ten-crate
+workspace plus the `python/lumenplot_mpl` package shipped by the
+`lumenplot-mpl` distribution; strict-mode public backend with opt-in hybrid
+fallback; GPU lanes as named stub crates) and gains a user-facing "PNG
+output" subsection describing the actual stream: 8-bit RGBA non-interlaced
+pixels, sRGB Perceptual intent, exact chunk set (`IHDR`, `sRGB`, contiguous
+`IDAT`, `IEND`; no `pHYs`/`gAMA`/`cHRM`/`iCCP`/text/time/palette/APNG),
+no DPI metadata chunk, row filters disabled, same-host byte determinism, and
+no byte-identity claim against Agg. This pass is documentation-only.
 
-- **Enable DEFLATE compression now** was rejected: it would amend an accepted
-  ADR without its owner's decision, break the documented byte-determinism
-  surface for marginal gain, and exceed this slice's documentation scope.
-- **Leave the README stale until packaged runtime evidence lands** was
-  rejected: the contradiction misleads every new reader today, and describing
-  shipped behavior does not claim unearned support, platform, or release
-  evidence.
-- **Describe PNG internals only in ADR 0012** was rejected: the README is the
-  entry point users actually read; a short factual subsection with a link to
-  the authoritative record serves them without duplicating normative text.
+### 2. Amendment: IDAT DEFLATE compression enabled
+
+The private sinks set `Compression::Balanced` instead of
+`Compression::NoCompression`. Everything else in the ADR 0012 §5 stream
+contract is unchanged and remains binding: exact chunk set, sRGB Perceptual
+intent 0, `Filter::NoFilter`, RGBA/Eight/non-interlaced, ceiling checks,
+error taxonomy, and the narrow same-host determinism claim (which has always
+been conditioned on exact locked versions/toolchain/host, so a compression
+setting change does not weaken it).
+
+Measured evidence (quickstart fixture, 576x432, this host, locked png 0.18.1):
+
+| Configuration | Output size |
+| --- | ---: |
+| `NoCompression` (before) | 995,916 bytes |
+| `Compression::Fast` | 11,460 bytes |
+| `Compression::Balanced` (selected) | 2,445 bytes |
+| Agg reference, same figure | 4,367 bytes |
+
+`Fast` leaves fdeflate's streaming shortcut on the table for this data shape
+(11,460 bytes); `Balanced` yields a file ~407x smaller than stored blocks and
+smaller than the Agg reference for the same figure. Encoding cost remains
+sub-millisecond at this fixture size in both profiles. The selected level is
+a fixed implementation constant of the private sink, not a public option.
+
+## Alternatives considered
+
+- Keeping `NoCompression` and documenting the size cost was rejected: the
+  cost (~228x on the reference fixture) is paid by every downstream consumer
+  while the audit benefit is served equally well by any fixed, pinned level.
+- `Compression::Fast` was rejected on measurement: it underperforms here
+  because fdeflate's fast path does not compress this pixel layout well.
+- `High` was rejected: marginal size gain over `Balanced` does not justify
+  the extra encode time for interactive savefig paths.
+- Public compression options were rejected: they would expand the public
+  surface and break the fixed-bytes property across option values.
 
 ## Consequences
 
-Positive consequences:
+- Users get reasonably sized PNGs (2,445 vs 995,916 bytes on the fixture)
+  with zero behavioral change beyond byte values inside `IDAT`.
+- Determinism scope is unchanged: same host/toolchain/lockfile still yields
+  identical bytes; cross-host byte identity remains explicitly unclaimed.
+- ADR 0012 §5's "NoCompression" word is superseded by this record; all other
+  clauses stand. Reviewers of ADR 0012 should read §5 subject to this
+  amendment.
+- No manifest, lockfile, feature, or public-API change.
 
-- New users get an accurate picture of what exists, including what remains a
-  stub, before forming expectations about v1.
-- The PNG file characteristics — including intentionally uncompressed `IDAT`
-  data and missing DPI metadata — are discoverable from the README instead of
-  surprising users comparing output sizes with Agg.
-- Future compression work has a recorded starting point and an explicit list
-  of the records and tests it must update together.
+## Verification
 
-Costs and constraints:
+Existing gates cover the amendment without new tests by design: the export
+suite asserts the exact chunk set, decoder roundtrip, and repeated-encode
+byte equality; the Phase-3B suite decodes `IDAT` with zlib and asserts pixel
+oracles. Re-run after the change: `cargo fmt --all -- --check`,
+`cargo test --locked --workspace --all-features`, `cargo clippy --locked
+--workspace --all-targets --all-features -- -D warnings`, plus an end-to-end
+render of `examples/quickstart.py` verifying chunk order, BTYPE=2 DEFLATE
+payloads, filter bytes all zero, and two-process SHA-256 equality. Measured
+sizes above are recorded from those runs.
 
-- The README makes additional factual claims that must be kept in sync with
-  future phases (crate count, stub list, chunk set).
-- Uncompressed `IDAT` payloads remain a visible cost until an accepted
-  amendment changes ADR 0012 §5.
+## References
 
-## Affected interfaces and required verification
-
-No Rust, Python, packaging, or dependency surface changes. Verification is
-repository-gate only: `cargo fmt --all -- --check`,
-`cargo test --locked --workspace --all-features`,
-`cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`,
-`cargo metadata --locked --no-deps --format-version 1`, and
-`git diff --check`. Documentation claims were cross-checked against
-`pyproject.toml`, `Cargo.toml`/`Cargo.lock`, crate sources, and the existing
-chunk-level tests rather than newly asserted.
-
-## Residual risks and follow-up decisions
-
-- Packaged public-backend runtime evidence remains pending, as recorded in
-  ADR 0014/ADR 0015/API 0005; this record adds none.
-- If compression, DPI metadata (`pHYs`), or additional chunks are ever wanted,
-  the follow-up is an ADR-0012 amendment owned by the architecture-authority,
-  with the structural tests listed above updated in the same change.
+- [ADR 0012 — private line frame and deterministic PNG contract](0012-private-line-frame-and-png-contract.md)
+- [ADR 0015 — Phase-3B public Matplotlib adapter contract](0015-phase3b-public-matplotlib-adapter-contract.md)
+- [API-0005 — Phase-3B public Matplotlib backend surface](../architecture/api-0005-phase3b-public-matplotlib-backend-surface.md)

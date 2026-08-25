@@ -128,18 +128,18 @@ surface](docs/architecture/api-0005-phase3b-public-matplotlib-backend-surface.md
 
 Successful native renders produce the deterministic PNG stream defined in
 [ADR 0012: private line frame and deterministic PNG
-contract](docs/adr/0012-private-line-frame-and-png-contract.md): 8-bit RGBA,
-non-interlaced, with an sRGB Perceptual chunk and contiguous uncompressed
-`IDAT` chunks. The stream contains exactly the PNG signature, `IHDR`, `sRGB`,
-the `IDAT` chunks, and `IEND`; no `pHYs`, `gAMA`, `cHRM`, `iCCP`, text, time,
-palette, or animation metadata is emitted. Dots-per-inch metadata is
-deliberately absent, so pixel dimensions are set at render time from the
-requested DPI rather than recorded in the file. Because the `IDAT` payloads
-are stored uncompressed by contract, files are larger than Matplotlib's Agg
-defaults; compression is a deliberate trade for a fully specified, auditable
-byte stream, not an oversight. Repeated encoding of the same figure on the
-same machine produces identical bytes. Byte identity against Agg output is
-neither claimed nor expected, and any standard PNG decoder can read the file.
+contract](docs/adr/0012-private-line-frame-and-png-contract.md) as amended by
+[ADR 0018](docs/adr/0018-user-facing-png-output-description.md): 8-bit RGBA,
+non-interlaced, with an sRGB Perceptual chunk and contiguous `IDAT` chunks
+compressed with DEFLATE. The stream contains exactly the PNG signature,
+`IHDR`, `sRGB`, the `IDAT` chunks, and `IEND`; no `pHYs`, `gAMA`, `cHRM`,
+`iCCP`, text, time, palette, or animation metadata is emitted. Dots-per-inch
+metadata is deliberately absent, so pixel dimensions are set at render time
+from the requested DPI rather than recorded in the file. Row filters stay
+disabled so each pixel's bytes remain directly auditable after decompression.
+Repeated encoding of the same figure on the same machine produces identical
+bytes. Byte identity against Agg output is neither claimed nor expected, and
+any standard PNG decoder can read the file.
 
 ## Goals
 
