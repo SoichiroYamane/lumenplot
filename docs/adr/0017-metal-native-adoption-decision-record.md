@@ -1,6 +1,7 @@
 # ADR 0017: Metal native adoption decision record (O-16 gate disposition)
 
-- Status: **Proposal — decision record draft for the architecture-authority; nothing here is Go, and no support, dependency, or implementation claim is made**
+- Status: **Accepted — No-Go disposition (O-16 gate, evaluated against the first executed O-08 bundle)**
+- Accepted by the architecture authority (maintainer), 2026-08-25
 - Date: 2026-08-25
 - Decision owner: architecture-authority
 - Recorded by: engineering-worker
