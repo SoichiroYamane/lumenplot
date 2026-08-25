@@ -358,10 +358,12 @@ class _EligibilityPreflight:
     # collector-trace expectation, style contract, and fixtures landed in
     # one commit) the eligible content surface also carries filled areas:
     # ``Polygon`` (``Axes.fill``) and ``FillBetweenPolyCollection``
-    # (``Axes.fill_between``).
+    # (``Axes.fill_between``). The LP-FUNC-033 bar lane adds axis-aligned
+    # ``Rectangle`` artists (``Axes.bar`` / ``Axes.barh`` bars).
     _ARTIST_WHITELIST = (
         matplotlib.lines.Line2D,
         matplotlib.patches.Polygon,
+        matplotlib.patches.Rectangle,
         matplotlib.collections.FillBetweenPolyCollection,
     )
 
@@ -400,9 +402,13 @@ class _EligibilityPreflight:
                 continue
             # Static checks dispatch on the artist's class family: the
             # fixed §5 stroke surface applies to lines, the LP-FUNC-032
-            # fill style contract applies to patches and poly-collections.
+            # fill style contract applies to patches and poly-collections,
+            # and the LP-FUNC-033 axis-aligned rectangle contract applies
+            # to bars.
             if isinstance(artist, matplotlib.lines.Line2D):
                 self._check_line2d_static(artist)
+            elif isinstance(artist, matplotlib.patches.Rectangle):
+                self._check_rectangle_static(artist)
             elif isinstance(artist, matplotlib.collections.Collection):
                 self._check_fill_collection_static(artist)
             else:
@@ -646,6 +652,26 @@ class _EligibilityPreflight:
             # an unknown value means the collector contract drifted.
             self.unsupported(
                 f"joinstyle {patch.get_joinstyle()!r} is unsupported", name
+            )
+
+    def _check_rectangle_static(
+        self, patch: matplotlib.patches.Rectangle
+    ) -> None:
+        """Static style checks for one bar ``Rectangle`` (LP-FUNC-033).
+
+        Bars are axis-aligned filled rectangles anchored to a declared
+        baseline: the LP-FUNC-032 patch surface applies, plus an explicit
+        refusal of rotated rectangles (``angle != 0``) — a tilted bar is
+        outside the declared-baseline contract and must never be silently
+        rendered as its axis-aligned bounding box.
+        """
+        self._check_patch_static(patch)
+        name = type(patch).__name__
+        if float(patch.get_angle()) != 0.0:
+            self.unsupported(
+                f"rotated rectangles (angle {float(patch.get_angle())!r}) "
+                "are unsupported; bars must be axis-aligned",
+                name,
             )
 
     def _check_fill_collection_static(
@@ -1385,7 +1411,10 @@ class _EligibilityPreflight:
                 if fill is not None:
                     commands.append(fill)
             for patch in ax.patches:
-                if not isinstance(patch, matplotlib.patches.Polygon):
+                if not (
+                    isinstance(patch, matplotlib.patches.Polygon)
+                    or isinstance(patch, matplotlib.patches.Rectangle)
+                ):
                     continue
                 fill = self._fill_command(patch, to_px_x, to_px_y)
                 if fill is not None:
@@ -1671,6 +1700,26 @@ class _EligibilityPreflight:
           seam selectors directly.
         """
         name = type(artist).__name__
+        rectangle_geometry: list[tuple[float, float]] | None = None
+        if isinstance(artist, matplotlib.patches.Rectangle):
+            # A Rectangle's stored path is the unit square scaled at draw
+            # time, so the corners are re-derived from the public getters
+            # (LP-FUNC-033): (x, y) anchor, signed width/height, and a
+            # declared baseline. Negative heights (bars hanging below the
+            # baseline) stay verbatim -- Agg fills the same loop.
+            x0, y0 = (float(v) for v in artist.get_xy())
+            width = float(artist.get_width())
+            height = float(artist.get_height())
+            if width == 0.0 or height == 0.0:
+                # Zero-area bars paint nothing in Agg (no coverage).
+                return None
+            rectangle_geometry = [
+                (x0, y0),
+                (x0 + width, y0),
+                (x0 + width, y0 + height),
+                (x0, y0 + height),
+                (x0, y0),
+            ]
         if isinstance(artist, matplotlib.collections.Collection):
             paths = list(artist.get_paths())
             transform = artist.get_transform()
@@ -1697,6 +1746,17 @@ class _EligibilityPreflight:
             if artist.get_joinstyle() is None:
                 joinstyle = "round"
             del transform
+        elif rectangle_geometry is not None:
+            # LP-FUNC-033: style getters mirror the Polygon route -- one
+            # resolved face color, a scalar line width, explicit cap/join,
+            # and the artist alpha; only the geometry source differs.
+            paths = []
+            facecolors = None
+            edgecolors = None
+            linewidths = float(artist.get_linewidth())
+            capstyle = str(artist.get_capstyle())
+            joinstyle = str(artist.get_joinstyle())
+            alpha = artist.get_alpha()
         else:
             paths = [artist.get_path()]
             facecolors = None
@@ -1786,6 +1846,19 @@ class _EligibilityPreflight:
         vertices: list[list[float]] = []
         codes: list[int] = []
         emitted_loops = 0
+        if rectangle_geometry is not None:
+            vertices = [
+                [float(to_px_x(x)), float(to_px_y(y))]
+                for x, y in rectangle_geometry
+            ]
+            # One explicit closed loop: MOVETO, LINETO x3, CLOSEPOLY --
+            # the same code shape Agg's draw_path shows for bars.
+            codes = (
+                [int(Path.MOVETO)]
+                + [int(Path.LINETO)] * (len(vertices) - 2)
+                + [int(Path.CLOSEPOLY)]
+            )
+            emitted_loops = 1
         for path in paths:
             loop_vertices = [
                 [float(to_px_x(x)), float(to_px_y(y))]
