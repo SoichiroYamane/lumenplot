@@ -3204,16 +3204,22 @@ def _phase3a2_activation_reasons(root: Path) -> list[str]:
     return reasons
 
 
-PHASE3A2_PHASE3B_PACKAGE_FILES = frozenset({"backend.py", "__init__.py"})
+PHASE3A2_PHASE3B_PACKAGE_FILES = frozenset(
+    {"backend.py", "__init__.py", "textpath.py"}
+)
 # While the Phase-3B allowance is active, these are the ONLY matplotlib
-# shapes still rejected inside the two phase3b-owned package files; every
+# shapes still rejected inside the three phase3b-owned package files; every
 # other occurrence (qualified chains such as matplotlib.lines.Line2D,
 # rcParams access, docstring prose) is admitted because the backend module
-# itself is the adapter. Workstream-manager decision on task t_52f05497.
+# itself is the adapter and textpath.py consumes the documented public
+# matplotlib.textpath/matplotlib.path APIs for the O-12 TextToPath
+# boundary (workstream-manager decisions 1-5, PRAC-A-T lane). The
+# substring ban keeps applying to every other package file and to the
+# whole pre-Phase-3B baseline: fail-closed both ways. Workstream-manager
+# decision on task t_52f05497; textpath addition on task t_1c790b2b.
 PHASE3A2_PHASE3B_MATPLOTLIB_FORBIDDEN_SHAPES = (
-    re.compile(r"^import matplotlib\.pylot"),
-    re.compile(r"^from matplotlib import"),
-    re.compile(r"^import matplotlib\.pylot as"),
+    re.compile(r"^\s*import matplotlib\.pyplot\b"),
+    re.compile(r"^\s*from matplotlib import\b"),
 )
 
 
@@ -3337,7 +3343,7 @@ def _metal_activation_reason(root: Path) -> str | None:
 
 
 def _phase3a2_phase3b_matplotlib_forbidden(source: str) -> bool:
-    """Detect pyplot-import regressions in the two phase3b-owned files."""
+    """Detect pyplot-import regressions inside the allowance-set package files."""
     return any(
         shape.match(line) is not None
         for line in source.splitlines()
@@ -3446,8 +3452,10 @@ def _phase3a2_check_python_package(root: Path, errors: list[str]) -> None:
         lowered = source.lower()
         if "matplotlib" in lowered or re.search(r"\bbackend\b", lowered):
             # Phase-3B: backend.py is the adapter itself and __init__.py
-            # hosts it; while the allowance is active only pyplot-import
-            # shapes stay forbidden inside those two files.
+            # hosts it; textpath.py consumes the documented public
+            # matplotlib.textpath API for the O-12 TextToPath boundary.
+            # While the allowance is active only pyplot-import shapes stay
+            # forbidden inside those three files (fail-closed both ways).
             if not (
                 phase3b_active
                 and path.name in PHASE3A2_PHASE3B_PACKAGE_FILES
