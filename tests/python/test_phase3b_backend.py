@@ -838,8 +838,9 @@ class TestDecoratedAxesEligibility(unittest.TestCase):
     @staticmethod
     def _plain_line(ax):
         ax.set_facecolor("none")  # no axes fill in this slice
-        # Tick label glyphs are the T-lane deliverable; decoration fixtures
-        # disable them so only stroke decorations remain.
+        # Tick label glyphs became eligible with the PRAC-A-W wire-up;
+        # this fixture keeps them off so the class pins the stroke-only
+        # surface independently of the text lane.
         ax.tick_params(labelbottom=False, labelleft=False)
         ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
                            solid_capstyle="butt", solid_joinstyle="miter"))
@@ -925,14 +926,175 @@ class TestDecoratedAxesEligibility(unittest.TestCase):
         self.assertEqual(result.diagnostics, ())
 
     def test_tick_label_text_is_still_unsupported(self):
-        """Tick labels/titles/axis labels stay outside this lane: text is
-        the T-lane deliverable and must not silently disappear."""
+        """Titles/axis labels stay outside the strict slice: text support is
+        scoped to tick label glyphs (the PRAC-A-W wire-up), so a title must
+        not silently disappear."""
         def build(ax):
             self._plain_line(ax)
             ax.set_title("hello")
 
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
             self._canvas_with(build).render_png()
+
+
+# ---------------------------------------------------------------------------
+# Tick label wire-up (PRAC-A-W, ADR 0015 §4a + T-lane deliverable)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestTickLabelWireUp(unittest.TestCase):
+    """End-to-end behavior of the tick-label text lane.
+
+    Eligibility: a default decorated axes with visible major tick labels
+    renders natively; labels become ``kind: "path"`` glyph commands built
+    by the public T-lane module. Unsupported text surfaces keep refusing.
+    """
+
+    def _canvas_with(self, build, figsize=(2.0, 1.0), **canvas_kwargs):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        fig = figure.Figure(figsize=figsize, dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, **canvas_kwargs)
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        self._axes_created = [ax]
+        build(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        return canvas
+
+    def _visible_labels(self):
+        """Public-API expectation: the non-empty visible major labels."""
+        labels = []
+        for ax in getattr(self, "_axes_created", []):
+            for axis in (ax.xaxis, ax.yaxis):
+                for label in axis.get_majorticklabels():
+                    if label.get_visible() and label.get_text() != "":
+                        labels.append(label.get_text())
+        return labels
+
+    @staticmethod
+    def _labeled_line(ax):
+        ax.set_facecolor("none")
+        ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
+
+    def test_decorated_axes_with_labels_render_strict(self):
+        """AC (a): a default decorated axes carrying visible tick labels is
+        strict-eligible end to end."""
+        canvas = self._canvas_with(self._labeled_line)
+        result = canvas.render_png()
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        self.assertEqual(result.diagnostics, ())
+        self.assertEqual(canvas.last_diagnostics, ())
+
+    def test_tick_label_commands_present_in_spec(self):
+        """AC (b): each visible label contributes one frozen-seam path
+        command whose fill surface matches the T-lane contract."""
+        canvas = self._canvas_with(self._labeled_line)
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        commands = _StubNativeModule.last_spec["commands"]
+        self.assertIsNotNone(commands)
+        paths = [c for c in commands if c.get("kind") == "path"
+                 and c.get("fill_rgba") is not None
+                 and c.get("stroke_rgba") is None]
+        self.assertTrue(paths, "no filled glyph path commands in spec")
+        for command in paths:
+            self.assertEqual(command["fill_rgba"], [0, 0, 0, 255])
+            self.assertIsNone(command["stroke_rgba"])
+            self.assertEqual(command["line_width_pt"], 0.0)
+            self.assertEqual(command["cap"], "butt")
+            self.assertEqual(command["join"], "miter")
+            self.assertIsNone(command["dashes"])
+            self.assertEqual(
+                command["transform"], [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+            )
+        # Default x ticks are 0/5/10 and y ticks 0/1..5 -> eight labels,
+        # each contributing exactly one whole-outline path command.
+        self.assertEqual(len(paths), len(self._visible_labels()))
+        # Placement: the frozen seam's vertex frame is bottom-left origin
+        # (the seam applies its own display flip), so x-axis label ink must
+        # sit BELOW the axes rectangle in that frame. This band geometry
+        # pins the anchor pipeline against sign flips the stub seam itself
+        # cannot observe.
+        for command in paths:
+            ys = [v[1] for v in command["vertices"]]
+            xs = [v[0] for v in command["vertices"]]
+            if all(x < 18.0 for x in xs):
+                # A y-axis label: entirely left of the axes edge.
+                self.assertGreater(min(ys), 0.0)
+            else:
+                # An x-axis label: entirely below the axes bottom edge
+                # (seam y = 10 for this fixture); an unflipped top-left
+                # regression lands these near y >= 90 instead.
+                self.assertLess(
+                    max(ys),
+                    12.0,
+                    f"label misplaced: {command['vertices'][:3]}",
+                )
+
+
+    def test_hybrid_label_axes_fall_back_with_one_diagnostic(self):
+        """AC (c): while any part of a labeled decorated axes is outside the
+        strict slice, hybrid mode must not render it natively: the attempt
+        fails unsupported and falls back to one whole-frame Agg diagnostic."""
+        canvas = self._canvas_with(
+            lambda ax: (
+                ax.set_facecolor("none"),
+                ax.add_line(Line2D([0, 10], [0, 5], linestyle="--")),
+            ),
+            mode="hybrid",
+        )
+        result = canvas.render_png()
+        self.assertEqual(len(result.diagnostics), 1)
+        diagnostic = result.diagnostics[0]
+        self.assertEqual(diagnostic.kind, "unsupported-capability")
+        self.assertEqual(diagnostic.scope, "whole-frame")
+        self.assertEqual(diagnostic.representation, "raster")
+        self.assertEqual(diagnostic.fallback_type, "matplotlib-agg")
+
+    def test_minor_ticks_with_labels_unsupported(self):
+        """AC (d): enabling minor ticks keeps the frame explicitly refused;
+        strict support covers major tick labels only."""
+
+        def build(ax):
+            self._labeled_line(ax)
+            ax.minorticks_on()
+
+        fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        build(ax)
+        ax.set_xlim(0, 10)
+        ax.set_ylim(0, 5)
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+            canvas.render_png()
+        message = str(ctx.exception)
+        self.assertTrue(
+            ("minor" in message) or ("tick" in message),
+            f"diagnostic lost the unsupported reason: {message!r}",
+        )
+
+    def test_two_axes_labels_render_strict_per_axes(self):
+        """AC (e): two stacked decorated axes with labels render natively;
+        every axes' labels appear in the shared spec."""
+        def build(ax):
+            self._labeled_line(ax)
+            ax.set_xticks([0, 10])
+            ax.set_yticks([0, 5])
+
+        canvas = self._canvas_with(build, figsize=(2.0, 2.0))
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        commands = _StubNativeModule.last_spec["commands"]
+        paths = [c for c in commands if c.get("kind") == "path"
+                 and c.get("fill_rgba") is not None]
+        # Both stacked axes keep default label visibility, so the shared
+        # spec carries every visible label of every created axes.
+        self.assertEqual(len(paths), len(self._visible_labels()))
+        self.assertGreaterEqual(len(paths), 4)
 
 
 # ---------------------------------------------------------------------------
