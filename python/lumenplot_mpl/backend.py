@@ -65,6 +65,7 @@ from matplotlib.backend_bases import FigureCanvasBase, FigureManagerBase
 from matplotlib.path import Path
 
 import numpy
+from lumenplot_mpl import textpath
 
 __all__ = [
     "FigureCanvas",
@@ -378,6 +379,8 @@ class _EligibilityPreflight:
         self._height_px = 0
         self._canvas_width_px = 0
         self._effective_dpi = 100.0
+        # ``draw_text`` payloads captured by the stage-two collector.
+        self._observed_text_payloads: list[dict] = []
 
     def unsupported(self, reason: str, type_context: str | None = None) -> None:
         self.reasons.append((type_context, reason))
@@ -455,15 +458,12 @@ class _EligibilityPreflight:
             if axis.get_offset_text().get_text() != "":
                 self.unsupported("offset text is unsupported", "Text")
             for label in axis.get_majorticklabels():
-                # Tick label glyphs are the T-lane deliverable; any visible
-                # non-empty label keeps the axes out of strict eligibility.
-                if label.get_visible() and label.get_text() != "":
-                    self.unsupported(
-                        "tick labels are unsupported; disable them with "
-                        "tick_params(labelbottom=False, labelleft=False)",
-                        "Text",
-                    )
-                    break
+                # Tick label glyphs are the T-lane deliverable: since the
+                # PRAC-A-W wire-up a visible non-empty major label is
+                # accepted and rendered as explicit glyph path commands.
+                if not label.get_visible() or label.get_text() == "":
+                    continue
+                self._check_tick_label_static(label)
             if any(t.get_visible() for t in axis.get_minorticklines()):
                 self.unsupported(
                     "visible minor ticks are unsupported; strict mode "
@@ -523,6 +523,37 @@ class _EligibilityPreflight:
             self.unsupported("negative line width", name)
         if spine.get_path_effects():
             self.unsupported("path effects are unsupported", name)
+
+    def _check_tick_label_static(self, label: Any) -> None:
+        """Whitelist-check one visible major tick label (PRAC-A-W).
+
+        The label is rendered as explicit filled glyph path commands built
+        by the public ``lumenplot_mpl.textpath`` module; only its string,
+        font size, color, alpha, rotation, alignment, and position are
+        honored. Anything outside the supported surface is refused here so
+        stage two never observes an unexpected ``draw_text``.
+        """
+        name = type(label).__name__
+        if label.get_text() != label.get_text().strip():
+            # Leading/trailing whitespace changes Agg's layout box but not
+            # the glyph outlines; refuse instead of shifting silently.
+            self.unsupported(
+                "tick labels with leading or trailing whitespace are "
+                "unsupported",
+                name,
+            )
+        if "\n" in label.get_text() or "\r" in label.get_text():
+            self.unsupported(
+                "multi-line tick labels are unsupported", name
+            )
+        if label.get_path_effects():
+            self.unsupported("path effects are unsupported", name)
+        # ``get_parse_math()`` merely enables ``$...$`` interpretation and
+        # defaults to True on plain labels, so eligibility is gated on the
+        # marker itself: TextPath draws dollars literally while Agg may
+        # interpret them, which must never diverge silently.
+        if label.get_usetex() or "$" in label.get_text():
+            self.unsupported("math/TeX text is unsupported", name)
 
     def _iterate_content_artists(self, figure: matplotlib.figure.Figure):
         """Yield drawable content artists, not structural containers.
@@ -654,19 +685,42 @@ class _EligibilityPreflight:
 
     # -- stage two: public RendererBase collector ------------------------
 
-    def _make_grammar_collector(self, collected: list[tuple]) -> Any:
+    def _make_grammar_collector(
+        self,
+        collected: list[tuple],
+        expected_labels: list[dict],
+        canvas_width_px: float,
+        canvas_height_px: float,
+        output_dpi: float,
+    ) -> Any:
         """Return a public ``RendererBase`` collector class.
 
         The collector records the full callback event stream of ADR 0015
         §4 — group open/close pairs, per-artist ``new_gc`` calls and
-        ``draw_path`` strokes. Any other renderer callback raises instead
-        of silently succeeding through the base-class no-op.
+        ``draw_path`` strokes. Since the PRAC-A-W wire-up it also accepts
+        ``draw_text`` callbacks for major tick labels: each callback must
+        carry exactly the next statically enumerated label's text, font
+        size, and rotation, and is recorded together with the label
+        artist so rendering can rebuild the glyphs. Any other renderer
+        callback raises instead of silently succeeding through the
+        base-class no-op.
+
+        ``Text.draw`` consults three renderer services while laying out
+        each label: the canvas size, the display flip, and text metrics.
+        The flip and canvas size reproduce the top-left display space the
+        adapter renders in, so Matplotlib itself hands over the true
+        baseline-start anchors. Metrics delegate to a real public
+        ``RendererAgg`` so alignment arithmetic sees Agg's exact numbers;
+        nothing is approximated here.
         """
+        from matplotlib.backend_bases import GraphicsContextBase
         from matplotlib.backend_bases import RendererBase
 
         class _GrammarCollector(RendererBase):
             def __init__(self) -> None:
                 super().__init__()
+                self._pending_labels = list(expected_labels)
+                self._metrics_renderer: Any = None
 
             def _record(self, kind: str, *rest: Any) -> None:
                 collected.append((kind, *rest))
@@ -679,8 +733,6 @@ class _EligibilityPreflight:
                 self._record("close", s)
 
             def new_gc(self):  # noqa: N802
-                from matplotlib.backend_bases import GraphicsContextBase
-
                 self._record("new_gc")
                 return GraphicsContextBase()
 
@@ -695,6 +747,78 @@ class _EligibilityPreflight:
                     },
                 )
 
+            def draw_text(  # noqa: N802
+                self,
+                gc,
+                x,
+                y,
+                s,
+                prop,
+                angle,
+                ismath=False,
+                mtext=None,
+            ):
+                del gc
+                if not self._pending_labels:
+                    self._record(
+                        "draw_text_unexpected",
+                        {"text": str(s)},
+                    )
+                    return
+                entry = self._pending_labels.pop(0)
+                size_ok = (
+                    abs(float(prop.get_size()) - entry["size"]) <= 1e-9
+                )
+                angle_ok = (
+                    abs(float(angle) - entry["angle"]) <= 1e-9
+                )
+                if bool(ismath) or s != entry["text"] or not size_ok or (
+                    not angle_ok
+                ):
+                    self._record(
+                        "draw_text_unexpected",
+                        {
+                            "text": str(s),
+                            "expected": entry["text"],
+                        },
+                    )
+                    return
+                self._record(
+                    "draw_text",
+                    {
+                        "artist": entry["artist"],
+                        "x": float(x),
+                        "y": float(y),
+                        "angle": float(angle),
+                    },
+                )
+
+            def remaining_labels(self) -> list[dict]:
+                """Statically accepted labels never observed at draw time."""
+                return list(self._pending_labels)
+
+            # -- layout services consumed by ``Text.draw`` ---------------
+            def get_canvas_width_height(self):  # noqa: N802
+                return (float(canvas_width_px), float(canvas_height_px))
+
+            def flipy(self):  # noqa: N802
+                return True
+
+            def get_text_width_height_descent(  # noqa: N802
+                self, s, prop, ismath
+            ):
+                if self._metrics_renderer is None:
+                    from matplotlib.backends.backend_agg import RendererAgg
+
+                    self._metrics_renderer = RendererAgg(
+                        max(1, int(canvas_width_px)),
+                        max(1, int(canvas_height_px)),
+                        float(output_dpi),
+                    )
+                return self._metrics_renderer.get_text_width_height_descent(
+                    s, prop, ismath
+                )
+
             # -- everything else is outside the trace --------------------
             def __getattr__(self, name):
                 if name.startswith("draw_"):
@@ -703,29 +827,84 @@ class _EligibilityPreflight:
 
         return _GrammarCollector
 
-    def collect(self, figure: matplotlib.figure.Figure) -> None:
+    def _enumerate_expected_labels(
+        self, figure: matplotlib.figure.Figure
+    ) -> list[dict]:
+        """Enumerate the tick labels stage one accepted, in draw order.
+
+        Matplotlib draws each decorated axes' major ticks through public
+        ``Axis.get_major_ticks``/``get_ticklocs`` in the same order the
+        collector observes their ``draw_text`` callbacks (x-axis first,
+        then y-axis; ``label1`` before ``label2`` per tick). Only visible
+        non-empty labels enter the queue; ``Tick.draw`` skips invisible
+        ones exactly like ``Text.draw`` skips empty strings, so the queue
+        stays aligned with the live stream.
+        """
+        entries: list[dict] = []
+        for ax in figure.get_axes():
+            if type(ax) is not matplotlib.axes.Axes:
+                continue
+            if not bool(getattr(ax, "axison", True)):
+                continue
+            for axis in (ax.xaxis, ax.yaxis):
+                for tick in axis.get_major_ticks():
+                    for label in (tick.label1, tick.label2):
+                        text = label.get_text()
+                        if not label.get_visible() or text == "":
+                            continue
+                        entries.append(
+                            {
+                                "artist": label,
+                                "text": str(text),
+                                "size": float(label.get_fontsize()),
+                                "angle": float(label.get_rotation()),
+                            }
+                        )
+        return entries
+
+    def collect(
+        self,
+        figure: matplotlib.figure.Figure,
+        *,
+        width_px: int | None = None,
+        height_px: int | None = None,
+        dpi: float | None = None,
+    ) -> None:
         """Run one collector traversal through a public RendererBase.
 
         Asserts the exact eligible trace of ADR 0015 §4: one
         figure-background ``draw_path`` plus one single-stroke
         ``draw_path`` per whitelisted Line2D, with the figure/patch/axes/
-        line2d group structure and per-artist ``new_gc`` calls. Only the
-        strokes emitted inside a ``line2d`` group are content lines; any
-        other renderer callback or unexpected path shape records an
+        line2d group structure and per-artist ``new_gc`` calls. Since the
+        PRAC-A-W wire-up the trace also admits one ``draw_text`` callback
+        per statically enumerated major tick label, cross-checked against
+        that label's public string/font size/rotation. Only the strokes
+        emitted inside a ``line2d`` group are content lines; any other
+        renderer callback or unexpected path shape records an
         unsupported reason; nothing is silently ignored.
         """
         from matplotlib.backend_bases import RendererBase
 
         collected: list[tuple] = []
+        expected_labels = self._enumerate_expected_labels(figure)
 
-        collector_cls = self._make_grammar_collector(collected)
+        collector_cls = self._make_grammar_collector(
+            collected,
+            expected_labels,
+            float(
+                self._canvas_width_px if width_px is None else width_px
+            ),
+            float(self._height_px if height_px is None else height_px),
+            float(self._effective_dpi if dpi is None else dpi),
+        )
         for name in ("open_group", "close_group", "new_gc",
                      self._ELIGIBLE_CALLBACKS[0]):
             if not hasattr(RendererBase, name):  # pragma: no cover - defensive
                 self.unsupported(f"renderer callback {name} unavailable")
                 return
         try:
-            figure.draw(collector_cls())
+            collector_instance = collector_cls()
+            figure.draw(collector_instance)
         except NotImplementedError as error:
             message = str(error) or "unknown"
             self.unsupported(
@@ -739,6 +918,7 @@ class _EligibilityPreflight:
 
         line_calls: list[dict] = []
         fill_calls: list[dict] = []
+        text_calls: list[dict] = []
         background_call: dict | None = None
         idx = 0
         total = len(collected)
@@ -848,12 +1028,47 @@ class _EligibilityPreflight:
                     "groups is outside the eligible trace"
                 )
                 return
+            if kind == "draw_text":
+                payload = events[idx][1]
+                idx += 1
+                text_calls.append(payload)
+                continue
+            if kind == "draw_text_unexpected":
+                payload = events[idx][1]
+                idx += 1
+                expected = payload.get("expected")
+                if expected is None:
+                    self.unsupported(
+                        "an unexpected draw_text callback (no statically "
+                        f"accepted label remains): {payload.get('text')!r}",
+                        "Text",
+                    )
+                else:
+                    self.unsupported(
+                        "the draw_text callback for an accepted tick label "
+                        f"changed at draw time: expected {expected!r}, got "
+                        f"{payload.get('text')!r}",
+                        "Text",
+                    )
+                return
             self.unsupported(f"unexpected {kind!r} event in the trace")
             return
 
         if stack:
             self.unsupported("a collector group is left open")
             return
+
+        if collector_instance.remaining_labels():
+            # A label that stage one accepted never reached the renderer:
+            # refusing keeps the trace exact instead of silently dropping
+            # visible text.
+            self.unsupported(
+                "a statically accepted tick label was not drawn",
+                "Text",
+            )
+            return
+
+        self._observed_text_payloads = text_calls
 
         if background_call is None:
             self.unsupported("no drawable content observed", "Figure")
@@ -1133,6 +1348,7 @@ class _EligibilityPreflight:
         self._height_px = int(height_px)
         self._canvas_width_px = int(width_px)
         self._effective_dpi = float(output_dpi)
+        self._label_payloads = list(self._observed_text_payloads)
         for ax in figure.get_axes():
             xlim = ax.get_xlim()
             ylim = ax.get_ylim()
@@ -1179,6 +1395,11 @@ class _EligibilityPreflight:
                 if spec is not None:
                     commands.append(spec)
 
+        # Tick label glyphs paint above lines and decorations in Matplotlib
+        # (text artists draw after the axes' line content), so the wire-up
+        # appends them last: same relative order, no z-order regression.
+        commands.extend(self._tick_label_commands())
+
         if self.background_rgbface is not None:
             background_rgba = _rgba8(self.background_rgbface)
         return {
@@ -1187,7 +1408,97 @@ class _EligibilityPreflight:
             "output_dpi": float(output_dpi),
             "commands": commands,
             "background_rgba": list(background_rgba),
+            # Architecture ruling 2026-08-25 (ADR 0012 additive amendment):
+            # the adapter's quality oracle is matplotlib Agg, whose blend
+            # arithmetic runs in encoded sRGB. The parity path opts in
+            # explicitly; export and every default-mode consumer keep the
+            # frozen linear-light compositing.
+            "blend_mode": "agg_srgb",
         }
+
+    def _tick_label_commands(self) -> list[dict]:
+        """Build one filled glyph path command per collected tick label.
+
+        Each stage-two ``draw_text`` payload carries the true baseline
+        anchor in top-left display pixels, handed over by Matplotlib's own
+        ``Text.draw`` layout under the collector's flip/canvas/metric
+        services. The public ``lumenplot_mpl.textpath`` module extracts
+        the glyph outlines in identity space (baseline at the origin,
+        y up); this method composes them into display space with one
+        explicit matrix per label::
+
+            p_display = R(angle) @ S(output_dpi / 72) @ p_outline + anchor
+
+        so the pt-space outlines land exactly where Agg would have inked
+        them, honoring rotation without re-deriving any layout algebra.
+        Color and alpha come from the label artist through the same
+        public-getter route as every other command surface.
+        """
+        commands: list[dict] = []
+        scale = self._effective_dpi / 72.0
+        for payload in self._label_payloads:
+            label = payload["artist"]
+            anchor_x = float(payload["x"])
+            anchor_y = float(payload["y"])
+            angle_deg = float(payload["angle"])
+            try:
+                outline = textpath.glyph_outline_commands(
+                    str(label.get_text()),
+                    (0.0, 0.0),
+                    1.0,
+                    0.0,
+                    font_size_pt=float(label.get_fontsize()),
+                )[0]
+            except ValueError as error:
+                raise LumenPlotUnsupportedError(
+                    f"tick label glyphs are unsupported: {error}",
+                ) from error
+
+            theta = math.radians(angle_deg)
+            cos_t = math.cos(theta)
+            sin_t = math.sin(theta)
+
+            vertices: list[list[float]] = []
+            for vx, vy in outline["vertices"]:
+                # ``glyph_outline_commands`` already emits top-left pixel
+                # orientation (its contract negates TextPath's y-up sign
+                # once), so both axes scale uniformly without another
+                # negation before the rotation.
+                px = vx * scale
+                py = vy * scale
+                vertices.append(
+                    [
+                        anchor_x + px * cos_t + py * sin_t,
+                        self._height_px - (anchor_y - px * sin_t
+                                           + py * cos_t),
+                    ]
+                )
+            commands.append(
+                {
+                    "kind": "path",
+                    "decoration": "tick_label",
+                    "vertices": vertices,
+                    "codes": list(outline["codes"]),
+                    "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    "stroke_rgba": None,
+                    "fill_rgba": list(_rgba8(label.get_color(),
+                                             label.get_alpha())),
+                    "line_width_pt": 0.0,
+                    "cap": "butt",
+                    "join": "miter",
+                    "dash_offset_pt": 0.0,
+                    "dashes": None,
+                    "fill_rule": "nonzero",
+                    "antialias": True,
+                    "clip_rect": [
+                        0.0,
+                        0.0,
+                        float(self._canvas_width_px),
+                        float(self._height_px),
+                    ],
+                }
+            )
+        return commands
 
     def _decoration_commands(
         self,
@@ -1842,7 +2153,16 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
             try:
                 preflight = _EligibilityPreflight()
                 preflight.check_static(figure)
-                preflight.collect(figure)
+                # The collector needs the real canvas geometry up front:
+                # ``Text.draw`` consults the renderer's canvas size and
+                # display flip while laying out each label, so stale
+                # defaults here would misplace every anchor it reports.
+                preflight.collect(
+                    figure,
+                    width_px=width_px,
+                    height_px=height_px,
+                    dpi=output_dpi,
+                )
                 if preflight.reasons:
                     type_context, reason = preflight.reasons[0]
                     raise LumenPlotUnsupportedError(

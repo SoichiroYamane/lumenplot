@@ -296,6 +296,9 @@ pub(crate) struct FrameSpec {
     /// 0, 0]` unless the caller supplies `background_rgba`, preserving the
     /// frozen no-key behavior of the accepted slice.
     background_rgba: [u8; 4],
+    /// Compositing color model. `BlendMode::Linear` unless the spec opts in
+    /// with ``blend_mode: "agg_srgb"`` (architecture ruling 2026-08-25).
+    blend_mode: BlendMode,
     commands: Vec<Command>,
 }
 
@@ -332,6 +335,7 @@ impl FrameSpec {
             height_px,
             output_dpi,
             background_rgba: [0, 0, 0, 0],
+            blend_mode: BlendMode::Linear,
             commands: Vec::new(),
         })
     }
@@ -344,6 +348,15 @@ impl FrameSpec {
 
     pub(crate) fn background_rgba(&self) -> [u8; 4] {
         self.background_rgba
+    }
+
+    /// Opts this frame into the Agg-compat encoded-sRGB compositing model.
+    pub(crate) fn set_blend_mode(&mut self, mode: BlendMode) {
+        self.blend_mode = mode;
+    }
+
+    pub(crate) fn blend_mode(&self) -> BlendMode {
+        self.blend_mode
     }
 
     pub(crate) fn push_command(&mut self, command: Command) -> Result<(), FrameError> {
@@ -373,6 +386,15 @@ impl FrameSpec {
 #[derive(Clone, Copy)]
 struct LinearPixel {
     premultiplied: [f64; 3],
+    alpha: f64,
+}
+
+/// Encoded-sRGB straight (unpremultiplied) pixel accumulator for the
+/// Agg-compat blend mode. Channels stay in encoded-sRGB units so that
+/// source-over runs in exactly the arithmetic matplotlib Agg uses.
+#[derive(Clone, Copy)]
+struct SrgbPixel {
+    rgb: [f64; 3],
     alpha: f64,
 }
 
@@ -448,6 +470,131 @@ fn source_over(source: LinearPixel, destination: LinearPixel) -> LinearPixel {
     }
 }
 
+fn srgb_pixel_from_rgba(color: [u8; 4]) -> SrgbPixel {
+    SrgbPixel {
+        rgb: [
+            f64::from(color[0]) / 255.0,
+            f64::from(color[1]) / 255.0,
+            f64::from(color[2]) / 255.0,
+        ],
+        alpha: f64::from(color[3]) / 255.0,
+    }
+}
+
+/// Agg's premultiplied-encoded source-over: the destination accumulates in
+/// premultiplied encoded-sRGB units (what the Agg buffer physically holds)
+/// and read-back unpremultiplies.
+#[derive(Clone, Copy)]
+struct SrgbPremultiplied {
+    premultiplied: [f64; 3],
+    alpha: f64,
+}
+
+fn srgb_premultiplied_over(source: SrgbPixel, destination: SrgbPixel) -> SrgbPixel {
+    let destination_accumulated = SrgbPremultiplied {
+        premultiplied: [
+            destination.rgb[0] * destination.alpha,
+            destination.rgb[1] * destination.alpha,
+            destination.rgb[2] * destination.alpha,
+        ],
+        alpha: destination.alpha,
+    };
+    let source_alpha = clamp_unit(source.alpha);
+    let inverse_source_alpha = 1.0 - source_alpha;
+    let alpha = clamp_unit(source_alpha + destination_accumulated.alpha * inverse_source_alpha);
+    let mut premultiplied = [0.0; 3];
+    for (index, channel) in premultiplied.iter_mut().enumerate() {
+        *channel = clamp_unit(
+            source.rgb[index] * source_alpha
+                + destination_accumulated.premultiplied[index] * inverse_source_alpha,
+        );
+    }
+    let rgb = if alpha > 0.0 {
+        [
+            clamp_unit(premultiplied[0] / alpha),
+            clamp_unit(premultiplied[1] / alpha),
+            clamp_unit(premultiplied[2] / alpha),
+        ]
+    } else {
+        [0.0; 3]
+    };
+    SrgbPixel { rgb, alpha }
+}
+
+/// One frame's working canvas. The enum discriminates the two ruled
+/// compositing models; every write goes through `composite`.
+enum Canvas {
+    Linear(Vec<LinearPixel>),
+    AggSrgb(Vec<SrgbPixel>),
+}
+
+impl Canvas {
+    fn new(mode: BlendMode, background: [u8; 4], pixel_count: usize) -> Self {
+        match mode {
+            BlendMode::Linear => {
+                let mut pixels = Vec::new();
+                if pixels.try_reserve_exact(pixel_count).is_err() {
+                    // Fall through to the amortizing vec! below.
+                    return Canvas::Linear(vec![linear_pixel_from_rgba(background); pixel_count]);
+                }
+                pixels.resize(pixel_count, linear_pixel_from_rgba(background));
+                Canvas::Linear(pixels)
+            }
+            BlendMode::AggSrgb => {
+                Canvas::AggSrgb(vec![srgb_pixel_from_rgba(background); pixel_count])
+            }
+        }
+    }
+
+    /// Composites one straight-alpha sRGB8 paint over pixel `index` with
+    /// this canvas's ruled color model and the given coverage fraction.
+    fn composite(&mut self, index: usize, coverage: f64, color: [u8; 4]) {
+        let style_alpha = f64::from(color[3]) / 255.0;
+        let alpha = clamp_unit(style_alpha * coverage);
+        if alpha == 0.0 {
+            return;
+        }
+        match self {
+            Canvas::Linear(pixels) => {
+                let source_rgb = [
+                    decode_srgb_channel(color[0]),
+                    decode_srgb_channel(color[1]),
+                    decode_srgb_channel(color[2]),
+                ];
+                let source = LinearPixel {
+                    premultiplied: [
+                        source_rgb[0] * alpha,
+                        source_rgb[1] * alpha,
+                        source_rgb[2] * alpha,
+                    ],
+                    alpha,
+                };
+                pixels[index] = source_over(source, pixels[index]);
+            }
+            Canvas::AggSrgb(pixels) => {
+                let source = srgb_pixel_from_rgba([
+                    color[0],
+                    color[1],
+                    color[2],
+                    quantize_round_half_even(alpha),
+                ]);
+                let destination = pixels[index];
+                pixels[index] = SrgbPixel {
+                    rgb: srgb_premultiplied_over(source, destination).rgb,
+                    alpha: clamp_unit(source.alpha + destination.alpha * (1.0 - source.alpha)),
+                };
+            }
+        }
+    }
+
+    fn to_rgba8(&self) -> Vec<u8> {
+        match self {
+            Canvas::Linear(pixels) => to_rgba8(pixels),
+            Canvas::AggSrgb(pixels) => srgb_pixels_to_rgba8(pixels),
+        }
+    }
+}
+
 fn to_rgba8(pixels: &[LinearPixel]) -> Vec<u8> {
     let mut rgba = Vec::new();
     // Byte count is bounded by the plan check, so reservation cannot fail
@@ -469,6 +616,30 @@ fn to_rgba8(pixels: &[LinearPixel]) -> Vec<u8> {
             quantize_round_half_even(red),
             quantize_round_half_even(green),
             quantize_round_half_even(blue),
+            alpha_u8,
+        ]);
+    }
+    rgba
+}
+
+/// Read-back for the Agg-compat canvas: channels are already encoded sRGB,
+/// so this only quantizes (no transfer function applied).
+fn srgb_pixels_to_rgba8(pixels: &[SrgbPixel]) -> Vec<u8> {
+    let mut rgba = Vec::new();
+    if rgba.try_reserve_exact(pixels.len() * 4).is_err() {
+        return Vec::new();
+    }
+    for pixel in pixels {
+        let alpha = clamp_unit(pixel.alpha);
+        let alpha_u8 = quantize_round_half_even(alpha);
+        if alpha_u8 == 0 {
+            rgba.extend_from_slice(&[0, 0, 0, 0]);
+            continue;
+        }
+        rgba.extend_from_slice(&[
+            quantize_round_half_even(clamp_unit(pixel.rgb[0])),
+            quantize_round_half_even(clamp_unit(pixel.rgb[1])),
+            quantize_round_half_even(clamp_unit(pixel.rgb[2])),
             alpha_u8,
         ]);
     }
@@ -756,39 +927,22 @@ fn coverage_mask(width: u32, height: u32, pixel_count: usize) -> Result<Mask, Fr
     Mask::from_vec(data, size).ok_or(FrameError::OutOfMemory)
 }
 
-fn composite_coverage(pixels: &mut [LinearPixel], mask: &Mask, color: [u8; 4]) {
-    let source_rgb = [
-        decode_srgb_channel(color[0]),
-        decode_srgb_channel(color[1]),
-        decode_srgb_channel(color[2]),
-    ];
+fn composite_coverage(canvas: &mut Canvas, mask: &Mask, color: [u8; 4]) {
     let style_alpha = f64::from(color[3]) / 255.0;
     if style_alpha == 0.0 {
         return;
     }
-    for (index, destination) in pixels.iter_mut().enumerate() {
+    for index in 0..mask.data().len() {
         let coverage = f64::from(mask.data()[index]) / 255.0;
         if coverage == 0.0 {
             continue;
         }
-        let alpha = clamp_unit(style_alpha * coverage);
-        if alpha == 0.0 {
-            continue;
-        }
-        let source = LinearPixel {
-            premultiplied: [
-                source_rgb[0] * alpha,
-                source_rgb[1] * alpha,
-                source_rgb[2] * alpha,
-            ],
-            alpha,
-        };
-        *destination = source_over(source, *destination);
+        canvas.composite(index, coverage, color);
     }
 }
 
 fn composite_image(
-    pixels: &mut [LinearPixel],
+    pixels: &mut Canvas,
     command: &ImageCommand,
     width: u32,
     height: u32,
@@ -827,8 +981,9 @@ fn composite_image(
                 continue;
             }
             let destination_index = device_y as usize * width as usize + device_x as usize;
-            pixels[destination_index] =
-                source_over(linear_pixel_from_rgba(color), pixels[destination_index]);
+            // Full coverage for image pixels (the bitmap itself is the
+            // coverage); the canvas picks the ruled compositing model.
+            pixels.composite(destination_index, 1.0, color);
         }
     }
 }
@@ -847,15 +1002,10 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
         })
         .ok_or(FrameError::Internal("pixel count overflowed"))?;
 
-    let mut pixels = Vec::new();
-    if pixels.try_reserve_exact(pixel_count).is_err() {
-        return Err(FrameError::OutOfMemory);
-    }
-    // Seed every pixel with the validated canvas background. The default is
-    // fully transparent (frozen behavior of the accepted slice); a caller
-    // supplied `background_rgba` fills the frame before any command runs,
-    // and path/image commands composite over it with source-over.
-    pixels.resize(pixel_count, linear_pixel_from_rgba(spec.background_rgba()));
+    // The canvas carries whichever compositing model the spec selected:
+    // linear-light (frozen ADR 0012 default) or Agg-compat encoded-sRGB
+    // (opt-in `blend_mode: "agg_srgb"`, architecture ruling 2026-08-25).
+    let mut pixels = Canvas::new(spec.blend_mode(), spec.background_rgba(), pixel_count);
     let scale = spec.scale();
 
     for command in &spec.commands {
@@ -924,7 +1074,7 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
         }
     }
 
-    Ok(to_rgba8(&pixels))
+    Ok(pixels.to_rgba8())
 }
 
 struct CappedWriter {
