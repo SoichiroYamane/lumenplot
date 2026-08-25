@@ -544,6 +544,9 @@ class TestDecoratedAxesSpec(unittest.TestCase):
         fig = figure.Figure(figsize=figsize, dpi=100)
         canvas = backend_mod.FigureCanvasLumenPlot(fig)
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.set_facecolor("none")  # no axes fill in this slice
+        # Tick label glyphs are the T-lane deliverable.
+        ax.tick_params(labelbottom=False, labelleft=False)
         ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
                            solid_capstyle="butt", solid_joinstyle="miter"))
         build(ax)
@@ -557,6 +560,11 @@ class TestDecoratedAxesSpec(unittest.TestCase):
     @staticmethod
     def _deco_commands(spec):
         return [c for c in (spec["commands"] or []) if "decoration" in c]
+
+    @staticmethod
+    def _grid_commands(spec):
+        return [c for c in TestDecoratedAxesSpec._deco_commands(spec)
+                if c["decoration"] == "gridline"]
 
     def test_command_order_and_line_last(self):
         """Decorations precede content lines in every axes group."""
@@ -578,8 +586,7 @@ class TestDecoratedAxesSpec(unittest.TestCase):
         bbox = ax.get_window_extent()
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
-        grids = [c for c in self._deco_commands(spec)
-                 if c["decoration"] == "gridline"]
+        grids = self._grid_commands(spec)
         # One vertical line per in-view major x tick plus one horizontal
         # line per in-view major y tick (which='major' slice).
         xlocs = [float(x) for x in ax.xaxis.get_ticklocs()
@@ -693,6 +700,9 @@ class TestDecoratedAxesSpec(unittest.TestCase):
         ax0 = fig.add_axes([0.1, 0.55, 0.8, 0.35])
         ax1 = fig.add_axes([0.1, 0.1, 0.8, 0.35])
         for ax in (ax0, ax1):
+            ax.set_facecolor("none")  # no axes fill in this slice
+            # Tick label glyphs are the T-lane deliverable.
+            ax.tick_params(labelbottom=False, labelleft=False)
             ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
                                solid_capstyle="butt",
                                solid_joinstyle="miter"))
@@ -739,10 +749,15 @@ class TestStrictUnsupported(unittest.TestCase):
     def test_decorated_axes_are_strict_eligible(self):
         """A plain axison=True axes is accepted since the PRAC-A-D contract
         amendment (ADR 0015 §4): spines, major ticks, and solid major
-        gridlines render natively as path commands (LP-FUNC-003)."""
+        gridlines render natively as path commands (LP-FUNC-003).
+        The lane contract renders no axes background fill and no tick label
+        text, so the eligible fixture carries ``facecolor='none'`` and
+        label-less ticks."""
         fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
         canvas = backend_mod.FigureCanvasLumenPlot(fig)
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])  # decorations on (default)
+        ax.set_facecolor("none")
+        ax.tick_params(labelbottom=False, labelleft=False)
         ax.add_line(Line2D([0, 1], [0, 1], color="red", linewidth=2.0,
                            solid_capstyle="butt", solid_joinstyle="miter"))
         ax.set_xlim(0, 10)
@@ -817,6 +832,10 @@ class TestDecoratedAxesEligibility(unittest.TestCase):
 
     @staticmethod
     def _plain_line(ax):
+        ax.set_facecolor("none")  # no axes fill in this slice
+        # Tick label glyphs are the T-lane deliverable; decoration fixtures
+        # disable them so only stroke decorations remain.
+        ax.tick_params(labelbottom=False, labelleft=False)
         ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
                            solid_capstyle="butt", solid_joinstyle="miter"))
 
@@ -875,10 +894,10 @@ class TestDecoratedAxesEligibility(unittest.TestCase):
         self.assertIn("solid", str(ctx.exception))
 
     def test_axes_background_patch_unsupported(self):
-        """AC (d): an opaque axes facecolor is explicitly refused."""
+        """AC (d): an axes facecolor other than 'none' is refused."""
         def build(ax):
-            ax.set_facecolor("lightblue")
             self._plain_line(ax)
+            ax.set_facecolor("lightblue")
 
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
             self._canvas_with(build).render_png()
