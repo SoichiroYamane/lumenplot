@@ -58,10 +58,13 @@ from typing import Any
 import matplotlib
 import matplotlib.axes  # noqa: F401 - public submodule for type checks
 import matplotlib.axis  # noqa: F401 - public submodule for tick positions
+import matplotlib.collections  # noqa: F401 - public submodule for the whitelist
 import matplotlib.lines  # noqa: F401 - public submodule for the whitelist
+import matplotlib.patches  # noqa: F401 - public submodule for the whitelist
 from matplotlib.backend_bases import FigureCanvasBase, FigureManagerBase
 from matplotlib.path import Path
 
+import numpy
 from lumenplot_mpl import textpath
 
 __all__ = [
@@ -350,8 +353,17 @@ class _EligibilityPreflight:
     reason.
     """
 
-    # Documented-public artist whitelist for this slice.
-    _ARTIST_WHITELIST = (matplotlib.lines.Line2D,)
+    # Documented-public artist whitelist for this slice. Since the
+    # LP-FUNC-032 eligibility extension (LP-MPL-020: whitelist entry,
+    # collector-trace expectation, style contract, and fixtures landed in
+    # one commit) the eligible content surface also carries filled areas:
+    # ``Polygon`` (``Axes.fill``) and ``FillBetweenPolyCollection``
+    # (``Axes.fill_between``).
+    _ARTIST_WHITELIST = (
+        matplotlib.lines.Line2D,
+        matplotlib.patches.Polygon,
+        matplotlib.collections.FillBetweenPolyCollection,
+    )
 
     # RendererBase callbacks the collector may observe, in the exact order
     # and multiplicity the eligible trace allows (ADR 0015 §4).
@@ -362,6 +374,7 @@ class _EligibilityPreflight:
         self.background_seen = False
         self.background_rgbface: Any = None
         self.line_paths = 0
+        self.fill_paths = 0
         self._clip_points: Any = None
         self._height_px = 0
         self._canvas_width_px = 0
@@ -385,7 +398,15 @@ class _EligibilityPreflight:
                     type(artist).__name__,
                 )
                 continue
-            self._check_line2d_static(artist)
+            # Static checks dispatch on the artist's class family: the
+            # fixed §5 stroke surface applies to lines, the LP-FUNC-032
+            # fill style contract applies to patches and poly-collections.
+            if isinstance(artist, matplotlib.lines.Line2D):
+                self._check_line2d_static(artist)
+            elif isinstance(artist, matplotlib.collections.Collection):
+                self._check_fill_collection_static(artist)
+            else:
+                self._check_patch_static(artist)
 
     def _check_axes_decorations(self, ax: matplotlib.axes.Axes) -> None:
         """Whitelist-check one axes and its decoration surface.
@@ -597,6 +618,70 @@ class _EligibilityPreflight:
             )
         if line.get_gid() is None:
             return
+
+    def _check_patch_static(self, patch: matplotlib.patches.Patch) -> None:
+        """Static style checks for one whitelisted ``Patch`` (LP-FUNC-032).
+
+        The fill style contract mirrors Agg's own resolution: the artist's
+        resolved face/edge colors and alpha are authoritative, hatching
+        and path effects are outside the slice, and a negative width is
+        refused rather than clamped.
+        """
+        name = type(patch).__name__
+        if patch.get_hatch() is not None:
+            self.unsupported("hatching is unsupported in strict mode", name)
+        if patch.get_path_effects():
+            self.unsupported("path effects are unsupported", name)
+        if patch.get_sketch_params() is not None:
+            self.unsupported("sketch parameters are unsupported", name)
+        if float(patch.get_linewidth()) < 0:
+            self.unsupported("negative line width", name)
+        if not bool(getattr(patch, "get_fill", bool)()):
+            self.unsupported(
+                "unfilled patches are unsupported; use a line instead",
+                name,
+            )
+        if str(patch.get_joinstyle()) not in ("miter", "round", "bevel"):
+            # Defensive: every Matplotlib joinstyle maps to a seam selector;
+            # an unknown value means the collector contract drifted.
+            self.unsupported(
+                f"joinstyle {patch.get_joinstyle()!r} is unsupported", name
+            )
+
+    def _check_fill_collection_static(
+        self, collection: matplotlib.collections.Collection
+    ) -> None:
+        """Static style checks for one whitelisted poly-collection.
+
+        Only the LP-FUNC-032 ``FillBetweenPolyCollection`` is eligible;
+        any other collection class reaching here is an internal fault of
+        the whitelist dispatch and records an explicit reason.
+        """
+        name = type(collection).__name__
+        if not isinstance(
+            collection, matplotlib.collections.FillBetweenPolyCollection
+        ):
+            self.unsupported(
+                f"collection {name} is outside the supported whitelist",
+                name,
+            )
+            return
+        if collection.get_hatch() is not None:
+            self.unsupported("hatching is unsupported in strict mode", name)
+        if collection.get_path_effects():
+            self.unsupported("path effects are unsupported", name)
+        if collection.get_sketch_params() is not None:
+            self.unsupported("sketch parameters are unsupported", name)
+        widths = collection.get_linewidth()
+        import numpy as _np
+
+        width_list = _np.atleast_1d(
+            _np.asarray(widths, dtype=float).ravel()
+        )
+        for width in width_list:
+            if float(width) < 0:
+                self.unsupported("negative line width", name)
+                return
 
     # -- stage two: public RendererBase collector ------------------------
 
@@ -832,6 +917,7 @@ class _EligibilityPreflight:
             return
 
         line_calls: list[dict] = []
+        fill_calls: list[dict] = []
         text_calls: list[dict] = []
         background_call: dict | None = None
         idx = 0
@@ -862,7 +948,7 @@ class _EligibilityPreflight:
                 idx += 1
                 # The figure background stroke sits in figure > patch;
                 # content and tick-mark line2d groups sit deeper in the
-                # tree. Only these two shapes are eligible.
+                # tree. Only these shapes are eligible.
                 if (
                     len(stack) == 2
                     and stack[0] == "figure"
@@ -876,27 +962,52 @@ class _EligibilityPreflight:
                         return
                     background_call = call
                     continue
-                if len(stack) >= 3 and stack[-1] == "patch":
-                    # Axes-structural patch strokes: the transparent axes
-                    # background (5-vertex fill, zero width) and the spine
-                    # edges. The static stage proved the surface; here they
-                    # only reconcile clip behavior.
+                if len(stack) >= 3 and stack[-1] in (
+                    "patch",
+                    "FillBetweenPolyCollection",
+                ):
+                    # Patch-shaped groups carry three kinds of strokes:
+                    # LP-FUNC-032 fill content, the transparent axes
+                    # background, and the spine-edge decoration strokes.
+                    # All three are validated here; the geometry assembly
+                    # re-derives decorations from public getters.
                     if any(part == "axes" for part in stack[:-1]):
-                        if stack[-2] == "axes":
+                        if stack[-1] == "FillBetweenPolyCollection":
+                            # A fill-between collection group: every
+                            # draw_path inside is fill content.
+                            fill_calls.append(call)
+                            continue
+                        gc = call["gc"]
+                        is_axes_background = (
+                            stack[-2] == "axes"
+                            and gc.get_linewidth() == 0.0
+                            and call["rgbFace"] is None
+                            and len(call["path"].vertices) == 5
+                        )
+                        if is_axes_background:
                             # The transparent axes-background fill: no clip
                             # is required for a zero-width full-frame fill.
-                            if call["gc"].get_linewidth() == 0.0:
-                                continue
-                        # Spine strokes are axes > patch with no clip; they
-                        # are validated by the targeted decoration walk.
-                        continue
-                    else:
-                        self.unsupported(
-                            "a patch stroke outside an axes is outside "
-                            "the eligible trace"
+                            continue
+                        has_clip = gc.get_clip_rectangle() is not None
+                        is_spine = (
+                            stack[-2] == "axes"
+                            and call["rgbFace"] is None
+                            and len(call["path"].vertices) == 2
+                            and not has_clip
                         )
-                        return
-                    continue
+                        if is_spine:
+                            # Spine decoration stroke: validated by the
+                            # targeted static decoration walk.
+                            continue
+                        # Everything else under axes > patch with a real
+                        # facecolor is user fill content (LP-FUNC-032).
+                        fill_calls.append(call)
+                        continue
+                    self.unsupported(
+                        "a patch stroke outside an axes is outside "
+                        "the eligible trace"
+                    )
+                    return
                 if len(stack) >= 3 and stack[-1] == "line2d":
                     if any(part == "axes" for part in stack[:-1]):
                         if stack[-2] == "axes":
@@ -976,7 +1087,10 @@ class _EligibilityPreflight:
         for call in line_calls:
             self.line_paths += 1
             self._check_line_call(call)
-        if not line_calls:
+        for call in fill_calls:
+            self.fill_paths += 1
+            self._check_fill_call(call)
+        if not line_calls and not fill_calls:
             self.unsupported("no drawable content observed", "Figure")
 
     def _consume_trace(self, events: list[tuple]) -> bool:
@@ -1137,7 +1251,51 @@ class _EligibilityPreflight:
         vertices = path.vertices
         if len(vertices) < 2:
             self.unsupported("degenerate single-vertex stroke")
+        self._check_stroke_common(call["gc"])
+
+    def _check_fill_call(self, call: dict) -> None:
+        """Collector-side checks for one fill draw_path (LP-FUNC-032).
+
+        Fills must stay polygonal (MOVETO/LINETO/CLOSEPOLY only), carry
+        a facecolor, and share the rectangular axes clip with every
+        other eligible stroke. The shared ``_check_stroke_common`` runs
+        the dash/sketch/snap/clip surface; the clip bookkeeping also
+        seeds the fill command's ``clip_rect``.
+        """
+        path = call["path"]
+        codes = path.codes
+        if codes is not None and len(codes):
+            code_values = {int(code) for code in codes}
+            allowed = {
+                int(Path.MOVETO),
+                int(Path.LINETO),
+                int(Path.CLOSEPOLY),
+                0,
+            }
+            if not code_values <= allowed:
+                self.unsupported("curved path segments are unsupported")
+        vertices = path.vertices
+        # A closed loop needs at least three real positions (CLOSEPOLY's
+        # vertex is a positional dummy); fewer cannot enclose area.
+        real_points = (
+            len(vertices)
+            if codes is None
+            else sum(1 for code in codes if int(code) != int(Path.CLOSEPOLY))
+        )
+        if real_points < 3:
+            self.unsupported("degenerate fill path")
         gc = call["gc"]
+        if gc.get_hatch() is not None:
+            self.unsupported("hatching is unsupported in strict mode")
+        self._check_stroke_common(gc)
+
+    def _check_stroke_common(self, gc: Any) -> None:
+        """Shared dash/sketch/snap/clip checks for one eligible stroke.
+
+        The rectangular-clip branch also seeds ``_clip_points`` so the
+        geometry assembly can attach an explicit ``clip_rect``; fills and
+        lines share exactly one axes rectangle.
+        """
         if gc.get_dashes()[1] is not None:
             self.unsupported("dashed strokes are unsupported in strict mode")
         if gc.get_sketch_params() is not None:
@@ -1217,6 +1375,21 @@ class _EligibilityPreflight:
                 commands.extend(
                     self._decoration_commands(ax, x0, y0, w, h)
                 )
+            for collection in ax.collections:
+                if not isinstance(
+                    collection,
+                    matplotlib.collections.FillBetweenPolyCollection,
+                ):
+                    continue
+                fill = self._fill_command(collection, to_px_x, to_px_y)
+                if fill is not None:
+                    commands.append(fill)
+            for patch in ax.patches:
+                if not isinstance(patch, matplotlib.patches.Polygon):
+                    continue
+                fill = self._fill_command(patch, to_px_x, to_px_y)
+                if fill is not None:
+                    commands.append(fill)
             for line in ax.get_lines():
                 spec = self._line_command(line, to_px_x, to_px_y)
                 if spec is not None:
@@ -1235,6 +1408,12 @@ class _EligibilityPreflight:
             "output_dpi": float(output_dpi),
             "commands": commands,
             "background_rgba": list(background_rgba),
+            # Architecture ruling 2026-08-25 (ADR 0012 additive amendment):
+            # the adapter's quality oracle is matplotlib Agg, whose blend
+            # arithmetic runs in encoded sRGB. The parity path opts in
+            # explicitly; export and every default-mode consumer keep the
+            # frozen linear-light compositing.
+            "blend_mode": "agg_srgb",
         }
 
     def _tick_label_commands(self) -> list[dict]:
@@ -1472,6 +1651,200 @@ class _EligibilityPreflight:
             commands.append(command)
 
         return commands
+
+    def _fill_command(self, artist, to_px_x, to_px_y):
+        """Build one fill path command from a Polygon or poly-collection.
+
+        LP-FUNC-032 style contract (Agg-identical resolution):
+
+        - geometry: the artist's collected path (already split into
+          polygon loops with CLOSEPOLY codes by matplotlib) mapped through
+          the same public affine as lines;
+        - face: ``fill_rgba`` = the resolved facecolor; the explicit
+          artist alpha is applied exactly once (Agg bakes it into the
+          resolved colors), never multiplied twice;
+        - edge: an explicit nonzero-alpha edgecolor with positive width
+          strokes the outline; the Polygon default resolves to fully
+          transparent ('none'), which draws no stroke;
+        - join/cap: the artist's resolved styles (Polygon defaults
+          butt/miter, collections butt/round) — accepted values map onto
+          seam selectors directly.
+        """
+        name = type(artist).__name__
+        if isinstance(artist, matplotlib.collections.Collection):
+            paths = list(artist.get_paths())
+            transform = artist.get_transform()
+            facecolors = artist.get_facecolor()
+            edgecolors = artist.get_edgecolor()
+            linewidths = artist.get_linewidth()
+            capstyle = str(artist.get_capstyle())
+            joinstyle = str(artist.get_joinstyle())
+            alpha = artist.get_alpha()
+            offsets = artist.get_offsets()
+            # FillBetweenPolyCollection carries one path per polygon run
+            # and identity offsets; multi-offset collections are outside
+            # this slice's contract.
+            if offsets is not None and len(offsets) not in (0, 1):
+                self.unsupported(
+                    "multi-point collection offsets are unsupported", name
+                )
+                return None
+            # An unset collection style resolves through the Agg graphics
+            # context at draw time: cap defaults to butt and join to round
+            # (GraphicsContextBase defaults, observed in the collector).
+            if artist.get_capstyle() is None:
+                capstyle = "butt"
+            if artist.get_joinstyle() is None:
+                joinstyle = "round"
+            del transform
+        else:
+            paths = [artist.get_path()]
+            facecolors = None
+            edgecolors = None
+            linewidths = float(artist.get_linewidth())
+            capstyle = str(artist.get_capstyle())
+            joinstyle = str(artist.get_joinstyle())
+            alpha = artist.get_alpha()
+
+        # -- resolved colors -------------------------------------------------
+        face_rgba_list = (
+            list(facecolors)
+            if facecolors is not None and len(facecolors)
+            else [matplotlib.colors.to_rgba(
+                artist.get_facecolor(), artist.get_alpha())]
+        )
+        if isinstance(artist, matplotlib.collections.Collection):
+            # Collection facecolors arrive already resolved per member;
+            # use the first as the representative for this command. The
+            # explicit alpha is NOT re-applied: ``get_facecolor`` already
+            # carries it (probe: FBPC alpha=0.5 facecolor alpha == 0.5).
+            if alpha is None:
+                face_color = tuple(float(c) for c in face_rgba_list[0])
+            else:
+                # Defensive: a collection whose stored facecolor predates
+                # an alpha change still resolves single-application.
+                raw = tuple(float(c) for c in face_rgba_list[0])
+                face_color = raw[:3] + (float(alpha),)
+        else:
+            face_color = tuple(float(c) for c in matplotlib.colors.to_rgba(
+                artist.get_facecolor()))
+            if alpha is not None:
+                # Agg applies the explicit alpha once when resolving the
+                # Patch colors (probe: ``get_facecolor`` already carries
+                # it); mirror that single application instead of
+                # re-multiplying.
+                face_color = face_color[:3] + (float(alpha),)
+        fill_rgba = _rgba8(face_color)
+
+        edge_color_raw = artist.get_edgecolor()
+        edge_rgba = None
+        try:
+            edge_tuple = tuple(float(c) for c in edge_color_raw)
+        except TypeError:
+            edge_tuple = tuple(float(c) for c in edge_color_raw[0])
+        explicit_edge = edge_tuple[3] != 0.0
+        line_widths = artist.get_linewidth()
+        if isinstance(line_widths, (list, tuple, numpy.ndarray)):
+            width_array = numpy.atleast_1d(
+                numpy.asarray(line_widths, dtype=float).ravel()
+            )
+            effective_width = (
+                float(width_array[0]) if width_array.size else 0.0
+            )
+        else:
+            effective_width = float(line_widths)
+        if explicit_edge and effective_width > 0:
+            edge_rgba = _rgba8(edge_tuple)
+
+        if capstyle not in ("butt", "round", "projecting"):
+            self.unsupported(
+                f"fill cap style {capstyle!r} is unsupported", name
+            )
+            capstyle = "butt"
+        if joinstyle not in ("miter", "round", "bevel"):
+            self.unsupported(
+                f"fill join style {joinstyle!r} is unsupported", name
+            )
+            joinstyle = "miter"
+
+        # The validated rectangular clip, in top-left pixel space with
+        # exclusive right/bottom edges (frozen seam contract).
+        clip_rect: list[float] | None = None
+        if self._clip_points is not None:
+            (cx0, cy0), (cx1, cy1) = self._clip_points
+            left = min(cx0, cx1)
+            right = max(cx0, cx1)
+            bottom = min(cy0, cy1)
+            top = max(cy0, cy1)
+            clip_rect = [
+                float(left),
+                float(self._height_px - top),
+                float(right - left),
+                float(top - bottom),
+            ]
+
+        vertices: list[list[float]] = []
+        codes: list[int] = []
+        emitted_loops = 0
+        for path in paths:
+            loop_vertices = [
+                [float(to_px_x(x)), float(to_px_y(y))]
+                for x, y in path.vertices
+                if _finite(x) and _finite(y)
+            ]
+            path_codes = (
+                [int(code) for code in path.codes]
+                if path.codes is not None
+                else None
+            )
+            if path_codes is not None and len(path_codes) != len(loop_vertices):
+                # Non-finite vertices were dropped; keep code alignment by
+                # dropping the same positions.
+                kept = [
+                    (x, y)
+                    for x, y in zip(path.vertices, path.codes)
+                    if _finite(x) and _finite(y)
+                ]
+                path_codes = [int(code) for _, code in kept]
+            if path_codes is None:
+                # An unclosed vertex list: close it implicitly like the
+                # seam's implicit-code path does.
+                if len(loop_vertices) < 3:
+                    continue
+                vertices.extend(loop_vertices)
+                codes.extend([int(Path.MOVETO)]
+                             + [int(Path.LINETO)] * (len(loop_vertices) - 2)
+                             + [int(Path.CLOSEPOLY)])
+                emitted_loops += 1
+                continue
+            real_points = sum(1 for c in path_codes if c != int(Path.CLOSEPOLY))
+            if real_points < 3:
+                continue
+            vertices.extend(loop_vertices)
+            codes.extend(path_codes)
+            emitted_loops += 1
+
+        if emitted_loops == 0 or len(vertices) < 3:
+            self.unsupported("degenerate fill path", name)
+            return None
+
+        command = {
+            "kind": "path",
+            "vertices": vertices,
+            "codes": codes,
+            "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            "stroke_rgba": list(edge_rgba) if edge_rgba is not None else None,
+            "line_width_pt": float(effective_width),
+            "cap": capstyle,
+            "join": joinstyle,
+            "dash_offset_pt": 0.0,
+            "dashes": None,
+            "fill_rule": "nonzero",
+            "antialias": True,
+            "clip_rect": clip_rect,
+            "fill_rgba": list(fill_rgba),
+        }
+        return command
 
     def _line_command(self, line, to_px_x, to_px_y):
         name = type(line).__name__
