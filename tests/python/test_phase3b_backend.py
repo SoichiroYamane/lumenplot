@@ -1412,6 +1412,47 @@ class TestHybridFallback(unittest.TestCase):
         self.assertIs(canvas.figure, fig)
         self.assertIs(fig.canvas, canvas)
 
+    def test_fallback_resolves_dpi_none_through_savefig_rcparam(self):
+        # ADR-0015 §6 / API 0005 §5: ``dpi=None`` resolves through
+        # rcParams ``savefig.dpi`` for BOTH delivery paths, so a numeric rc
+        # value must drive the whole-frame Agg fallback pixel size exactly
+        # like it drives the native strict geometry (mirrors the strict-side
+        # ``test_dpi_none_uses_numeric_savefig_rcparam``).
+        def build(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        with matplotlib.rc_context({"savefig.dpi": 300.0}):
+            fig, canvas = _hybrid_canvas_with(
+                build, figsize=(2.0, 1.0), dpi=100
+            )
+            result = canvas.render_png()
+        # 2x1 inches at the effective 300 dpi -- not the figure dpi.
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (600, 300))
+        self.assertEqual(len(result.diagnostics), 1)
+        del fig
+
+    def test_fallback_chains_figure_rcparam_to_original_dpi(self):
+        # ``savefig.dpi='figure'`` chains through the figure's original
+        # construction DPI on the fallback path as well, never through any
+        # temporary render state (mirrors the strict-side
+        # ``test_dpi_none_chains_figure_rcparam_to_original_dpi``).
+        def build(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        with matplotlib.rc_context({"savefig.dpi": "figure"}):
+            fig, canvas = _hybrid_canvas_with(
+                build, figsize=(2.0, 1.0), dpi=175
+            )
+            result = canvas.render_png()
+        # 2x1 inches at the original figure DPI of 175.
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (350, 175))
+        self.assertEqual(len(result.diagnostics), 1)
+        del fig
+
     def test_print_figure_uses_fallback_in_hybrid_mode(self):
         def build(ax):
             ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
