@@ -25,6 +25,12 @@ Mode policy: the constructor kwarg ``mode`` selects ``"strict"`` (default)
 or ``"hybrid"`` (ADR 0015 §12 ordered delivery). Strict mode renders only
 the whitelisted eligible trace and raises
 :class:`LumenPlotUnsupportedError` before any target write otherwise.
+Since the PRAC-A-D amendment of ADR 0015 §4, the eligible trace includes
+one standard ``Axes`` with decorations enabled: solid major gridlines,
+major tick strokes, and spine edges are rendered natively as explicit
+path commands ahead of the axes' content lines. Visible minor tick
+content, non-solid grid styles, an opaque axes facecolor, titles, axis
+labels, and tick labels remain outside the slice and raise.
 Hybrid mode first attempts exactly the strict native path and, only when
 that raises the stable ``unsupported-capability`` failure, succeeds with a
 whole-frame Agg fallback: stock public ``FigureCanvasAgg`` PNG output plus
@@ -50,6 +56,9 @@ import os
 from typing import Any
 
 import matplotlib
+import matplotlib.axes  # noqa: F401 - public submodule for type checks
+import matplotlib.axis  # noqa: F401 - public submodule for tick positions
+import matplotlib.lines  # noqa: F401 - public submodule for the whitelist
 from matplotlib.backend_bases import FigureCanvasBase, FigureManagerBase
 from matplotlib.path import Path
 
@@ -304,6 +313,28 @@ def _finite(value: Any) -> bool:
     return math.isfinite(float(value))
 
 
+class _SpineStroke:
+    """Line2D-style view over one Spine for the decoration builder.
+
+    Exposes only the public getters the fixed §5 stroke surface needs:
+    color, width, and alpha. Cap/join are the lane-fixed Butt/Miter, not
+    the artist's own styles.
+    """
+
+    def __init__(self, spine: Any) -> None:
+        self._spine = spine
+
+    def get_color(self) -> Any:
+        return self._spine.get_edgecolor()
+
+    def get_alpha(self) -> float | None:
+        alpha = self._spine.get_alpha()
+        return None if alpha is None else float(alpha)
+
+    def get_linewidth(self) -> float:
+        return float(self._spine.get_linewidth())
+
+
 class _EligibilityPreflight:
     """Two-stage eligibility preflight (ADR 0015 §3-4, API 0005 §4).
 
@@ -321,7 +352,7 @@ class _EligibilityPreflight:
     _ARTIST_WHITELIST = (matplotlib.lines.Line2D,)
 
     # RendererBase callbacks the collector may observe, in the exact order
-    # and multiplicity the eligible trace allows.
+    # and multiplicity the eligible trace allows (ADR 0015 §4).
     _ELIGIBLE_CALLBACKS = ("draw_path",)
 
     def __init__(self) -> None:
@@ -331,6 +362,8 @@ class _EligibilityPreflight:
         self.line_paths = 0
         self._clip_points: Any = None
         self._height_px = 0
+        self._canvas_width_px = 0
+        self._effective_dpi = 100.0
 
     def unsupported(self, reason: str, type_context: str | None = None) -> None:
         self.reasons.append((type_context, reason))
@@ -339,9 +372,7 @@ class _EligibilityPreflight:
 
     def check_static(self, figure: matplotlib.figure.Figure) -> None:
         for ax in figure.get_axes():
-            if not bool(getattr(ax, "axison", True)):
-                continue
-            self.unsupported("axes decorations are enabled", type(ax).__name__)
+            self._check_axes_decorations(ax)
         for artist in self._iterate_content_artists(figure):
             if not isinstance(artist, self._ARTIST_WHITELIST):
                 self.unsupported(
@@ -351,6 +382,125 @@ class _EligibilityPreflight:
                 )
                 continue
             self._check_line2d_static(artist)
+
+    def _check_axes_decorations(self, ax: matplotlib.axes.Axes) -> None:
+        """Whitelist-check one axes and its decoration surface.
+
+        Since the PRAC-A-D amendment of ADR 0015 §4 a standard decorated
+        ``Axes`` is eligible: solid major gridlines, major tick strokes,
+        and spine edges render as explicit path commands. Everything else
+        about the decoration surface (visible minor tick content, non-solid
+        grid styles, an opaque facecolor, titles, axis labels, offset
+        text, or child axes) records an explicit unsupported reason.
+        """
+        name = type(ax).__name__
+        if type(ax) is not matplotlib.axes.Axes:
+            self.unsupported(
+                f"{name} is outside the supported Axes whitelist", name
+            )
+            return
+        if ax.get_subplotspec() is not None or ax.get_gridspec() is not None:
+            self.unsupported(
+                "subplots/grid-spec layouts are unsupported", "Figure"
+            )
+        if not bool(getattr(ax, "axison", True)):
+            # Decoration-less axes: nothing below applies.
+            return
+        face = tuple(
+            float(c) for c in matplotlib.colors.to_rgba(ax.get_facecolor())
+        )
+        # This slice renders no axes background fill command (transparent
+        # maintenance, lane decision): an axes carrying any other facecolor
+        # is explicitly refused rather than silently drawn unfilled.
+        # AC (a)'s eligible fixture sets ``ax.set_facecolor("none")``.
+        if face[3] != 0.0:
+            self.unsupported(
+                "axes background fills are unsupported; set "
+                "facecolor='none' for strict mode",
+                "Axes",
+            )
+        for title in (
+            ax.get_title("center"),
+            ax.get_title("left"),
+            ax.get_title("right"),
+        ):
+            if title != "":
+                self.unsupported("titles are unsupported", "Text")
+        if ax.get_xlabel() != "" or ax.get_ylabel() != "":
+            self.unsupported("axis labels are unsupported", "Text")
+        for axis in (ax.xaxis, ax.yaxis):
+            axis_name = type(axis).__name__
+            if axis.get_offset_text().get_text() != "":
+                self.unsupported("offset text is unsupported", "Text")
+            for label in axis.get_majorticklabels():
+                # Tick label glyphs are the T-lane deliverable; any visible
+                # non-empty label keeps the axes out of strict eligibility.
+                if label.get_visible() and label.get_text() != "":
+                    self.unsupported(
+                        "tick labels are unsupported; disable them with "
+                        "tick_params(labelbottom=False, labelleft=False)",
+                        "Text",
+                    )
+                    break
+            if any(t.get_visible() for t in axis.get_minorticklines()):
+                self.unsupported(
+                    "visible minor ticks are unsupported; strict mode "
+                    "supports major ticks only",
+                    axis_name,
+                )
+            for gridline in axis.get_gridlines():
+                if not gridline.get_visible():
+                    continue
+                style = str(gridline.get_linestyle())
+                if style != "-":
+                    self.unsupported(
+                        f"solid gridlines are required; {style!r} is "
+                        "unsupported in strict mode",
+                        axis_name,
+                    )
+                if gridline.is_dashed():
+                    self.unsupported(
+                        "solid gridlines are required; dashed grids are "
+                        "unsupported in strict mode",
+                        axis_name,
+                    )
+            minor_grid = [
+                t.gridline for t in axis.get_minor_ticks()
+                if t.gridline.get_visible()
+            ]
+            if minor_grid:
+                self.unsupported(
+                    "minor gridlines are unsupported; strict mode "
+                    "supports which='major' only",
+                    axis_name,
+                )
+            for side in ("left", "bottom"):
+                # With decorations on, Matplotlib always draws these edges.
+                self._check_spine_static(ax.spines[side])
+            if axis is ax.xaxis and ax.xaxis.get_ticks_position() in (
+                "top",
+                "unknown",
+            ):
+                self._check_spine_static(ax.spines["top"])
+            if axis is ax.yaxis and ax.yaxis.get_ticks_position() in (
+                "right",
+                "unknown",
+            ):
+                self._check_spine_static(ax.spines["right"])
+
+    def _check_spine_static(self, spine: Any) -> None:
+        """Collect visible spine edges into the fixed-style surface.
+
+        Spines are rendered as explicit path commands with the §5 stroke
+        surface (Butt cap, Miter join), not approximated through the
+        artist's own cap/join style; only their width, color, and
+        visibility are honored from public getters.
+        """
+        name = type(spine).__name__
+        if spine.get_linewidth() < 0:
+            self.unsupported("negative line width", name)
+        if spine.get_path_effects():
+            self.unsupported("path effects are unsupported", name)
 
     def _iterate_content_artists(self, figure: matplotlib.figure.Figure):
         """Yield drawable content artists, not structural containers.
@@ -416,45 +566,187 @@ class _EligibilityPreflight:
         if line.get_gid() is None:
             return
 
-        # -- stage two: public RendererBase collector ------------------------
+    # -- stage two: public RendererBase collector ------------------------
 
-    def collect(self, figure: matplotlib.figure.Figure) -> None:
-        """Run one collector traversal through a public RendererBase.
+    def _make_grammar_collector(self, collected: list[tuple]) -> Any:
+        """Return a public ``RendererBase`` collector class.
 
-        Builds the exact eligible trace: exactly one figure-background
-        ``draw_path`` followed by one single-stroke ``draw_path`` per
-        whitelisted Line2D. Any other renderer callback or unexpected path
-        shape records an unsupported reason.
+        The collector records the full callback event stream of ADR 0015
+        §4 — group open/close pairs, per-artist ``new_gc`` calls and
+        ``draw_path`` strokes. Any other renderer callback raises instead
+        of silently succeeding through the base-class no-op.
         """
         from matplotlib.backend_bases import RendererBase
 
-        collected: list[dict] = []
+        class _GrammarCollector(RendererBase):
+            def __init__(self) -> None:
+                super().__init__()
 
-        class _Collector(RendererBase):
+            def _record(self, kind: str, *rest: Any) -> None:
+                collected.append((kind, *rest))
+
+            # -- eligible events ----------------------------------------
+            def open_group(self, s, gid=None):  # noqa: N802
+                self._record("open", s)
+
+            def close_group(self, s):  # noqa: N802
+                self._record("close", s)
+
+            def new_gc(self):  # noqa: N802
+                from matplotlib.backend_bases import GraphicsContextBase
+
+                self._record("new_gc")
+                return GraphicsContextBase()
+
             def draw_path(self, gc, path, transform, rgbFace=None):  # noqa: N802
-                collected.append(
+                self._record(
+                    "draw_path",
                     {
                         "gc": gc,
                         "path": path,
                         "transform": transform,
                         "rgbFace": rgbFace,
-                    }
+                    },
                 )
 
-            def __getattr__(self, name):  # pragma: no cover - defensive
+            # -- everything else is outside the trace --------------------
+            def __getattr__(self, name):
+                if name.startswith("draw_"):
+                    raise NotImplementedError(name)
                 raise AttributeError(name)
 
-        collector = _Collector()
-        for name in self._ELIGIBLE_CALLBACKS:
+        return _GrammarCollector
+
+    def collect(self, figure: matplotlib.figure.Figure) -> None:
+        """Run one collector traversal through a public RendererBase.
+
+        Asserts the exact eligible trace of ADR 0015 §4: one
+        figure-background ``draw_path`` plus one single-stroke
+        ``draw_path`` per whitelisted Line2D, with the figure/patch/axes/
+        line2d group structure and per-artist ``new_gc`` calls. Only the
+        strokes emitted inside a ``line2d`` group are content lines; any
+        other renderer callback or unexpected path shape records an
+        unsupported reason; nothing is silently ignored.
+        """
+        from matplotlib.backend_bases import RendererBase
+
+        collected: list[tuple] = []
+
+        collector_cls = self._make_grammar_collector(collected)
+        for name in ("open_group", "close_group", "new_gc",
+                     self._ELIGIBLE_CALLBACKS[0]):
             if not hasattr(RendererBase, name):  # pragma: no cover - defensive
                 self.unsupported(f"renderer callback {name} unavailable")
                 return
-        figure.draw(collector)
+        try:
+            figure.draw(collector_cls())
+        except NotImplementedError as error:
+            message = str(error) or "unknown"
+            self.unsupported(
+                f"renderer callback {message} is outside the eligible trace"
+            )
+            return
 
         if not collected:
             self.unsupported("no drawable content observed", "Figure")
             return
-        first = collected[0]
+
+        line_calls: list[dict] = []
+        background_call: dict | None = None
+        idx = 0
+        total = len(collected)
+        events = collected
+        stack: list[str] = []
+
+        while idx < total:
+            kind = events[idx][0]
+            if kind == "open":
+                stack.append(events[idx][1])
+                idx += 1
+                continue
+            if kind == "close":
+                tag = events[idx][1]
+                idx += 1
+                if not stack or stack.pop() != tag:
+                    self.unsupported(
+                        f"unbalanced close({tag!r}) in the collector trace"
+                    )
+                    return
+                continue
+            if kind == "new_gc":
+                idx += 1
+                continue
+            if kind == "draw_path":
+                call = events[idx][1]
+                idx += 1
+                # The figure background stroke sits in figure > patch;
+                # content and tick-mark line2d groups sit deeper in the
+                # tree. Only these two shapes are eligible.
+                if (
+                    len(stack) == 2
+                    and stack[0] == "figure"
+                    and stack[1] == "patch"
+                ):
+                    if background_call is not None:
+                        self.unsupported(
+                            "multiple figure-background strokes are "
+                            "outside the eligible trace"
+                        )
+                        return
+                    background_call = call
+                    continue
+                if len(stack) >= 3 and stack[-1] == "patch":
+                    # Axes-structural patch strokes: the transparent axes
+                    # background (5-vertex fill, zero width) and the spine
+                    # edges. The static stage proved the surface; here they
+                    # only reconcile clip behavior.
+                    if any(part == "axes" for part in stack[:-1]):
+                        if stack[-2] == "axes":
+                            # The transparent axes-background fill: no clip
+                            # is required for a zero-width full-frame fill.
+                            if call["gc"].get_linewidth() == 0.0:
+                                continue
+                        # Spine strokes are axes > patch with no clip; they
+                        # are validated by the targeted decoration walk.
+                        continue
+                    else:
+                        self.unsupported(
+                            "a patch stroke outside an axes is outside "
+                            "the eligible trace"
+                        )
+                        return
+                    continue
+                if len(stack) >= 3 and stack[-1] == "line2d":
+                    if any(part == "axes" for part in stack[:-1]):
+                        if stack[-2] == "axes":
+                            # A direct content line of this axes.
+                            line_calls.append(call)
+                        else:
+                            # Tick-mark strokes are validated by the
+                            # targeted decoration walk, not here.
+                            pass
+                        continue
+                    self.unsupported(
+                        f"a line2d stroke under {stack[-2]!r} (no axes "
+                        "ancestor) is outside the eligible trace"
+                    )
+                    return
+                self.unsupported(
+                    "a draw_path outside the figure patch and line2d "
+                    "groups is outside the eligible trace"
+                )
+                return
+            self.unsupported(f"unexpected {kind!r} event in the trace")
+            return
+
+        if stack:
+            self.unsupported("a collector group is left open")
+            return
+
+        if background_call is None:
+            self.unsupported("no drawable content observed", "Figure")
+            return
+        first = background_call
         background = first["rgbFace"]
         if background is None:
             self.unsupported("first draw_path is not a filled background")
@@ -465,9 +757,146 @@ class _EligibilityPreflight:
             self.background_rgbface = background
             self._check_background_style(first)
 
-        for call in collected[1:]:
+        for call in line_calls:
             self.line_paths += 1
             self._check_line_call(call)
+        if not line_calls:
+            self.unsupported("no drawable content observed", "Figure")
+
+    def _consume_trace(self, events: list[tuple]) -> bool:
+        """Validate the group/new_gc grammar of ADR 0015 §4.
+
+        Returns ``False`` after recording a reason when the event stream
+        deviates from the accepted structure. The accepted stream for this
+        slice is::
+
+            open(figure) open(patch) new_gc draw_path(bg) close(patch)
+            [open(axes) [open(tag) [new_gc draw_path]... close(tag)]...
+             new_gc draw_path close(axes)]...
+            close(figure)
+
+        with exactly one background stroke, at least one line stroke, and
+        no other event kinds. Group nesting is structural: any artist that
+        emits an unaccepted callback inside a group has already raised
+        through the collector, so the stream can only contain the four
+        accepted event kinds here.
+        """
+        index = 0
+        total = len(events)
+
+        def expect_open(tag: str) -> bool:
+            nonlocal index
+            if index < total and events[index] == ("open", tag):
+                index += 1
+                return True
+            return False
+
+        def expect_close(tag: str) -> bool:
+            nonlocal index
+            if index < total and events[index] == ("close", tag):
+                index += 1
+                return True
+            return False
+
+        def consume_group() -> bool:
+            """Consume one balanced open(tag)...close(tag) artist group.
+
+            The group body may nest further groups; any accepted event
+            kind inside is structural for this stage. Returns ``False``
+            only when the stream deviates or the group is left open.
+            """
+            nonlocal index
+            tag = events[index][1]
+            start = index
+            index += 1
+            while index < total:
+                kind = events[index][0]
+                if kind == "close" and events[index][1] == tag:
+                    index += 1
+                    return True
+                if kind == "open":
+                    if not consume_group():
+                        return False
+                    continue
+                if kind in ("new_gc", "draw_path"):
+                    index += 1
+                    continue
+                self.unsupported(
+                    f"unexpected {kind!r} inside the {tag} group "
+                    f"opened at event {start}"
+                )
+                return False
+            self.unsupported(
+                f"the {tag} group opened at event {start} is left open"
+            )
+            return False
+
+        if not (expect_open("figure") and expect_open("patch")):
+            self.unsupported(
+                "collector trace does not start with the figure/patch groups"
+            )
+            return False
+        if index >= total or events[index][0] != "new_gc":
+            self.unsupported(
+                "figure background stroke is missing its graphics context"
+            )
+            return False
+        index += 1
+        if (
+            index >= total
+            or events[index][0] != "draw_path"
+            or events[index][1].get("rgbFace") is None
+        ):
+            self.unsupported("figure background stroke is missing")
+            return False
+        index += 1
+        if not expect_close("patch"):
+            self.unsupported("the figure patch group is left open")
+            return False
+        while index < total and events[index] == ("open", "axes"):
+            index += 1
+            saw_line = False
+            while index < total:
+                kind = events[index][0]
+                if kind == "close" and events[index] == ("close", "axes"):
+                    break
+                if kind == "draw_path":
+                    saw_line = True
+                    index += 1
+                    continue
+                if kind == "new_gc":
+                    index += 1
+                    continue
+                if kind == "open":
+                    # A nested artist group (line2d content or decoration
+                    # surface); its structure was proven by the targeted
+                    # traversal. A group carrying at least one stroke
+                    # counts as drawable content.
+                    if not consume_group():
+                        return False
+                    saw_line = True
+                    continue
+                self.unsupported(
+                    f"unexpected {kind!r} inside an axes group"
+                )
+                return False
+            if not saw_line:
+                self.unsupported("an axes group carries no drawable line")
+                return False
+            if not expect_close("axes"):
+                self.unsupported("an axes group is left open")
+                return False
+        if not expect_close("figure"):
+            self.unsupported("the figure group is left open")
+            return False
+        if index != total:
+            kind = events[index][0]
+            detail = events[index][1] if len(events[index]) > 1 else ""
+            self.unsupported(
+                f"unexpected {kind} {detail!r} outside the eligible trace"
+            )
+            return False
+        return True
 
     def _check_background_style(self, call: dict) -> None:
         gc = call["gc"]
@@ -536,14 +965,16 @@ class _EligibilityPreflight:
         data plus public linear increasing Axes limits feed one temporary
         affine request; the collected path only reconciles affine and clip
         behavior. Background color comes from the collected figure patch.
+        Since the PRAC-A-D amendment, each decorated axes emits its
+        solid major gridlines, major tick strokes, and visible spine edges
+        as explicit path commands ahead of its content lines.
         """
         commands: list[dict] = []
         background_rgba = _RGBA_BLACK
         self._height_px = int(height_px)
+        self._canvas_width_px = int(width_px)
+        self._effective_dpi = float(output_dpi)
         for ax in figure.get_axes():
-            if bool(getattr(ax, "axison", True)):
-                # Preflight already recorded this as unsupported.
-                continue
             xlim = ax.get_xlim()
             ylim = ax.get_ylim()
             if ax.get_xscale() != "linear" or ax.get_yscale() != "linear":
@@ -563,6 +994,12 @@ class _EligibilityPreflight:
             if self._clip_points is None:
                 self._clip_points = ((x0, y0), (x0 + w, y0 + h))
 
+            decorated = bool(getattr(ax, "axison", True))
+            if decorated:
+                # Decorations first (painted below content), per axes.
+                commands.extend(
+                    self._decoration_commands(ax, x0, y0, w, h)
+                )
             for line in ax.get_lines():
                 spec = self._line_command(line, to_px_x, to_px_y)
                 if spec is not None:
@@ -577,6 +1014,158 @@ class _EligibilityPreflight:
             "commands": commands,
             "background_rgba": list(background_rgba),
         }
+
+    def _decoration_commands(
+        self,
+        ax: matplotlib.axes.Axes,
+        x0: float,
+        y0: float,
+        w: float,
+        h: float,
+    ) -> list[dict]:
+        """Build gridline/tick/spine path commands for one axes.
+
+        Geometry comes from documented public getters only: major tick
+        locations from ``Axis.get_ticklocs`` filtered into view, tick
+        stroke style from the edge ``Line2D`` markers, and spine edges
+        from the axes rectangle with the fixed §5 stroke surface.
+        Gridlines and spines clip to their own axes rectangle; tick
+        strokes protrude outside it, so they clip to the full canvas
+        like Agg (which does not clip tick marks).
+        """
+        # The frozen seam clip is bottom-left-origin (x, y, w, h). Gridlines
+        # and spines stay inside the axes rectangle; tick strokes protrude
+        # outside it, so they carry a full-canvas clip like Agg.
+        axes_clip = [float(x0), float(y0), float(w), float(h)]
+        canvas_clip = [
+            0.0,
+            0.0,
+            float(self._canvas_width_px),
+            float(self._height_px),
+        ]
+        commands: list[dict] = []
+        xaxis, yaxis = ax.xaxis, ax.yaxis
+        xlim, ylim = ax.get_xlim(), ax.get_ylim()
+
+        def seg(p0: tuple[float, float], p1: tuple[float, float],
+                line: matplotlib.lines.Line2D, deco: str,
+                clip: list[float]) -> dict:
+            return {
+                "kind": "path",
+                "decoration": deco,
+                "vertices": [[float(p0[0]), float(p0[1])],
+                             [float(p1[0]), float(p1[1])]],
+                "codes": None,
+                "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                "stroke_rgba": list(_rgba8(line.get_color(),
+                                           line.get_alpha())),
+                "line_width_pt": float(line.get_linewidth()),
+                "cap": "butt",
+                "join": "miter",
+                "dash_offset_pt": 0.0,
+                "dashes": None,
+                "fill_rule": "nonzero",
+                "antialias": True,
+                "clip_rect": list(clip),
+            }
+
+        # -- solid major gridlines (which='major') ------------------------
+        # A visible major gridline spans the axes at each in-view tick
+        # location; the static stage proved every visible one is solid.
+        # The per-tick gridline Line2D carries the effective style; the
+        # first one is a style-safe representative for the whole axis.
+        for axis, vertical in ((xaxis, True), (yaxis, False)):
+            representative = next(
+                (g for g in axis.get_gridlines() if g.get_visible()),
+                None,
+            )
+            if representative is None:
+                continue
+            data_lo, data_hi = (
+                (float(xlim[0]), float(xlim[1]))
+                if vertical
+                else (float(ylim[0]), float(ylim[1]))
+            )
+            for loc in axis.get_ticklocs():
+                value = float(loc)
+                if not (data_lo <= value <= data_hi):
+                    continue
+                fraction = (value - data_lo) / (data_hi - data_lo)
+                if vertical:
+                    at = x0 + fraction * w
+                    p0 = (at, float(y0))
+                    p1 = (at, float(y0 + h))
+                else:
+                    at = y0 + fraction * h
+                    p0 = (float(x0), at)
+                    p1 = (float(x0 + w), at)
+                commands.append(seg(p0, p1, representative, "gridline",
+                                    axes_clip))
+
+        # -- major tick strokes --------------------------------------------
+        # One outward stroke per drawn tick position on each visible edge,
+        # styled from the edge tick line's public marker getters.
+        dpi_scale = self._effective_dpi / 72.0
+        for axis, horizontal, edges in ((xaxis, True, ("bottom", "top")),
+                                        (yaxis, False, ("left", "right"))):
+            ticks = axis.get_major_ticks()
+            locs = list(axis.get_ticklocs())
+            for index, tick in enumerate(ticks):
+                if index >= len(locs):
+                    break
+                value = float(locs[index])
+                data_lo, data_hi = (
+                    (float(xlim[0]), float(xlim[1]))
+                    if horizontal
+                    else (float(ylim[0]), float(ylim[1]))
+                )
+                if not (data_lo <= value <= data_hi):
+                    continue
+                span_lo, span_hi = (
+                    (x0, x0 + w) if horizontal else (y0, y0 + h)
+                )
+                base = span_lo + (
+                    (value - data_lo) / (data_hi - data_lo)
+                ) * (span_hi - span_lo)
+                for side in edges:
+                    line = getattr(tick, f"tick{1 if side in ('bottom', 'left') else 2}line")
+                    if not line.get_visible():
+                        continue
+                    length_px = float(line.get_markersize()) * dpi_scale
+                    # Bottom-left pixel space (matching the content-line
+                    # geometry): outward means downward from the bottom
+                    # edge and leftward from the left edge.
+                    direction = -1.0 if side in ("bottom", "left") else 1.0
+                    if horizontal:
+                        p0 = (base, float(y0))
+                        p1 = (base, float(y0 + direction * length_px))
+                    else:
+                        p0 = (float(x0), base)
+                        p1 = (float(x0 + direction * length_px), base)
+                    commands.append(seg(p0, p1, line, "tick", canvas_clip))
+
+        # -- spine edges -----------------------------------------------------
+        # Visible spines draw the axes rectangle edges with the fixed §5
+        # stroke surface; width and color come from the spine getters.
+        for side, p0, p1 in (
+            ("bottom", (x0, y0), (x0 + w, y0)),
+            ("top", (x0, y0 + h), (x0 + w, y0 + h)),
+            ("left", (x0, y0), (x0, y0 + h)),
+            ("right", (x0 + w, y0), (x0 + w, y0 + h)),
+        ):
+            spine = ax.spines[side]
+            if not spine.get_visible():
+                continue
+            command = seg(
+                (float(p0[0]), float(p0[1])),
+                (float(p1[0]), float(p1[1])),
+                _SpineStroke(spine),
+                "spine",
+                axes_clip,
+            )
+            commands.append(command)
+
+        return commands
 
     def _line_command(self, line, to_px_x, to_px_y):
         name = type(line).__name__
