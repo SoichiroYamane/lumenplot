@@ -75,18 +75,18 @@ or `environment required` results.
 
 ## Coverage summary
 
-- Requirement entries: **232**.
-- Normative `MUST`/`MUST NOT` entries requiring closure: **153**.
-- Classification counts: MAY=9, MUST=116, MUST NOT=37, NON-GOAL=6, PHASE=6, REFERENCE=13, SHOULD=45.
-- Stable families: `DATA` (10), `EXPORT` (10), `FUNC` (39), `LOD` (7), `MPL` (20), `PERF` (16), `PLAT` (12), `PROD` (18), `QUAL` (28), `REL` (14), `RENDER` (10), `SEC` (8), `TEXT` (7), `UX` (33).
-- Evidence gates referenced: **101**.
+- Requirement entries: **237**.
+- Normative `MUST`/`MUST NOT` entries requiring closure: **156**.
+- Classification counts: MAY=9, MUST=119, MUST NOT=37, NON-GOAL=6, PHASE=6, REFERENCE=13, SHOULD=47.
+- Stable families: `DATA` (10), `EXPORT` (10), `FUNC` (41), `LOD` (7), `MPL` (23), `PERF` (16), `PLAT` (12), `PROD` (18), `QUAL` (28), `REL` (14), `RENDER` (10), `SEC` (8), `TEXT` (7), `UX` (33).
+- Evidence gates referenced: **106**.
 
 The 2026-08-25 adoption of the Matplotlib major-feature rows added nine entries
 (`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`; three normative, six advisory) and nine gate names;
 the pre-adoption baseline was 223 entries / 150 normative / 92 gates.
 
 The 2026-08-26 adoption of the verified GAP-R1 candidate rows added five entries
-(`LP-FUNC-040`, `LP-FUNC-041`, `LP-MPL-021`–`LP-MPL-023`; two normative, three advisory)
+(`LP-FUNC-040`, `LP-FUNC-041`, `LP-MPL-021`–`LP-MPL-023`; three normative, two advisory)
 and five gate names; the pre-adoption baseline was 232 entries / 153 normative / 101 gates.
 
 Every `MUST` and `MUST NOT` entry appears in the registry below with at least one acceptance gate. The `Result` column is not a pass/fail claim; it is the honest status of the full requirement. A bounded Phase-1 implementation does not automatically promote a row to closure.
@@ -529,7 +529,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 - ArbitraryXY topology/correctness/culling is a v1 model/correctness lane; advanced simplification and picking performance are Phase 5.
 - SVG is a v1 `SHOULD` and non-blocking; PNG and PDF are v1 `MUST` outputs.
 - Reference dependency versions are non-normative and are not counted as support evidence.
-- The Matplotlib major-feature rows (`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`) were adopted on 2026-08-25 from [`matplotlib-parity-requirements-draft.md`](matplotlib-parity-requirements-draft.md); their wave placement (3B-cont. / 3B-cont.+1 / Phase 5 / future / continuous) is recorded per row, and 3D stays excluded per `LP-FUNC-025`. On the same date the maintainer fixed their shared acceptance quality bar — "implemented to the same quality as the current Matplotlib backend (Agg)" — canonized on 2026-08-26 in Section 5.4 of that document and reflected in this registry's Target cells and evidence plans: each gate is met only by Agg parity fixtures (geometry parity to sub-pixel rounding, decoded-pixel difference within recorded thresholds, style semantics equal to Agg's resolution; text via `TextPath` outline comparison). This fixed gate conditions only; no row's class or phase placement changed. On 2026-08-26 the W1 workstream satisfied those conditions for exactly three rows — `LP-FUNC-032`/`033`/`034` (PRs #68/#69/#70; mixed-workload integration #71) — whose result cells now carry bounded implemented evidence naming their merged fixture classes; all other results are unchanged. On 2026-08-26 the architecture authority adopted the five verified GAP-R1 candidate rows (`LP-FUNC-040`, `LP-FUNC-041`, `LP-MPL-021`–`LP-MPL-023`; two normative, three advisory) from [`codex-gap-verification-candidate-rows-t_3f634d0b.md`](../research/codex-gap-verification-candidate-rows-t_3f634d0b.md) with their wave placement (3B-cont. / 3B-cont.+1 / W-lane post-W1 / Phase 5) recorded per row; each new gate producing a rendered frame is bound to the same §5.4 quality oracle, every result stays honestly `Not implemented`, and no existing row's class, phase placement, or result changed.
+- The Matplotlib major-feature rows (`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`) were adopted on 2026-08-25 from [`matplotlib-parity-requirements-draft.md`](matplotlib-parity-requirements-draft.md); their wave placement (3B-cont. / 3B-cont.+1 / Phase 5 / future / continuous) is recorded per row, and 3D stays excluded per `LP-FUNC-025`. On the same date the maintainer fixed their shared acceptance quality bar — "implemented to the same quality as the current Matplotlib backend (Agg)" — canonized on 2026-08-26 in Section 5.4 of that document and reflected in this registry's Target cells and evidence plans: each gate is met only by Agg parity fixtures (geometry parity to sub-pixel rounding, decoded-pixel difference within recorded thresholds, style semantics equal to Agg's resolution; text via `TextPath` outline comparison). This fixed gate conditions only; no row's class or phase placement changed. On 2026-08-26 the W1 workstream satisfied those conditions for exactly three rows — `LP-FUNC-032`/`033`/`034` (PRs #68/#69/#70; mixed-workload integration #71) — whose result cells now carry bounded implemented evidence naming their merged fixture classes; all other results are unchanged. On 2026-08-26 the architecture authority adopted the five verified GAP-R1 candidate rows (`LP-FUNC-040`, `LP-FUNC-041`, `LP-MPL-021`–`LP-MPL-023`; three normative, two advisory) from [`codex-gap-verification-candidate-rows-t_3f634d0b.md`](../research/codex-gap-verification-candidate-rows-t_3f634d0b.md) with their wave placement (3B-cont. / 3B-cont.+1 / W-lane post-W1 / Phase 5) recorded per row; each new gate producing a rendered frame is bound to the same §5.4 quality oracle, every result stays honestly `Not implemented`, and no existing row's class, phase placement, or result changed.
 
 ## Honest evidence boundary
 
