@@ -567,14 +567,30 @@ class TestDecoratedAxesSpec(unittest.TestCase):
                 if c["decoration"] == "gridline"]
 
     def test_command_order_and_line_last(self):
-        """Decorations precede content lines in every axes group."""
+        """Default-zorder axes keep gridline/tick strokes below content.
+
+        LP-FUNC-035 (D1): the spec reproduces Agg's ``Axes.draw``
+        z-order. At the default surface the Axis unit's decorations
+        (solid major gridlines, major tick strokes) still precede every
+        default content line, while spine edges (zorder 2.5) legitimately
+        paint above them -- exactly as Agg composes this fixture.
+        """
         _, _, spec = self._render(lambda ax: ax.grid(True))
         commands = spec["commands"] or []
-        deco_idx = [i for i, c in enumerate(commands) if "decoration" in c]
-        line_idx = [i for i, c in enumerate(commands) if "decoration" not in c]
-        self.assertTrue(deco_idx)
+        axis_deco_idx = [
+            i for i, c in enumerate(commands)
+            if c.get("decoration") in ("gridline", "tick")
+        ]
+        line_idx = [i for i, c in enumerate(commands)
+                    if "decoration" not in c]
+        self.assertTrue(axis_deco_idx)
         self.assertTrue(line_idx)
-        self.assertLess(max(deco_idx), min(line_idx))
+        self.assertLess(max(axis_deco_idx), min(line_idx))
+        # Spines ride their real zorder above default content lines.
+        spine_idx = [i for i, c in enumerate(commands)
+                     if c.get("decoration") == "spine"]
+        self.assertTrue(spine_idx)
+        self.assertGreater(min(spine_idx), max(line_idx))
 
     def test_grid_geometry_matches_public_getters(self):
         """Gridline endpoints equal the public window-extent computation."""
@@ -726,11 +742,16 @@ class TestDecoratedAxesSpec(unittest.TestCase):
         # Each axes' commands share its own clip origin; the two origins differ.
         unique = sorted(set(clips))
         self.assertEqual(len(unique), 2)
-        deco_idx = [i for i, c in enumerate(spec["commands"])
-                    if "decoration" in c]
+        # LP-FUNC-035 (D1): each axes' Axis-unit decorations (gridline,
+        # tick) still precede its default content lines, while spine
+        # edges (zorder 2.5) paint above them per Agg's z-order.
+        axis_deco_idx = [
+            i for i, c in enumerate(spec["commands"])
+            if c.get("decoration") in ("gridline", "tick")
+        ]
         line_idx = [i for i, c in enumerate(spec["commands"])
                     if "decoration" not in c]
-        self.assertLess(max(deco_idx[: len(deco_idx) // 2]),
+        self.assertLess(max(axis_deco_idx[: len(axis_deco_idx) // 2]),
                         min(line_idx[: len(line_idx) // 2]))
 
 
