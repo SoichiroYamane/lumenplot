@@ -454,6 +454,26 @@ class _EligibilityPreflight:
                     type(artist).__name__,
                 )
                 continue
+            # LP-FUNC-035 compositing gate: the emission stage reproduces
+            # Agg's stable ``Axes.draw`` z-order sort, so every eligible
+            # content artist must carry a real finite zorder up front. A
+            # non-real or non-finite value has no Agg meaning (Matplotlib
+            # would sort it with Python comparison semantics) and is
+            # refused instead of silently mis-ordered. Negative zorder is
+            # supported: it is exactly how content sinks below the
+            # decoration surface.
+            zorder = artist.get_zorder()
+            if (
+                isinstance(zorder, bool)
+                or not isinstance(zorder, numbers.Real)
+                or not math.isfinite(float(zorder))
+            ):
+                self.unsupported(
+                    f"content zorder {zorder!r} is outside the supported "
+                    "real-number surface",
+                    type(artist).__name__,
+                )
+                continue
             # Static checks dispatch on the artist's class family: the
             # fixed §5 stroke surface applies to lines, the LP-FUNC-032
             # fill style contract applies to patches and poly-collections,
@@ -1204,15 +1224,20 @@ class _EligibilityPreflight:
         slice is::
 
             open(figure) open(patch) new_gc draw_path(bg) close(patch)
-            [open(axes) [open(tag) [new_gc draw_path]... close(tag)]...
-             new_gc draw_path close(axes)]...
+            [open(axes) [artist groups / new_gc / draw_path]...
+             close(axes)]...
             close(figure)
 
-        with exactly one background stroke, at least one line stroke, and
-        no other event kinds. Group nesting is structural: any artist that
-        emits an unaccepted callback inside a group has already raised
-        through the collector, so the stream can only contain the four
-        accepted event kinds here.
+        with exactly one background stroke and at least one drawable
+        stroke per axes group. Since LP-FUNC-035 (D2) the axes body is
+        order-free: eligible artist groups (``line2d`` content,
+        ``patch`` fills, decoration surfaces) may interleave in any
+        order because ``Axes.draw`` sorts children by zorder, so no
+        whole-trace ordering is imposed; only the figure/patch prefix,
+        the balanced group nesting, and per-group structure remain.
+        Any artist that emits an unaccepted callback inside a group has
+        already raised through the collector, so the stream can only
+        contain the four accepted event kinds here.
         """
         index = 0
         total = len(events)
@@ -1301,10 +1326,12 @@ class _EligibilityPreflight:
                     index += 1
                     continue
                 if kind == "open":
-                    # A nested artist group (line2d content or decoration
-                    # surface); its structure was proven by the targeted
-                    # traversal. A group carrying at least one stroke
-                    # counts as drawable content.
+                    # A nested artist group (line2d content, patch fill,
+                    # or decoration surface). Since LP-FUNC-035 (D2)
+                    # groups may interleave in any order -- ``Axes.draw``
+                    # sorts children by zorder, so no whole-trace
+                    # ordering exists to assert. A group carrying at
+                    # least one stroke counts as drawable content.
                     if not consume_group():
                         return False
                     saw_line = True
@@ -1442,9 +1469,22 @@ class _EligibilityPreflight:
         data plus public linear increasing Axes limits feed one temporary
         affine request; the collected path only reconciles affine and clip
         behavior. Background color comes from the collected figure patch.
-        Since the PRAC-A-D amendment, each decorated axes emits its
-        solid major gridlines, major tick strokes, and visible spine edges
-        as explicit path commands ahead of its content lines.
+
+        LP-FUNC-035 compositing contract (D1): each axes reproduces Agg's
+        ``Axes.draw`` ordering -- one stable sort of every eligible child
+        by public ``get_zorder()`` (Python ``sorted`` keeps add order on
+        ties, which is Agg's own stable-sort semantics). Gridline, tick,
+        and spine decorations ride their artists' real zorders inside that
+        single sort instead of the former decorations-first special case:
+        at the default surface this preserves the legacy relative order
+        (gridlines z2 and tick strokes z2.01 below content lines z2 are
+        impossible under a strict per-value read, so the ratified model is
+        the Axis-unit placement Agg actually draws: grid/tick strokes with
+        their axis unit below default content, spines z2.5 above it),
+        while inverted or negative zorders now interleave exactly as Agg
+        paints them. Tick label glyphs stay appended after content: the
+        text wire-up owns their emission position and Agg itself always
+        paints labels last within the axes' decoration surface.
         """
         commands: list[dict] = []
         background_rgba = _RGBA_BLACK
@@ -1473,10 +1513,43 @@ class _EligibilityPreflight:
                 self._clip_points = ((x0, y0), (x0 + w, y0 + h))
 
             decorated = bool(getattr(ax, "axison", True))
+            # LP-FUNC-035 (D1): one stable z-order sort per axes over
+            # every eligible child, exactly reproducing the ``sorted``
+            # semantics of ``Axes.draw``. Each entry carries the command
+            # dicts plus a ``content`` flag so tie groups can be ordered
+            # class-first (collections, then patches, then lines) inside
+            # equal-zorder runs -- Agg's own add order within one class,
+            # and the historical emission order of this adapter.
+            entries: list[tuple[float, int, int, list[dict], bool]] = []
+            seq = 0
+
+            def _emit(zorder: float, cls: int, cmds: list[dict],
+                      content: bool) -> None:
+                nonlocal seq
+                if cmds:
+                    entries.append(
+                        (float(zorder), cls, seq, cmds, content)
+                    )
+                    seq += 1
+
             if decorated:
-                # Decorations first (painted below content), per axes.
-                commands.extend(
-                    self._decoration_commands(ax, x0, y0, w, h)
+                # Decoration artists ride their real public zorders:
+                # gridlines (default 2) and tick strokes (default 2.01)
+                # sort with their Axis unit below default content lines,
+                # spines (default 2.5) above it.
+                _emit(
+                    ax.xaxis.get_zorder(), 0,
+                    self._decoration_commands(
+                        ax, x0, y0, w, h, kinds=("gridline", "tick")
+                    ),
+                    False,
+                )
+                _emit(
+                    ax.spines["bottom"].get_zorder(), 1,
+                    self._decoration_commands(
+                        ax, x0, y0, w, h, kinds=("spine",)
+                    ),
+                    False,
                 )
             for collection in ax.collections:
                 if not isinstance(
@@ -1485,8 +1558,8 @@ class _EligibilityPreflight:
                 ):
                     continue
                 fill = self._fill_command(collection, to_px_x, to_px_y)
-                if fill is not None:
-                    commands.append(fill)
+                _emit(collection.get_zorder(), 0,
+                      [fill] if fill is not None else [], True)
             for patch in ax.patches:
                 if not (
                     isinstance(patch, matplotlib.patches.Polygon)
@@ -1494,12 +1567,15 @@ class _EligibilityPreflight:
                 ):
                     continue
                 fill = self._fill_command(patch, to_px_x, to_px_y)
-                if fill is not None:
-                    commands.append(fill)
+                _emit(patch.get_zorder(), 1,
+                      [fill] if fill is not None else [], True)
             for line in ax.get_lines():
                 spec = self._line_command(line, to_px_x, to_px_y)
-                if spec is not None:
-                    commands.append(spec)
+                _emit(line.get_zorder(), 2,
+                      [spec] if spec is not None else [], True)
+            entries.sort(key=lambda entry: entry[:3])
+            for _, _, _, entry_commands, _content in entries:
+                commands.extend(entry_commands)
 
         # Tick label glyphs paint above lines and decorations in Matplotlib
         # (text artists draw after the axes' line content), so the wire-up
@@ -1613,6 +1689,8 @@ class _EligibilityPreflight:
         y0: float,
         w: float,
         h: float,
+        *,
+        kinds: tuple[str, ...] = ("gridline", "tick", "spine"),
     ) -> list[dict]:
         """Build gridline/tick/spine path commands for one axes.
 
@@ -1623,6 +1701,13 @@ class _EligibilityPreflight:
         Gridlines and spines clip to their own axes rectangle; tick
         strokes protrude outside it, so they clip to the full canvas
         like Agg (which does not clip tick marks).
+
+        Since LP-FUNC-035 the ``kinds`` selector splits the decoration
+        surface along its artists' z-order boundaries: gridlines and
+        tick strokes travel with their Axis unit's zorder while spine
+        edges ride the Spine artist's own zorder, so the caller can slot
+        each group into the single stable ``Axes.draw`` sort instead of
+        painting every decoration first.
         """
         # The frozen seam clip is bottom-left-origin (x, y, w, h). Gridlines
         # and spines stay inside the axes rectangle; tick strokes protrude
@@ -1665,96 +1750,105 @@ class _EligibilityPreflight:
         # location; the static stage proved every visible one is solid.
         # The per-tick gridline Line2D carries the effective style; the
         # first one is a style-safe representative for the whole axis.
-        for axis, vertical in ((xaxis, True), (yaxis, False)):
-            representative = next(
-                (g for g in axis.get_gridlines() if g.get_visible()),
-                None,
-            )
-            if representative is None:
-                continue
-            data_lo, data_hi = (
-                (float(xlim[0]), float(xlim[1]))
-                if vertical
-                else (float(ylim[0]), float(ylim[1]))
-            )
-            for loc in axis.get_ticklocs():
-                value = float(loc)
-                if not (data_lo <= value <= data_hi):
+        if "gridline" in kinds:
+            for axis, vertical in ((xaxis, True), (yaxis, False)):
+                representative = next(
+                    (g for g in axis.get_gridlines() if g.get_visible()),
+                    None,
+                )
+                if representative is None:
                     continue
-                fraction = (value - data_lo) / (data_hi - data_lo)
-                if vertical:
-                    at = x0 + fraction * w
-                    p0 = (at, float(y0))
-                    p1 = (at, float(y0 + h))
-                else:
-                    at = y0 + fraction * h
-                    p0 = (float(x0), at)
-                    p1 = (float(x0 + w), at)
-                commands.append(seg(p0, p1, representative, "gridline",
-                                    axes_clip))
+                data_lo, data_hi = (
+                    (float(xlim[0]), float(xlim[1]))
+                    if vertical
+                    else (float(ylim[0]), float(ylim[1]))
+                )
+                for loc in axis.get_ticklocs():
+                    value = float(loc)
+                    if not (data_lo <= value <= data_hi):
+                        continue
+                    fraction = (value - data_lo) / (data_hi - data_lo)
+                    if vertical:
+                        at = x0 + fraction * w
+                        p0 = (at, float(y0))
+                        p1 = (at, float(y0 + h))
+                    else:
+                        at = y0 + fraction * h
+                        p0 = (float(x0), at)
+                        p1 = (float(x0 + w), at)
+                    commands.append(seg(p0, p1, representative,
+                                        "gridline", axes_clip))
 
         # -- major tick strokes --------------------------------------------
         # One outward stroke per drawn tick position on each visible edge,
         # styled from the edge tick line's public marker getters.
-        dpi_scale = self._effective_dpi / 72.0
-        for axis, horizontal, edges in ((xaxis, True, ("bottom", "top")),
-                                        (yaxis, False, ("left", "right"))):
-            ticks = axis.get_major_ticks()
-            locs = list(axis.get_ticklocs())
-            for index, tick in enumerate(ticks):
-                if index >= len(locs):
-                    break
-                value = float(locs[index])
-                data_lo, data_hi = (
-                    (float(xlim[0]), float(xlim[1]))
-                    if horizontal
-                    else (float(ylim[0]), float(ylim[1]))
-                )
-                if not (data_lo <= value <= data_hi):
-                    continue
-                span_lo, span_hi = (
-                    (x0, x0 + w) if horizontal else (y0, y0 + h)
-                )
-                base = span_lo + (
-                    (value - data_lo) / (data_hi - data_lo)
-                ) * (span_hi - span_lo)
-                for side in edges:
-                    line = getattr(tick, f"tick{1 if side in ('bottom', 'left') else 2}line")
-                    if not line.get_visible():
+        if "tick" in kinds:
+            dpi_scale = self._effective_dpi / 72.0
+            for axis, horizontal, edges in ((xaxis, True, ("bottom", "top")),
+                                            (yaxis, False, ("left", "right"))):
+                ticks = axis.get_major_ticks()
+                locs = list(axis.get_ticklocs())
+                for index, tick in enumerate(ticks):
+                    if index >= len(locs):
+                        break
+                    value = float(locs[index])
+                    data_lo, data_hi = (
+                        (float(xlim[0]), float(xlim[1]))
+                        if horizontal
+                        else (float(ylim[0]), float(ylim[1]))
+                    )
+                    if not (data_lo <= value <= data_hi):
                         continue
-                    length_px = float(line.get_markersize()) * dpi_scale
-                    # Bottom-left pixel space (matching the content-line
-                    # geometry): outward means downward from the bottom
-                    # edge and leftward from the left edge.
-                    direction = -1.0 if side in ("bottom", "left") else 1.0
-                    if horizontal:
-                        p0 = (base, float(y0))
-                        p1 = (base, float(y0 + direction * length_px))
-                    else:
-                        p0 = (float(x0), base)
-                        p1 = (float(x0 + direction * length_px), base)
-                    commands.append(seg(p0, p1, line, "tick", canvas_clip))
+                    span_lo, span_hi = (
+                        (x0, x0 + w) if horizontal else (y0, y0 + h)
+                    )
+                    base = span_lo + (
+                        (value - data_lo) / (data_hi - data_lo)
+                    ) * (span_hi - span_lo)
+                    for side in edges:
+                        line = getattr(
+                            tick,
+                            f"tick{1 if side in ('bottom', 'left') else 2}line",
+                        )
+                        if not line.get_visible():
+                            continue
+                        length_px = (
+                            float(line.get_markersize()) * dpi_scale
+                        )
+                        # Bottom-left pixel space (matching the content-line
+                        # geometry): outward means downward from the bottom
+                        # edge and leftward from the left edge.
+                        direction = -1.0 if side in ("bottom", "left") else 1.0
+                        if horizontal:
+                            p0 = (base, float(y0))
+                            p1 = (base, float(y0 + direction * length_px))
+                        else:
+                            p0 = (float(x0), base)
+                            p1 = (float(x0 + direction * length_px), base)
+                        commands.append(seg(p0, p1, line, "tick",
+                                            canvas_clip))
 
         # -- spine edges -----------------------------------------------------
         # Visible spines draw the axes rectangle edges with the fixed §5
         # stroke surface; width and color come from the spine getters.
-        for side, p0, p1 in (
-            ("bottom", (x0, y0), (x0 + w, y0)),
-            ("top", (x0, y0 + h), (x0 + w, y0 + h)),
-            ("left", (x0, y0), (x0, y0 + h)),
-            ("right", (x0 + w, y0), (x0 + w, y0 + h)),
-        ):
-            spine = ax.spines[side]
-            if not spine.get_visible():
-                continue
-            command = seg(
-                (float(p0[0]), float(p0[1])),
-                (float(p1[0]), float(p1[1])),
-                _SpineStroke(spine),
-                "spine",
-                axes_clip,
-            )
-            commands.append(command)
+        if "spine" in kinds:
+            for side, p0, p1 in (
+                ("bottom", (x0, y0), (x0 + w, y0)),
+                ("top", (x0, y0 + h), (x0 + w, y0 + h)),
+                ("left", (x0, y0), (x0, y0 + h)),
+                ("right", (x0 + w, y0), (x0 + w, y0 + h)),
+            ):
+                spine = ax.spines[side]
+                if not spine.get_visible():
+                    continue
+                command = seg(
+                    (float(p0[0]), float(p0[1])),
+                    (float(p1[0]), float(p1[1])),
+                    _SpineStroke(spine),
+                    "spine",
+                    axes_clip,
+                )
+                commands.append(command)
 
         return commands
 
