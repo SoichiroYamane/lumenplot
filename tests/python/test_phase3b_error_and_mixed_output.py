@@ -160,15 +160,15 @@ class TestStrictErrorFixtures(unittest.TestCase):
         return fig
 
     def test_stock_nonwhitelisted_artist_rejected(self):
-        """A stock Patch outside the Line2D whitelist is named and refused."""
-        from matplotlib.patches import Rectangle
+        """A stock Patch outside the artist whitelist is named and refused."""
+        from matplotlib.patches import Ellipse
 
         def build(ax):
             ax.axison = False
-            ax.add_patch(Rectangle((1.0, 1.0), 2.0, 1.0))
+            ax.add_patch(Ellipse((1.0, 1.0), 2.0, 1.0))
             _eligible_axes(ax)
 
-        self._assert_explicitly_unsupported(build, expected_type="Rectangle")
+        self._assert_explicitly_unsupported(build, expected_type="Ellipse")
 
     def test_user_defined_artist_subclass_rejected(self):
         """A user-defined Line2D subclass is unknown content: the whitelist
@@ -306,11 +306,21 @@ class TestStrictErrorFixtures(unittest.TestCase):
             ax.add_line(Line2D([0, 10], [0, 5], color="red", linestyle="--"))
 
         def build_drawstyle(ax):
+            # LP-FUNC-034 moved the step family inside; the negative now
+            # carries a drawstyle value that stays outside the whitelist.
+            # Line2D validates spellings at construction, so the unknown
+            # value is set afterwards through the private attribute that
+            # backs get_drawstyle().
             ax.axison = False
-            ax.add_line(Line2D([0, 10], [0, 5], color="red",
-                               drawstyle="steps-mid",
-                               solid_capstyle="butt",
-                               solid_joinstyle="miter"))
+            line = Line2D([0, 10], [0, 5], color="red",
+                          solid_capstyle="butt",
+                          solid_joinstyle="miter")
+            ax.add_line(line)
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+            # Inject after add_line: Axes autolim walks the expanded
+            # path, so the unknown drawstyle must not exist yet.
+            line._drawstyle = "steps-diagonal"
 
         def build_text(ax):
             ax.axison = False

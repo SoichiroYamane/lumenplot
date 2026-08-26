@@ -141,6 +141,17 @@ public increasing linear Axes limits into one temporary linear `ArbitraryXY`
 request); the collected path reconciles affine/clipping behavior but never
 feeds rendering.
 
+PRAC-A-D alignment (ADR 0015 §4a, 2026-08-25): a standard decorated `Axes`
+(`axison=True`) is additionally eligible. The collector grammar widens to
+balanced artist subgroups whose only stroke events are `new_gc()` +
+`draw_path`; each decorated axes emits solid visible major gridlines, major
+tick strokes (`markersize * dpi_eff / 72` px outward), and its visible spine
+edges — all with the §5 stroke surface (Butt/Miter), clipped to that axes'
+rectangle and ordered ahead of its content lines. Axes facecolor other than
+`'none'`, titles, axis labels, offset/tick label text (T-lane), minor tick or
+gridline content, non-solid grid styles, subplotspec/gridspec children, and
+non-exact `Axes` types remain explicitly unsupported.
+
 ### 5. File-output semantics
 
 PNG-only with an explicit guard: `print_figure` is overridden/guarded so

@@ -1,25 +1,31 @@
-# Matplotlib major-feature native-rendering requirements — DRAFT
+# Matplotlib major-feature native-rendering requirements — ADOPTED
 
 ## Status
 
-**DRAFT — REQUIREMENTS DRAFTING ONLY. NOT AN ACCEPTED DECISION, NOT AN AMENDMENT,
-AND NOT A SUPPORT CLAIM.**
+**ADOPTED by the architecture authority (maintainer), 2026-08-25.**
 
-- This document is a *new standalone draft* prepared for integration review. It does
-  **not** modify [`lumenplot-v1.0.md`](lumenplot-v1.0.md),
-  [`traceability-v1.0.md`](traceability-v1.0.md), any ADR/API record, or any open-decision
-  item. Adoption, ID canonization, and any v1.0 rewrite belong exclusively to the human
-  architecture authority.
-- Every proposed requirement below is marked **[PROPOSED]** and carries a candidate ID in
-  the next free slot of its family (`LP-FUNC-032`+, `LP-MPL-020`). Until adopted, these IDs
-  are placeholders and must not be cited as existing requirements.
+- Adopted as a requirements addition to [`lumenplot-v1.0.md`](lumenplot-v1.0.md): the nine
+  rows of Section 5 (`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`) are canonical requirements,
+  recorded verbatim in [`traceability-v1.0.md`](traceability-v1.0.md) with the registry's own
+  result column, and the Section 4 gate names are registered in that document's acceptance-gate
+  vocabulary.
+- Adoption makes these rows *requirements*, not results: every new row's traceability result
+  is honestly `Not implemented` until bounded product evidence exists (release-honesty rule
+  `LP-REL-014`).
+- Quality oracle: on 2026-08-25 the maintainer additionally fixed the acceptance quality bar
+  for every adopted row as **"implemented to the same quality as the current Matplotlib
+  backend (Agg)"** — Agg output is the quality oracle, and near-looking output is not
+  acceptance. Section 5.4 records the binding parity criteria each row's evidence gate must
+  demonstrate.
+- The reconciliation inventory (Sections 3–4), priority rationale (Section 6), wave placement
+  (Section 7), and flagged contract impacts (Section 8) remain the recorded adoption rationale;
+  they are context, not additional requirements.
 - Requirement levels (`MUST` / `SHOULD` / `MAY`), the registry table format, the evidence-gate
   vocabulary, and the phase model follow [`lumenplot-v1.0.md`](lumenplot-v1.0.md) §2, §32,
-  and Appendix A exactly. New evidence-gate names are proposed and require registration in
-  the traceability vocabulary if adopted.
+  and Appendix A exactly.
 - Scope boundary: **3D (mplot3d) remains out of scope** consistent with
   `LP-FUNC-025` (NON-GOAL) and the existing post-v1 3D research notes. Nothing here reopens it.
-- Public-safety: this draft contains no private task identifiers, local paths, host details,
+- Public-safety: this document contains no private task identifiers, local paths, host details,
   or internal artifact references (`LP-SEC-008` boundary respected).
 
 ## How to read this document
@@ -28,9 +34,9 @@ AND NOT A SUPPORT CLAIM.**
    transform paths (not pyplot entry points).
 2. Section 4 maps every inventoried feature onto the canonical v1.0 registry and states the
    verdict: already covered / partially covered / uncovered.
-3. Section 5 drafts new candidate rows **only** for uncovered features whose addition is
+3. Section 5 states the adopted rows, added **only** for uncovered features whose addition is
    justified by the recorded priority criteria.
-4. Sections 6–8 record the priority rationale, phase-placement proposal, and flagged contract
+4. Sections 6–8 record the priority rationale, adopted phase placement, and flagged contract
    impacts. Design work is deliberately excluded; flagged impacts are hand-off notes for the
    architecture authority, not designs.
 
@@ -45,7 +51,7 @@ single axes with decorations disabled — and fall back to whole-frame Agg other
 consequence: ordinary figures (axes, fills, bars, steps, multiple primitive kinds) either
 reject in strict mode or forfeit all native benefit in hybrid mode.
 
-This draft defines, in canonical requirement form, what "render the major features of
+This document defines, in canonical requirement form, what "render the major features of
 Matplotlib natively" means for LumenPlot — bounded by the existing non-goals
 (`LP-PROD-006`, `LP-PROD-007`: no full backend-API parity, no Artist-hierarchy
 reimplementation) and by the one-way adapter contract.
@@ -59,13 +65,13 @@ reimplementation) and by the one-way adapter contract.
    v1.0 registry (223 entries; source of truth `lumenplot-v1.0.md` +
    `traceability-v1.0.md`). Features already owned by an existing row did **not** receive a
    new ID (Section 4).
-3. **Gap drafting** — only uncovered features received candidate rows, written in the exact
+3. **Gap closure** — only uncovered features received rows, written in the exact
    v1.0 row grammar with Target/Release/Phase/Evidence fields (Section 5).
 4. **Evidence-based leveling** — `MUST` is reserved for low-cost static-geometry extensions
    of the accepted line path with outsized coverage gains; `SHOULD` for capabilities needing
    new transforms, projections, or cross-primitive semantic guarantees; `MAY` for candidates
    with adverse cost/risk balance. Nothing is leveled `MUST` by default (Section 6).
-5. **Phase placement** — proposals align with the current implementation state (Phase-3B
+5. **Phase placement** — placements align with the implementation state at drafting (Phase-3B
    public backend merged; axes-decoration, text-minimal-surface, and multi-axes lanes planned
    separately; native performance gate untouched) (Section 7).
 
@@ -111,16 +117,16 @@ axes-on planning effort are marked **LANDED ELSEWHERE** to prevent duplicate IDs
 | F-01 line series | `LP-FUNC-001`, `LP-RENDER-001`–`006`, `LP-MPL-004`–`008` | — | — | — | — | COVERED |
 | F-02 multi-series | `LP-FUNC-002` | — | — | — | — | COVERED |
 | F-03 scatter | `LP-FUNC-017` (SHOULD, Ph 5) | — | — | — | — | COVERED (deliberate non-blocking placement) |
-| F-04 filled areas | — | **LP-FUNC-032** [PROPOSED] | MUST | 3B-cont. | `AT-FUNC-FILL` | UNCOVERED — no registry row owns polygon fill rendering anywhere (native or adapter) |
-| F-05 bars / histograms | — | **LP-FUNC-033** [PROPOSED] | MUST | 3B-cont. | `AT-FUNC-BAR` | UNCOVERED — rectangle fill+stroke semantics absent; histogram = adapter-side binning + this row (no engine data-binning requirement) |
+| F-04 filled areas | — | **LP-FUNC-032** | MUST | 3B-cont. | `AT-FUNC-FILL` | UNCOVERED — no registry row owns polygon fill rendering anywhere (native or adapter) |
+| F-05 bars / histograms | — | **LP-FUNC-033** | MUST | 3B-cont. | `AT-FUNC-BAR` | UNCOVERED — rectangle fill+stroke semantics absent; histogram = adapter-side binning + this row (no engine data-binning requirement) |
 | F-06 markers | `LP-FUNC-018` (SHOULD, Ph 5) | — | — | — | — | COVERED |
 | F-07 error bars | `LP-FUNC-019` (SHOULD, Ph 5) | — | — | — | — | COVERED |
-| F-08 step drawstyles | — | **LP-FUNC-034** [PROPOSED] | MUST | 3B-cont. | `AT-FUNC-DRAWSTYLE` | PARTIAL→UNCOVERED — `LP-FUNC-001` fixes "default" drawstyle implicitly via the eligible-trace contract; step variants are rejected with no owning row |
+| F-08 step drawstyles | — | **LP-FUNC-034** | MUST | 3B-cont. | `AT-FUNC-DRAWSTYLE` | PARTIAL→UNCOVERED — `LP-FUNC-001` fixes "default" drawstyle implicitly via the eligible-trace contract; step variants are rejected with no owning row |
 | F-09 axes decorations | axes-on planning lane (separate card) + `LP-FUNC-003` | — | — | — | — | LANDED ELSEWHERE — spines/ticks/labels/text minimal surface and multi-axes spec are owned by the practical-expansion planning card; this draft creates no competing IDs |
 | F-10 linear scale | `LP-FUNC-003` | — | — | — | — | COVERED |
 | F-10 log scale | `LP-FUNC-004` | — | — | — | — | COVERED |
-| F-10 symlog / logit | — | **LP-FUNC-039** [PROPOSED] | MAY | future | `AT-SEM-SCALE-EXT` | UNCOVERED — deferred candidate; see contract-impact flag C-5 (MonotonicX topology interaction) |
-| F-10 date/unit axes | `LP-FUNC-003` (transitively: unit conversion happens upstream of the public getters) | **LP-FUNC-037** [PROPOSED] | SHOULD | 3B-cont.+1 | `AT-FUNC-DATE-AXIS` | PARTIAL — base plotting rides the linear path unchanged, but unit-aware tick-label formatting (date locators/formatters) has no owning row once axes-on lands |
+| F-10 symlog / logit | — | **LP-FUNC-039** | MAY | future | `AT-SEM-SCALE-EXT` | UNCOVERED — deferred candidate; see contract-impact flag C-5 (MonotonicX topology interaction) |
+| F-10 date/unit axes | `LP-FUNC-003` (transitively: unit conversion happens upstream of the public getters) | **LP-FUNC-037** | SHOULD | 3B-cont.+1 | `AT-FUNC-DATE-AXIS` | PARTIAL — base plotting rides the linear path unchanged, but unit-aware tick-label formatting (date locators/formatters) has no owning row once axes-on lands |
 | F-11 legend | `LP-FUNC-009`, `LP-UX-016`–`022` | — | — | — | — | COVERED |
 | F-12 colorbar | `LP-MPL-007` (whole-frame fallback) for adapter mode; native = future | — | — | — | — | COVERED for v1 adapter semantics (colorbar content forces declared hybrid fallback); a native colorbar row is deliberately **not** drafted — revisit with image/mappable support post-v1 |
 | F-13 images / imshow | `LP-FUNC-023` (MAY, future) | — | — | — | — | COVERED (already adjudicated as post-v1 candidate) |
@@ -129,21 +135,23 @@ axes-on planning effort are marked **LANDED ELSEWHERE** to prevent duplicate IDs
 | F-15 subplots/gridspec | multi-axes lane (see F-09 note) | — | — | — | — | LANDED ELSEWHERE |
 | F-15 twin / secondary axes | `LP-FUNC-020` (SHOULD, Ph 5) | — | — | — | — | COVERED |
 | F-16 styles / rcParams | `LP-MPL-004` (Figure authority) | — | — | — | — | COVERED — adapter reads resolved values through the authoritative Figure graph; rcParams *parity* is not a goal and gets no row |
-| F-17 vector fields | — | **LP-FUNC-038** [PROPOSED] | SHOULD | 5 | `AT-FUNC-QUIVER` | UNCOVERED — quiver arrows are deterministic glyph geometry; streamplot stays out (trajectory-integration algorithm belongs to analysis, cf. `LP-PROD-009`) |
-| F-18 polar projection | — | **LP-FUNC-036** [PROPOSED] | SHOULD | 5 | `AT-FUNC-POLAR` | UNCOVERED — new transform family; rectangular clip/background contracts assume rectangles |
-| — | — | **LP-FUNC-035** [PROPOSED] | SHOULD | 3B-cont.+1 | `AT-SEM-COMPOSITING` | UNCOVERED — cross-primitive z-order/alpha guarantee; `LP-RENDER-004` owns alpha semantics for *supported* layers but no row pins ordering *across* primitive classes once fills/bars exist |
-| — | — | **LP-MPL-020** [PROPOSED] | SHOULD | continuous | `AT-MPL-ELIGIBILITY` | Governance gap — no row defines *how* the strict whitelist may grow; this operationalizes the accepted O-10 boundary mechanics for every future artist class |
+| F-17 vector fields | — | **LP-FUNC-038** | SHOULD | 5 | `AT-FUNC-QUIVER` | UNCOVERED — quiver arrows are deterministic glyph geometry; streamplot stays out (trajectory-integration algorithm belongs to analysis, cf. `LP-PROD-009`) |
+| F-18 polar projection | — | **LP-FUNC-036** | SHOULD | 5 | `AT-FUNC-POLAR` | UNCOVERED — new transform family; rectangular clip/background contracts assume rectangles |
+| — | — | **LP-FUNC-035** | SHOULD | 3B-cont.+1 | `AT-SEM-COMPOSITING` | UNCOVERED — cross-primitive z-order/alpha guarantee; `LP-RENDER-004` owns alpha semantics for *supported* layers but no row pins ordering *across* primitive classes once fills/bars exist |
+| — | — | **LP-MPL-020** | SHOULD | continuous | `AT-MPL-ELIGIBILITY` | Governance gap — no row defines *how* the strict whitelist may grow; this operationalizes the accepted O-10 boundary mechanics for every future artist class |
 
 Correction note: the MPL family already extends to `LP-MPL-019` (one-way-integration and standalone rows), so the governance candidate takes `LP-MPL-020`;
 the FUNC family ends at `LP-FUNC-031`, so candidate numbering starts at 032. Proposed gate
 names were checked against the 92 registered evidence gates — none collide.
 
-## 5. Proposed requirement rows [PROPOSED — not adopted]
+## 5. Adopted requirement rows
 
 Grammar, field semantics, and release vocabulary follow `lumenplot-v1.0.md`. Each row states
-its gap justification inline in prose beneath the row.
+its gap justification inline in prose beneath the row. These rows are canonical; the registry
+copies in [`traceability-v1.0.md`](traceability-v1.0.md) carry the current honest result
+column (`Not implemented`) and are the machine-checkable source of truth.
 
-### 5.1 Functional candidates
+### 5.1 Functional rows
 
 - **LP-FUNC-032** | `MUST` | Support filled polygons (fill and fill-between areas) with declared face color, edge, alpha, and correct baseline/span semantics, in native and adapter rendering. | Target: fill geometry and span fixtures | Release: v1 | Phase: 3B-cont. | Evidence: `AT-FUNC-FILL`
 
@@ -201,7 +209,7 @@ its gap justification inline in prose beneath the row.
   segment-linear transforms interact with MonotonicX topology detection and hierarchy
   selection (flag C-5). Adoption must follow, not precede, the topology decision.
 
-### 5.2 Adapter governance candidate
+### 5.2 Adapter governance row
 
 - **LP-MPL-020** | `SHOULD` | Grow the strict-common-2d eligibility surface only by explicit per-class contract extensions — whitelist entry, collector-trace expectation, style contract, and fixtures landed together — never by silent approximation or default-on tolerance. | Target: eligibility-extension process review | Release: v1 quality | Phase: continuous | Evidence: `AT-MPL-ELIGIBILITY`
 
@@ -227,6 +235,77 @@ its gap justification inline in prose beneath the row.
 - **Axes decorations, tick/label text surface, multi-axes/subplot spec** — owned by the
   active practical-expansion planning lane; duplicated IDs here would fork ownership.
 
+### 5.4 Quality oracle and equivalence criteria (fixed 2026-08-25, all adopted rows)
+
+The maintainer fixed the acceptance quality bar for every adopted row: **native rendering is
+accepted only when it matches what the current Matplotlib backend (Agg) produces for the same
+Figure — visually and numerically.** Agg is therefore the *quality oracle* for every gate in
+Section 5; "plausible" or "approximately right" output never passes. The criteria below define
+what each row's evidence fixture must demonstrate. They fix the acceptance standard only; they
+change no accepted decision, add no implementation, and leave every row's honest
+`Not implemented` result untouched.
+
+- **Geometry parity** — vertex/rectangle geometry must equal Agg's transform result:
+  data-space points pass through the same effective transform (axes limits → display space at
+  the fixture's DPI) with agreement to sub-pixel rounding only. For fills this includes span
+  baselines (`fill_between` y1/y2 semantics); for bars the anchored baseline including negative
+  and stacked cases; for steps the exact generated vertex sequence.
+- **Pixel parity** — on representative workloads per row, the decoded native PNG must differ
+  from the same-frame Agg PNG by no more than a declared threshold: exact match where the
+  pipeline is deterministic end-to-end, otherwise a numerically defined antialiasing tolerance.
+  Thresholds are not assumed: they are measured when the fixtures are built, recorded in the
+  evidence artifact, and re-measured if the renderer changes. Byte identity with Agg is never
+  asserted (ADR 0015 §5 keeps semantic tolerance for unprovable corner cases).
+- **Style semantics** — face color, edge color, alpha, line width, cap/join, and dash state
+  must resolve to the same values Agg resolves for the same Figure graph (same declared style
+  contract, same defaults), not merely similar-looking values.
+- **Text** — where a row renders text (date/unit tick labels under `LP-FUNC-037`), glyphs come
+  from the TextPath-derived outline module (`LP-TEXT` family), so font resolution and hinting
+  differences versus rasterized Agg text are handled by comparing outline geometry against
+  Matplotlib's own `TextPath` output for the same `FontProperties`; hinting/rasterization-stage
+  differences are excluded from pixel parity and their allowed magnitude recorded with the
+  fixture.
+
+Each wave's definition of done inherits these criteria directly:
+
+| Wave | Rows | Oracle requirement added to the DoD |
+| --- | --- | --- |
+| W1 | LP-FUNC-032/033/034 | Agg parity fixtures green: geometry parity + pixel parity + style semantics per §5.4, before any row's result leaves `Not implemented`. |
+| W2 | LP-FUNC-035/037 | Same oracle bar, plus compositing order validated against Agg layering and label text via the TextPath comparison above. |
+| W3 | LP-FUNC-036/038 (+039 when adopted) | Same oracle bar fixed now so future Phase-5 work cannot lower it: polar/quiver fixtures compare against Agg under the identical criteria. |
+
+### 5.5 Blend-mode dual-model rule (canonized 2026-08-26)
+
+Agg's compositing arithmetic runs in **encoded sRGB**, while LumenPlot's frozen
+export contract ([ADR 0012](../adr/0012-private-line-frame-and-png-contract.md))
+composites in premultiplied linear-sRGB — the two models produce different
+pixels for translucent overlaps (e.g. black at alpha 128/255 over opaque white:
+encoded-sRGB source-over yields exactly 127, linear-light blending re-encodes to
+187). Satisfying this document's pixel-parity oracle therefore cannot be done in
+the export color model alone. The maintainer ruled on 2026-08-25 (recorded in
+PR #68 and its merged implementation), and this section canonizes that ruling:
+
+1. **ADR 0012 remains frozen for everything it governs.** The default frame
+   compositing stays premultiplied linear-sRGB; absent any opt-in key, frames
+   render byte-for-byte identically to the pre-ruling contract (pinned by Rust
+   unit tests proving default-vs-explicit-linear byte equality).
+2. **The private adapter seam gains one opt-in selector** — the
+   `render_frame_png` spec key ``blend_mode``: `"linear"` (default, unchanged)
+   or `"agg_srgb"` (source-over in encoded sRGB, matching the quality oracle's
+   arithmetic). Unrecognized values are a validation error, never a silent
+   fallback.
+3. **Export keeps linear.** The opt-in exists solely so the Matplotlib parity
+   path can reproduce Agg pixels under §5.4; it is not a user-facing color-model
+   choice, does not alter ADR 0012's export semantics, and never applies by
+   default. The strict adapter sets `"agg_srgb"` explicitly in its emitted spec.
+
+This is an additive amendment to [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md):
+it changes no accepted decision, adds no public facade surface, and carries no
+support claim. The dual-model arithmetic is pinned where it is implemented
+(`BlendMode` in the private python-frame module: both models' quantization
+results asserted on fully covered interior pixels, plus the byte-stability test
+in (1)).
+
 ## 6. Priority rationale ("major feature" test)
 
 A feature qualifies as *major* — and its row's level — by scoring all four criteria; no
@@ -251,17 +330,17 @@ single criterion decides:
 Leveling outcome: 3 MUSTs (cheap, maximal coverage, bounded risk), 4 SHOULDs (real demand,
 higher cost/risk), 1 governance SHOULD, 1 MAY (risk-dominated). No row is MUST by fiat.
 
-## 7. Phase-placement proposal
+## 7. Phase placement (adopted waves)
 
 Aligned with actual implementation state: Phase-3B public backend merged; background-pixel,
 dependency, README/IDAT correction lanes in flight; axes-decoration / text-minimal /
 multi-axes lanes planned; native benchmark gate untouched.
 
-| Wave | Content | Rationale |
-| --- | --- | --- |
-| **W1 — "static geometry" (Phase 3B continuation, adapter + engine seam)** | LP-FUNC-032 (fill), LP-FUNC-033 (bar), LP-FUNC-034 (steps); LP-MPL-020 governs each slice | largest coverage-per-cost; pure geometry; each lands as an eligibility extension per the governance row; prerequisite: background-compositing fix merged so decoded-pixel assertions stay meaningful |
-| **W2 — "correct composition" (after W1 + axes-on stabilizes)** | LP-FUNC-035 (cross-primitive compositing), LP-FUNC-037 (date tick labels) | compositing needs ≥2 primitive classes to exist; label formatting needs the axes-decoration text surface |
-| **W3 — "expansion" (Phase 5 train, beside existing FUNC-017–020)** | LP-FUNC-036 (polar), LP-FUNC-038 (quiver); LP-FUNC-039 held pending topology decision | matches the existing Phase-5 expansion bundle placement; no competition with v1 native gate lanes |
+| Wave | Content | Rationale | Definition of done |
+| --- | --- | --- | --- |
+| **W1 — "static geometry" (Phase 3B continuation, adapter + engine seam)** | LP-FUNC-032 (fill), LP-FUNC-033 (bar), LP-FUNC-034 (steps); LP-MPL-020 governs each slice | largest coverage-per-cost; pure geometry; each lands as an eligibility extension per the governance row; prerequisite: background-compositing fix merged so decoded-pixel assertions stay meaningful | Agg parity fixtures green per §5.4: geometry parity, pixel parity within recorded thresholds, and style semantics for representative workloads per row |
+| **W2 — "correct composition" (after W1 + axes-on stabilizes)** | LP-FUNC-035 (cross-primitive compositing), LP-FUNC-037 (date tick labels) | compositing needs ≥2 primitive classes to exist; label formatting needs the axes-decoration text surface | Same oracle bar per §5.4; compositing order validated against Agg layering; label glyphs compared as TextPath outline geometry per the text criterion |
+| **W3 — "expansion" (Phase 5 train, beside existing FUNC-017–020)** | LP-FUNC-036 (polar), LP-FUNC-038 (quiver); LP-FUNC-039 held pending topology decision | matches the existing Phase-5 expansion bundle placement; no competition with v1 native gate lanes | Same oracle bar per §5.4, fixed in advance so later Phase-5 work cannot lower it |
 
 Native-viewer parity follows the same waves where the capability is engine-side; the adapter
 profile separation rules (`LP-MPL-011`, `LP-QUAL-021`) apply unchanged — nothing here moves
@@ -279,7 +358,7 @@ any performance gate onto adapter profiles.
 | C-6 | Cross-primitive alpha/order depends on opaque-background compositing being correct end-to-end | LP-FUNC-035 | prerequisite: background-loss correction lane merged with its decoded-pixel regression assertion |
 | C-7 | Date/unit label formatting consumes Figure-authoritative locator/converter info; must not duplicate layout measurement | LP-FUNC-037 | shared text/layout contract (`LP-TEXT-001`/`002`; no per-renderer re-measurement) |
 
-## 9. Integration decision points (for the adopting review)
+## 9. Integration decision points (executed at adoption)
 
 1. Promote LP-FUNC-032/033/034 into `lumenplot-v1.0.md` §3.1 at the next requirements
    revision, or hold as an amendments appendix until W1 evidence exists (release-honesty
@@ -293,8 +372,18 @@ any performance gate onto adapter profiles.
 4. Decide whether LP-MPL-020 is absorbed into an O-10 amendment or stands alone.
 5. Confirm W3 rows join the existing Phase-5 expansion train (`LP-FUNC-017`–`020`) as one
    release vehicle.
-6. On adoption, update the registry counts (currently: 223 entries / 150 normative) and add
-   coverage-matrix rows in Appendix A; this draft intentionally performs no such edit.
+6. On adoption, update the registry counts and coverage summary; this document performs no
+   such edit itself.
+
+All six points were executed at adoption on 2026-08-25: the rows entered the traceability
+registry as adopted requirements rather than a deferred appendix; the nine gate names are
+registered in the traceability vocabulary; the LP-FUNC-035 / LP-RENDER-004 scope split stands
+as drafted (ordering across primitive classes vs alpha within supported layers); LP-MPL-020
+stands alone as a registry row operationalizing the O-10 boundary mechanics without amending
+the open decision; the W3 rows joined the existing Phase-5 expansion-train placement; and the
+traceability counts were recomputed for the nine additions. Promotion into
+`lumenplot-v1.0.md` §3.1 itself remains reserved for the next human-owned revision of that
+document; until then `traceability-v1.0.md` is the canonical registry copy.
 
 ## Appendix — Verification trail
 
@@ -308,3 +397,15 @@ any performance gate onto adapter profiles.
 - Behavior statements about the merged Phase-3B slice (eligible trace, strict rejections,
   hybrid whole-frame fallback, PNG-only surface) reflect `python/lumenplot_mpl/backend.py`
   and the Phase-3B contract-test suite as merged at the time of drafting.
+- On 2026-08-25 the maintainer fixed the quality oracle ("same quality as the current
+  Matplotlib backend (Agg)") for all adopted rows; on 2026-08-26 Section 5.4 was added to
+  record the binding equivalence criteria (geometry parity, pixel parity with recorded
+  thresholds, style semantics, TextPath-based text comparison) and the wave DoD column in
+  Section 7. Docs-only canonization: no requirement row's meaning, level, or result was
+  changed.
+- On 2026-08-26 Section 5.5 was added to canonize the maintainer's blend-mode ruling of
+  2026-08-25 (executed by the merged LP-FUNC-032 lane, PR #68): the private adapter seam's
+  opt-in `blend_mode: "agg_srgb"` selector exists for §5.4 pixel parity only; ADR 0012's
+  frozen linear-light default and export semantics are unchanged and byte-stability is
+  unit-pinned. Docs-only canonization of an already-executed decision: no requirement row,
+  gate condition, or accepted contract was changed.

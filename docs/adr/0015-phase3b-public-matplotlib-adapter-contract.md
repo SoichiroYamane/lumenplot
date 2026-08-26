@@ -118,6 +118,39 @@ callback cause explicit unsupported handling in strict mode or whole-frame Agg
 fallback in hybrid mode. An axes-on fixture (patch/axis/tick/text/spine
 callbacks present) is a negative test fixture, never an eligible input.
 
+#### 4a. Decorated-axes amendment (PRAC-A-D lane, 2026-08-25)
+
+Amended by the accepted PRAC-A-D lane decision (parent workstream t_3339d0b5
+comment thread): a standard `Axes` with decorations enabled (`axison=True`)
+joins the eligible surface so that `LP-FUNC-003` axes decoration rendering
+works natively in this slice. The eligible collector grammar widens from the
+fixed trace above to its balanced-group form: after the figure background
+stroke, each axes group may contain balanced artist subgroups (the
+decoration surface and per-line `line2d` groups) whose only stroke events
+are `new_gc()` + `draw_path`. Any other renderer callback (text, markers,
+images, collections, quad mesh, Gouraud triangles) still raises through the
+unbound public `RendererBase` and maps to explicit unsupported handling —
+never a silent base-class no-op.
+
+The decorated surface rendered natively, per axes, ahead of that axes'
+content lines and clipped to its own rectangle:
+
+1. solid (`linestyle == '-'`, not dashed) visible major gridlines at
+   in-view major tick locations, one full-span segment per location;
+2. major tick strokes on each visible edge line, length
+   `markersize * dpi_eff / 72` px outward from the edge;
+3. visible spine edges of the axes rectangle, emitted with the §5 fixed
+   stroke surface (Butt cap, Miter join); spine width, color, alpha, and
+   visibility are honored, spine-local cap/join styles are normalized,
+   not approximated.
+
+Still outside the slice and refused with an explicit reason: any axes
+facecolor other than `'none'` (this slice emits no fill command), titles,
+axis labels, offset text, tick label text (the T-lane deliverable), visible
+minor tick lines or minor gridlines (major-only slice), non-solid gridline
+styles, subplotspec/gridspec child axes, and any non-exact `Axes` subclass.
+An undecorated fixture (`axison=False`) remains eligible unchanged.
+
 ### 5. Fixed-style guards, no approximation (hazard 5)
 
 The native request supports exactly the Phase-2 private frame style surface:
