@@ -89,7 +89,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-FUNC-001` | `MUST` | deterministic Line2D rendering | 1 | v1 | `AT-FUNC-LINE2D` | Not implemented |
 | `LP-FUNC-002` | `MUST` | stable ordering and visibility | 1 | v1 | `AT-FUNC-SERIES` | Not implemented |
 | `LP-FUNC-003` | `MUST` | axis, tick, and label correctness | 1 | v1 | `AT-FUNC-AXIS` | Not implemented (bounded Phase-3B local contract evidence: PR #63; native major-gridline/major-tick/spine rendering for eligible decorated `axison=True` axes per ADR 0015 §4a — `TestDecoratedAxesSpec`, `TestDecoratedAxesEligibility` in `test_phase3b_backend.py`; axis labels and date formatting remain unclosed) |
-| `LP-FUNC-004` | `MUST` | log-axis behavior | 1 | v1 | `AT-FUNC-LOG-AXIS` | Not implemented |
+| `LP-FUNC-004` | `MUST` | log-axis behavior | 1 | v1 | `AT-FUNC-LOG-AXIS` | Implemented (bounded Phase-3B local contract evidence: W3 lane t_a239680f; strict-mode base-10 log axes per LP-MPL-020 — scale dispatch accepting `linear`/base-10 `log` and refusing other scales explicitly, scale-consistent projection for content/fills/gridlines/tick strokes verified against `Axes.transData`, non-positive data following matplotlib's clip rule (`out[values <= 0] = -1000` in log units), invalid view domains inherited from matplotlib's own limit clamp, default mathtext labels refusing via the existing T-lane gate while plain formatters render natively — `TestLogAxisStrictEligibility`, `TestLogProjection`, `TestLogAxisRefusals`, `TestLogFramePixelFixtures` in `test_phase3b_log_axis.py`; stroke-edge parity within the ratified band (plain 0.9777, decorated 0.9695 within32); non-base-10 log scales and symlog/logit stay with LP-FUNC-039, any release claim stays open) |
 | `LP-FUNC-005` | `MUST` | native interaction | 1 | v1 | `AT-FUNC-PAN-ZOOM` | Not implemented |
 | `LP-FUNC-006` | `MUST` | anchor-preserving zoom | 1 | v1 | `AT-FUNC-PAN-ZOOM` | Not implemented |
 | `LP-FUNC-007` | `MUST` | bounded view selection | 1 | v1 | `AT-FUNC-BOX-ZOOM` | Not implemented |
@@ -323,7 +323,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-FUNC-001` | `MUST` | `AT-FUNC-LINE2D` | Not implemented |
 | `LP-FUNC-002` | `MUST` | `AT-FUNC-SERIES` | Not implemented |
 | `LP-FUNC-003` | `MUST` | `AT-FUNC-AXIS` | Not implemented (bounded Phase-3B local contract evidence: PR #63; decorated-axes decoration rendering per ADR 0015 §4a — `TestDecoratedAxesSpec`, `TestDecoratedAxesEligibility`; labels/date formatting remain unclosed) |
-| `LP-FUNC-004` | `MUST` | `AT-FUNC-LOG-AXIS` | Not implemented |
+| `LP-FUNC-004` | `MUST` | `AT-FUNC-LOG-AXIS` | Implemented (bounded Phase-3B local contract evidence: W3 lane t_a239680f; base-10 log-axis eligibility, projection, clip-rule domain handling, and Agg-oracle parity fixtures in `test_phase3b_log_axis.py`; non-base-10 log scales stay refused, release claim stays open) |
 | `LP-FUNC-005` | `MUST` | `AT-FUNC-PAN-ZOOM` | Not implemented |
 | `LP-FUNC-006` | `MUST` | `AT-FUNC-PAN-ZOOM` | Not implemented |
 | `LP-FUNC-007` | `MUST` | `AT-FUNC-BOX-ZOOM` | Not implemented |
