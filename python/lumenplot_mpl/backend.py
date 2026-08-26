@@ -93,6 +93,53 @@ _UNSUPPORTED_TOKEN = "unsupported-capability"
 #: Opaque black used when an artist carries no explicit stroke/fill color.
 _RGBA_BLACK = (0, 0, 0, 255)
 
+#: LP-FUNC-035 ordering contract, stated once for the whole adapter.
+#:
+#: This is the single normative description of how the emission stage
+#: reproduces Matplotlib Agg's ``Axes.draw`` paint order; every stage
+#: that touches ordering cites this text instead of restating its own
+#: copy (W2-comp-fix-v2 review item: one contract, one home).
+#:
+#: 1. Sort input. ``Axes.draw`` sorts ``ax.get_children()`` minus
+#:    ``ax.patch`` with Python's stable ``sorted`` keyed on zorder;
+#:    equal-zorder ties keep enumeration (add) order across primitive
+#:    classes. The adapter mirrors both halves: the single stable sort
+#:    runs over every eligible child of an axes at once, and tie rank
+#:    comes from the public ``Axes.get_children`` enumeration index --
+#:    never from artist class, type name, or container membership.
+#:
+#: 2. Patch exclusion. Agg removes the axes' background patch from the
+#:    sorted list and prepends it after sorting, so the background paints
+#:    below every child whatever its zorder -- even negative ones. The
+#:    adapter's eligibility walk excludes ``ax.patch`` (and every other
+#:    structural artist) from the content surface for the same reason,
+#:    and strict mode renders no axes-background fill command at all: an
+#:    opaque facecolor is refused, so exclusion cannot reorder anything.
+#:
+#: 3. Decoration placement. Gridline and tick strokes ride their Axis
+#:    unit's public zorder (default 1.5); spine edges ride the Spine
+#:    artists' own public zorder (default 2.5). At the default surface
+#:    this keeps grid/tick strokes below default content lines (z 2) --
+#:    the ratified Axis-unit model Agg actually paints -- while inverted
+#:    or negative zorders interleave exactly as Agg paints them. Tick
+#:    label glyphs stay appended after all axes content: the text wire-up
+#:    owns their emission position and Agg itself always paints labels
+#:    last within the decoration surface.
+#:
+#: 4. Outside-the-sort artists. Images, legends, tables, texts outside
+#:    the tick-label wire-up, rasterized artists (``rasterization_zorder``
+#:    splitting), and every non-whitelisted class are outside this
+#:    contract: they never enter the sort because they are not eligible
+#:    content -- they refuse in preflight (strict) or fall back whole-
+#:    frame through Agg (hybrid), so no silent reordering exists.
+_ZORDER_CONTRACT_DOC = """LP-FUNC-035 ordering contract (backend.py header).
+
+The normative text lives in the module comment block above; stages cite
+this constant's name when they depend on one of its clauses so a future
+editor finds every touchpoint from one search.
+"""
+
+
 class LumenPlotFallbackDiagnostic:
     """Immutable structured fallback record (API 0005 §3).
 
@@ -1473,7 +1520,9 @@ class _EligibilityPreflight:
         LP-FUNC-035 compositing contract (D1): each axes reproduces Agg's
         ``Axes.draw`` ordering -- one stable sort of every eligible child
         by public ``get_zorder()`` (Python ``sorted`` keeps add order on
-        ties, which is Agg's own stable-sort semantics). Gridline, tick,
+        ties, which is Agg's own stable-sort semantics). The normative
+        ordering text is the module-level ``_ZORDER_CONTRACT_DOC`` block;
+        this stage implements its clauses 1-3 directly: gridline, tick,
         and spine decorations ride their artists' real zorders inside that
         single sort instead of the former decorations-first special case:
         at the default surface this preserves the legacy relative order
