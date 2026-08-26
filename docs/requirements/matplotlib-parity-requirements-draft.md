@@ -274,6 +274,38 @@ Each wave's definition of done inherits these criteria directly:
 | W2 | LP-FUNC-035/037 | Same oracle bar, plus compositing order validated against Agg layering and label text via the TextPath comparison above. |
 | W3 | LP-FUNC-036/038 (+039 when adopted) | Same oracle bar fixed now so future Phase-5 work cannot lower it: polar/quiver fixtures compare against Agg under the identical criteria. |
 
+### 5.5 Blend-mode dual-model rule (canonized 2026-08-26)
+
+Agg's compositing arithmetic runs in **encoded sRGB**, while LumenPlot's frozen
+export contract ([ADR 0012](../adr/0012-private-line-frame-and-png-contract.md))
+composites in premultiplied linear-sRGB — the two models produce different
+pixels for translucent overlaps (e.g. black at alpha 128/255 over opaque white:
+encoded-sRGB source-over yields exactly 127, linear-light blending re-encodes to
+187). Satisfying this document's pixel-parity oracle therefore cannot be done in
+the export color model alone. The maintainer ruled on 2026-08-25 (recorded in
+PR #68 and its merged implementation), and this section canonizes that ruling:
+
+1. **ADR 0012 remains frozen for everything it governs.** The default frame
+   compositing stays premultiplied linear-sRGB; absent any opt-in key, frames
+   render byte-for-byte identically to the pre-ruling contract (pinned by Rust
+   unit tests proving default-vs-explicit-linear byte equality).
+2. **The private adapter seam gains one opt-in selector** — the
+   `render_frame_png` spec key ``blend_mode``: `"linear"` (default, unchanged)
+   or `"agg_srgb"` (source-over in encoded sRGB, matching the quality oracle's
+   arithmetic). Unrecognized values are a validation error, never a silent
+   fallback.
+3. **Export keeps linear.** The opt-in exists solely so the Matplotlib parity
+   path can reproduce Agg pixels under §5.4; it is not a user-facing color-model
+   choice, does not alter ADR 0012's export semantics, and never applies by
+   default. The strict adapter sets `"agg_srgb"` explicitly in its emitted spec.
+
+This is an additive amendment to [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md):
+it changes no accepted decision, adds no public facade surface, and carries no
+support claim. The dual-model arithmetic is pinned where it is implemented
+(`BlendMode` in the private python-frame module: both models' quantization
+results asserted on fully covered interior pixels, plus the byte-stability test
+in (1)).
+
 ## 6. Priority rationale ("major feature" test)
 
 A feature qualifies as *major* — and its row's level — by scoring all four criteria; no
@@ -371,3 +403,9 @@ document; until then `traceability-v1.0.md` is the canonical registry copy.
   thresholds, style semantics, TextPath-based text comparison) and the wave DoD column in
   Section 7. Docs-only canonization: no requirement row's meaning, level, or result was
   changed.
+- On 2026-08-26 Section 5.5 was added to canonize the maintainer's blend-mode ruling of
+  2026-08-25 (executed by the merged LP-FUNC-032 lane, PR #68): the private adapter seam's
+  opt-in `blend_mode: "agg_srgb"` selector exists for §5.4 pixel parity only; ADR 0012's
+  frozen linear-light default and export semantics are unchanged and byte-stability is
+  unit-pinned. Docs-only canonization of an already-executed decision: no requirement row,
+  gate condition, or accepted contract was changed.

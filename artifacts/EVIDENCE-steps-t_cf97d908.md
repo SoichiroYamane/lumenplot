@@ -89,6 +89,8 @@ Commands (venv `~/lp-verify/venv-evidence`, LD_LIBRARY_PATH isolib recipe):
   evidence stays at the pure-recurrence fixtures)
 - `python -m unittest discover -s tests.python -p "test_*.py"`
   -> Ran 476 tests, OK (skipped=2, both documented no-probe skips)
+  **[ERRATUM, 2026-08-26 — see the section below: the reported total was
+  inflated by duplicate collection; the real single-pass count is 238.]**
 - `python scripts/check_workspace_architecture.py` -> OK
 - `python -m unittest scripts.test_check_workspace_architecture`
   -> Ran 288 tests, OK
@@ -98,3 +100,35 @@ Commands (venv `~/lp-verify/venv-evidence`, LD_LIBRARY_PATH isolib recipe):
 
 No Rust-source changes are on this branch; the runs prove the tree stays at
 the sibling lane's merged green state.
+
+## Erratum (2026-08-26): full-discover test count
+
+The "Ran 476 tests" line above is wrong as a statement about how many tests
+exist in this tree. The steps-lane head (`b968c00`, merged as PR #70) contains
+exactly **238** static `def test_` definitions across the eleven
+`tests/python` modules; 238 is also the count a single-pass discovery
+collects. 476 is exactly 2 × 238: the recorded invocation collected every
+module twice (duplicate discovery roots/collection paths in that ad-hoc run),
+so each test executed and passed twice while the summary line doubled. The
+run itself was green — no fixture failed or was hidden — but the denominator
+was inflated.
+
+Correct reading of this lane's verification:
+
+| Command | Reported | Correct value |
+| --- | --- | --- |
+| `unittest tests.python.test_phase3b_steps` | Ran 23, OK | unchanged (single module, no duplication) |
+| `unittest discover -s tests.python -p "test_*.py"` | Ran 476 | **238** collected/executed once; skipped=2 as stated |
+
+The independent post-merge counts confirm this: the integration card's
+re-run at base `c291e1a` reports 260 against a static `def test_` census of
+exactly 260 (238 + the bar lane's deduplicated 22), and W1-FINAL's fresh
+detached re-run at `6fc8db0` reports "Ran 269" against a static census of
+exactly 269 (+9 = the mixed-workload integration suite). Every other line in
+the verification record (module suite, checker selftests, cargo gates) is
+single-pass and unaffected.
+
+Method note for future lanes: quote a discover total only together with its
+static `def test_` census; when the two disagree by an integer factor,
+suspect duplicate collection, not extra tests.
+
