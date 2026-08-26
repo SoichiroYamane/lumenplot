@@ -1544,7 +1544,30 @@ class _EligibilityPreflight:
         for ax in figure.get_axes():
             xlim = ax.get_xlim()
             ylim = ax.get_ylim()
-            if ax.get_xscale() != "linear" or ax.get_yscale() != "linear":
+            # LP-FUNC-004 (W3): each axis projects through its own scale.
+            # "linear" keeps the historical affine; base-10 "log" applies
+            # the fractional log placement Agg's transData produces. Any
+            # other scale records the explicit unsupported reason instead
+            # of silently skipping the axes (the former skip emitted an
+            # empty command surface for scaled frames -- a silent
+            # degradation LP-MPL-020 forbids). Base selection reads only
+            # public getters: matplotlib's own limit clamp (axis.py
+            # ``_set_lim``) guarantees positive increasing limits on an
+            # installed log axis, so log10 of both ends is well-defined;
+            # non-base-10 log scales refuse explicitly rather than touch
+            # private transform state.
+            x_scale = str(ax.get_xscale())
+            y_scale = str(ax.get_yscale())
+            if x_scale not in ("linear", "log") or y_scale not in (
+                "linear",
+                "log",
+            ):
+                self.unsupported(
+                    f"only linear and base-10 log scales are supported; "
+                    f"xscale={x_scale!r}, yscale={y_scale!r} is unsupported "
+                    "in strict mode",
+                    type(ax).__name__,
+                )
                 continue
             if not (xlim[0] < xlim[1] and ylim[0] < ylim[1]):
                 continue
@@ -1552,11 +1575,23 @@ class _EligibilityPreflight:
             x0, y0 = bbox.x0, bbox.y0
             w, h = bbox.width, bbox.height
 
-            def to_px_x(x: Any, _x0=x0, _w=w, _lim=xlim) -> Any:
-                return _x0 + (float(x) - _lim[0]) / (_lim[1] - _lim[0]) * _w
+            def _fraction(value: float, lo: float, hi: float,
+                          scale: str) -> float:
+                if scale == "log":
+                    return (math.log10(max(value, 1e-300))
+                            - math.log10(lo)) / (math.log10(hi)
+                                                 - math.log10(lo))
+                return (value - lo) / (hi - lo)
 
-            def to_px_y(y: Any, _y0=y0, _h=h, _lim=ylim) -> Any:
-                return _y0 + (float(y) - _lim[0]) / (_lim[1] - _lim[0]) * _h
+            def to_px_x(x: Any, _x0=x0, _w=w, _lim=xlim,
+                        _s=x_scale) -> Any:
+                return _x0 + _fraction(float(x), float(_lim[0]),
+                                       float(_lim[1]), _s) * _w
+
+            def to_px_y(y: Any, _y0=y0, _h=h, _lim=ylim,
+                        _s=y_scale) -> Any:
+                return _y0 + _fraction(float(y), float(_lim[0]),
+                                       float(_lim[1]), _s) * _h
 
             if self._clip_points is None:
                 self._clip_points = ((x0, y0), (x0 + w, y0 + h))
@@ -1600,19 +1635,22 @@ class _EligibilityPreflight:
                 # Decoration artists ride their real public zorders:
                 # gridlines (default 2) and tick strokes (default 2.01)
                 # sort with their Axis unit below default content lines,
-                # spines (default 2.5) above it.
+                # spines (default 2.5) above it. Tick locations project
+                # through the axis' own scale (LP-FUNC-004).
                 _emit(
                     ax.xaxis.get_zorder(),
                     _rank_of(ax.xaxis),
                     self._decoration_commands(
-                        ax, x0, y0, w, h, kinds=("gridline", "tick")
+                        ax, x0, y0, w, h, kinds=("gridline", "tick"),
+                        to_px_x=to_px_x, to_px_y=to_px_y,
                     ),
                 )
                 _emit(
                     ax.spines["bottom"].get_zorder(),
                     _rank_of(ax.spines["bottom"]),
                     self._decoration_commands(
-                        ax, x0, y0, w, h, kinds=("spine",)
+                        ax, x0, y0, w, h, kinds=("spine",),
+                        to_px_x=to_px_x, to_px_y=to_px_y,
                     ),
                 )
             for collection in ax.collections:
@@ -1756,6 +1794,8 @@ class _EligibilityPreflight:
         h: float,
         *,
         kinds: tuple[str, ...] = ("gridline", "tick", "spine"),
+        to_px_x=None,
+        to_px_y=None,
     ) -> list[dict]:
         """Build gridline/tick/spine path commands for one axes.
 
@@ -1766,6 +1806,11 @@ class _EligibilityPreflight:
         Gridlines and spines clip to their own axes rectangle; tick
         strokes protrude outside it, so they clip to the full canvas
         like Agg (which does not clip tick marks).
+
+        Tick locations project through the axis' own scale via the
+        caller's ``to_px_x``/``to_px_y`` closures (LP-FUNC-004): a log
+        axis places gridlines and tick strokes at the fractional log
+        position Agg uses, not at the linear fraction.
 
         Since LP-FUNC-035 the ``kinds`` selector splits the decoration
         surface along its artists' z-order boundaries: gridlines and
@@ -1828,17 +1873,17 @@ class _EligibilityPreflight:
                     if vertical
                     else (float(ylim[0]), float(ylim[1]))
                 )
+                project = to_px_x if vertical else to_px_y
                 for loc in axis.get_ticklocs():
                     value = float(loc)
                     if not (data_lo <= value <= data_hi):
                         continue
-                    fraction = (value - data_lo) / (data_hi - data_lo)
                     if vertical:
-                        at = x0 + fraction * w
+                        at = float(project(value))
                         p0 = (at, float(y0))
                         p1 = (at, float(y0 + h))
                     else:
-                        at = y0 + fraction * h
+                        at = float(project(value))
                         p0 = (float(x0), at)
                         p1 = (float(x0 + w), at)
                     commands.append(seg(p0, p1, representative,
@@ -1853,6 +1898,7 @@ class _EligibilityPreflight:
                                             (yaxis, False, ("left", "right"))):
                 ticks = axis.get_major_ticks()
                 locs = list(axis.get_ticklocs())
+                project = to_px_x if horizontal else to_px_y
                 for index, tick in enumerate(ticks):
                     if index >= len(locs):
                         break
@@ -1864,12 +1910,7 @@ class _EligibilityPreflight:
                     )
                     if not (data_lo <= value <= data_hi):
                         continue
-                    span_lo, span_hi = (
-                        (x0, x0 + w) if horizontal else (y0, y0 + h)
-                    )
-                    base = span_lo + (
-                        (value - data_lo) / (data_hi - data_lo)
-                    ) * (span_hi - span_lo)
+                    base = float(project(value))
                     for side in edges:
                         line = getattr(
                             tick,
