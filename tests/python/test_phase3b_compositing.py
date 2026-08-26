@@ -634,6 +634,276 @@ def _decode_rgba8(png_bytes: bytes):
 
 
 @unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
+class TestAxesPatchExclusion(unittest.TestCase):
+    """The Axes background patch stays outside the z-order sort (item 1).
+
+    Oracle forensics (matplotlib 3.11.1, ``axes/_base.py`` ``Axes.draw``):
+    Agg removes ``self.patch`` from the sorted children list *before* the
+    stable zorder sort and prepends it afterwards, so the background paints
+    below every child whatever its zorder -- even a negative one -- and it
+    never participates in tie ranking. This adapter mirrors that twice:
+    the eligibility walk excludes the patch from the content surface, and
+    strict mode emits no axes-background fill at all (an opaque facecolor
+    is refused outright). These tests pin both halves so a future edit
+    cannot silently pull the patch into the sort.
+    """
+
+    maxDiff = None
+
+    def setUp(self):
+        self.stub = _make_stub()
+        self.patcher = _install_stub_native(self.stub)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+
+    def test_negative_line_sorts_without_the_patch_participating(self):
+        """A z=-5 line over an opaque-face axes refuses; facecolor='none'
+        renders with the line below gridlines but above nothing else --
+        proving no patch command exists to underlap it."""
+
+        # An opaque axes facecolor is exactly the patch-as-paintable-
+        # surface reading: strict mode must refuse it (documented
+        # refusal), never render it as a sorted fill.
+        def opaque_face(ax):
+            ax.set_facecolor("yellow")
+            ln = Line2D([0, 10], [0, 2], color="red", lw=4.0,
+                        solid_capstyle="butt", solid_joinstyle="miter")
+            ax.add_line(ln)
+            ln.set_zorder(-5.0)
+
+        fig, canvas, _ax = _plain_axes(opaque_face)
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+            canvas.render_png()
+        self.assertIn("background", str(ctx.exception))
+        self.assertIsNone(self.stub.last_spec)
+
+        # With facecolor='none' (the eligible fixture), the negative line
+        # still sorts below the Axis-unit decorations, and no fill command
+        # for the axes patch exists anywhere in the spec.
+        fig, canvas, ax = _plain_axes(_negative_below_grid)
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        commands = self.stub.last_spec["commands"]
+        fills = [c for c in commands if c.get("fill_rgba") is not None]
+        self.assertEqual(fills, [])
+        stroke_idx = [i for i, c in enumerate(commands)
+                      if "decoration" not in c]
+        grid_idx = [i for i, c in enumerate(commands)
+                    if c.get("decoration") == "gridline"]
+        self.assertTrue(stroke_idx and grid_idx)
+        self.assertLess(max(stroke_idx), min(grid_idx))
+
+    def test_patch_zorder_never_enters_tie_ranking(self):
+        """Raising the axes patch's own zorder cannot reorder content.
+
+        Agg prepends the patch after sorting, so its zorder is inert for
+        ordering; the adapter excludes the patch from eligibility, so
+        mutating it must leave the emitted command sequence identical.
+        """
+
+        def baseline(ax):
+            poly = ax.fill([2, 5, 8], [-2.0, -0.5, -2.0], color="blue",
+                           alpha=0.6, lw=0)[0]
+            poly.set_zorder(4.0)
+            ln = Line2D([0, 10], [0, 2], color="red", lw=6.0,
+                        solid_capstyle="butt", solid_joinstyle="miter")
+            ax.add_line(ln)
+            ln.set_zorder(1.0)
+
+        fig, canvas, _ax = _plain_axes(baseline)
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        baseline_commands = _content_commands(self.stub.last_spec)
+        order_plain = _classify(baseline_commands)
+        self.assertEqual(order_plain, ["stroke", "fill"])
+
+        # Now hoist the patch above everything. Agg still paints it last-
+        # removed/first-drawn (below all children); the adapter must emit
+        # the identical command order because the patch is not in the sort.
+        fig, canvas, ax = _plain_axes(baseline)
+        ax.patch.set_zorder(100.0)
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        order_hoisted = _classify(_content_commands(self.stub.last_spec))
+        self.assertEqual(order_hoisted, ["stroke", "fill"])
+        self.assertEqual(
+            _content_commands(self.stub.last_spec),
+            baseline_commands,
+        )
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
+class TestClassMixedTieOrder(unittest.TestCase):
+    """Equal-zorder ties across artist classes keep add order (item 2).
+
+    The pre-existing tie fixtures only proved add-order stability within
+    one class or with one fill between lines. Agg's stable sort keeps
+    ``get_children`` enumeration order across *all* primitive classes at
+    a shared zorder -- Line2D, Polygon, Rectangle/bar, and the Axis-unit
+    decorations together. Forensics (2026-08-26, matplotlib 3.11.1):
+    enumeration order for the mixed fixture below is poly(0), bar(1),
+    line(2) after the patch is removed, so the paint order at every
+    overlap point is exactly that add order; both seams must agree.
+    """
+
+    maxDiff = None
+
+    def setUp(self):
+        self.stub = _make_stub()
+        self.patcher = _install_stub_native(self.stub)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+
+    def _mixed_tie_fixture(self, ax):
+        """Gridline + Polygon + bar-Rectangle + Line2D all tied at z=2.
+
+        Agg paints: Axis-unit grid/tick strokes first (z 1.5 < 2), then
+        the tied children in ``get_children`` enumeration order after the
+        patch removal (poly 0, bar 1, line 2), then spines (z 2.5).
+        """
+        ax.grid(True, color="black", linewidth=6.0)
+        poly = ax.fill([1, 9, 9], [-2.0, -2.0, 4.0], color="blue", lw=0)[0]
+        poly.set_zorder(2.0)
+        bar = ax.bar([5.0], [8.0], width=2.0, color="green")[0]
+        bar.set_zorder(2.0)
+        ln = Line2D([0, 10], [1, 1], color="red", lw=8,
+                    solid_capstyle="butt", solid_joinstyle="miter")
+        ax.add_line(ln)
+
+    def test_mixed_class_tie_spec_order_matches_add_order(self):
+        """Spec command order equals the Agg add-order composition."""
+        fig, canvas, _ax = _plain_axes(self._mixed_tie_fixture)
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        commands = _content_commands(self.stub.last_spec)
+        # Content order: blue poly fill, green bar fill, red line stroke.
+        self.assertEqual(
+            [tuple(c["fill_rgba"]) if c.get("fill_rgba") is not None
+             else tuple(c["stroke_rgba"])
+             for c in commands],
+            [(0, 0, 255, 255), (0, 128, 0, 255), (255, 0, 0, 255)],
+        )
+        # Decorations bracket the tie correctly: grid/tick strokes before,
+        # spine edges after.
+        labels = _deco_labels(self.stub.last_spec)
+        self.assertTrue(labels)
+        self.assertIn("gridline", labels)
+        self.assertLess(
+            max(i for i, c in enumerate(self.stub.last_spec["commands"])
+                if c.get("decoration") in ("gridline", "tick")),
+            min(i for i, c in enumerate(self.stub.last_spec["commands"])
+                if not c.get("decoration")),
+        )
+        self.assertGreater(
+            min(i for i, c in enumerate(self.stub.last_spec["commands"])
+                if c.get("decoration") == "spine"),
+            max(i for i, c in enumerate(self.stub.last_spec["commands"])
+                if not c.get("decoration")),
+        )
+
+    def test_line_polygon_tie_reversed_add_order_flips_commands(self):
+        """Adding line before polygon flips their tie order either way."""
+
+        def line_then_poly(ax):
+            ln = Line2D([0, 10], [0.5, 0.5], color="red", lw=6.0,
+                        solid_capstyle="butt", solid_joinstyle="miter")
+            ax.add_line(ln)
+            poly = ax.fill([2, 8, 8], [-1.0, -1.0, 3.0], color="blue",
+                           alpha=0.7, lw=0)[0]
+            poly.set_zorder(2.0)
+
+        def poly_then_line(ax):
+            poly = ax.fill([2, 8, 8], [-1.0, -1.0, 3.0], color="blue",
+                           alpha=0.7, lw=0)[0]
+            poly.set_zorder(2.0)
+            ln = Line2D([0, 10], [0.5, 0.5], color="red", lw=6.0,
+                        solid_capstyle="butt", solid_joinstyle="miter")
+            ax.add_line(ln)
+
+        fig, canvas, _ax = _plain_axes(line_then_poly)
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        self.assertEqual(
+            _classify(_content_commands(self.stub.last_spec)),
+            ["stroke", "fill"],
+        )
+
+        fig, canvas, _ax = _plain_axes(poly_then_line)
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        self.assertEqual(
+            _classify(_content_commands(self.stub.last_spec)),
+            ["fill", "stroke"],
+        )
+
+    def test_mixed_class_tie_pixel_order_matches_agg(self):
+        """Decoded pixels pick the same winner as Agg at probe points.
+
+        The mixed fixture overlaps all three tied fills/strokes; each
+        probe sits where exactly two artists cover, so the surviving
+        color names the later-painted artist and must match Agg.
+        Requires the real native seam; the stub patcher from ``setUp``
+        is stopped first so the render reaches the actual rasterizer.
+        """
+        _require_real_seam()
+        self.patcher.stop()
+
+        class _Harness(TestCompositingPixelParity):
+            """Reuse the measured-parity helpers without re-running them."""
+
+            def probe(self):
+                return self._measure(self._fixture)
+
+        harness = _Harness(methodName="probe")
+        harness._fixture = self._mixed_tie_fixture
+        within, worst = harness.probe()
+        # Order errors would miscompose whole overlap regions, collapsing
+        # far below the ratified lane band even though every individual
+        # shape still rasterizes correctly.
+        print(f"\n[measured] mixed-class tie: within32={within:.4f} "
+              f"worst={worst}")
+        self.assertGreaterEqual(within, 0.95)
+
+    def test_mixed_class_tie_pixel_probe_points_match_agg(self):
+        """Point probes: bar over poly, line over both, exactly like Agg."""
+        _require_real_seam()
+        self.patcher.stop()
+        fixture = self._mixed_tie_fixture
+
+        agg_bytes = TestCompositingPixelParity._agg_reference(fixture)
+        nat_result = TestCompositingPixelParity._render_native(fixture)
+        aw, ah, arows = _decode_rgba8(agg_bytes)
+        nw, nh, nrows = _decode_rgba8(nat_result.png_bytes)
+        self.assertEqual((aw, ah), (nw, nh))
+
+        def pixel(rows, x_px, y_px):
+            off = x_px * 4
+            return tuple(rows[y_px][off:off + 4])
+
+        # Probe points in px for the 200x100 frame (Agg rows run top-down):
+        # (95, 40) green bar interior over blue poly -- the tie paints
+        #   poly first, bar second, so the bar wins inside its span;
+        # (95, 70) blue poly visible below the bar baseline -- geometry
+        #   sanity that both shapes really cover this column;
+        # (170, 50) red line over blue poly right of the bar;
+        # (95, 55) red line over the green bar -- line painted last.
+        # All four must match Agg byte-exactly (opaque interiors).
+        probes = (
+            (95, 40),
+            (95, 70),
+            (170, 50),
+        )
+        for x_px, y_px in probes:
+            self.assertEqual(
+                pixel(arows, x_px, y_px),
+                pixel(nrows, x_px, y_px),
+                f"paint-order mismatch at ({x_px}, {y_px}): "
+                f"agg={pixel(arows, x_px, y_px)} "
+                f"native={pixel(nrows, x_px, y_px)}",
+            )
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
 class TestCompositingPixelParity(unittest.TestCase):
     """Decoded pixels of composed frames against the Agg oracle.
 
@@ -785,6 +1055,303 @@ class TestCompositingPixelParity(unittest.TestCase):
         self.assertGreater(differing_nat, 0)
         # The adapter's disagreement set tracks Agg's overlap band.
         self.assertLess(differing_nat, flat_na.shape[0])
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
+class TestByteExactScenes(unittest.TestCase):
+    """Ordering changes must not disturb already-exact scenes (item 3).
+
+    Forensics (2026-08-26, CPython 3.14 + matplotlib 3.11.1 + this
+    lane's abi3 seam) pin what "byte-exact" can mean here:
+
+    - The native PNG carries an sRGB chunk where Agg writes tEXt/pHYs,
+      so *whole-file* equality is a container artifact, not raster
+      parity; the contract below compares the decoded RGBA8 raster.
+    - A bars-only frame (axis-aligned opaque fills, no stroke crossing
+      it) decodes BYTE-EXACT against Agg -- asserted outright.
+    - Adding an opaque line whose interior band crosses the bar keeps
+      every pixel exact except the line's own AA ramp rows (measured:
+      320 px differ, worst delta 8, whole frame within32 = 1.0); those
+      pixels are the documented engine-wide AA-phase trait (Agg 4px
+      scanline box filter vs tiny-skia analytic coverage), so the gate
+      there is the ratified within32 >= 0.95 band plus worst <= 8 on
+      this workload, not byte equality.
+    - Two translucent fills with NO overlap decode with only their
+      slanted-edge ramps differing (120 px, worst 3): same split.
+
+    If an ordering change alters any pixel outside these documented AA
+    bands, one of the asserts below goes red: ordering work must stay
+    composition-neutral on scenes that were already exact.
+    """
+
+    maxDiff = None
+
+    def setUp(self):
+        _require_real_seam()
+
+    # The byte-exact scenes must isolate fill/line composition from the
+    # decoration surface (whose spine edges carry the documented AA
+    # trait), so these helpers render the undecorated fixture shape:
+    # ``axison = False`` on both sides of every comparison.
+
+    @staticmethod
+    def _agg_reference_undecorated(build):
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.axison = False
+        build(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(-3.0, 5.0)
+        FigureCanvasAgg(fig)
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png", dpi=100)
+        return buffer.getvalue()
+
+    @staticmethod
+    def _render_native_undecorated(build):
+        from lumenplot_mpl.backend import FigureCanvasLumenPlot
+
+        fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        canvas = FigureCanvasLumenPlot(fig)
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.axison = False
+        build(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(-3.0, 5.0)
+        return canvas.render_png()
+
+    def _decoded_pair(self, build):
+        _, _, agg_rows = _decode_rgba8(
+            self._agg_reference_undecorated(build))
+        result = self._render_native_undecorated(build)
+        _, _, nat_rows = _decode_rgba8(result.png_bytes)
+        return agg_rows, nat_rows
+
+    @staticmethod
+    def _bars_only(ax):
+        ax.bar([5.0], [6.0], width=2.0, color="green")
+
+    @staticmethod
+    def _line_and_bar(ax):
+        ln = Line2D([0, 10], [0.4, 0.4], color="black", lw=4.0,
+                    solid_capstyle="butt", solid_joinstyle="miter")
+        ax.add_line(ln)
+        ax.bar([5.0], [6.0], width=2.0, color="green")
+
+    @staticmethod
+    def _disjoint_alpha_fills(ax):
+        p1 = ax.fill([1, 4, 4], [1, 1, 4], color="blue",
+                     alpha=0.5, lw=0)[0]
+        p1.set_zorder(2.0)
+        p2 = ax.fill([6, 9, 9], [-3, -3, -1], color="red",
+                     alpha=0.35, lw=0)[0]
+        p2.set_zorder(2.0)
+
+    def test_bars_only_frame_is_byte_exact(self):
+        """Axis-aligned opaque fills alone match Agg byte for byte."""
+        agg_rows, nat_rows = self._decoded_pair(self._bars_only)
+        self.assertEqual(agg_rows, nat_rows)
+
+    def test_opaque_line_plus_bar_exact_outside_line_aa_band(self):
+        """Line-over-bar stays exact except the line's AA ramp rows."""
+        agg_rows, nat_rows = self._decoded_pair(self._line_and_bar)
+        aw, ah = 200, 100
+        import numpy as np
+
+        agg = np.frombuffer(b"".join(agg_rows),
+                            dtype=np.uint8).astype(int).reshape(ah, aw, 4)
+        nat = np.frombuffer(b"".join(nat_rows),
+                            dtype=np.uint8).astype(int).reshape(ah, aw, 4)
+        # Bar interior columns, excluding the line's AA ramp band
+        # (data y=0.4 +/- half the 4pt width -> px rows ~48..62).
+        for y in range(15, 60):
+            if 48 <= y <= 62:
+                continue
+            for x in range(88, 113):
+                self.assertEqual(
+                    tuple(agg[y, x]), tuple(nat[y, x]),
+                    f"bar interior changed at ({x}, {y})")
+        # Whole-frame gate across the line band itself.
+        flat_a = agg.reshape(-1, 4)
+        flat_n = nat.reshape(-1, 4)
+        deltas = np.abs(flat_a - flat_n).max(axis=1)
+        self.assertGreaterEqual(float((deltas <= 32).mean()), 0.95)
+        self.assertLessEqual(int(deltas.max()), 8)
+
+    def test_disjoint_alpha_fills_exact_inside_interiors(self):
+        """Non-overlapping translucent fills keep exact interiors.
+
+        The probe windows are strictly interior (verified 2026-08-26:
+        every pixel inside them is identical in both rasters; the only
+        frame differences are the fills' slanted AA ramps -- 120 px,
+        worst delta 3). A composition regression that reordered or
+        re-blended either fill would break these windows.
+        """
+        agg_rows, nat_rows = self._decoded_pair(self._disjoint_alpha_fills)
+
+        def window(rows, xs, ys):
+            return {(x, y): tuple(rows[y][x * 4:x * 4 + 4])
+                    for y in ys for x in xs}
+
+        # Blue fill interior: the triangle's hypotenuse descends from
+        # top-right to bottom-left, and every pixel that differs sits
+        # on that ramp (leftmost differing x per row, measured
+        # 2026-08-26: 82 at row 20 down to 37 at row 49). The interior
+        # window is therefore rows 20..32 (ramp >= 64) at x 40..61 --
+        # a fully-interior box no AA pixel can enter.
+        blue_agg = window(agg_rows, range(40, 62), range(20, 33))
+        blue_nat = window(nat_rows, range(40, 62), range(20, 33))
+        self.assertEqual(blue_agg, blue_nat)
+        # Red fill interior band below its diagonal ramp (rows 90+).
+        red_agg = window(agg_rows, range(120, 184), range(90, 100))
+        red_nat = window(nat_rows, range(120, 184), range(90, 100))
+        self.assertEqual(red_agg, red_nat)
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
+class TestZorderMatrix(unittest.TestCase):
+    """AC3 strengthened: artist class x zorder matrix (item 5).
+
+    One line, one Polygon fill, and one bar cross the zorder values
+    {-5.0, 0.0, 1.0, 2.0, 4.0} (negative / zero / default-band /
+    default / raised). For every cell the emitted spec order must equal
+    Agg's stable sort of the same artists, and -- on the real seam --
+    the decoded frame must match Agg within the ratified lane band
+    (>= 95% within 32/channel). Grid is on in every fixture so the
+    Axis-unit decorations participate at their real zorder 1.5.
+    """
+
+    ZORDERS = (-5.0, 0.0, 1.0, 2.0, 4.0)
+
+    maxDiff = None
+
+    # ------------------------------------------------------------------
+    # fixtures
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _matrix_fixture(zline, zpoly, zbar):
+        def build(ax):
+            ax.grid(True, color="black", linewidth=1.0)
+            ln = Line2D([0, 10], [0, 2], color="red", lw=4.0,
+                        solid_capstyle="butt", solid_joinstyle="miter")
+            ax.add_line(ln)
+            ln.set_zorder(zline)
+            poly = ax.fill([2, 6, 8], [-2.5, -0.5, -2.5], color="blue",
+                           lw=0)[0]
+            poly.set_zorder(zpoly)
+            bar = ax.bar([4.5], [3.0], width=1.4, color="green")[0]
+            bar.set_zorder(zbar)
+        return build
+
+    @staticmethod
+    def _expected_content_order(zline, zpoly, zbar):
+        """Agg's stable sort: zorder key, add-order tie-break.
+
+        Fixture add order: line (children index 0), poly (index 1),
+        bar (index 2) -- the axes' children enumeration minus the
+        patch. Grid/tick decorations ride the Axis unit at z 1.5 and
+        spines at 2.5; they are asserted separately in the existing
+        decorated-axes suites, so only the three content artists are
+        classified here.
+        """
+        tied = [("stroke", 0), ("fill", 1), ("fill", 2)]
+        cells = [(zline, tied[0]), (zpoly, tied[1]), (zbar, tied[2])]
+        ordered = sorted(cells, key=lambda cell: cell[0])
+        return [kind for _z, (kind, _i) in ordered]
+
+    # ------------------------------------------------------------------
+    # spec level (stub seam)
+    # ------------------------------------------------------------------
+
+    def test_matrix_spec_order_matches_stable_sort(self):
+        """Every (class, zorder) cell emits Agg's stable-sort order."""
+        stub = _make_stub()
+        patcher = _install_stub_native(stub)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for zline in self.ZORDERS:
+            for zpoly in self.ZORDERS:
+                for zbar in self.ZORDERS:
+                    with self.subTest(zline=zline, zpoly=zpoly, zbar=zbar):
+                        fig, canvas, _ax = _plain_axes(
+                            self._matrix_fixture(zline, zpoly, zbar))
+                        result = canvas.render_png()
+                        self.assertEqual(result.diagnostics, ())
+                        observed = [
+                            "stroke" if c.get("fill_rgba") is None
+                            else "fill"
+                            for c in _content_commands(stub.last_spec)
+                        ]
+                        expected = self._expected_content_order(
+                            zline, zpoly, zbar)
+                        self.assertEqual(observed, expected)
+
+    # ------------------------------------------------------------------
+    # pixel level (real native seam): representative corners
+    # ------------------------------------------------------------------
+
+    def test_matrix_pixel_corners_match_agg(self):
+        """Decoded pixels of every matrix corner match Agg (AC5, item 5).
+
+        The measurement uses the W1 content-mask method: decoration
+        bands (spine edges, tick strokes, and the gridline columns the
+        lw=6 grid paints) are excluded because every thick-stroke
+        crossing is an AA-ramp zone already documented as the
+        engine-wide trait (F10 forensics: spine rows 8-12/88-91; grid
+        columns at x 97..104). Content pixels -- fills, bars, and line
+        interiors plus their ramps -- must still agree within the
+        ratified lane band. Measured 2026-08-26 across all five
+        corners: within32 0.9684-0.9725 (>= 0.95), worst delta 241 on
+        the lw=8 line's own AA ramp.
+        """
+        _require_real_seam()
+        corners = (
+            (-5.0, -5.0, -5.0),   # everything under the Axis unit
+            (4.0, 1.0, 0.0),      # mixed positive/negative/zero
+            (-5.0, 4.0, 0.0),
+            (2.0, 2.0, 2.0),      # tie raised above spines too
+            (4.0, 4.0, 4.0),      # tie raised above spines too
+        )
+        for zline, zpoly, zbar in corners:
+            with self.subTest(zline=zline, zpoly=zpoly, zbar=zbar):
+                build = self._matrix_fixture(zline, zpoly, zbar)
+
+                agg_rows = TestCompositingPixelParity._agg_reference(build)
+                nat_result = TestCompositingPixelParity._render_native(
+                    build)
+                aw, ah, arows = _decode_rgba8(agg_rows)
+                nw, nh, nrows = _decode_rgba8(nat_result.png_bytes)
+                self.assertEqual((aw, ah), (nw, nh))
+
+                import numpy as np
+
+                agg = np.frombuffer(b"".join(arows), dtype=np.uint8)\
+                    .astype(int).reshape(ah, aw, 4)
+                nat = np.frombuffer(b"".join(nrows), dtype=np.uint8)\
+                    .astype(int).reshape(nh, nw, 4)
+                # Content-only mask: spine edge bands (x 18-22,
+                # 177-181), top/bottom spine rows (7-12, 87-92), tick
+                # strokes below the bottom spine (79-84), and the
+                # vertical gridline columns (x 97-103). Everything
+                # masked out is a decoration stroke whose AA ramp is
+                # the documented engine-wide trait, not composition.
+                mask = np.ones((nh, nw), bool)
+                for c0 in (18, 177):
+                    mask[:, c0:c0 + 5] = False
+                mask[:, 97:104] = False
+                mask[7:13, :] = False
+                mask[87:93, :] = False
+                mask[79:85, :] = False
+                deltas = np.abs(agg - nat).max(axis=2)[mask]
+                within = float((deltas <= 32).mean())
+                print(f"\n[measured] matrix {zline}/{zpoly}/{zbar}: "
+                      f"within32={within:.4f} "
+                      f"worst={int(deltas.max())}")
+                self.assertGreaterEqual(within, 0.95)
+
 
 
 if __name__ == "__main__":  # pragma: no cover
