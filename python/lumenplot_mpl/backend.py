@@ -924,9 +924,14 @@ class _EligibilityPreflight:
         ``Axis.get_major_ticks``/``get_ticklocs`` in the same order the
         collector observes their ``draw_text`` callbacks (x-axis first,
         then y-axis; ``label1`` before ``label2`` per tick). Only visible
-        non-empty labels enter the queue; ``Tick.draw`` skips invisible
-        ones exactly like ``Text.draw`` skips empty strings, so the queue
-        stays aligned with the live stream.
+        non-empty labels whose tick location lies inside
+        ``Axis.get_view_interval()`` enter the queue: ``Tick.draw`` skips
+        out-of-view ticks entirely, so an unfiltered enumeration would
+        accept labels the renderer never draws (observed with date/unit
+        locators whose end ticks fall outside the data margins --
+        LP-FUNC-037 fixtures pin this). Filtering by the same public view
+        interval keeps the queue aligned with the live stream without
+        duplicating Matplotlib's layout work.
         """
         entries: list[dict] = []
         for ax in figure.get_axes():
@@ -935,7 +940,17 @@ class _EligibilityPreflight:
             if not bool(getattr(ax, "axison", True)):
                 continue
             for axis in (ax.xaxis, ax.yaxis):
-                for tick in axis.get_major_ticks():
+                view_lo, view_hi = (
+                    float(axis.get_view_interval()[0]),
+                    float(axis.get_view_interval()[1]),
+                )
+                locations = [float(loc) for loc in axis.get_ticklocs()]
+                for index, tick in enumerate(axis.get_major_ticks()):
+                    if index >= len(locations):
+                        break
+                    location = locations[index]
+                    if not (view_lo <= location <= view_hi):
+                        continue
                     for label in (tick.label1, tick.label2):
                         text = label.get_text()
                         if not label.get_visible() or text == "":
@@ -1986,8 +2001,13 @@ class _EligibilityPreflight:
         if not isinstance(line, matplotlib.lines.Line2D):
             self.unsupported("non-line artist reached rendering", name)
             return None
-        xdata = list(line.get_xdata())
-        ydata = list(line.get_ydata())
+        # LP-FUNC-037: ``orig=False`` is the unit-processed route -- date
+        # and other unit converters have already resolved to floats here
+        # (parity draft §4, F-10), matching both Agg's drawn geometry and
+        # this builder's axes-limits projection. The raw route would hand
+        # back datetime objects that the finite filter must refuse.
+        xdata = list(line.get_xdata(orig=False))
+        ydata = list(line.get_ydata(orig=False))
         if len(xdata) != len(ydata) or not xdata:
             self.unsupported("mismatched or empty line data", name)
             return None
