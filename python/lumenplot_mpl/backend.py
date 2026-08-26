@@ -1515,22 +1515,37 @@ class _EligibilityPreflight:
             decorated = bool(getattr(ax, "axison", True))
             # LP-FUNC-035 (D1): one stable z-order sort per axes over
             # every eligible child, exactly reproducing the ``sorted``
-            # semantics of ``Axes.draw``. Each entry carries the command
-            # dicts plus a ``content`` flag so tie groups can be ordered
-            # class-first (collections, then patches, then lines) inside
-            # equal-zorder runs -- Agg's own add order within one class,
-            # and the historical emission order of this adapter.
-            entries: list[tuple[float, int, int, list[dict], bool]] = []
+            # semantics of ``Axes.draw``. Matplotlib draws from one
+            # add-ordered child list (public ``Axes.get_children``), so
+            # equal-zorder ties keep pure add order across primitive
+            # classes; the public children enumeration supplies that
+            # rank. Decoration bundles ride the enumerated rank of
+            # their representative artist (the x-axis unit, the bottom
+            # spine).
+            artist_rank: dict[int, int] = {
+                id(child): rank
+                for rank, child in enumerate(ax.get_children())
+            }
+            next_rank = len(artist_rank)
+            entries: list[tuple[float, int, list[dict]]] = []
             seq = 0
 
-            def _emit(zorder: float, cls: int, cmds: list[dict],
-                      content: bool) -> None:
+            def _emit(zorder: float, rank: int,
+                      cmds: list[dict]) -> None:
                 nonlocal seq
                 if cmds:
-                    entries.append(
-                        (float(zorder), cls, seq, cmds, content)
-                    )
+                    entries.append((float(zorder), rank, cmds))
                     seq += 1
+
+            def _rank_of(artist: Any) -> int:
+                nonlocal next_rank
+                rank = artist_rank.get(id(artist))
+                if rank is None:
+                    # A live artist absent from the enumeration (should
+                    # not happen) keeps a deterministic tail rank.
+                    rank = next_rank
+                    next_rank += 1
+                return rank
 
             if decorated:
                 # Decoration artists ride their real public zorders:
@@ -1538,18 +1553,18 @@ class _EligibilityPreflight:
                 # sort with their Axis unit below default content lines,
                 # spines (default 2.5) above it.
                 _emit(
-                    ax.xaxis.get_zorder(), 0,
+                    ax.xaxis.get_zorder(),
+                    _rank_of(ax.xaxis),
                     self._decoration_commands(
                         ax, x0, y0, w, h, kinds=("gridline", "tick")
                     ),
-                    False,
                 )
                 _emit(
-                    ax.spines["bottom"].get_zorder(), 1,
+                    ax.spines["bottom"].get_zorder(),
+                    _rank_of(ax.spines["bottom"]),
                     self._decoration_commands(
                         ax, x0, y0, w, h, kinds=("spine",)
                     ),
-                    False,
                 )
             for collection in ax.collections:
                 if not isinstance(
@@ -1558,8 +1573,9 @@ class _EligibilityPreflight:
                 ):
                     continue
                 fill = self._fill_command(collection, to_px_x, to_px_y)
-                _emit(collection.get_zorder(), 0,
-                      [fill] if fill is not None else [], True)
+                _emit(collection.get_zorder(),
+                      _rank_of(collection),
+                      [fill] if fill is not None else [])
             for patch in ax.patches:
                 if not (
                     isinstance(patch, matplotlib.patches.Polygon)
@@ -1567,14 +1583,14 @@ class _EligibilityPreflight:
                 ):
                     continue
                 fill = self._fill_command(patch, to_px_x, to_px_y)
-                _emit(patch.get_zorder(), 1,
-                      [fill] if fill is not None else [], True)
+                _emit(patch.get_zorder(), _rank_of(patch),
+                      [fill] if fill is not None else [])
             for line in ax.get_lines():
-                spec = self._line_command(line, to_px_x, to_px_y)
-                _emit(line.get_zorder(), 2,
-                      [spec] if spec is not None else [], True)
-            entries.sort(key=lambda entry: entry[:3])
-            for _, _, _, entry_commands, _content in entries:
+                spec_command = self._line_command(line, to_px_x, to_px_y)
+                _emit(line.get_zorder(), _rank_of(line),
+                      [spec_command] if spec_command is not None else [])
+            entries.sort(key=lambda entry: entry[:2])
+            for _, _, entry_commands in entries:
                 commands.extend(entry_commands)
 
         # Tick label glyphs paint above lines and decorations in Matplotlib
