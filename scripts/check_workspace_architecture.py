@@ -93,6 +93,15 @@ METAL_TARGET_EXTERNAL_DEPENDENCIES = {
 }
 # The exact Cargo target-gate expression the pinned edges live behind.
 METAL_TARGET_GATE = 'cfg(target_os = "macos")'
+# Option A from the accepted architecture decision permits only the accepted
+# system-device boundary.  These are exact path, symbol, signature, and
+# statement anchors; they are not a crate-wide unsafe waiver.
+METAL_FFI_SOURCE_PATH = "src/device.rs"
+METAL_FFI_EXTERN_SIGNATURE = "fn MTLCreateSystemDefaultDevice() -> *mut AnyObject;"
+METAL_FFI_CALL_STATEMENTS = (
+    "let raw = unsafe { MTLCreateSystemDefaultDevice() };",
+    "let inner = unsafe { Retained::from_raw(raw) }?;",
+)
 EXPORT_TYPES = {"ExportErrorKind", "ExportError", "PngSpec"}
 EXPORT_ENUM_VARIANTS = {
     "ExportErrorKind": {
@@ -4418,16 +4427,117 @@ def _check_bench_source(package_dir: Path, root: Path, errors: list[str]) -> Non
         errors.append("package lumenplot-bench: public item is not allowed in src/lib.rs")
 
 
-def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> None:
-    """Enforce the B2-P Metal-lane stub contract while the sentinel is active.
+def _normalise_rust_whitespace(source: str) -> str:
+    """Compare a small allowlisted Rust fragment without accepting new items."""
 
-    The prototype lane may carry Rust source beyond `src/lib.rs` only while
-    `_metal_activation_reason` fires.  Unlike the accepted O-08 bench
-    inventory, the prototype module set is deliberately not pinned yet; the
-    follow-up prototype task owns that decision.  `src/lib.rs` itself must
-    remain documentation-only with no public items so the crate boundary
-    never widens from documentation.
+    return " ".join(source.split())
+
+
+def _metal_raw_extern_c(source: str, position: int) -> bool:
+    """Return whether the code token at *position* is exactly ``extern "C"``."""
+
+    cursor = position + len("extern")
+    # The code-only pass blanks ABI string literals, so inspect the raw source
+    # here.  Rust comments are token trivia; skip them without changing the
+    # source offset used by the caller.  Block comments may nest.
+    while cursor < len(source):
+        if source[cursor].isspace():
+            cursor += 1
+            continue
+        if source.startswith("//", cursor):
+            newline = source.find("\n", cursor + 2)
+            if newline < 0:
+                return False
+            cursor = newline + 1
+            continue
+        if source.startswith("/*", cursor):
+            depth = 1
+            cursor += 2
+            while cursor < len(source) and depth:
+                if source.startswith("/*", cursor):
+                    depth += 1
+                    cursor += 2
+                elif source.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+            if depth:
+                return False
+            continue
+        break
+    abi_match = re.match(r'"([^"\\]*)"(?!\w)', source[cursor:])
+    return abi_match is not None and abi_match.group(1) == "C"
+
+
+def _metal_allowlisted_positions(
+    relative_path: str,
+    source: str,
+    code: str,
+) -> tuple[set[int], set[int]]:
+    """Return exact allowed ``unsafe`` and ``extern "C"`` token positions.
+
+    The exception is deliberately structural and count-checked.  A matching
+    token in any other file, a duplicate call, a changed declaration body, or
+    an additional item receives no allowance and is reported by the caller.
     """
+
+    if relative_path != METAL_FFI_SOURCE_PATH:
+        return set(), set()
+
+    allowed_unsafe: set[int] = set()
+    allowed_extern: set[int] = set()
+
+    # The two accepted call sites are exact statements, not expression or
+    # symbol-prefix patterns.  Requiring one occurrence of each prevents a
+    # copied call from inheriting the exception.
+    statement_positions: dict[str, list[int]] = {
+        statement: [] for statement in METAL_FFI_CALL_STATEMENTS
+    }
+    line_start = 0
+    for line in code.splitlines(keepends=True):
+        normalised = _normalise_rust_whitespace(line)
+        for statement in METAL_FFI_CALL_STATEMENTS:
+            if normalised == statement:
+                unsafe_position = line.find("unsafe")
+                if unsafe_position >= 0:
+                    statement_positions[statement].append(line_start + unsafe_position)
+        line_start += len(line)
+    for positions in statement_positions.values():
+        if len(positions) == 1:
+            allowed_unsafe.add(positions[0])
+
+    # The declaration is the sole item in the exact unsafe extern block.  The
+    # raw source is consulted only to preserve the ABI string literal, which
+    # the normal lexical pass intentionally blanks.
+    if code.count("fn MTLCreateSystemDefaultDevice") != 1:
+        return allowed_unsafe, allowed_extern
+    for unsafe_match in re.finditer(r"\bunsafe\b", code):
+        cursor = unsafe_match.end()
+        while cursor < len(code) and code[cursor].isspace():
+            cursor += 1
+        if not code.startswith("extern", cursor):
+            continue
+        extern_position = cursor
+        if not _metal_raw_extern_c(source, extern_position):
+            continue
+        opening = code.find("{", extern_position + len("extern"))
+        if opening >= len(code):
+            continue
+        closing = _find_matching_brace(code, opening)
+        if closing >= len(code):
+            continue
+        body = _normalise_rust_whitespace(code[opening + 1 : closing])
+        if body != _normalise_rust_whitespace(METAL_FFI_EXTERN_SIGNATURE):
+            continue
+        allowed_unsafe.add(unsafe_match.start())
+        allowed_extern.add(extern_position)
+        break
+    return allowed_unsafe, allowed_extern
+
+
+def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the B2-P Metal source and confined FFI-boundary contract."""
 
     source_dir = package_dir / "src"
     rust_files = sorted(
@@ -4449,6 +4559,37 @@ def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> Non
         errors.append("package lumenplot-render-metal: public item is not allowed in src/lib.rs")
     if NO_MANGLE_RE.search(code):
         errors.append("package lumenplot-render-metal: exported ABI is not allowed")
+
+    # Defense-in-depth over the complete source set.  Only the exact
+    # named device declaration and its two ownership-preserving call sites are
+    # exempt; all other unsafe or C ABI declarations fail closed.  The source
+    # inventory itself remains open for later prototype modules; each future
+    # module inherits no FFI allowance.
+    for module_path in sorted(source_dir.rglob("*.rs")):
+        try:
+            module_source = module_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            errors.append(
+                f"package lumenplot-render-metal: cannot read {_logical_path(module_path, root)}"
+            )
+            continue
+        module_code = _strip_rust_comments_and_literals(module_source)
+        relative_path = module_path.relative_to(source_dir.parent).as_posix()
+        allowed_unsafe, allowed_extern = _metal_allowlisted_positions(
+            relative_path,
+            module_source,
+            module_code,
+        )
+        for unsafe_match in re.finditer(r"\bunsafe\b", module_code):
+            if unsafe_match.start() not in allowed_unsafe:
+                errors.append("package lumenplot-render-metal: unsafe code is not allowed")
+        if NO_MANGLE_RE.search(module_code):
+            errors.append("package lumenplot-render-metal: exported ABI is not allowed")
+        for extern_match in re.finditer(r"\bextern\b", module_code):
+            if not _metal_raw_extern_c(module_source, extern_match.start()):
+                continue
+            if extern_match.start() not in allowed_extern:
+                errors.append('package lumenplot-render-metal: extern "C" is not allowed')
 
 
 def _check_package_source(
