@@ -81,6 +81,32 @@ def reset_bench_crate_to_baseline(root: Path) -> None:
     source.write_text(BASELINE_BENCH_SOURCE, encoding="utf-8")
 
 
+BASELINE_METAL_SOURCE = """//! Private B2-P prototype documentation stub for the Metal render lane.
+//!
+//! Binding implementation is deferred until its accepted bridge contract lands.
+"""
+
+
+def reset_metal_crate_to_baseline(root: Path) -> None:
+    source = root / "crates/lumenplot-render-metal/src/lib.rs"
+    source_dir = root / "crates/lumenplot-render-metal/src"
+    # The integration fixture is copied from a tree that may already contain
+    # the accepted prototype.  Metal tests activate that shape explicitly so
+    # every mutation starts from the documentation-only Phase-0 baseline.
+    if source_dir.is_dir():
+        for stale in sorted(source_dir.iterdir()):
+            if stale.name == "lib.rs":
+                continue
+            if stale.is_dir():
+                shutil.rmtree(stale)
+            else:
+                stale.unlink()
+    tests_dir = root / "crates/lumenplot-render-metal/tests"
+    if tests_dir.is_dir():
+        shutil.rmtree(tests_dir)
+    source.write_text(BASELINE_METAL_SOURCE, encoding="utf-8")
+
+
 class WorkspaceArchitectureMutationTests(unittest.TestCase):
     def fixture(self) -> tempfile.TemporaryDirectory[str]:
         temporary = tempfile.TemporaryDirectory(prefix="lumenplot-architecture-")
@@ -93,6 +119,7 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
         shutil.copytree(ROOT / "crates", fixture_root / "crates")
         reset_python_bridge_to_baseline(fixture_root)
         reset_bench_crate_to_baseline(fixture_root)
+        reset_metal_crate_to_baseline(fixture_root)
         scripts_dir = fixture_root / "scripts"
         scripts_dir.mkdir()
         shutil.copy2(CHECKER, scripts_dir / CHECKER.name)
@@ -1983,16 +2010,32 @@ fn body_macro_is_below_root_scope() {
     # ------------------------------------------------------------------
 
     def add_metal_module_files(self, root: Path) -> None:
-        """Write prototype-lane module files beyond the documentation-only stub."""
+        """Write the exact device source accepted by the Metal FFI allowlist."""
 
         source_dir = root / "crates/lumenplot-render-metal/src"
-        (source_dir / "command.rs").write_text(
-            "pub(crate) fn encode() -> usize {\n    0\n}\n",
+        # Copy the checked-in implementation rather than a reduced lookalike;
+        # the positive test therefore exercises the current exact boundary.
+        shutil.copy2(
+            ROOT / "crates/lumenplot-render-metal/src/device.rs",
+            source_dir / "device.rs",
+        )
+
+    def add_metal_compile_gate(self, root: Path) -> None:
+        """Write the required auto-discovered integration-test compile gate."""
+
+        tests_dir = root / "crates/lumenplot-render-metal/tests"
+        tests_dir.mkdir(exist_ok=True)
+        (tests_dir / "compile_gate.rs").write_text(
+            "#![cfg(target_os = \"macos\")]\n\n"
+            "#[path = \"../src/device.rs\"]\n"
+            "mod device;\n",
             encoding="utf-8",
         )
 
     def activate_metal_lane(self, root: Path) -> None:
+        """Activate the lane with the exact shape the checker pins."""
         self.add_metal_module_files(root)
+        self.add_metal_compile_gate(root)
 
     def strip_metal_target_dependencies(self, root: Path) -> None:
         """Restore the plain Phase-0 stub manifest without the pinned gate."""
@@ -2014,12 +2057,156 @@ fn body_macro_is_below_root_scope() {
             "package lumenplot-render-metal: source must be documentation-only",
         )
 
-    def test_metal_active_inventory_accepts_extra_module_file(self) -> None:
+    def test_metal_active_full_pinned_shape_passes_checker(self) -> None:
         with self.fixture() as temporary:
             fixture_root = Path(temporary)
             self.activate_metal_lane(fixture_root)
             returncode, output = self.run_checker(fixture_root)
             self.assertEqual(returncode, 0, output)
+
+    def test_metal_active_inventory_accepts_extra_module_file(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/command.rs"
+            path.write_text("pub(crate) fn encode() -> usize {\n    0\n}\n", encoding="utf-8")
+
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            mutate(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_metal_active_ffi_in_extra_module_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/command.rs"
+            path.write_text("unsafe fn raw() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
+
+    def test_metal_active_unrelated_unsafe_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(path.read_text(encoding="utf-8") + "\nunsafe fn raw() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
+
+    def test_metal_active_unrelated_extern_c_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8") + '\nextern "C" fn bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_c_unwind_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            source = path.read_text(encoding="utf-8")
+            self.assertIn('unsafe extern "C" {', source)
+            path.write_text(
+                source.replace('unsafe extern "C" {', 'unsafe extern "C-unwind" {', 1),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
+
+    def test_metal_active_abi_prefix_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            source = path.read_text(encoding="utf-8")
+            self.assertIn('unsafe extern "C" {', source)
+            path.write_text(
+                source.replace('unsafe extern "C" {', 'unsafe extern "C"foo {', 1),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
+
+    def test_metal_active_block_comment_cannot_hide_extern_c(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern /* hidden */ "C" { fn bridge(); }\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_line_comment_cannot_hide_extern_c(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern // hidden\n"C" { fn bridge(); }\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_ffi_signature_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("*mut AnyObject", "*const AnyObject"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
+
+    def test_metal_active_duplicate_allowlisted_call_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace(
+                    "        Some(Self { inner })\n",
+                    "        let duplicate = unsafe { Retained::from_raw(raw) }?;\n"
+                    "        let _ = duplicate;\n"
+                    "        Some(Self { inner })\n",
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
 
     def test_metal_stub_rules_apply_without_pinned_edges(self) -> None:
         def mutate(root: Path) -> None:
@@ -2027,7 +2214,7 @@ fn body_macro_is_below_root_scope() {
             self.add_metal_module_files(root)
 
         # The source sentinel alone does not unlock external dependencies:
-        # the exact inventory expectation still fires (fail-closed).
+        # the exact dependency inventory expectation still fires (fail-closed).
         self.assert_mutation_rejected(
             mutate,
             "package lumenplot-render-metal: exact external dependency "
