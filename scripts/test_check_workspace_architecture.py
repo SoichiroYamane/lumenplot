@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import json
 import hashlib
+import re
 import shutil
 import subprocess
 import sys
@@ -2112,6 +2113,81 @@ fn body_macro_is_below_root_scope() {
             'package lumenplot-render-metal: extern "C" is not allowed',
         )
 
+    def test_metal_active_raw_string_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern r"C" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_hashed_raw_string_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern r#"C"# fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_escaped_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern "\\x43" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_unicode_escaped_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern "\\u{43}" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_non_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern "system" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
     def test_metal_active_c_unwind_abi_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             self.activate_metal_lane(root)
@@ -2449,7 +2525,7 @@ class Phase3A2WheelEvidenceMutationTests(unittest.TestCase):
     )
     CONFIG_DIGEST = "sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5"
     MATURIN_HASH = "dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e"
-    RUSTUP_INIT_HASH = "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+    RUSTUP_INIT_HASH = "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
     NUMPY_HASHES = {
         "cp311": "89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93",
         "cp312": "90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853",
@@ -2967,6 +3043,35 @@ jobs:
                 output,
                 "workspace architecture: OK\nphase3a2 static contract: OK\nphase3a2 wheel evidence: OK\n",
             )
+
+    def test_repository_rustup_init_pin_matches_checker_pin(self) -> None:
+        workflow = (ROOT / ".github/workflows/phase3a2-wheel.yml").read_text(encoding="utf-8")
+        checker = CHECKER.read_text(encoding="utf-8")
+        workflow_pins = re.findall(
+            r"(?m)^[ \t]*PHASE3A2_RUSTUP_INIT_SHA256:[ \t]*[\"']([0-9a-f]{64})[\"'][ \t]*(?:#.*)?$",
+            workflow,
+        )
+        checker_pins = re.findall(
+            r'(?m)^PHASE3A2_RUSTUP_INIT_SHA256\s*=\s*"([0-9a-f]{64})"$',
+            checker,
+        )
+        self.assertEqual(workflow_pins, [self.RUSTUP_INIT_HASH])
+        self.assertEqual(checker_pins, [self.RUSTUP_INIT_HASH])
+
+    def test_rustup_init_workflow_pin_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            tampered_hash = "0" * 64
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    f'PHASE3A2_RUSTUP_INIT_SHA256: "{self.RUSTUP_INIT_HASH}"',
+                    f'PHASE3A2_RUSTUP_INIT_SHA256: "{tampered_hash}"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "rustup-init digest must match the reviewed checker pin")
 
     def test_static_contract_does_not_require_runtime_manifest(self) -> None:
         with self.fixture() as temporary:

@@ -46,6 +46,29 @@ README as stale.
 - A Rust toolchain (the extension module is built from source via
   [maturin](https://www.maturin.rs); there are no binary wheels yet)
 
+#### macOS (Apple Silicon / `aarch64-darwin`)
+
+On Apple Silicon, prefer the Nix development shell for the editable install:
+
+```bash
+nix develop -c bash -c 'pip install -e .'
+```
+
+The Darwin devShell supplies the `libiconv` dependency needed by the native
+link step. In a non-Nix environment, expose the macOS SDK and prefer Apple's
+clang before installing:
+
+```bash
+export SDKROOT="$(xcrun --show-sdk-path)"
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+export CC="$(xcrun --find clang)"
+export CXX="$(xcrun --find clang++)"
+pip install -e .
+```
+
+The `xcrun` commands require the Xcode Command Line Tools (or Xcode) to be
+installed. Keep the same Python environment active when running `pip install`.
+
 LumenPlot is **not published to PyPI**. Installation is from a clone of this
 repository only:
 

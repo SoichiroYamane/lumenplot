@@ -2,17 +2,25 @@
 
 ## Status
 
-**DRAFT — input to the maintainer adoption flow. Not an accepted decision.**
+**ADOPTED by the architecture authority (maintainer), 2026-08-26 — all five
+candidate rows (`LP-FUNC-040`, `LP-FUNC-041`, `LP-MPL-021`, `LP-MPL-022`,
+`LP-MPL-023`) accepted verbatim and canonized in
+[`traceability-v1.0.md`](../requirements/traceability-v1.0.md).**
 
 This document records the verification of the external gap probe (codex /
 gpt-5.6-sol, "Agg vs lumenplot gap survey", 2026-08-26, archived at run scope)
-against current `main`, and drafts candidate requirement rows for the gaps that
-survived verification. Per the GAP-R1 card:
+against current `main`, and the five candidate requirement rows that survived
+verification. Per the GAP-R1 card, those rows were adopted through GOV-3 as
+recorded below:
 
-- Nothing here edits [`traceability-v1.0.md`](../requirements/traceability-v1.0.md)
-  or any other canonical registry. Adoption is a maintainer decision made
-  through the GOV flow (the precedent is ADR-0017's adoption of the nine
-  Matplotlib-parity rows from the parity requirements draft).
+- Executed at adoption (2026-08-26): all five rows in Section 3 are registered
+  in [`traceability-v1.0.md`](../requirements/traceability-v1.0.md) verbatim,
+  with honestly pending results (`Not implemented`; adoption is not an
+  implementation result), their gate names registered in that registry's
+  evidence-gate vocabulary, and every row's status cell flipped from
+  `PROPOSED` to `ADOPTED`. Adoption follows the GOV-flow precedent of
+  ADR-0017's adoption of the nine Matplotlib-parity rows from the parity
+  requirements draft.
 - Row levels (`MUST`/`SHOULD`), the registry table format, the evidence-gate
   vocabulary, and the phase model follow
   [`lumenplot-v1.0.md`](../requirements/lumenplot-v1.0.md) exactly.
@@ -59,15 +67,18 @@ adopted … the canonical registry still reports FUNC max 31 and MPL max 19") is
 **superseded**: the canonical registry at `f87fc8d` carries the nine adopted
 rows `LP-FUNC-032`–`LP-FUNC-039` + `LP-MPL-020` (canonized by GOV-1 / ADR-0017,
 PR #66, commit `555d7f1`), with honest `Not implemented` result entries per the
-release-honesty rule (`LP-REL-014`). The candidate IDs below were verified
-unclaimed on `origin/main` (no occurrence of `FUNC-040`, `FUNC-041`,
-`MPL-021`, `MPL-022`, `MPL-023` anywhere in `docs/`), so they remain free.
+release-honesty rule (`LP-REL-014`). The five GAP-R1 rows below were subsequently
+adopted through GOV-3 on 2026-08-26 and are registered verbatim in the canonical
+registry with honest `Not implemented` result entries. Their five evidence gates
+are registered in the registry vocabulary; adoption is not an implementation
+result.
 
-## 3. Candidate rows
+## 3. Adopted GAP-R1 rows
 
 Format mirrors the adopted parity draft's row table. Each row names its
-evidence gate (new gate names are marked *new*; none collide with the existing
-acceptance-gate vocabulary), a phase proposal, and its gsplot-compat ledger
+evidence gate (the five GAP-R1 gate names are registered in the canonical
+evidence-gate vocabulary; the draft-only *new* markers are retired), a phase
+proposal, and its gsplot-compat ledger
 mapping (G-numbers per
 [`gsplot-compat-gap-ledger-t_43b57c74.md`](gsplot-compat-gap-ledger-t_43b57c74.md)).
 Quality oracle for every row: current Matplotlib Agg backend output, fixed as
@@ -76,11 +87,11 @@ the same bar applies here unless the authority says otherwise.
 
 | ID | Level | Requirement | Phase | Release | Evidence gate | Ledger | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `LP-FUNC-040` | MUST | Non-finite sample fidelity — NaN/masked/infinite samples in eligible line data MUST render exactly as Agg renders them: both segments adjacent to a non-finite sample are omitted, and painting resumes at the next finite sample as a new subpath; native output MUST NOT bridge or reconnect across a gap. Quality oracle: Agg pixel parity of gap fixtures (interior NaN, leading/trailing non-finite, masked arrays, infinities) under the parity criteria of the parity draft §5.4. | 3B-cont.+1 | v1 quality | `AT-FUNC-NAN-GAP` (*new*) | — | PROPOSED |
-| `LP-MPL-021` | MUST | Strict-preflight soundness — strict mode MUST refuse every Figure it cannot represent completely and return no PNG: any axes whose scale class is outside the declared eligibility surface (today: non-linear x/y scales), any inverted limits pair, and any geometry-stage refusal that leaves an axes with zero projected content MUST produce an explicit `LumenPlotUnsupportedError`, never a successful partial or background-only frame. Hybrid mode's existing whole-frame fallback diagnostic path remains the only success route for such frames. | 3B-cont. | v1 quality | `AT-MPL-PREFLIGHT-SOUNDNESS` (*new*) | G-09 (residual soundness half) | PROPOSED |
-| `LP-MPL-022` | MUST | Public unit-conversion consumption — unit-aware artists (dates, calibrated units) MUST be rendered from Matplotlib's publicly converted numeric data (the `orig=False` view) so converted geometry matches Agg's drawn geometry, while Figure-authoritative limits/converter semantics stay untouched; conversion outputs that cannot be represented natively MUST be refused explicitly, never silently dropped to zero commands. | 3B-cont.+1 | v1 quality | `AT-MPL-UNIT-DATA` (*new*) | G-14 (data half; label half stays LP-FUNC-037) | PROPOSED |
-| `LP-MPL-023` | SHOULD | Native collection translation — supported members of `LineCollection`, `PatchCollection`, and `PathCollection` MUST NOT be approximated: either translated natively with per-element style, clip, transform, and z-order fidelity (each class landing as an eligibility extension per `LP-MPL-020`: whitelist entry, collector-trace expectation, style contract, fixtures together), or refused explicitly; silent whole-class approximation is forbidden. | W-lane, post-W1 | post-v1 | `AT-MPL-COLLECTIONS` (*new*) | G-03, G-04, G-10 | PROPOSED |
-| `LP-FUNC-041` | SHOULD | Scalar-mappable semantics — where mappable artists become eligible (scatter/images per the post-v1 map), normalization and colormap application MUST match Matplotlib: `Normalize` (and declared alternatives) mapping, under/over/bad colors, and shared colorbar↔artist consistency, with Agg pixel parity per the parity draft §5.4. Native colorbar remains governed by its existing disposition (parity draft "deliberately not drafted" list); this row owns only artist-side mapping semantics. | 5 | v1 non-blocking | `AT-FUNC-MAPPABLE` (*new*) | G-11, G-12 (+G-03 cmap_* mapping half) | PROPOSED |
+| `LP-FUNC-040` | MUST | Non-finite sample fidelity — NaN/masked/infinite samples in eligible line data MUST render exactly as Agg renders them: both segments adjacent to a non-finite sample are omitted, and painting resumes at the next finite sample as a new subpath; native output MUST NOT bridge or reconnect across a gap. Quality oracle: Agg pixel parity of gap fixtures (interior NaN, leading/trailing non-finite, masked arrays, infinities) under the parity criteria of the parity draft §5.4. | 3B-cont.+1 | v1 quality | `AT-FUNC-NAN-GAP` | — | ADOPTED |
+| `LP-MPL-021` | MUST | Strict-preflight soundness — strict mode MUST refuse every Figure it cannot represent completely and return no PNG: any axes whose scale class is outside the declared eligibility surface (today: non-linear x/y scales), any inverted limits pair, and any geometry-stage refusal that leaves an axes with zero projected content MUST produce an explicit `LumenPlotUnsupportedError`, never a successful partial or background-only frame. Hybrid mode's existing whole-frame fallback diagnostic path remains the only success route for such frames. | 3B-cont. | v1 quality | `AT-MPL-PREFLIGHT-SOUNDNESS` | G-09 (residual soundness half) | ADOPTED |
+| `LP-MPL-022` | MUST | Public unit-conversion consumption — unit-aware artists (dates, calibrated units) MUST be rendered from Matplotlib's publicly converted numeric data (the `orig=False` view) so converted geometry matches Agg's drawn geometry, while Figure-authoritative limits/converter semantics stay untouched; conversion outputs that cannot be represented natively MUST be refused explicitly, never silently dropped to zero commands. | 3B-cont.+1 | v1 quality | `AT-MPL-UNIT-DATA` | G-14 (data half; label half stays LP-FUNC-037) | ADOPTED |
+| `LP-MPL-023` | SHOULD | Native collection translation — supported members of `LineCollection`, `PatchCollection`, and `PathCollection` MUST NOT be approximated: either translated natively with per-element style, clip, transform, and z-order fidelity (each class landing as an eligibility extension per `LP-MPL-020`: whitelist entry, collector-trace expectation, style contract, fixtures together), or refused explicitly; silent whole-class approximation is forbidden. | W-lane, post-W1 | post-v1 | `AT-MPL-COLLECTIONS` | G-03, G-04, G-10 | ADOPTED |
+| `LP-FUNC-041` | SHOULD | Scalar-mappable semantics — where mappable artists become eligible (scatter/images per the post-v1 map), normalization and colormap application MUST match Matplotlib: `Normalize` (and declared alternatives) mapping, under/over/bad colors, and shared colorbar↔artist consistency, with Agg pixel parity per the parity draft §5.4. Native colorbar remains governed by its existing disposition (parity draft "deliberately not drafted" list); this row owns only artist-side mapping semantics. | 5 | v1 non-blocking | `AT-FUNC-MAPPABLE` | G-11, G-12 (+G-03 cmap_* mapping half) | ADOPTED |
 
 ## 4. Row-by-row rationale and boundary notes
 
@@ -180,8 +191,10 @@ transform-family cost heuristic; phase 5 aligns with `LP-FUNC-038/039`.
 
 ## 6. Explicit non-goals recorded by this verification
 
-- No registry edit, no gate-name registration, no result-column change: all
-  of that is maintainer adoption work in the GOV flow.
+- GOV-3 adoption is complete: the five GAP-R1 rows and their five evidence-gate
+  names are recorded in the canonical registry. This verification claims no
+  implementation or result promotion; all five rows retain honest
+  `Not implemented` results.
 - No change proposed to the LP-FUNC-034 step-family non-finite refusal
   (already conforms).
 - Z-order, decorated axes, tick-label glyphs, fills/bars/steps: verified

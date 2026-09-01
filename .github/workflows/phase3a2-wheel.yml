@@ -17,7 +17,7 @@ env:
   # https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
   # and cross-checked against the published rustup-init.sha256 sidecar;
   # re-probe both before any bump.
-  PHASE3A2_RUSTUP_INIT_SHA256: "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+  PHASE3A2_RUSTUP_INIT_SHA256: "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
 
 jobs:
   phase3a2-wheel:

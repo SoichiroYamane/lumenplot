@@ -31,6 +31,11 @@ major tick strokes, and spine edges are rendered natively as explicit
 path commands ahead of the axes' content lines. Visible minor tick
 content, non-solid grid styles, an opaque axes facecolor, titles, axis
 labels, and tick labels remain outside the slice and raise.
+Since the PRAC-A-L amendment of ADR 0015 §4a a standard Axes legend
+(``matplotlib.legend.Legend``, single-column, line entries) is eligible
+as well: its frame, handle strokes, and entry labels render as explicit
+path commands with geometry handed over by Matplotlib's own legend
+layout.
 Hybrid mode first attempts exactly the strict native path and, only when
 that raises the stable ``unsupported-capability`` failure, succeeds with a
 whole-frame Agg fallback: stock public ``FigureCanvasAgg`` PNG output plus
@@ -59,8 +64,10 @@ import matplotlib
 import matplotlib.axes  # noqa: F401 - public submodule for type checks
 import matplotlib.axis  # noqa: F401 - public submodule for tick positions
 import matplotlib.collections  # noqa: F401 - public submodule for the whitelist
+import matplotlib.legend  # noqa: F401 - public submodule for the whitelist
 import matplotlib.lines  # noqa: F401 - public submodule for the whitelist
 import matplotlib.patches  # noqa: F401 - public submodule for the whitelist
+import matplotlib.text  # noqa: F401 - public submodule for legend labels
 from matplotlib.backend_bases import FigureCanvasBase, FigureManagerBase
 from matplotlib.path import Path
 
@@ -138,7 +145,6 @@ The normative text lives in the module comment block above; stages cite
 this constant's name when they depend on one of its clauses so a future
 editor finds every touchpoint from one search.
 """
-
 
 class LumenPlotFallbackDiagnostic:
     """Immutable structured fallback record (API 0005 §3).
@@ -356,11 +362,30 @@ def _rgba8(color: Any, alpha: float | None = None) -> tuple[int, int, int, int]:
     return channel
 
 
+def _native_f64(value: Any) -> bool:
+    """Return whether a processed data value can enter the native f64 seam.
+
+    ``Line2D.get_{x,y}data(orig=False)`` is the public, unit-processed route.
+    Unit converters are allowed to return arbitrary objects, so checking only
+    the later finite filter would silently discard an unrepresentable value
+    (and could bridge the remaining points). Keep the native boundary strict:
+    NumPy real scalars are accepted, while booleans and non-real objects are
+    refused before geometry assembly.
+    """
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return False
+    try:
+        float(value)
+    except (OverflowError, TypeError, ValueError):
+        return False
+    return True
+
+
 def _finite(value: Any) -> bool:
     # numpy integer/floating scalars (what Line2D.get_{x,y}data returns for
     # int or float input) are not Python int/float instances, so accept any
     # numbers.Real except bool.
-    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+    if not _native_f64(value):
         return False
     return math.isfinite(float(value))
 
@@ -460,12 +485,16 @@ class _EligibilityPreflight:
     # one commit) the eligible content surface also carries filled areas:
     # ``Polygon`` (``Axes.fill``) and ``FillBetweenPolyCollection``
     # (``Axes.fill_between``). The LP-FUNC-033 bar lane adds axis-aligned
-    # ``Rectangle`` artists (``Axes.bar`` / ``Axes.barh`` bars).
+    # ``Rectangle`` artists (``Axes.bar`` / ``Axes.barh`` bars). The
+    # PRAC-A-L legend lane adds ``matplotlib.legend.Legend`` itself; the
+    # frame/handle/label surface *inside* the legend is checked by
+    # :meth:`_check_legend_static`, not by this tuple.
     _ARTIST_WHITELIST = (
         matplotlib.lines.Line2D,
         matplotlib.patches.Polygon,
         matplotlib.patches.Rectangle,
         matplotlib.collections.FillBetweenPolyCollection,
+        matplotlib.legend.Legend,
     )
 
     # RendererBase callbacks the collector may observe, in the exact order
@@ -484,6 +513,18 @@ class _EligibilityPreflight:
         self._effective_dpi = 100.0
         # ``draw_text`` payloads captured by the stage-two collector.
         self._observed_text_payloads: list[dict] = []
+        # Legend strokes captured by the stage-two collector (PRAC-A-L):
+        # the rounded frame outline and the per-entry handle polylines,
+        # already laid out by Matplotlib's own ``Legend.draw``.
+        self._legend_frame_calls: list[dict] = []
+        self._legend_handle_calls: list[dict] = []
+        #: ``id(Legend) ->`` seam-ready path commands, built at collect
+        #: time and consumed by :meth:`build_frame_spec`.
+        self._legend_payloads: dict[int, list[dict]] = {}
+        #: Frame-on flag and public line-entry count captured before the
+        #: renderer traversal; the trace grammar matches each observed
+        #: legend group against this static expectation.
+        self._expected_legend_shapes: list[tuple[bool, int]] = []
 
     def unsupported(self, reason: str, type_context: str | None = None) -> None:
         self.reasons.append((type_context, reason))
@@ -532,6 +573,8 @@ class _EligibilityPreflight:
                 self._check_rectangle_static(artist)
             elif isinstance(artist, matplotlib.collections.Collection):
                 self._check_fill_collection_static(artist)
+            elif isinstance(artist, matplotlib.legend.Legend):
+                self._check_legend_static(artist)
             else:
                 self._check_patch_static(artist)
 
@@ -682,6 +725,194 @@ class _EligibilityPreflight:
         if label.get_usetex() or "$" in label.get_text():
             self.unsupported("math/TeX text is unsupported", name)
 
+    def _check_legend_static(self, legend: Any) -> None:
+        """Whitelist-check one Axes legend (PRAC-A-L, LP-MPL-020).
+
+        The eligibility surface is deliberately narrow: the standard
+        ``matplotlib.legend.Legend`` class attached to exactly one axes,
+        one public-layout column, no title, and only line handles with visible
+        non-empty labels. All decisions use documented Legend/Artist
+        accessors; rendered geometry is checked during the collector stage.
+        """
+        name = type(legend).__name__
+        if type(legend) is not matplotlib.legend.Legend:
+            self.unsupported(
+                "legend subclasses are unsupported; use the standard "
+                "matplotlib.legend.Legend class",
+                name,
+            )
+            return
+        parent_axes = legend.axes
+        if (
+            parent_axes is None
+            or type(parent_axes) is not matplotlib.axes.Axes
+        ):
+            self.unsupported(
+                "legend is attached outside a standard Axes", name
+            )
+        figure = legend.get_figure()
+        if any(leg is legend for leg in figure.legends):
+            self.unsupported(
+                "figure-level legends are unsupported", name
+            )
+        if legend.get_title().get_text() != "":
+            self.unsupported("legend titles are unsupported", "Text")
+        if bool(legend.get_frame_on()):
+            frame = legend.get_frame()
+            if type(frame) is not matplotlib.patches.FancyBboxPatch:
+                self.unsupported(
+                    "legend frames must use the standard FancyBboxPatch", name
+                )
+            else:
+                self._check_legend_frame_static(frame)
+        labels = list(legend.get_texts())
+        handles = list(legend.get_lines())
+        patches = [
+            patch for patch in legend.get_patches()
+            if patch is not legend.get_frame()
+        ]
+        if not labels:
+            self.unsupported("legend carries no entries", name)
+        if patches or len(handles) != len(labels):
+            self.unsupported(
+                "only line handles are supported in strict-mode legends",
+                name,
+            )
+        if labels:
+            # Legend has no public column-count getter. Its public layout
+            # geometry is sufficient to prove the contract: after the
+            # public window extent lays out the legend, all entry labels in
+            # a single-column legend share one x origin. Multiple x origins
+            # are a multi-column layout and refuse explicitly.
+            try:
+                from matplotlib.backends.backend_agg import RendererAgg
+
+                width_px = max(
+                    1, int(round(figure.get_figwidth() * figure.get_dpi()))
+                )
+                height_px = max(
+                    1, int(round(figure.get_figheight() * figure.get_dpi()))
+                )
+                renderer = RendererAgg(width_px, height_px, figure.get_dpi())
+                legend.draw(renderer)
+                x_origins = {
+                    round(float(handle.get_window_extent(renderer).x0), 7)
+                    for handle in handles
+                    if handle.get_visible()
+                }
+            except (AttributeError, TypeError, ValueError, RuntimeError) as error:
+                self.unsupported(
+                    f"legend column layout could not be validated: {error}",
+                    name,
+                )
+            else:
+                if len(x_origins) > 1:
+                    self.unsupported(
+                        "multi-column legends are unsupported; strict mode "
+                        "supports single-column legends",
+                        name,
+                    )
+        for handle, label in zip(handles, labels):
+            if type(handle) is not matplotlib.lines.Line2D:
+                self.unsupported(
+                    "only plain Line2D handles are supported in strict-mode "
+                    "legends",
+                    type(handle).__name__,
+                )
+                continue
+            if type(label) is not matplotlib.text.Text:
+                self.unsupported(
+                    "only plain Text labels are supported in strict-mode "
+                    "legends",
+                    type(label).__name__,
+                )
+                continue
+            if not label.get_visible() or label.get_text() == "":
+                self.unsupported(
+                    "legend entries require visible, non-empty labels",
+                    type(label).__name__,
+                )
+            # LP-FUNC-034 permits exact step expansion for axes content, but
+            # ADR-0015 §4b deliberately fixes legend proxy handles to the
+            # default drawstyle. Keep that narrower contract local to the
+            # legend so stepped content remains eligible without silently
+            # extending the legend surface.
+            if handle.get_drawstyle() != "default":
+                self.unsupported(
+                    "legend handles require the default drawstyle",
+                    type(handle).__name__,
+                )
+            # Re-check the proxy handle through the remaining fixed-style
+            # surface as content lines: the legend must never relax the
+            # stroke contract its owner already satisfied.
+            self._check_line2d_static(handle)
+            self._check_legend_label_static(label)
+
+    def _check_legend_frame_static(
+        self, frame: matplotlib.patches.FancyBboxPatch
+    ) -> None:
+        """Whitelist the exact rounded frame style for the native seam."""
+        name = type(frame).__name__
+        if type(frame.get_boxstyle()) is not matplotlib.patches.BoxStyle.Round:
+            self.unsupported(
+                "legend frames require the standard BoxStyle.Round", name
+            )
+        if not bool(frame.get_fill()):
+            self.unsupported("legend frames must be filled", name)
+        if frame.get_hatch() is not None:
+            self.unsupported("legend frame hatching is unsupported", name)
+        if frame.get_path_effects():
+            self.unsupported("legend frame path effects are unsupported", name)
+        if frame.get_sketch_params() is not None:
+            self.unsupported(
+                "legend frame sketch parameters are unsupported", name
+            )
+        width = float(frame.get_linewidth())
+        if not math.isfinite(width) or width <= 0.0:
+            self.unsupported(
+                "legend frame line width must be finite and positive", name
+            )
+        alpha = frame.get_alpha()
+        if alpha is not None and (
+            not _finite(alpha) or not 0.0 <= float(alpha) <= 1.0
+        ):
+            self.unsupported("legend frame alpha must be finite", name)
+        if frame.get_snap() is not True:
+            self.unsupported(
+                "legend frame snap must remain at the default True", name
+            )
+        if frame.get_clip_box() is not None or frame.get_clip_path() is not None:
+            self.unsupported("legend frame custom clipping is unsupported", name)
+        if frame.get_url() is not None:
+            self.unsupported("legend frame hyperlinks are unsupported", name)
+        if str(frame.get_capstyle()) != "butt":
+            self.unsupported("legend frame cap style must be 'butt'", name)
+        if str(frame.get_joinstyle()) != "miter":
+            self.unsupported("legend frame join style must be 'miter'", name)
+        if not bool(frame.get_antialiased()):
+            self.unsupported("legend frame antialiasing is required", name)
+
+    def _check_legend_label_static(self, label: Any) -> None:
+        """Whitelist-check one legend entry label (PRAC-A-L).
+
+        Legend labels render as filled glyph path commands through the
+        public ``lumenplot_mpl.textpath`` module exactly like tick
+        labels; they satisfy the same static text contract.
+        """
+        self._check_tick_label_static(label)
+        name = type(label).__name__
+        size = float(label.get_fontsize())
+        if not math.isfinite(size) or size <= 0.0:
+            self.unsupported("non-positive font size", name)
+        if label.get_sketch_params() is not None:
+            self.unsupported("sketch parameters are unsupported", name)
+        if label.get_snap() is not None:
+            self.unsupported("explicit snap is unsupported", name)
+        if label.get_clip_box() is not None or label.get_clip_path() is not None:
+            self.unsupported("custom clipping is unsupported", name)
+        if label.get_url() is not None:
+            self.unsupported("hyperlinks are unsupported", name)
+
     def _iterate_content_artists(self, figure: matplotlib.figure.Figure):
         """Yield drawable content artists, not structural containers.
 
@@ -723,14 +954,17 @@ class _EligibilityPreflight:
             self.unsupported("non-default drawstyle is unsupported", name)
         if line.is_dashed():
             self.unsupported("dashed strokes are unsupported in strict mode", name)
-        if line.get_linewidth() < 0:
-            self.unsupported("negative line width", name)
+        width = float(line.get_linewidth())
+        if not math.isfinite(width) or width < 0.0:
+            self.unsupported("line width must be finite and non-negative", name)
         if line.get_path_effects():
             self.unsupported("path effects are unsupported", name)
         if line.get_sketch_params() is not None:
             self.unsupported("sketch parameters are unsupported", name)
         if line.get_snap() is not None:
             self.unsupported("explicit snap is unsupported", name)
+        if line.get_clip_path() is not None:
+            self.unsupported("custom clipping is unsupported", name)
         if line.get_url() is not None:
             self.unsupported("hyperlinks are unsupported", name)
         # ADR-0015 §5: the native request supports exactly Butt cap and
@@ -899,6 +1133,7 @@ class _EligibilityPreflight:
                         "path": path,
                         "transform": transform,
                         "rgbFace": rgbFace,
+                        "affine": bool(transform.is_affine),
                     },
                 )
 
@@ -941,6 +1176,7 @@ class _EligibilityPreflight:
                 self._record(
                     "draw_text",
                     {
+                        "kind": entry.get("kind", "tick_label"),
                         "artist": entry["artist"],
                         "x": float(x),
                         "y": float(y),
@@ -985,7 +1221,7 @@ class _EligibilityPreflight:
     def _enumerate_expected_labels(
         self, figure: matplotlib.figure.Figure
     ) -> list[dict]:
-        """Enumerate the tick labels stage one accepted, in draw order.
+        """Enumerate accepted tick and legend labels in draw order.
 
         Matplotlib draws each decorated axes' major ticks through public
         ``Axis.get_major_ticks``/``get_ticklocs`` in the same order the
@@ -994,11 +1230,8 @@ class _EligibilityPreflight:
         non-empty labels whose tick location lies inside
         ``Axis.get_view_interval()`` enter the queue: ``Tick.draw`` skips
         out-of-view ticks entirely, so an unfiltered enumeration would
-        accept labels the renderer never draws (observed with date/unit
-        locators whose end ticks fall outside the data margins --
-        LP-FUNC-037 fixtures pin this). Filtering by the same public view
-        interval keeps the queue aligned with the live stream without
-        duplicating Matplotlib's layout work.
+        accept labels the renderer never draws. A whitelisted legend then
+        contributes its entry labels after its axes' tick labels.
         """
         entries: list[dict] = []
         for ax in figure.get_axes():
@@ -1030,6 +1263,21 @@ class _EligibilityPreflight:
                                 "angle": float(label.get_rotation()),
                             }
                         )
+            legend = ax.get_legend()
+            if type(legend) is matplotlib.legend.Legend:
+                for label in legend.get_texts():
+                    text = label.get_text()
+                    if not label.get_visible() or text == "":
+                        continue
+                    entries.append(
+                        {
+                            "kind": "legend_label",
+                            "artist": label,
+                            "text": str(text),
+                            "size": float(label.get_fontsize()),
+                            "angle": float(label.get_rotation()),
+                        }
+                    )
         return entries
 
     def collect(
@@ -1048,15 +1296,39 @@ class _EligibilityPreflight:
         line2d group structure and per-artist ``new_gc`` calls. Since the
         PRAC-A-W wire-up the trace also admits one ``draw_text`` callback
         per statically enumerated major tick label, cross-checked against
-        that label's public string/font size/rotation. Only the strokes
-        emitted inside a ``line2d`` group are content lines; any other
-        renderer callback or unexpected path shape records an
-        unsupported reason; nothing is silently ignored.
+        that label's public string/font size/rotation. Since PRAC-A-L it
+        additionally admits, per whitelisted legend, the rounded frame
+        patch stroke and one handle stroke per entry (validated and
+        converted into seam-ready commands keyed by legend identity).
+        Only the strokes emitted inside a ``line2d`` group are content
+        lines; any other renderer callback or unexpected path shape
+        records an unsupported reason; nothing is silently ignored.
         """
         from matplotlib.backend_bases import RendererBase
 
+        # Record the effective geometry before any traversal: legend
+        # strokes are converted into seam-ready commands during this
+        # method, and their full-canvas clip needs the real pixel size
+        # (``build_frame_spec`` re-states the same values afterwards).
+        if height_px is not None:
+            self._height_px = int(height_px)
+        if width_px is not None:
+            self._canvas_width_px = int(width_px)
+        if dpi is not None:
+            self._effective_dpi = float(dpi)
+
         collected: list[tuple] = []
         expected_labels = self._enumerate_expected_labels(figure)
+        self._expected_legend_shapes = [
+            (
+                bool(legend.get_frame_on()),
+                len(legend.get_lines()),
+            )
+            for ax in figure.get_axes()
+            if type(ax) is matplotlib.axes.Axes
+            for legend in (ax.get_legend(),)
+            if type(legend) is matplotlib.legend.Legend
+        ]
 
         collector_cls = self._make_grammar_collector(
             collected,
@@ -1084,6 +1356,8 @@ class _EligibilityPreflight:
 
         if not collected:
             self.unsupported("no drawable content observed", "Figure")
+            return
+        if not self._consume_trace(collected):
             return
 
         line_calls: list[dict] = []
@@ -1131,6 +1405,18 @@ class _EligibilityPreflight:
                         )
                         return
                     background_call = call
+                    continue
+                if (
+                    len(stack) >= 4
+                    and stack[-1] == "patch"
+                    and stack[-2] == "legend"
+                ):
+                    # The legend frame outline (PRAC-A-L): a rounded
+                    # FancyBboxPatch path already transformed into
+                    # display space by ``Legend.draw``. Dispatched before
+                    # the generic patch branch, whose polygon-only fill
+                    # contract does not apply to this sanctioned shape.
+                    self._legend_frame_calls.append(call)
                     continue
                 if len(stack) >= 3 and stack[-1] in (
                     "patch",
@@ -1183,6 +1469,11 @@ class _EligibilityPreflight:
                         if stack[-2] == "axes":
                             # A direct content line of this axes.
                             line_calls.append(call)
+                        elif stack[-2] == "legend":
+                            # A legend handle stroke (PRAC-A-L): the
+                            # proxy Line2D's path in handlebox-local
+                            # coordinates with its layout affine.
+                            self._legend_handle_calls.append(call)
                         else:
                             # Tick-mark strokes are validated by the
                             # targeted decoration walk, not here.
@@ -1215,8 +1506,8 @@ class _EligibilityPreflight:
                     )
                 else:
                     self.unsupported(
-                        "the draw_text callback for an accepted tick label "
-                        f"changed at draw time: expected {expected!r}, got "
+                        "the draw_text callback for an accepted text "
+                        f"label changed at draw time: expected {expected!r}, got "
                         f"{payload.get('text')!r}",
                         "Text",
                     )
@@ -1233,12 +1524,28 @@ class _EligibilityPreflight:
             # refusing keeps the trace exact instead of silently dropping
             # visible text.
             self.unsupported(
-                "a statically accepted tick label was not drawn",
+                "a statically accepted text label was not drawn",
                 "Text",
             )
             return
 
         self._observed_text_payloads = text_calls
+
+        # -- legend strokes (PRAC-A-L) ------------------------------------
+        # The static stage already proved each legend's frame patch,
+        # handles, and labels satisfy the style contracts. Here the
+        # collected geometry is validated (affine-only, expected shapes)
+        # and converted into seam-ready path commands keyed by legend
+        # identity, so ``build_frame_spec`` can emit each legend bundle at
+        # the Legend artist's real public zorder inside the axes' stable
+        # D1 sort, preserving D2 interleaving with decorations/content.
+        for call in self._legend_frame_calls:
+            self._check_legend_frame_call(call)
+        if not self.reasons:
+            for call in self._legend_handle_calls:
+                self._check_legend_handle_call(call)
+        if not self.reasons:
+            self._build_legend_payloads(figure)
 
         if background_call is None:
             self.unsupported("no drawable content observed", "Figure")
@@ -1264,145 +1571,250 @@ class _EligibilityPreflight:
             self.unsupported("no drawable content observed", "Figure")
 
     def _consume_trace(self, events: list[tuple]) -> bool:
-        """Validate the group/new_gc grammar of ADR 0015 §4.
+        """Validate the exact grouped callback grammar for this slice.
 
-        Returns ``False`` after recording a reason when the event stream
-        deviates from the accepted structure. The accepted stream for this
-        slice is::
-
-            open(figure) open(patch) new_gc draw_path(bg) close(patch)
-            [open(axes) [artist groups / new_gc / draw_path]...
-             close(axes)]...
-            close(figure)
-
-        with exactly one background stroke and at least one drawable
-        stroke per axes group. Since LP-FUNC-035 (D2) the axes body is
-        order-free: eligible artist groups (``line2d`` content,
-        ``patch`` fills, decoration surfaces) may interleave in any
-        order because ``Axes.draw`` sorts children by zorder, so no
-        whole-trace ordering is imposed; only the figure/patch prefix,
-        the balanced group nesting, and per-group structure remain.
-        Any artist that emits an unaccepted callback inside a group has
-        already raised through the collector, so the stream can only
-        contain the four accepted event kinds here.
+        Every leaf artist group has one ``new_gc`` immediately followed by
+        its callback. ``FillBetweenPolyCollection`` is the one exception:
+        one graphics context may service several polygon paths. Axis groups
+        contain only ``xtick``/``ytick`` groups, and a legend contains an
+        optional frame patch followed by line/text entry pairs. The axes
+        body remains order-free under LP-FUNC-035 D2, but unknown groups,
+        bare callbacks, missing graphics contexts, and unbalanced nesting
+        are refused instead of being silently accepted.
         """
         index = 0
         total = len(events)
 
-        def expect_open(tag: str) -> bool:
-            nonlocal index
-            if index < total and events[index] == ("open", tag):
-                index += 1
-                return True
+        def fail(reason: str) -> bool:
+            self.unsupported(reason, "Figure")
             return False
 
-        def expect_close(tag: str) -> bool:
-            nonlocal index
-            if index < total and events[index] == ("close", tag):
-                index += 1
-                return True
-            return False
+        def is_open(tag: str) -> bool:
+            return (
+                index < total
+                and events[index][0] == "open"
+                and events[index][1] == tag
+            )
 
-        def consume_group() -> bool:
-            """Consume one balanced open(tag)...close(tag) artist group.
-
-            The group body may nest further groups; any accepted event
-            kind inside is structural for this stage. Returns ``False``
-            only when the stream deviates or the group is left open.
-            """
+        def consume_leaf(
+            tag: str, callback: str, alternatives: tuple[str, ...] = ()
+        ) -> dict | None:
+            """Consume ``open(tag), new_gc, callback, close(tag)``."""
             nonlocal index
-            tag = events[index][1]
-            start = index
+            if not is_open(tag):
+                fail(f"expected open({tag!r}) group")
+                return None
             index += 1
-            while index < total:
-                kind = events[index][0]
-                if kind == "close" and events[index][1] == tag:
-                    index += 1
-                    return True
-                if kind == "open":
-                    if not consume_group():
+            if index >= total or events[index][0] != "new_gc":
+                fail(
+                    f"{tag} group is missing its graphics context before "
+                    f"{callback}"
+                )
+                return None
+            index += 1
+            accepted_callbacks = (callback, *alternatives)
+            if index >= total or events[index][0] not in accepted_callbacks:
+                actual = events[index][0] if index < total else "end-of-trace"
+                fail(
+                    f"{tag} group expected one of {accepted_callbacks}, "
+                    f"observed {actual}"
+                )
+                return None
+            payload = events[index][1]
+            index += 1
+            if index >= total or events[index] != ("close", tag):
+                fail(f"{tag} group is not balanced after {callback}")
+                return None
+            index += 1
+            return payload
+
+        def consume_fill() -> bool:
+            """Consume a collection group with shared graphics contexts."""
+            nonlocal index
+            tag = "FillBetweenPolyCollection"
+            if not is_open(tag):
+                fail(f"expected open({tag!r}) group")
+                return False
+            index += 1
+            gc_count = 0
+            while index < total and events[index][0] == "new_gc":
+                gc_count += 1
+                index += 1
+            if gc_count == 0:
+                fail(f"{tag} group is missing its graphics context")
+                return False
+            paths = 0
+            while index < total and events[index][0] == "draw_path":
+                paths += 1
+                index += 1
+            if paths == 0:
+                fail(f"{tag} group carries no draw_path callback")
+                return False
+            if index >= total or events[index] != ("close", tag):
+                fail(f"{tag} group is not balanced after its paths")
+                return False
+            index += 1
+            return True
+
+        def consume_axis_tick(tag: str) -> bool:
+            nonlocal index
+            if not is_open(tag):
+                fail(f"expected open({tag!r}) group")
+                return False
+            index += 1
+            while index < total and events[index][0] == "open":
+                child = events[index][1]
+                if child == "line2d":
+                    if consume_leaf(child, "draw_path") is None:
                         return False
-                    continue
-                if kind in ("new_gc", "draw_path"):
-                    index += 1
-                    continue
-                self.unsupported(
-                    f"unexpected {kind!r} inside the {tag} group "
-                    f"opened at event {start}"
+                elif child == "text":
+                    if consume_leaf(
+                        "text", "draw_text", ("draw_text_unexpected",)
+                    ) is None:
+                        return False
+                else:
+                    fail(
+                        f"unexpected {child!r} group inside {tag!r}"
+                    )
+                    return False
+            if index >= total or events[index] != ("close", tag):
+                fail(f"{tag} group is not balanced")
+                return False
+            index += 1
+            return True
+
+        def consume_axis() -> bool:
+            nonlocal index
+            tag = "matplotlib.axis"
+            if not is_open(tag):
+                fail(f"expected open({tag!r}) group")
+                return False
+            index += 1
+            while index < total and events[index][0] == "open":
+                child = events[index][1]
+                if child not in ("xtick", "ytick"):
+                    fail(
+                        f"unexpected {child!r} group inside {tag!r}"
+                    )
+                    return False
+                if not consume_axis_tick(child):
+                    return False
+            if index >= total or events[index] != ("close", tag):
+                fail(f"{tag} group is not balanced")
+                return False
+            index += 1
+            return True
+
+        expected_shapes = list(self._expected_legend_shapes)
+        expected_legend_count = len(expected_shapes)
+
+        def consume_legend() -> bool:
+            nonlocal index
+            tag = "legend"
+            if not is_open(tag):
+                fail(f"expected open({tag!r}) group")
+                return False
+            index += 1
+            frame_count = 0
+            if is_open("patch"):
+                if consume_leaf("patch", "draw_path") is None:
+                    return False
+                frame_count = 1
+            if is_open("patch"):
+                fail(
+                    "legend emitted an extra frame patch; shadows and "
+                    "repeated frames are unsupported"
                 )
                 return False
-            self.unsupported(
-                f"the {tag} group opened at event {start} is left open"
-            )
-            return False
-
-        if not (expect_open("figure") and expect_open("patch")):
-            self.unsupported(
-                "collector trace does not start with the figure/patch groups"
-            )
-            return False
-        if index >= total or events[index][0] != "new_gc":
-            self.unsupported(
-                "figure background stroke is missing its graphics context"
-            )
-            return False
-        index += 1
-        if (
-            index >= total
-            or events[index][0] != "draw_path"
-            or events[index][1].get("rgbFace") is None
-        ):
-            self.unsupported("figure background stroke is missing")
-            return False
-        index += 1
-        if not expect_close("patch"):
-            self.unsupported("the figure patch group is left open")
-            return False
-        while index < total and events[index] == ("open", "axes"):
-            index += 1
-            saw_line = False
-            while index < total:
-                kind = events[index][0]
-                if kind == "close" and events[index] == ("close", "axes"):
-                    break
-                if kind == "draw_path":
-                    saw_line = True
-                    index += 1
-                    continue
-                if kind == "new_gc":
-                    index += 1
-                    continue
-                if kind == "open":
-                    # A nested artist group (line2d content, patch fill,
-                    # or decoration surface). Since LP-FUNC-035 (D2)
-                    # groups may interleave in any order -- ``Axes.draw``
-                    # sorts children by zorder, so no whole-trace
-                    # ordering exists to assert. A group carrying at
-                    # least one stroke counts as drawable content.
-                    if not consume_group():
-                        return False
-                    saw_line = True
-                    continue
-                self.unsupported(
-                    f"unexpected {kind!r} inside an axes group"
+            entries = 0
+            while is_open("line2d"):
+                if consume_leaf("line2d", "draw_path") is None:
+                    return False
+                if not is_open("text"):
+                    fail(
+                        "legend handle is not followed by a text label; "
+                        "label was not drawn"
+                    )
+                    return False
+                if consume_leaf(
+                    "text", "draw_text", ("draw_text_unexpected",)
+                ) is None:
+                    return False
+                entries += 1
+            if entries == 0:
+                fail("legend group carries no line/text entries")
+                return False
+            shape = (frame_count == 1, entries)
+            if expected_legend_count == 0:
+                fail("collector emitted an unexpected legend group")
+                return False
+            if shape not in expected_shapes:
+                fail(
+                    "legend group frame/entry shape does not match the "
+                    "statically enumerated legend"
                 )
                 return False
-            if not saw_line:
-                self.unsupported("an axes group carries no drawable line")
+            expected_shapes.remove(shape)
+            if index >= total or events[index] != ("close", tag):
+                fail("legend group is not balanced")
                 return False
-            if not expect_close("axes"):
-                self.unsupported("an axes group is left open")
+            index += 1
+            return True
+
+        def consume_axes() -> bool:
+            nonlocal index
+            tag = "axes"
+            if not is_open(tag):
+                fail(f"expected open({tag!r}) group")
                 return False
-        if not expect_close("figure"):
-            self.unsupported("the figure group is left open")
+            index += 1
+            while index < total and events[index][0] == "open":
+                child = events[index][1]
+                if child in ("line2d", "patch"):
+                    if consume_leaf(child, "draw_path") is None:
+                        return False
+                elif child == "FillBetweenPolyCollection":
+                    if not consume_fill():
+                        return False
+                elif child == "matplotlib.axis":
+                    if not consume_axis():
+                        return False
+                elif child == "legend":
+                    if not consume_legend():
+                        return False
+                else:
+                    fail(f"unexpected {child!r} group inside axes")
+                    return False
+            if index >= total or events[index] != ("close", tag):
+                fail("axes group is not balanced")
+                return False
+            index += 1
+            return True
+
+        if not is_open("figure"):
+            return fail("collector trace does not start with open('figure')")
+        index += 1
+        background = consume_leaf("patch", "draw_path")
+        if background is None:
             return False
+        if background.get("rgbFace") is None:
+            return fail("figure background stroke is missing its facecolor")
+        while is_open("axes"):
+            if not consume_axes():
+                return False
+        if index >= total or events[index] != ("close", "figure"):
+            return fail("figure group is not balanced")
+        index += 1
         if index != total:
             kind = events[index][0]
-            detail = events[index][1] if len(events[index]) > 1 else ""
-            self.unsupported(
-                f"unexpected {kind} {detail!r} outside the eligible trace"
+            return fail(
+                f"unexpected {kind!r} event outside the eligible trace"
             )
-            return False
+        if expected_shapes:
+            return fail(
+                "one or more statically enumerated legends were absent "
+                "from the collector trace"
+            )
         return True
 
     def _check_background_style(self, call: dict) -> None:
@@ -1500,6 +1912,373 @@ class _EligibilityPreflight:
             if self._clip_points is None:
                 self._clip_points = points
 
+    # -- legend collector-side validation (PRAC-A-L) ----------------------
+
+    def _check_legend_gc(self, gc: Any, *, frame: bool) -> None:
+        """Re-check the legend stroke surface at callback time.
+
+        Static artist properties can change after stage one, so the
+        collected graphics context is checked independently before its
+        values reach the native seam.
+        """
+        width = float(gc.get_linewidth())
+        if not math.isfinite(width) or width <= 0.0:
+            self.unsupported(
+                "legend stroke width must be finite and positive", "Legend"
+            )
+        if gc.get_dashes()[1] is not None:
+            self.unsupported(
+                "dashed strokes are unsupported in strict mode", "Legend"
+            )
+        if gc.get_hatch() is not None:
+            self.unsupported("hatching is unsupported in strict mode", "Legend")
+        if gc.get_sketch_params() is not None:
+            self.unsupported("sketch parameters are unsupported", "Legend")
+        expected_snap = True if frame else None
+        if gc.get_snap() is not expected_snap:
+            self.unsupported(
+                "legend stroke snap differs from the fixed style surface",
+                "Legend",
+            )
+        if not bool(gc.get_antialiased()):
+            self.unsupported("legend stroke antialiasing is required", "Legend")
+        if str(gc.get_capstyle()) != "butt":
+            self.unsupported("legend stroke cap style must be 'butt'", "Legend")
+        if str(gc.get_joinstyle()) != "miter":
+            self.unsupported(
+                "legend stroke join style must be 'miter'", "Legend"
+            )
+        if gc.get_clip_rectangle() is not None:
+            self.unsupported(
+                "legend strokes cannot carry a clip rectangle", "Legend"
+            )
+        if gc.get_clip_path() != (None, None):
+            self.unsupported("legend strokes cannot carry a custom clip", "Legend")
+        try:
+            rgba = tuple(float(value) for value in gc.get_rgb())
+        except (TypeError, ValueError):
+            rgba = ()
+        if len(rgba) != 4 or any(
+            not math.isfinite(value) or not 0.0 <= value <= 1.0
+            for value in rgba
+        ):
+            self.unsupported("legend stroke color must be finite RGBA", "Legend")
+
+    def _check_legend_frame_call(self, call: dict) -> None:
+        """Validate one collected legend-frame stroke (PRAC-A-L).
+
+        The rounded ``FancyBboxPatch`` frame arrives already transformed
+        into display space by Matplotlib's own legend layout: an affine
+        transform, a filled path with curve-capable codes, and no clip.
+        The fill/stroke style surface was checked statically; only the
+        geometric shape contract is enforced here so the assembly below
+        never consumes an unexpected path shape.
+        """
+        transform = call["transform"]
+        if not bool(call.get("affine", True)):
+            self.unsupported(
+                "the legend frame carries a non-affine transform",
+                "Legend",
+            )
+            return
+        identity = (
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        )
+        try:
+            matrix = transform.get_matrix()
+            is_identity = all(
+                math.isfinite(float(matrix[row][column]))
+                and abs(float(matrix[row][column]) - identity[row][column])
+                <= 1.0e-12
+                for row in range(3)
+                for column in range(3)
+            )
+        except (AttributeError, IndexError, TypeError, ValueError):
+            is_identity = False
+        if not is_identity:
+            self.unsupported(
+                "the legend frame transform is not identity display space",
+                "Legend",
+            )
+            return
+        path = call["path"]
+        codes = path.codes
+        if codes is None or not len(codes):
+            self.unsupported(
+                "the legend frame outline is not a closed loop", "Legend"
+            )
+            return
+        code_values = {int(code) for code in codes}
+        allowed = {
+            int(Path.MOVETO),
+            int(Path.LINETO),
+            int(Path.CURVE3),
+            int(Path.CLOSEPOLY),
+            0,
+        }
+        if not code_values <= allowed:
+            self.unsupported(
+                "the legend frame outline contains unsupported segments",
+                "Legend",
+            )
+            return
+        real_points = sum(
+            1 for code in codes if int(code) != int(Path.CLOSEPOLY)
+        )
+        if real_points < 3:
+            self.unsupported("degenerate legend frame path", "Legend")
+            return
+        gc = call["gc"]
+        self._check_legend_gc(gc, frame=True)
+        if int(codes[0]) != int(Path.MOVETO) or int(codes[-1]) != int(Path.CLOSEPOLY):
+            self.unsupported(
+                "the legend frame outline is not a closed rounded path",
+                "Legend",
+            )
+        if any(
+            not _finite(float(value))
+            for vertex in path.vertices
+            for value in vertex
+        ):
+            self.unsupported("non-finite legend frame geometry", "Legend")
+        rgb_face = call.get("rgbFace")
+        try:
+            face_values = tuple(float(value) for value in rgb_face)
+        except (TypeError, ValueError):
+            face_values = ()
+        if len(face_values) != 4 or any(
+            not _finite(value) or not 0.0 <= value <= 1.0
+            for value in face_values
+        ):
+            self.unsupported("legend frame facecolor must be finite RGBA", "Legend")
+
+    def _check_legend_handle_call(self, call: dict) -> None:
+        """Validate one collected legend handle stroke (PRAC-A-L)."""
+        if not bool(call.get("affine", True)):
+            self.unsupported(
+                "a legend handle carries a non-affine transform",
+                "Legend",
+            )
+            return
+        self._check_legend_gc(call["gc"], frame=False)
+        path = call["path"]
+        vertices = path.vertices
+        if len(vertices) < 2:
+            self.unsupported("degenerate single-vertex stroke", "Legend")
+        if any(
+            not _finite(float(value))
+            for vertex in vertices
+            for value in vertex
+        ):
+            self.unsupported("non-finite legend handle geometry", "Legend")
+        codes = path.codes
+        if codes is not None and len(codes):
+            allowed = {
+                int(Path.MOVETO),
+                int(Path.LINETO),
+                int(Path.CLOSEPOLY),
+                0,
+            }
+            if any(int(code) not in allowed for code in codes):
+                self.unsupported(
+                    "legend handle contains unsupported path segments",
+                    "Legend",
+                )
+        transform = call["transform"]
+        try:
+            matrix = transform.get_matrix()
+            if any(
+                not _finite(float(matrix[row][column]))
+                for row in range(3)
+                for column in range(3)
+            ):
+                self.unsupported(
+                    "legend handle transform contains non-finite values",
+                    "Legend",
+                )
+        except (AttributeError, IndexError, TypeError, ValueError):
+            self.unsupported(
+                "legend handle transform is malformed", "Legend"
+            )
+
+    def _legend_clip(self, legend: Any) -> list[float]:
+        """Return the frozen-seam clip rectangle for one legend.
+
+        The frameless legend clips its strokes to the canvas exactly like
+        the tick-label glyphs; a framed legend additionally paints inside
+        its frame patch, which Agg realizes through patch clipping. The
+        conservative full-canvas rectangle keeps every visible pixel of
+        either case while staying inside the frozen seam's axis-aligned
+        clip vocabulary (top-left origin, exclusive right/bottom edges).
+        """
+        del legend
+        return [
+            0.0,
+            0.0,
+            float(self._canvas_width_px),
+            float(self._height_px),
+        ]
+
+    def _legend_frame_command(self, call: dict) -> dict | None:
+        """Build one seam path command from the collected frame stroke."""
+        path = call["path"]
+        gc = call["gc"]
+        rgb_face = call["rgbFace"]
+        if rgb_face is None:
+            # A framed legend always fills its patch; a missing facecolor
+            # means the collector trace drifted from the static stage.
+            self.unsupported(
+                "the legend frame stroke lost its facecolor", "Legend"
+            )
+            return None
+        edge_rgb = gc.get_rgb()
+        width = float(gc.get_linewidth())
+        try:
+            edge_rgba8 = _rgba8(tuple(float(c) for c in edge_rgb))
+        except (TypeError, ValueError):
+            edge_rgba8 = None
+        explicit_edge = (
+            tuple(float(c) for c in edge_rgb)[3] != 0.0 and width > 0.0
+        )
+        face_color = tuple(float(c) for c in rgb_face)
+        command: dict[str, Any] = {
+            "kind": "path",
+            "decoration": "legend_frame",
+            "vertices": [
+                # Collected display space is bottom-left-origin; the
+                # frozen seam wants top-left pixels, so y flips once,
+                # linearly (curve control points included).
+                [float(vx), float(self._height_px) - float(vy)]
+                for vx, vy in path.vertices
+            ],
+            "codes": [int(code) for code in path.codes],
+            "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            "stroke_rgba": list(edge_rgba8) if explicit_edge else None,
+            "line_width_pt": width,
+            "cap": str(gc.get_capstyle()),
+            "join": str(gc.get_joinstyle()),
+            "dash_offset_pt": 0.0,
+            "dashes": None,
+            "fill_rule": "nonzero",
+            "antialias": True,
+            "clip_rect": self._legend_clip(None),
+            "fill_rgba": list(_rgba8(face_color)),
+        }
+        if command["cap"] not in ("butt", "round", "projecting"):
+            self.unsupported(
+                f"legend frame cap style {command['cap']!r} is unsupported",
+                "Legend",
+            )
+            return None
+        if command["join"] not in ("miter", "round", "bevel"):
+            self.unsupported(
+                f"legend frame join style "
+                f"{command['join']!r} is unsupported",
+                "Legend",
+            )
+            return None
+        return command
+
+    def _legend_handle_command(self, call: dict) -> dict | None:
+        """Build one seam stroke command from a collected handle."""
+        path = call["path"]
+        gc = call["gc"]
+        transform = call["transform"]
+        affine = transform.get_matrix()
+        vertices = [
+            [
+                float(affine[0][0]) * float(x)
+                + float(affine[0][1]) * float(y)
+                + float(affine[0][2]),
+                float(affine[1][0]) * float(x)
+                + float(affine[1][1]) * float(y)
+                + float(affine[1][2]),
+            ]
+            for x, y in path.vertices
+        ]
+        rgb = gc.get_rgb()
+        color = tuple(float(c) for c in rgb)
+        alpha = gc.get_alpha()
+        if alpha is not None:
+            color = color[:3] + (float(alpha),)
+        # Handle strokes arrive in handlebox-local coordinates under the
+        # legend layout affine (bottom-left-origin display space); the
+        # seam wants top-left pixels, so the flip composes after the
+        # affine, once, linearly.
+        flipped_vertices = [
+            [float(vx), float(self._height_px) - float(vy)]
+            for vx, vy in vertices
+        ]
+        return {
+            "kind": "path",
+            "decoration": "legend_handle",
+            "vertices": flipped_vertices,
+            "codes": None,
+            "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            "stroke_rgba": list(_rgba8(color)),
+            "line_width_pt": float(gc.get_linewidth()),
+            "cap": str(gc.get_capstyle()),
+            "join": str(gc.get_joinstyle()),
+            "dash_offset_pt": 0.0,
+            "dashes": None,
+            "fill_rule": "nonzero",
+            "antialias": True,
+            "clip_rect": self._legend_clip(None),
+        }
+
+    def _build_legend_payloads(
+        self, figure: matplotlib.figure.Figure
+    ) -> None:
+        """Group collected legend strokes per legend, in paint order."""
+        legends = [
+            ax.get_legend()
+            for ax in figure.get_axes()
+            if ax.get_legend() is not None
+        ]
+        legends.extend(figure.legends)
+        frames = list(self._legend_frame_calls)
+        handles = list(self._legend_handle_calls)
+        expected_frames = sum(
+            1 for legend in legends
+            if type(legend) is matplotlib.legend.Legend
+            and bool(legend.get_frame_on())
+        )
+        expected_handles = sum(
+            len(legend.get_lines())
+            for legend in legends
+            if type(legend) is matplotlib.legend.Legend
+        )
+        if len(frames) != expected_frames:
+            self.unsupported(
+                "collector emitted unmatched legend frame strokes; "
+                "shadowed or repeated frames are unsupported",
+                "Legend",
+            )
+            return
+        if len(handles) != expected_handles:
+            self.unsupported(
+                "collector emitted unmatched legend handle strokes",
+                "Legend",
+            )
+            return
+        for legend in legends:
+            if type(legend) is not matplotlib.legend.Legend:
+                continue
+            commands: list[dict] = []
+            frame_count = 1 if bool(legend.get_frame_on()) else 0
+            for _ in range(frame_count):
+                command = self._legend_frame_command(frames.pop(0))
+                if command is not None:
+                    commands.append(command)
+            entry_count = len(legend.get_lines())
+            for _ in range(entry_count):
+                command = self._legend_handle_command(handles.pop(0))
+                if command is not None:
+                    commands.append(command)
+            self._legend_payloads[id(legend)] = commands
+
     # -- geometry assembly -----------------------------------------------
 
     def build_frame_spec(
@@ -1516,13 +2295,18 @@ class _EligibilityPreflight:
         data plus public linear increasing Axes limits feed one temporary
         affine request; the collected path only reconciles affine and clip
         behavior. Background color comes from the collected figure patch.
+        Since the PRAC-A-D amendment, each decorated axes emits its
+        solid major gridlines, major tick strokes, and visible spine edges
+        as explicit path commands ahead of its content lines.
+        Since PRAC-A-L a whitelisted legend contributes its frame and
+        handle strokes as one bundle that rides the Legend artist's real
+        public zorder inside the same per-axes sort (see the D1 contract
+        below).
 
         LP-FUNC-035 compositing contract (D1): each axes reproduces Agg's
         ``Axes.draw`` ordering -- one stable sort of every eligible child
         by public ``get_zorder()`` (Python ``sorted`` keeps add order on
-        ties, which is Agg's own stable-sort semantics). The normative
-        ordering text is the module-level ``_ZORDER_CONTRACT_DOC`` block;
-        this stage implements its clauses 1-3 directly: gridline, tick,
+        ties, which is Agg's own stable-sort semantics). Gridline, tick,
         and spine decorations ride their artists' real zorders inside that
         single sort instead of the former decorations-first special case:
         at the default surface this preserves the legacy relative order
@@ -1541,6 +2325,9 @@ class _EligibilityPreflight:
         self._canvas_width_px = int(width_px)
         self._effective_dpi = float(output_dpi)
         self._label_payloads = list(self._observed_text_payloads)
+        legend_commands_by_id: dict[int, list[dict]] = {}
+        if not self.reasons:
+            legend_commands_by_id = dict(self._legend_payloads)
         for ax in figure.get_axes():
             xlim = ax.get_xlim()
             ylim = ax.get_ylim()
@@ -1676,6 +2463,17 @@ class _EligibilityPreflight:
                 spec_command = self._line_command(line, to_px_x, to_px_y)
                 _emit(line.get_zorder(), _rank_of(line),
                       [spec_command] if spec_command is not None else [])
+            legend = ax.get_legend()
+            legend_commands = legend_commands_by_id.pop(id(legend), None)
+            if legend_commands:
+                # PRAC-A-L: the Legend artist is a real whitelisted child
+                # of the axes, so its frame and handles ride the same
+                # stable public-zorder sort as every other axes child.
+                _emit(
+                    legend.get_zorder(),
+                    _rank_of(legend),
+                    legend_commands,
+                )
             entries.sort(key=lambda entry: entry[:2])
             for _, _, entry_commands in entries:
                 commands.extend(entry_commands)
@@ -1684,6 +2482,16 @@ class _EligibilityPreflight:
         # (text artists draw after the axes' line content), so the wire-up
         # appends them last: same relative order, no z-order regression.
         commands.extend(self._tick_label_commands())
+
+        # A legend payload built for an axes skipped by the assembly
+        # (non-linear or non-increasing limits) would silently vanish;
+        # refusing keeps the render explicit about what it drops.
+        if legend_commands_by_id:
+            self.unsupported(
+                "a legend could not be placed on its axes' supported "
+                "projection",
+                "Legend",
+            )
 
         if self.background_rgbface is not None:
             background_rgba = _rgba8(self.background_rgbface)
@@ -1702,7 +2510,7 @@ class _EligibilityPreflight:
         }
 
     def _tick_label_commands(self) -> list[dict]:
-        """Build one filled glyph path command per collected tick label.
+        """Build one filled glyph path command per collected text label.
 
         Each stage-two ``draw_text`` payload carries the true baseline
         anchor in top-left display pixels, handed over by Matplotlib's own
@@ -1717,7 +2525,10 @@ class _EligibilityPreflight:
         so the pt-space outlines land exactly where Agg would have inked
         them, honoring rotation without re-deriving any layout algebra.
         Color and alpha come from the label artist through the same
-        public-getter route as every other command surface.
+        public-getter route as every other command surface. Since the
+        PRAC-A-L amendment the same route renders legend entry labels
+        (payload kind ``legend_label``), tagged with a distinct
+        ``decoration`` marker.
         """
         commands: list[dict] = []
         scale = self._effective_dpi / 72.0
@@ -1726,6 +2537,12 @@ class _EligibilityPreflight:
             anchor_x = float(payload["x"])
             anchor_y = float(payload["y"])
             angle_deg = float(payload["angle"])
+            label_kind = str(payload.get("kind", "tick_label"))
+            decoration = (
+                "legend_label"
+                if label_kind == "legend_label"
+                else "tick_label"
+            )
             try:
                 outline = textpath.glyph_outline_commands(
                     str(label.get_text()),
@@ -1736,7 +2553,7 @@ class _EligibilityPreflight:
                 )[0]
             except ValueError as error:
                 raise LumenPlotUnsupportedError(
-                    f"tick label glyphs are unsupported: {error}",
+                    f"{decoration} glyphs are unsupported: {error}",
                 ) from error
 
             theta = math.radians(angle_deg)
@@ -1761,7 +2578,7 @@ class _EligibilityPreflight:
             commands.append(
                 {
                     "kind": "path",
-                    "decoration": "tick_label",
+                    "decoration": decoration,
                     "vertices": vertices,
                     "codes": list(outline["codes"]),
                     "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
@@ -1806,18 +2623,6 @@ class _EligibilityPreflight:
         Gridlines and spines clip to their own axes rectangle; tick
         strokes protrude outside it, so they clip to the full canvas
         like Agg (which does not clip tick marks).
-
-        Tick locations project through the axis' own scale via the
-        caller's ``to_px_x``/``to_px_y`` closures (LP-FUNC-004): a log
-        axis places gridlines and tick strokes at the fractional log
-        position Agg uses, not at the linear fraction.
-
-        Since LP-FUNC-035 the ``kinds`` selector splits the decoration
-        surface along its artists' z-order boundaries: gridlines and
-        tick strokes travel with their Axis unit's zorder while spine
-        edges ride the Spine artist's own zorder, so the caller can slot
-        each group into the single stable ``Axes.draw`` sort instead of
-        painting every decoration first.
         """
         # The frozen seam clip is bottom-left-origin (x, y, w, h). Gridlines
         # and spines stay inside the axes rectangle; tick strokes protrude
@@ -2001,8 +2806,6 @@ class _EligibilityPreflight:
             paths = list(artist.get_paths())
             transform = artist.get_transform()
             facecolors = artist.get_facecolor()
-            edgecolors = artist.get_edgecolor()
-            linewidths = artist.get_linewidth()
             capstyle = str(artist.get_capstyle())
             joinstyle = str(artist.get_joinstyle())
             alpha = artist.get_alpha()
@@ -2029,16 +2832,12 @@ class _EligibilityPreflight:
             # and the artist alpha; only the geometry source differs.
             paths = []
             facecolors = None
-            edgecolors = None
-            linewidths = float(artist.get_linewidth())
             capstyle = str(artist.get_capstyle())
             joinstyle = str(artist.get_joinstyle())
             alpha = artist.get_alpha()
         else:
             paths = [artist.get_path()]
             facecolors = None
-            edgecolors = None
-            linewidths = float(artist.get_linewidth())
             capstyle = str(artist.get_capstyle())
             joinstyle = str(artist.get_joinstyle())
             alpha = artist.get_alpha()
@@ -2211,6 +3010,21 @@ class _EligibilityPreflight:
         if len(xdata) != len(ydata) or not xdata:
             self.unsupported("mismatched or empty line data", name)
             return None
+        for axis_name, values in (("x", xdata), ("y", ydata)):
+            for value in values:
+                if not _native_f64(value):
+                    # Do not let the finite-row filter below turn a failed
+                    # unit conversion into a partial or empty success. The
+                    # message intentionally names only the public data
+                    # boundary and value type; converted payload contents are
+                    # not a diagnostic identity.
+                    self.unsupported(
+                        f"processed {axis_name}-data contains a "
+                        f"{type(value).__name__} that is not representable "
+                        "as native f64",
+                        name,
+                    )
+                    return None
         # LP-FUNC-034: the step family expands the SAMPLED data exactly.
         # A non-finite sample has no step semantics (Agg's own path
         # cleaning re-pairs the risers around the gap, so neither dropping
