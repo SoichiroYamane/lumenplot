@@ -1,4 +1,4 @@
-"""Phase-3B wheel-evidence probe (propose-only; changes no CI workflow).
+"""Phase-3B installed-package evidence probe.
 
 Pipeline (all steps are real executions, results reported verbatim):
 
@@ -13,10 +13,8 @@ Pipeline (all steps are real executions, results reported verbatim):
    ``filetypes``/``required_interactive_framework``, forbidden exports;
 6. run the existing Phase-3A2 helper tests (tests/python/) against the
    installed wheel;
-7. emit a JSON manifest describing exactly what was proven and what was
-   blocked. The backend module itself is owned by sibling lane t_e60a8ed3;
-   until it lands the manifest records ``backend_absent`` instead of
-   pretending success.
+7. run the installed-package public runtime probe and emit a JSON manifest
+   describing exactly what was proven and what was blocked.
 
 Usage:
     python3 scripts/test_phase3b_wheel_evidence.py --probe [--workdir DIR]
@@ -40,7 +38,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import urllib.request
 import venv
 from pathlib import Path
 
@@ -170,8 +167,15 @@ def build_wheel(project_dir: Path, build_python: Path, out_dir: Path) -> Path:
 
 
 def ensure_matplotlib(run_python: Path) -> bool:
-    """Best-effort matplotlib provision for probing; never claims evidence."""
-    probe = run([str(run_python), "-c", "import matplotlib"], check=False)
+    """Provision exactly Matplotlib 3.11.1 for the convenience probe."""
+    probe = run(
+        [
+            str(run_python),
+            "-c",
+            "import matplotlib; raise SystemExit(0 if matplotlib.__version__ == '3.11.1' else 1)",
+        ],
+        check=False,
+    )
     if probe.returncode == 0:
         return True
     install = run(
@@ -185,7 +189,16 @@ def ensure_matplotlib(run_python: Path) -> bool:
         ],
         check=False,
     )
-    return install.returncode == 0
+    if install.returncode != 0:
+        return False
+    return run(
+        [
+            str(run_python),
+            "-c",
+            "import matplotlib; raise SystemExit(0 if matplotlib.__version__ == '3.11.1' else 1)",
+        ],
+        check=False,
+    ).returncode == 0
 
 
 def probe_backend(run_python: Path, matplotlib_ready: bool) -> dict[str, object]:
@@ -295,6 +308,38 @@ def _find_libstdcxx() -> str | None:
     return None
 
 
+def run_public_runtime_probe(
+    run_python: Path, expected_version: str
+) -> dict[str, object]:
+    """Exercise the installed public backend in the convenience venv."""
+    env = os.environ.copy()
+    libstdcxx = _find_libstdcxx()
+    if libstdcxx:
+        existing = env.get("LD_LIBRARY_PATH")
+        env["LD_LIBRARY_PATH"] = (
+            f"{libstdcxx}:{existing}" if existing else libstdcxx
+        )
+    result = run(
+        [
+            str(run_python),
+            str(REPO_ROOT / "scripts" / "test_phase3b_runtime.py"),
+            "--expected-version",
+            expected_version,
+        ],
+        check=False,
+        cwd=str(REPO_ROOT),
+        env=env,
+    )
+    try:
+        probe = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        probe = {"status": "failed", "reason": "runtime probe returned invalid JSON"}
+    return {
+        "exit_code": result.returncode,
+        "probe": probe,
+    }
+
+
 def run_helper_tests(run_python: Path) -> dict[str, object]:
     """Run the existing Phase-3A2 helper suite against the installed wheel.
 
@@ -327,7 +372,7 @@ def run_helper_tests(run_python: Path) -> dict[str, object]:
         "suite": "tests/python (Phase-3A2 helper + Phase-3B entry-point checks)",
         "exit_code": result.returncode,
         "summary": tail,
-        "ld_library_path_added": libstdcxx,
+        "ld_library_path_added": bool(libstdcxx),
     }
 
 
@@ -356,21 +401,29 @@ def run_probe(workdir: Path) -> dict[str, object]:
         ]
     ).stdout.strip()
 
-    matplotlib_ready = ensure_matplotlib(run_python)
-    surface = probe_backend(run_python, matplotlib_ready)
-
-    # The helper suite exercises the native extension and the entry-point
-    # suite skips cleanly when the backend module has not landed yet; both
-    # run regardless of surface state so the manifest records real results.
     numpy_ready = ensure_numpy(run_python)
+    matplotlib_ready = ensure_matplotlib(run_python)
+    surface = probe_backend(run_python, matplotlib_ready and numpy_ready)
+
+    # The helper suite exercises the native extension and the public runtime
+    # probe exercises the installed backend package. Both results are kept
+    # separate so a package import cannot masquerade as runtime evidence.
     if numpy_ready:
         helper_tests = run_helper_tests(run_python)
+        public_runtime = run_public_runtime_probe(run_python, version)
     else:
         helper_tests = {
             "suite": "tests/python (Phase-3A2 helper + Phase-3B entry-point checks)",
             "exit_code": None,
             "summary": "skipped: pinned numpy==2.4.6 could not be installed",
             "ld_library_path_added": None,
+        }
+        public_runtime = {
+            "exit_code": None,
+            "probe": {
+                "status": "skipped",
+                "reason": "pinned numpy==2.4.6 could not be installed",
+            },
         }
 
     implemented = surface["backend_importable"] and all(
@@ -381,7 +434,7 @@ def run_probe(workdir: Path) -> dict[str, object]:
             "required_interactive_framework_none",
             "module_loader_usable",
         )
-    )
+    ) and public_runtime["exit_code"] == 0 and helper_tests["exit_code"] == 0
     status = (
         STATUS_IMPLEMENTED
         if implemented
@@ -395,6 +448,7 @@ def run_probe(workdir: Path) -> dict[str, object]:
         "surface_status": status,
         "surface": surface,
         "helper_tests": helper_tests,
+        "public_runtime": public_runtime,
         "note": (
             "convenience evidence only; acceptance requires the reviewed "
             "offline containerized Phase-3A2 supply-chain lane"
@@ -417,6 +471,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "blocked", "reason": str(error)}, indent=2))
         return 1
     print(json.dumps(manifest, indent=2))
+    public_runtime = manifest.get("public_runtime", {})
+    if (
+        manifest.get("surface_status") != STATUS_IMPLEMENTED
+        or not isinstance(public_runtime, dict)
+        or public_runtime.get("exit_code") != 0
+    ):
+        return 1
     return 0
 
 
