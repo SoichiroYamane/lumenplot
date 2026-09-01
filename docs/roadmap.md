@@ -1,7 +1,7 @@
 # LumenPlot implementation roadmap
 
 - Status: pre-alpha planning document
-- Updated: 2026-08-30
+- Updated: 2026-09-02
 - Planning unit: ordered milestones, not release dates
 - Source of truth for requirement status: [v1 traceability](requirements/traceability-v1.0.md)
 
@@ -24,9 +24,10 @@ Implemented with bounded local evidence:
 - the Phase-3A Python bridge and private-helper wheel evidence;
 - the Phase-3B public Matplotlib backend with strict and explicit whole-frame
   hybrid behavior;
-- native Matplotlib eligibility for line, decorated axes, fill, bar, and step
-  geometry, plus recently landed compositing and date/unit-label work whose
-  traceability status still needs reconciliation;
+- bounded native Matplotlib eligibility for line, decorated axes, fill, bar, and
+  step geometry, with base-10 log axes and a limited Legend/text surface;
+  compositing and date/unit-label code is merged, while its adopted
+  traceability rows remain open pending reconciliation;
 - the M1 synchronous CPU-side frame seam and the O-08 five-block benchmark
   harness.
 
@@ -78,9 +79,10 @@ multi-module slice, and **L** is a cross-crate or environment-backed milestone.
 
 Implement:
 
-- reconcile the traceability rows and architecture summaries with the landed
-  LP-FUNC-035 compositing and LP-FUNC-037 date/unit-label code after their
-  evidence review;
+- reconcile the traceability rows and architecture summaries with the merged
+  compositing and date/unit-label slices, preserving bounded evidence and
+  leaving LP-FUNC-035 and LP-FUNC-037 open until their acceptance evidence is
+  reviewed;
 - resolve the profile-default mismatch: the accepted architecture names
   `hybrid-explicit` as the default, while the current staged backend and README
   use strict by default; either implement the accepted default or amend the
@@ -177,8 +179,8 @@ Implement:
 - adopt the staged dependency baseline from [ADR
   0008](adr/0008-portable-gpu-and-shaders.md) through the required dependency,
   license, and lockfile review;
-- render the existing line/fill/bar/step packet subset offscreen with reviewed
-  static WGSL and explicit artifact hashes/provenance;
+- render the existing line/fill/bar/step frame-command subset offscreen with
+  reviewed static WGSL and explicit artifact hashes/provenance;
 - implement prepare/upload/draw/readback with bounded allocations, resource
   reuse, and device-generation checks;
 - compare decoded output against the CPU reference and Agg oracle under named
@@ -372,4 +374,3 @@ creating the narrowest safe path to the first real portable GPU frame.
 - [ADR 0017 — Metal No-Go disposition](adr/0017-metal-native-adoption-decision-record.md)
 - [API 0004 — annotations and accessibility](architecture/api-0004-annotations-accessibility.md)
 - [Phase-3B public backend surface](architecture/api-0005-phase3b-public-matplotlib-backend-surface.md)
-- [Backend hotspot sequencing note](research/backend-hotspot-w1-sequencing-input.md)
