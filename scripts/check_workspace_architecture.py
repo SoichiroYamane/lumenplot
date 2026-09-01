@@ -593,7 +593,7 @@ PHASE3A2_MATURIN_WHEEL_SHA256 = "dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13
 # Probed from
 # https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
 # and cross-checked against the published rustup-init.sha256 sidecar.
-PHASE3A2_RUSTUP_INIT_SHA256 = "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+PHASE3A2_RUSTUP_INIT_SHA256 = "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
 PHASE3A2_NUMPY_WHEEL_SHA256 = {
     "cp311": "89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93",
     "cp312": "90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853",
@@ -3585,6 +3585,12 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
     shell_code = _phase3a2_strip_shell_comments("\n".join(run_blocks))
     docker_runs = _phase3a2_docker_run_segments(shell_code)
     repositories = _phase3a2_check_workflow_actions(text, errors)
+    rustup_init_pins = re.findall(
+        r"(?m)^[ \t]*PHASE3A2_RUSTUP_INIT_SHA256:[ \t]*[\"']([0-9a-f]{64})[\"'][ \t]*(?:#.*)?$",
+        text,
+    )
+    if rustup_init_pins != [PHASE3A2_RUSTUP_INIT_SHA256]:
+        errors.append("phase3a2 workflow: rustup-init digest must match the reviewed checker pin")
     required_fragments = (
         ("pull_request", "pull_request trigger"),
         ("push:", "push trigger"),
