@@ -151,6 +151,72 @@ minor tick lines or minor gridlines (major-only slice), non-solid gridline
 styles, subplotspec/gridspec child axes, and any non-exact `Axes` subclass.
 An undecorated fixture (`axison=False`) remains eligible unchanged.
 
+#### 4b. Legend amendment (PRAC-A-L lane, 2026-08-26)
+
+Amended by the accepted PRAC-A-L legend lane decision (task
+t_00592194, 2026-08-26): the
+standard `matplotlib.legend.Legend` attached to an eligible Axes joins the
+strict surface so that F-11 legend rendering works natively in this slice.
+Per LP-MPL-020 the whitelist entry, collector-trace expectation, style
+contract, and fixtures landed together.
+
+The eligible legend object is narrow by contract:
+
+- exactly `matplotlib.legend.Legend` (subclasses refuse), attached to a
+  standard `Axes` (`Legend.axes`); figure-level legends refuse;
+- single column (verified from the public legend layout geometry;
+  multi-column layouts refuse);
+- no shadow, no title text;
+- one or more entries, each pairing a plain `Line2D` handle with a visible
+  non-empty label; every other handle type refuses;
+- each handle re-checks through the fixed line stroke surface
+  (`_check_line2d_static`: butt cap, miter join, solid, no markers, default
+  drawstyle — the legend never relaxes its owner's style contract);
+- each label re-checks through the tick-label text contract plus a positive
+  font-size guard (no math/TeX, no path effects, no leading/trailing
+  whitespace, no newlines).
+
+The collector grammar widens accordingly. Since the LP-FUNC-035 D2
+amendment (interleaved class-mixed acceptance, order-free axes body) the
+axes group carries no whole-trace ordering to widen; the legend's own
+group structure is what matters: one balanced `legend` group inside the
+axes group containing (frame-on legends) one `patch` group carrying the
+rounded frame outline and (per entry, in draw order) one `line2d` group
+with the proxy handle stroke and one `text` group whose `draw_text`
+callback must match the statically enumerated legend label queue. Legend
+geometry provenance:
+Matplotlib's own `Legend.draw` layout executes under the collector and hands
+over display-space geometry — the frame path arrives already transformed to
+display pixels (the collector records its affine flag), and each handle
+stroke arrives in handlebox-local coordinates with its layout affine, which
+the adapter applies explicitly. The adapter never re-derives legend layout
+algebra from getters; drift between static enumeration and the live stream
+refuses through the existing label cross-check.
+
+Rendered commands, ordered by the compositing contract below (LP-FUNC-035
+D1): the frame outline and handle strokes ride as one bundle at the
+`Legend` artist's real public zorder inside the axes' single stable sort —
+exactly where Matplotlib paints the legend relative to decorations and
+content lines (default zorder 5 paints above default content; negative
+content zorders sink below it):
+
+1. the frame outline as one filled+stroked path command (`decoration:
+   "legend_frame"`): facecolor from the collected patch face, edge color /
+   width / alpha from the collected graphics context, identity transform,
+   full-canvas clip. This is the slice's only sanctioned curved outline
+   (`BoxStyle.Round` MOVETO/LINETO/CURVE3/CLOSEPOLY); other code sets, a
+   polygonal frame, hatching, dashes, sketch, or path effects refuse;
+2. one polyline per handle (`decoration: "legend_handle"`) with the §5
+   stroke surface resolved from the collected graphics context;
+3. one glyph-path command per entry label via the public `textpath`
+   module (`decoration: "legend_label"`), identical route to tick labels.
+
+Still outside the slice and refused with an explicit reason: figure-level
+legends, legend subclasses, multi-column layouts, shadows, titles,
+non-`Line2D` handles, handles violating the stroke contract, empty legends,
+unsupported label text, and any legend on axes whose projection is
+unsupported by this slice.
+
 ### 5. Fixed-style guards, no approximation (hazard 5)
 
 The native request supports exactly the Phase-2 private frame style surface:

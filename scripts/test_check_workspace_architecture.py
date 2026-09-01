@@ -2112,6 +2112,81 @@ fn body_macro_is_below_root_scope() {
             'package lumenplot-render-metal: extern "C" is not allowed',
         )
 
+    def test_metal_active_raw_string_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern r"C" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_hashed_raw_string_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern r#"C"# fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_escaped_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern "\\x43" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_unicode_escaped_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern "\\u{43}" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_non_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern "system" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
     def test_metal_active_c_unwind_abi_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             self.activate_metal_lane(root)

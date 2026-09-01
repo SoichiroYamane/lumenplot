@@ -4434,7 +4434,7 @@ def _normalise_rust_whitespace(source: str) -> str:
 
 
 def _metal_raw_extern_c(source: str, position: int) -> bool:
-    """Return whether the code token at *position* is exactly ``extern "C"``."""
+    """Return whether *position* has an ``extern`` whose ABI value is ``C``."""
 
     cursor = position + len("extern")
     # The code-only pass blanks ABI string literals, so inspect the raw source
@@ -4466,8 +4466,17 @@ def _metal_raw_extern_c(source: str, position: int) -> bool:
                 return False
             continue
         break
-    abi_match = re.match(r'"([^"\\]*)"(?!\w)', source[cursor:])
-    return abi_match is not None and abi_match.group(1) == "C"
+    abi_source = source[cursor:]
+    quoted_match = re.match(r'"([^"\\]*)"(?!\w)', abi_source)
+    if quoted_match is not None:
+        return quoted_match.group(1) == "C"
+
+    # Rust raw strings may use any matching number of hash delimiters.  Treat
+    # each spelling whose semantic value is exactly ``C`` as the same ABI token;
+    # raw spelling does not create another FFI allowance.  Reject a trailing
+    # identifier or hash so an invalid token prefix cannot inherit the match.
+    raw_match = re.match(r'r(?P<hashes>#*)"C"(?P=hashes)(?![\w#])', abi_source)
+    return raw_match is not None
 
 
 def _metal_allowlisted_positions(
@@ -4562,7 +4571,7 @@ def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> Non
 
     # Defense-in-depth over the complete source set.  Only the exact
     # named device declaration and its two ownership-preserving call sites are
-    # exempt; all other unsafe or C ABI declarations fail closed.  The source
+    # exempt; all other unsafe or extern declarations fail closed.  The source
     # inventory itself remains open for later prototype modules; each future
     # module inherits no FFI allowance.
     for module_path in sorted(source_dir.rglob("*.rs")):
@@ -4586,8 +4595,6 @@ def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> Non
         if NO_MANGLE_RE.search(module_code):
             errors.append("package lumenplot-render-metal: exported ABI is not allowed")
         for extern_match in re.finditer(r"\bextern\b", module_code):
-            if not _metal_raw_extern_c(module_source, extern_match.start()):
-                continue
             if extern_match.start() not in allowed_extern:
                 errors.append('package lumenplot-render-metal: extern "C" is not allowed')
 
