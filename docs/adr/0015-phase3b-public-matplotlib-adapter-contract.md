@@ -153,8 +153,7 @@ An undecorated fixture (`axison=False`) remains eligible unchanged.
 
 #### 4b. Legend amendment (PRAC-A-L lane, 2026-08-26)
 
-Amended by the accepted PRAC-A-L legend lane decision (task
-t_00592194, 2026-08-26): the
+Amended by the accepted PRAC-A-L legend lane decision (2026-08-26): the
 standard `matplotlib.legend.Legend` attached to an eligible Axes joins the
 strict surface so that F-11 legend rendering works natively in this slice.
 Per LP-MPL-020 the whitelist entry, collector-trace expectation, style

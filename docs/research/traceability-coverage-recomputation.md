@@ -1,6 +1,6 @@
-# Traceability coverage-summary recomputation — t_88a9a591
+# Traceability coverage-summary recomputation
 
-Date: 2026-08-26 · Lane: review rework for [`wt/t_88a9a591`](../requirements/traceability-v1.0.md)
+Date: 2026-08-26 · Lane: traceability registry review ([canonical registry](../requirements/traceability-v1.0.md))
 Scope: `docs/requirements/traceability-v1.0.md` bookkeeping only; no requirement
 row, class, phase placement, gate definition, or result cell was altered beyond
 the two corrections below.
@@ -56,7 +56,7 @@ than transcribed from the reviewer's list:
 - `scripts/verify_traceability_coverage.py` — permanent verifier; recomputes
   everything above and asserts the published block equals the recomputation,
   closure == normative set, GAP-R1 split against both registry and the source
-  research doc (`docs/research/codex-gap-verification-candidate-rows-t_3f634d0b.md`),
+  research doc ([GAP-R1 candidate-row record](codex-gap-verification-candidate-rows.md)),
   all five GAP-R1 gates present, and baseline-chain arithmetic. Exit 0 iff all
   checks pass. Current run: 25/25 PASS (including the five per-gate checks).
 - `scripts/test_verify_traceability_coverage.py` — mutation suite (six cases):

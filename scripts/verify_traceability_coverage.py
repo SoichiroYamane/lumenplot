@@ -23,7 +23,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 TRACE = REPO / "docs" / "requirements" / "traceability-v1.0.md"
-GAPR1 = REPO / "docs" / "research" / "codex-gap-verification-candidate-rows-t_3f634d0b.md"
+GAPR1 = REPO / "docs" / "research" / "codex-gap-verification-candidate-rows.md"
 
 ROW = re.compile(r"^\|\s*`(LP-[A-Z]+-\d+)`\s*\|\s*`([A-Z][A-Z -]*?)`\s*\|(.*)$")
 GATE = re.compile(r"`(AT-[A-Z0-9-]+)`")

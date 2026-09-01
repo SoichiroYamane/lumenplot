@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "verify_traceability_coverage.py"
 TRACE = ROOT / "docs" / "requirements" / "traceability-v1.0.md"
-GAPR1 = ROOT / "docs" / "research" / "codex-gap-verification-candidate-rows-t_3f634d0b.md"
+GAPR1 = ROOT / "docs" / "research" / "codex-gap-verification-candidate-rows.md"
 
 
 class TraceabilityCoverageMutationTests(unittest.TestCase):
