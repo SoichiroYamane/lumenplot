@@ -2460,9 +2460,12 @@ fn body_macro_is_below_root_scope() {
 
     def test_render_api_stub_public_item_still_enforced_without_sentinel(self) -> None:
         def mutate(root: Path) -> None:
-            path = root / "crates/lumenplot-render-api/src/frame.rs"
-            # Remove the sentinel file; the stub rules must apply unchanged.
-            path.unlink()
+            source_dir = root / "crates/lumenplot-render-api/src"
+            # Remove every implementation module; the stub rules must apply
+            # unchanged when the render-api sentinel is absent.
+            for path in source_dir.iterdir():
+                if path.name != "lib.rs":
+                    path.unlink()
             lib_path = root / "crates/lumenplot-render-api/src/lib.rs"
             source = lib_path.read_text(encoding="utf-8")
             lib_path.write_text(
