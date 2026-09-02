@@ -57,7 +57,7 @@ def main() -> int:
     #
     #     canvas = FigureCanvasLumenPlot(fig, mode="hybrid")
     fig = figure.Figure(figsize=(4.0, 3.0), dpi=100)
-    _canvas = FigureCanvasLumenPlot(fig)
+    _ = FigureCanvasLumenPlot(fig)
     ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
     ax.set_axis_off()
     ax.add_line(

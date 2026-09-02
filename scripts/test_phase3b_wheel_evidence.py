@@ -201,7 +201,9 @@ def ensure_matplotlib(run_python: Path) -> bool:
     ).returncode == 0
 
 
-def probe_backend(run_python: Path, matplotlib_ready: bool) -> dict[str, object]:
+def probe_backend(
+    run_python: Path, matplotlib_ready: bool, numpy_ready: bool
+) -> dict[str, object]:
     """Probe the public backend surface; report absence honestly."""
     info: dict[str, object] = {
         "backend_importable": False,
@@ -214,6 +216,9 @@ def probe_backend(run_python: Path, matplotlib_ready: bool) -> dict[str, object]
     }
     if not matplotlib_ready:
         info["blocked_reason"] = "matplotlib unavailable in run venv"
+        return info
+    if not numpy_ready:
+        info["blocked_reason"] = "numpy unavailable in run venv"
         return info
 
     import_probe = run(
@@ -403,7 +408,7 @@ def run_probe(workdir: Path) -> dict[str, object]:
 
     numpy_ready = ensure_numpy(run_python)
     matplotlib_ready = ensure_matplotlib(run_python)
-    surface = probe_backend(run_python, matplotlib_ready and numpy_ready)
+    surface = probe_backend(run_python, matplotlib_ready, numpy_ready)
 
     # The helper suite exercises the native extension and the public runtime
     # probe exercises the installed backend package. Both results are kept
@@ -490,6 +495,10 @@ class SurfaceConstantsTests(unittest.TestCase):
         self.assertEqual(EXPECTED_ENTRY_POINT_NAME, "lumenplot")
         self.assertEqual(set(BACKEND_EXPORTS), {"FigureCanvasLumenPlot", "FigureCanvas", "FigureManager"})
         self.assertEqual(set(FORBIDDEN_BACKEND_EXPORTS), {"_Backend", "new_figure_manager", "draw_if_interactive", "show"})
+
+    def test_dependency_block_reason_identifies_missing_numpy(self) -> None:
+        surface = probe_backend(Path("/unused"), True, False)
+        self.assertEqual(surface["blocked_reason"], "numpy unavailable in run venv")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -9,7 +9,6 @@ from typing import Any
 import matplotlib
 
 
-_UNSUPPORTED_TOKEN = "unsupported-capability"
 _RGBA_BLACK = (0, 0, 0, 255)
 _STEP_DRASTYLES = frozenset({"steps", "steps-pre", "steps-post", "steps-mid"})
 
