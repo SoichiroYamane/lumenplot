@@ -3,12 +3,14 @@
 //! Four clock domains exist per the shared contract:
 //!
 //! 1. **scheduler** — CPU-monotonic wall span from event acceptance to the
-//!    presentation call returning. Every scheduler-originated span name
-//!    carries the mandatory `event_accept_to_` prefix.
+//!    selected render boundary returning. Every scheduler-originated span
+//!    name carries the mandatory `event_accept_to_` prefix; the name never
+//!    claims physical display-present latency.
 //! 2. **gpu** — GPU-timestamp domain with its own time base. It is never
 //!    merged into scheduler nanoseconds. This harness currently drives the
-//!    accepted private PNG facade, which exposes no GPU timestamp queries,
-//!    so this domain reports `available: false`.
+//!    accepted private PNG facade and portable offscreen renderer, neither of
+//!    which exposes GPU timestamp queries, so this domain reports
+//!    `available: false`.
 //! 3. **queue** — completion/readback observations taken on the CPU
 //!    monotonic clock with the `queue_` prefix. The facade surface exposes
 //!    no distinct queue-completion or readback observation point, so this
@@ -25,9 +27,10 @@
 
 use std::time::Instant;
 
-/// Scheduler-domain span: accept the frame event until the present call
-/// returns (the facade render call completing on the CPU).
-pub(crate) const SCHEDULER_SPAN: &str = "event_accept_to_present_return";
+/// Scheduler-domain span for the CPU facade path.
+pub(crate) const RENDER_RETURN_SPAN: &str = "event_accept_to_render_return";
+/// Scheduler-domain span for the accelerated offscreen readback path.
+pub(crate) const READBACK_RETURN_SPAN: &str = "event_accept_to_readback_return";
 /// GPU-timestamp-domain span (own time base; unavailable on this surface).
 pub(crate) const GPU_SPAN: &str = "gpu_frame_timestamp_span";
 /// Queue-domain span (CPU-monotonic completion/readback observation).
@@ -70,16 +73,17 @@ impl ClockBoard {
     /// Run one frame body and observe the scheduler-domain span around it.
     ///
     /// The returned nanosecond value measures acceptance (immediately before
-    /// the frame body starts) through the present call returning; the frame
-    /// result is handed back untouched so callers can keep work observable.
+    /// the frame body starts) through the selected render boundary returning;
+    /// the frame result is handed back untouched so callers can keep work
+    /// observable. This helper never implies a physical display observation.
     pub(crate) fn observe_frame<F, T>(&self, frame: F) -> (FrameClocks, T)
     where
         F: FnOnce() -> T,
     {
         let accept = Instant::now();
         let produced = frame();
-        let present_return = Instant::now();
-        let elapsed = present_return.duration_since(accept);
+        let render_return = Instant::now();
+        let elapsed = render_return.duration_since(accept);
         let scheduler_ns = self
             .scheduler_available
             .then(|| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
@@ -87,10 +91,10 @@ impl ClockBoard {
     }
 
     /// Manifest `clocks[]` inventory in the fixed D1 order.
-    pub(crate) fn descriptors(&self) -> [ClockDescriptor; 4] {
+    pub(crate) fn descriptors(&self, scheduler_span: &'static str) -> [ClockDescriptor; 4] {
         [
             ClockDescriptor {
-                name: SCHEDULER_SPAN,
+                name: scheduler_span,
                 domain: "scheduler",
                 unit: "ns",
                 available: self.scheduler_available,

@@ -375,6 +375,7 @@ dependencies = [
  "lumenplot",
  "lumenplot-engine",
  "lumenplot-render-api",
+ "lumenplot-render-wgpu",
 ]
 
 [[package]]

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
-WGPU_LOCK_SHA256 = "9e161ba18ec1344e6336e6233c9d0329771f513937d8dc7282aa28aeb206ca73"
+WGPU_LOCK_SHA256 = "719d1f74b4681242f44ba01942fbc80b1cce40846798548845740e4b15ce1769"
 WGPU_PACKAGE_VERSION = "29.0.4"
 WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
 
@@ -303,7 +303,12 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
 
 EXPECTED_WORKSPACE_DEPENDENCIES = {
     "lumenplot": {"lumenplot-engine", "lumenplot-export"},
-    "lumenplot-bench": {"lumenplot", "lumenplot-engine", "lumenplot-render-api"},
+    "lumenplot-bench": {
+        "lumenplot",
+        "lumenplot-engine",
+        "lumenplot-render-api",
+        "lumenplot-render-wgpu",
+    },
     "lumenplot-engine": set(),
     "lumenplot-export": {"lumenplot-engine", "png", "tiny-skia"},
     "lumenplot-python": {"lumenplot", "numpy", "png", "pyo3", "tiny-skia"},

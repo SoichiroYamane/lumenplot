@@ -109,6 +109,34 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
             "dependency graph drift for workspace package lumenplot-bench",
         )
 
+    def test_bench_renderer_edge_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = 'lumenplot-render-wgpu = { path = "../lumenplot-render-wgpu"'
+            self.assertIn(marker, text)
+            path.write_text(
+                "".join(line for line in text.splitlines(keepends=True) if marker not in line),
+                encoding="utf-8",
+            )
+
+            lock = root / "Cargo.lock"
+            source = lock.read_text(encoding="utf-8")
+            start = source.index('name = "lumenplot-bench"')
+            end = source.index("[[package]]", start)
+            block = source[start:end]
+            dependency = ' "lumenplot-render-wgpu",\n'
+            self.assertIn(dependency, block)
+            lock.write_text(
+                source[:start] + block.replace(dependency, "") + source[end:],
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(
+            mutate,
+            "dependency graph drift for workspace package lumenplot-bench",
+        )
+
     def test_bench_unexpected_extra_edge_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             # Add an undeclared extra internal edge to the bench manifest and

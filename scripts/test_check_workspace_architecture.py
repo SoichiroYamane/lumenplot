@@ -2033,8 +2033,8 @@ fn body_macro_is_below_root_scope() {
 
     def test_bench_accepted_dependency_edges_pass(self) -> None:
         # The accelerated lane's accepted edge set {lumenplot,
-        # lumenplot-engine, lumenplot-render-api} must satisfy the exact
-        # DAG expectation while the bench sentinel is active.
+        # lumenplot-engine, lumenplot-render-api, lumenplot-render-wgpu} must
+        # satisfy the exact DAG expectation while the bench sentinel is active.
         with self.fixture() as temporary:
             root = Path(temporary)
             self.activate_bench_lane(root)
@@ -2052,7 +2052,8 @@ fn body_macro_is_below_root_scope() {
                 "[dependencies]\n"
                 'lumenplot = { path = "../lumenplot", version = "0.1.0" }\n'
                 'lumenplot-engine = { path = "../lumenplot-engine", version = "0.1.0" }\n'
-                'lumenplot-render-api = { path = "../lumenplot-render-api", version = "0.1.0" }\n',
+                'lumenplot-render-api = { path = "../lumenplot-render-api", version = "0.1.0" }\n'
+                'lumenplot-render-wgpu = { path = "../lumenplot-render-wgpu", version = "0.1.0" }\n',
                 encoding="utf-8",
             )
             returncode, output = self.run_checker(root)
@@ -2089,6 +2090,23 @@ fn body_macro_is_below_root_scope() {
         self.assert_mutation_rejected(
             mutate,
             "package lumenplot-bench: exact dependency graph mismatch (missing lumenplot-render-api)",
+        )
+
+    def test_bench_missing_renderer_edge_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_bench_lane(root)
+            path = root / "crates/lumenplot-bench/Cargo.toml"
+            text = path.read_text(encoding="utf-8")
+            marker = 'lumenplot-render-wgpu = { path = "../lumenplot-render-wgpu"'
+            self.assertIn(marker, text)
+            path.write_text(
+                "".join(line for line in text.splitlines(keepends=True) if marker not in line),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-bench: exact dependency graph mismatch (missing lumenplot-render-wgpu)",
         )
 
     def test_bench_active_inventory_rejects_nested_module_directory(self) -> None:
