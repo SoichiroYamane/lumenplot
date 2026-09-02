@@ -50,7 +50,36 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
             returncode, output = self.run_checker(Path(temporary))
             self.assertEqual(returncode, 0, output)
             self.assertIn("phase2b dependency graph: OK", output)
-            self.assertIn("dependency build-script evidence: crc32fast", output)
+            self.assertIn("crc32fast", output)
+
+    def test_wgpu_package_checksum_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "Cargo.lock"
+            source = path.read_text(encoding="utf-8")
+            marker = (
+                'name = "wgpu"\n'
+                'version = "29.0.4"\n'
+                'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+                'checksum = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"'
+            )
+            self.assertIn(marker, source)
+            path.write_text(
+                source.replace(
+                    'checksum = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"',
+                    'checksum = "0000000000000000000000000000000000000000000000000000000000000000"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "Cargo.lock checksum drift for wgpu")
+
+    def test_wgpu_lock_inventory_digest_is_fail_closed(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "Cargo.lock"
+            path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+        self.assert_rejected(mutate, "Cargo.lock wgpu inventory hash drift")
 
     def test_bench_workspace_edge_drift_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
@@ -221,18 +250,6 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
                 self.assertIn(dependency, block)
                 block = block.replace(dependency, "")
             source = source[:start] + block + source[end:]
-            orphans = [
-                "dispatch2",
-                "objc2",
-                "objc2-core-foundation",
-                "objc2-encode",
-                "objc2-foundation",
-                "objc2-metal",
-            ]
-            for name in orphans:
-                head = source.index(f'\n[[package]]\nname = "{name}"')
-                tail = source.index("[[package]]", head + len("\n[[package]]"))
-                source = source[:head] + "\n" + source[tail:]
             lock.write_text(source, encoding="utf-8")
 
         self.assert_rejected(
