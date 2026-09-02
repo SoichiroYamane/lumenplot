@@ -93,6 +93,16 @@ METAL_TARGET_EXTERNAL_DEPENDENCIES = {
 }
 # The exact Cargo target-gate expression the pinned edges live behind.
 METAL_TARGET_GATE = 'cfg(target_os = "macos")'
+WGPU_EXTERNAL_DEPENDENCIES = {
+    "wgpu": {
+        "version": "=29.0.4",
+        "default-features": False,
+        "features": ["std", "wgsl", "vulkan"],
+    },
+}
+WGPU_SOURCE_FILES = {"src/lib.rs", "src/shader.rs"}
+WGPU_SHADER_PATH = "shaders/line.wgsl"
+WGPU_SHADER_SHA256 = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3"
 # Option A from the accepted architecture decision permits only the accepted
 # system-device boundary.  These are exact path, symbol, signature, and
 # statement anchors; they are not a crate-wide unsafe waiver.
@@ -3279,6 +3289,20 @@ def _render_api_activation_reason(root: Path) -> str | None:
     return None
 
 
+def _wgpu_activation_reason(root: Path) -> str | None:
+    """Return why the portable renderer static contract activates, or None."""
+
+    source_dir = root / "crates" / "lumenplot-render-wgpu" / "src"
+    if any(path.suffix == ".rs" for path in source_dir.glob("*.rs") if path.name != "lib.rs"):
+        return "crates/lumenplot-render-wgpu/src/*.rs beyond src/lib.rs"
+    manifest = _read_toml(root / "crates/lumenplot-render-wgpu/Cargo.toml", root, [])
+    if isinstance(manifest, dict):
+        dependencies = manifest.get("dependencies")
+        if isinstance(dependencies, dict) and dependencies.get("wgpu") == WGPU_EXTERNAL_DEPENDENCIES["wgpu"]:
+            return "crates/lumenplot-render-wgpu/Cargo.toml wgpu dependency"
+    return None
+
+
 RENDER_API_FORBIDDEN_CODE_PATTERNS = (
     FORBIDDEN_CODE_PATTERNS[0],
     FORBIDDEN_CODE_PATTERNS[1],
@@ -3326,6 +3350,70 @@ def _check_render_api_source(package_dir: Path, root: Path, errors: list[str]) -
         for label, pattern in RENDER_API_FORBIDDEN_CODE_PATTERNS:
             if pattern.search(module_code):
                 errors.append(f"package lumenplot-render-api: {label} is not allowed")
+
+
+WGPU_FORBIDDEN_CODE_PATTERNS = (
+    FORBIDDEN_CODE_PATTERNS[0],
+    FORBIDDEN_CODE_PATTERNS[1],
+    (
+        "higher-level frontend code",
+        re.compile(r"\b(?:python|matplotlib|numpy|pyo3|winit|raw_window_handle)\b", re.I),
+    ),
+    (
+        "Metal backend naming",
+        re.compile(r"\b(?:metal|mtl|objc2)\b", re.I),
+    ),
+)
+
+
+def _check_wgpu_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the bounded portable renderer and static shader artifact lane."""
+
+    source_dir = package_dir / "src"
+    rust_files = (
+        {path.relative_to(package_dir).as_posix() for path in source_dir.rglob("*.rs")}
+        if source_dir.is_dir()
+        else set()
+    )
+    if rust_files != WGPU_SOURCE_FILES:
+        missing = sorted(WGPU_SOURCE_FILES - rust_files)
+        extra = sorted(rust_files - WGPU_SOURCE_FILES)
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ",".join(missing))
+        if extra:
+            details.append("extra " + ",".join(extra))
+        errors.append(
+            "package lumenplot-render-wgpu: exact source inventory mismatch"
+            + (" (" + "; ".join(details) + ")" if details else "")
+        )
+
+    for module_path in sorted(source_dir.rglob("*.rs")):
+        try:
+            module_source = module_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            errors.append(
+                f"package lumenplot-render-wgpu: cannot read {_logical_path(module_path, root)}"
+            )
+            continue
+        module_code = _strip_rust_comments_and_literals(module_source)
+        if NO_MANGLE_RE.search(module_code):
+            errors.append("package lumenplot-render-wgpu: exported ABI is not allowed")
+        for label, pattern in WGPU_FORBIDDEN_CODE_PATTERNS:
+            if pattern.search(module_code):
+                errors.append(f"package lumenplot-render-wgpu: {label} is not allowed")
+
+    shader_path = package_dir / WGPU_SHADER_PATH
+    try:
+        shader_bytes = shader_path.read_bytes()
+    except (OSError, UnicodeError):
+        errors.append(
+            f"package lumenplot-render-wgpu: cannot read {_logical_path(shader_path, root)}"
+        )
+    else:
+        digest = hashlib.sha256(shader_bytes).hexdigest()
+        if digest != WGPU_SHADER_SHA256:
+            errors.append("package lumenplot-render-wgpu: static shader hash mismatch")
 
 
 def _metal_activation_reason(root: Path) -> str | None:
@@ -4634,6 +4722,8 @@ def _check_package_source(
         and _render_api_activation_reason(root) is not None
     ):
         _check_render_api_source(package_dir, root, errors)
+    elif package_name == "lumenplot-render-wgpu" and _wgpu_activation_reason(root) is not None:
+        _check_wgpu_source(package_dir, root, errors)
     elif package_name == "lumenplot-render-metal" and _metal_activation_reason(root) is not None:
         _check_metal_source(package_dir, root, errors)
     else:
@@ -4658,6 +4748,11 @@ def _check_dependencies(
         and _metal_activation_reason(root) is not None
     ):
         expected_external = METAL_TARGET_EXTERNAL_DEPENDENCIES
+    elif (
+        package_name == "lumenplot-render-wgpu"
+        and _wgpu_activation_reason(root) is not None
+    ):
+        expected_external = WGPU_EXTERNAL_DEPENDENCIES
     elif package_name == "lumenplot-python" and phase3a2_active:
         expected_external = PHASE3A2_PYTHON_DEPENDENCIES
         if phase3b_active:

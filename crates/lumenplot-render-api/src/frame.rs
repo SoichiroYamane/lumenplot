@@ -380,6 +380,16 @@ impl FramePacket {
         self.layout.background
     }
 
+    /// Encoded straight-sRGB line color resolved for this frame.
+    pub fn line_color(&self) -> SrgbRgba8 {
+        self.line_color
+    }
+
+    /// Line width in display pixels resolved for this frame.
+    pub fn line_width_px(&self) -> f64 {
+        self.line_width_px
+    }
+
     /// Resolved line series in display space.
     pub fn series(&self) -> &[PacketSeries] {
         &self.series
@@ -485,6 +495,8 @@ mod tests {
         let packet = handle.resolve_frame(&fixture_spec()).expect("packet");
         assert_eq!(packet.canvas_px(), [CANVAS_W, CANVAS_H]);
         assert_eq!(packet.dots_per_inch(), 100.0);
+        assert!(packet.line_color() == SrgbRgba8::new(31, 119, 180, 255));
+        assert_eq!(packet.line_width_px(), 2.0);
         assert_eq!(packet.revision(), handle.revision());
         assert_eq!(packet.series().len(), 1);
         let total_points: usize = packet.series()[0]

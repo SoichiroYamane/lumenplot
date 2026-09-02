@@ -2483,6 +2483,77 @@ fn body_macro_is_below_root_scope() {
             "package lumenplot-render-api: public item is not allowed in Phase-0 stub",
         )
 
+    # ------------------------------------------------------------------
+    # M3 portable wgpu renderer lane: exact pinned dependency, source
+    # boundary, and static WGSL provenance are fail-closed.
+    # ------------------------------------------------------------------
+
+    def test_wgpu_renderer_source_and_shader_pass_checker(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_wgpu_static_shader_hash_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/shaders/line.wgsl"
+            path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-wgpu: static shader hash mismatch",
+        )
+
+    def test_wgpu_unsafe_renderer_source_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/src/shader.rs"
+            path.write_text(path.read_text(encoding="utf-8") + "\nunsafe fn raw() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-wgpu: unsafe code is not allowed",
+        )
+
+    def test_wgpu_dependency_specification_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    'version = "=29.0.4"',
+                    'version = "=29.0.3"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external dependency 'wgpu' has an unexpected specification",
+        )
+
+    def test_wgpu_source_without_dependency_fails_closed(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
+            source = path.read_text(encoding="utf-8")
+            marker = 'wgpu = { version = "=29.0.4", default-features = false, features = ["std", "wgsl", "vulkan"] }\n'
+            self.assertIn(marker, source)
+            path.write_text(source.replace(marker, "", 1), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-wgpu: exact external dependency inventory mismatch (missing wgpu)",
+        )
+
+    def test_wgpu_manifest_without_source_fails_closed(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/src/shader.rs"
+            path.unlink()
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-wgpu: exact source inventory mismatch",
+        )
+
     def test_render_metal_to_wgpu_edge_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-render-metal/Cargo.toml"
