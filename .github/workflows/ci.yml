@@ -127,6 +127,12 @@ jobs:
       - name: Test Phase-2B dependency mutations
         run: python3 -m unittest scripts/test_check_phase2b_dependencies.py
 
+      - name: Verify traceability coverage bookkeeping
+        run: python3 scripts/verify_traceability_coverage.py
+
+      - name: Test traceability coverage verifier mutations
+        run: python3 -m unittest scripts/test_verify_traceability_coverage.py
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -203,7 +209,7 @@ jobs:
 
       - name: Run checker mutation suites
         run: |
-          python3 -m unittest scripts.test_check_workspace_architecture scripts.test_check_phase2b_dependencies -v
+          python3 -m unittest scripts.test_check_workspace_architecture scripts.test_check_phase2b_dependencies scripts.test_verify_traceability_coverage -v
 
       - name: Verify offline skip-legitimacy (matplotlib absent)
         # The matplotlib-absent cells must pass via their existing skipUnless

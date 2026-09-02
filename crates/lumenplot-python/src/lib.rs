@@ -834,6 +834,34 @@ fn extract_spec(spec: &Bound<'_, PyAny>) -> PyResult<FrameSpec> {
     let mut frame_spec =
         FrameSpec::new(width_px, height_px, output_dpi).map_err(frame_error_to_pyerr)?;
 
+    // Optional canvas seed. The adapter (ADR 0015 §6) always sends
+    // `background_rgba`; the seam treats it as additive so an absent key
+    // keeps the frozen transparent-canvas behavior of the accepted slice.
+    if let Some(background) = optional_key(dict, "background_rgba")? {
+        let background_rgba = extract_rgba(&background, "background_rgba")?;
+        frame_spec.set_background_rgba(background_rgba);
+    }
+
+    // Optional compositing model (architecture ruling 2026-08-25, an
+    // additive amendment of ADR 0012): "linear" (default, frozen byte
+    // behavior) or "agg_srgb" for the adapter's Agg-parity path.
+    if let Some(mode_value) = optional_key(dict, "blend_mode")? {
+        let mode: &str = mode_value
+            .cast::<PyString>()
+            .map_err(|_| type_error("blend_mode", "must be a string"))?
+            .to_str()
+            .map_err(|_| type_error("blend_mode", "must be a string"))?;
+        match mode {
+            "linear" => frame_spec.set_blend_mode(frame::BlendMode::Linear),
+            "agg_srgb" => frame_spec.set_blend_mode(frame::BlendMode::AggSrgb),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "blend_mode is unrecognized; use 'linear' or 'agg_srgb'",
+                ));
+            }
+        }
+    }
+
     if frame_spec.reserve_commands(commands_list.len()).is_err() {
         return Err(internal_error("allocation failed"));
     }

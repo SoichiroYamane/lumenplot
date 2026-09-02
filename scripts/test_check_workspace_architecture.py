@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import json
 import hashlib
+import re
 import shutil
 import subprocess
 import sys
@@ -81,6 +82,32 @@ def reset_bench_crate_to_baseline(root: Path) -> None:
     source.write_text(BASELINE_BENCH_SOURCE, encoding="utf-8")
 
 
+BASELINE_METAL_SOURCE = """//! Private B2-P prototype documentation stub for the Metal render lane.
+//!
+//! Binding implementation is deferred until its accepted bridge contract lands.
+"""
+
+
+def reset_metal_crate_to_baseline(root: Path) -> None:
+    source = root / "crates/lumenplot-render-metal/src/lib.rs"
+    source_dir = root / "crates/lumenplot-render-metal/src"
+    # The integration fixture is copied from a tree that may already contain
+    # the accepted prototype.  Metal tests activate that shape explicitly so
+    # every mutation starts from the documentation-only Phase-0 baseline.
+    if source_dir.is_dir():
+        for stale in sorted(source_dir.iterdir()):
+            if stale.name == "lib.rs":
+                continue
+            if stale.is_dir():
+                shutil.rmtree(stale)
+            else:
+                stale.unlink()
+    tests_dir = root / "crates/lumenplot-render-metal/tests"
+    if tests_dir.is_dir():
+        shutil.rmtree(tests_dir)
+    source.write_text(BASELINE_METAL_SOURCE, encoding="utf-8")
+
+
 class WorkspaceArchitectureMutationTests(unittest.TestCase):
     def fixture(self) -> tempfile.TemporaryDirectory[str]:
         temporary = tempfile.TemporaryDirectory(prefix="lumenplot-architecture-")
@@ -93,6 +120,7 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
         shutil.copytree(ROOT / "crates", fixture_root / "crates")
         reset_python_bridge_to_baseline(fixture_root)
         reset_bench_crate_to_baseline(fixture_root)
+        reset_metal_crate_to_baseline(fixture_root)
         scripts_dir = fixture_root / "scripts"
         scripts_dir.mkdir()
         shutil.copy2(CHECKER, scripts_dir / CHECKER.name)
@@ -1983,16 +2011,32 @@ fn body_macro_is_below_root_scope() {
     # ------------------------------------------------------------------
 
     def add_metal_module_files(self, root: Path) -> None:
-        """Write prototype-lane module files beyond the documentation-only stub."""
+        """Write the exact device source accepted by the Metal FFI allowlist."""
 
         source_dir = root / "crates/lumenplot-render-metal/src"
-        (source_dir / "command.rs").write_text(
-            "pub(crate) fn encode() -> usize {\n    0\n}\n",
+        # Copy the checked-in implementation rather than a reduced lookalike;
+        # the positive test therefore exercises the current exact boundary.
+        shutil.copy2(
+            ROOT / "crates/lumenplot-render-metal/src/device.rs",
+            source_dir / "device.rs",
+        )
+
+    def add_metal_compile_gate(self, root: Path) -> None:
+        """Write the required auto-discovered integration-test compile gate."""
+
+        tests_dir = root / "crates/lumenplot-render-metal/tests"
+        tests_dir.mkdir(exist_ok=True)
+        (tests_dir / "compile_gate.rs").write_text(
+            "#![cfg(target_os = \"macos\")]\n\n"
+            "#[path = \"../src/device.rs\"]\n"
+            "mod device;\n",
             encoding="utf-8",
         )
 
     def activate_metal_lane(self, root: Path) -> None:
+        """Activate the lane with the exact shape the checker pins."""
         self.add_metal_module_files(root)
+        self.add_metal_compile_gate(root)
 
     def strip_metal_target_dependencies(self, root: Path) -> None:
         """Restore the plain Phase-0 stub manifest without the pinned gate."""
@@ -2014,12 +2058,231 @@ fn body_macro_is_below_root_scope() {
             "package lumenplot-render-metal: source must be documentation-only",
         )
 
-    def test_metal_active_inventory_accepts_extra_module_file(self) -> None:
+    def test_metal_active_full_pinned_shape_passes_checker(self) -> None:
         with self.fixture() as temporary:
             fixture_root = Path(temporary)
             self.activate_metal_lane(fixture_root)
             returncode, output = self.run_checker(fixture_root)
             self.assertEqual(returncode, 0, output)
+
+    def test_metal_active_inventory_accepts_extra_module_file(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/command.rs"
+            path.write_text("pub(crate) fn encode() -> usize {\n    0\n}\n", encoding="utf-8")
+
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            mutate(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_metal_active_ffi_in_extra_module_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/command.rs"
+            path.write_text("unsafe fn raw() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
+
+    def test_metal_active_unrelated_unsafe_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(path.read_text(encoding="utf-8") + "\nunsafe fn raw() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
+
+    def test_metal_active_unrelated_extern_c_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8") + '\nextern "C" fn bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_raw_string_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern r"C" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_hashed_raw_string_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern r#"C"# fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_escaped_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern "\\x43" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_unicode_escaped_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern "\\u{43}" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_non_c_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern "system" fn unreviewed_bridge() {}\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_c_unwind_abi_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            source = path.read_text(encoding="utf-8")
+            self.assertIn('unsafe extern "C" {', source)
+            path.write_text(
+                source.replace('unsafe extern "C" {', 'unsafe extern "C-unwind" {', 1),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
+
+    def test_metal_active_abi_prefix_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            source = path.read_text(encoding="utf-8")
+            self.assertIn('unsafe extern "C" {', source)
+            path.write_text(
+                source.replace('unsafe extern "C" {', 'unsafe extern "C"foo {', 1),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
+
+    def test_metal_active_block_comment_cannot_hide_extern_c(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern /* hidden */ "C" { fn bridge(); }\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_line_comment_cannot_hide_extern_c(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + '\nextern // hidden\n"C" { fn bridge(); }\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            'package lumenplot-render-metal: extern "C" is not allowed',
+        )
+
+    def test_metal_active_ffi_signature_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("*mut AnyObject", "*const AnyObject"),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
+
+    def test_metal_active_duplicate_allowlisted_call_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_metal_lane(root)
+            path = root / "crates/lumenplot-render-metal/src/device.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace(
+                    "        Some(Self { inner })\n",
+                    "        let duplicate = unsafe { Retained::from_raw(raw) }?;\n"
+                    "        let _ = duplicate;\n"
+                    "        Some(Self { inner })\n",
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-metal: unsafe code is not allowed",
+        )
 
     def test_metal_stub_rules_apply_without_pinned_edges(self) -> None:
         def mutate(root: Path) -> None:
@@ -2027,7 +2290,7 @@ fn body_macro_is_below_root_scope() {
             self.add_metal_module_files(root)
 
         # The source sentinel alone does not unlock external dependencies:
-        # the exact inventory expectation still fires (fail-closed).
+        # the exact dependency inventory expectation still fires (fail-closed).
         self.assert_mutation_rejected(
             mutate,
             "package lumenplot-render-metal: exact external dependency "
@@ -2197,9 +2460,12 @@ fn body_macro_is_below_root_scope() {
 
     def test_render_api_stub_public_item_still_enforced_without_sentinel(self) -> None:
         def mutate(root: Path) -> None:
-            path = root / "crates/lumenplot-render-api/src/frame.rs"
-            # Remove the sentinel file; the stub rules must apply unchanged.
-            path.unlink()
+            source_dir = root / "crates/lumenplot-render-api/src"
+            # Remove every implementation module; the stub rules must apply
+            # unchanged when the render-api sentinel is absent.
+            for path in source_dir.iterdir():
+                if path.name != "lib.rs":
+                    path.unlink()
             lib_path = root / "crates/lumenplot-render-api/src/lib.rs"
             source = lib_path.read_text(encoding="utf-8")
             lib_path.write_text(
@@ -2215,6 +2481,77 @@ fn body_macro_is_below_root_scope() {
         self.assert_mutation_rejected(
             mutate,
             "package lumenplot-render-api: public item is not allowed in Phase-0 stub",
+        )
+
+    # ------------------------------------------------------------------
+    # M3 portable wgpu renderer lane: exact pinned dependency, source
+    # boundary, and static WGSL provenance are fail-closed.
+    # ------------------------------------------------------------------
+
+    def test_wgpu_renderer_source_and_shader_pass_checker(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+
+    def test_wgpu_static_shader_hash_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/shaders/line.wgsl"
+            path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-wgpu: static shader hash mismatch",
+        )
+
+    def test_wgpu_unsafe_renderer_source_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/src/shader.rs"
+            path.write_text(path.read_text(encoding="utf-8") + "\nunsafe fn raw() {}\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-wgpu: unsafe code is not allowed",
+        )
+
+    def test_wgpu_dependency_specification_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    'version = "=29.0.4"',
+                    'version = "=29.0.3"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external dependency 'wgpu' has an unexpected specification",
+        )
+
+    def test_wgpu_source_without_dependency_fails_closed(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
+            source = path.read_text(encoding="utf-8")
+            marker = 'wgpu = { version = "=29.0.4", default-features = false, features = ["std", "wgsl", "vulkan"] }\n'
+            self.assertIn(marker, source)
+            path.write_text(source.replace(marker, "", 1), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-wgpu: exact external dependency inventory mismatch (missing wgpu)",
+        )
+
+    def test_wgpu_manifest_without_source_fails_closed(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/src/shader.rs"
+            path.unlink()
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-wgpu: exact source inventory mismatch",
         )
 
     def test_render_metal_to_wgpu_edge_is_rejected(self) -> None:
@@ -2262,13 +2599,48 @@ class Phase3A2WheelEvidenceMutationTests(unittest.TestCase):
     )
     CONFIG_DIGEST = "sha256:fd0c576d9673648a125bffeaea6acb762d8bc52d97da9034dfdbe00f98a17dd5"
     MATURIN_HASH = "dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e"
-    RUSTUP_INIT_HASH = "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+    RUSTUP_INIT_HASH = "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
     NUMPY_HASHES = {
         "cp311": "89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93",
         "cp312": "90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853",
         "cp313": "a7830bab239b79cda9c08c2da014761cafb48da6150e1da17ac06283f43b6089",
         "cp314": "a2c306dea656c12c68f51f4cea133cbe78ca7435eb28c735eac1d3ebe73be6e8",
     }
+    MATPLOTLIB_HASHES = {
+        "cp311": "aee55e9041211bf84302ab55ec3965df18dd90ae19f8b58332a7feaf208bfe83",
+        "cp312": "ba8f811b8ddfac493734d6af0b2dff96919d0c28ca0d641858dab4262777c6ea",
+        "cp313": "b0a19dcf73406d3746d25a5ed42d713604c9a3e024d129b102852b0d941cb9f3",
+        "cp314": "5af0dcda57d471440a7b5b623e70e0a61003518443d9098f211a96ecfbbc25be",
+    }
+    CONTOURPY_HASHES = {
+        "cp311": "51e79c1f7470158e838808d4a996fa9bac72c498e93d8ebe5119bc1e6becb0db",
+        "cp312": "4d00e655fcef08aba35ec9610536bfe90267d7ab5ba944f7032549c55a146da1",
+        "cp313": "4debd64f124ca62069f313a9cb86656ff087786016d76927ae2cf37846b006c9",
+        "cp314": "f64836de09927cba6f79dcd00fdd7d5329f3fccc633468507079c829ca4db4e3",
+    }
+    CYCLER_HASH = "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30"
+    FONTTOOLS_HASHES = {
+        "cp311": "d76ac49f929aecaf82d83250b8347e099d7aecba0f4726c1d9b6df3b8bb5fe18",
+        "cp312": "58dc6bb86a78d782f00f9190ca02c119cf5bbe2807536e361e18d42019f877d8",
+        "cp313": "22135da48a348785c5e2d5d2d9d6bec5ed44adacbaeb9db12d9493bf6c6bfa68",
+        "cp314": "445af2eab030a16b9171ea8bdda7ebf7d96bda2df88ee182a464252f6e05e20d",
+    }
+    KIWISOLVER_HASHES = {
+        "cp311": "2517e24d7315eb51c10664cdb865195df38ab74456c677df67bb47f12d088a27",
+        "cp312": "bb5136fb5352d3f422df33f0c879a1b0c204004324150cc3b5e3c4f310c9049f",
+        "cp313": "332b4f0145c30b5f5ad9374881133e5aa64320428a57c2c2b61e9d891a51c2f3",
+        "cp314": "80aa065ffd378ff784822a6d7c3212f2d5f5e9c3589614b5c228b311fd3063ac",
+    }
+    PILLOW_HASHES = {
+        "cp311": "23d27a3e0307ec2244cc51e7287b919aa68d097504ebe19df4e76a98a3eea5bd",
+        "cp312": "78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91",
+        "cp313": "0847a763afefb695bc912d7c131e7e0632d4edc1d8698f58ddabec8e46b8b6d3",
+        "cp314": "251bf95b67017e27b13d82f5b326234ca62d70f9cf4c2b9032de2358a3b12c7b",
+    }
+    PYPARSING_HASH = "850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d"
+    PYTHON_DATEUTIL_HASH = "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"
+    PACKAGING_HASH = "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c"
+    SIX_HASH = "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
 
     def fixture(self) -> tempfile.TemporaryDirectory[str]:
         temporary = tempfile.TemporaryDirectory(prefix="lumenplot-phase3a2-wheel-")
@@ -2421,6 +2793,50 @@ jobs:
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 313 --abi cp313 -r /tmp/wheelhouse-numpy313.txt
             printf '%s\\n' 'numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}' > /tmp/wheelhouse-numpy314.txt
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --implementation cp --python-version 314 --abi cp314 -r /tmp/wheelhouse-numpy314.txt
+            printf '%s\\n' 'matplotlib==3.11.1 --hash=sha256:{self.MATPLOTLIB_HASHES['cp311']}' > /tmp/wheelhouse-mpl311.txt
+            printf '%s\\n' 'contourpy==1.3.3 --hash=sha256:{self.CONTOURPY_HASHES['cp311']}' >> /tmp/wheelhouse-mpl311.txt
+            printf '%s\\n' 'cycler==0.12.1 --hash=sha256:{self.CYCLER_HASH}' >> /tmp/wheelhouse-mpl311.txt
+            printf '%s\\n' 'fonttools==4.63.0 --hash=sha256:{self.FONTTOOLS_HASHES['cp311']}' >> /tmp/wheelhouse-mpl311.txt
+            printf '%s\\n' 'kiwisolver==1.5.0 --hash=sha256:{self.KIWISOLVER_HASHES['cp311']}' >> /tmp/wheelhouse-mpl311.txt
+            printf '%s\\n' 'pillow==12.3.0 --hash=sha256:{self.PILLOW_HASHES['cp311']}' >> /tmp/wheelhouse-mpl311.txt
+            printf '%s\\n' 'pyparsing==3.3.2 --hash=sha256:{self.PYPARSING_HASH}' >> /tmp/wheelhouse-mpl311.txt
+            printf '%s\\n' 'python-dateutil==2.9.0.post0 --hash=sha256:{self.PYTHON_DATEUTIL_HASH}' >> /tmp/wheelhouse-mpl311.txt
+            printf '%s\\n' 'packaging==26.3 --hash=sha256:{self.PACKAGING_HASH}' >> /tmp/wheelhouse-mpl311.txt
+            printf '%s\\n' 'six==1.17.0 --hash=sha256:{self.SIX_HASH}' >> /tmp/wheelhouse-mpl311.txt
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --implementation cp --python-version 311 --abi cp311 -r /tmp/wheelhouse-mpl311.txt
+            printf '%s\\n' 'matplotlib==3.11.1 --hash=sha256:{self.MATPLOTLIB_HASHES['cp312']}' > /tmp/wheelhouse-mpl312.txt
+            printf '%s\\n' 'contourpy==1.3.3 --hash=sha256:{self.CONTOURPY_HASHES['cp312']}' >> /tmp/wheelhouse-mpl312.txt
+            printf '%s\\n' 'cycler==0.12.1 --hash=sha256:{self.CYCLER_HASH}' >> /tmp/wheelhouse-mpl312.txt
+            printf '%s\\n' 'fonttools==4.63.0 --hash=sha256:{self.FONTTOOLS_HASHES['cp312']}' >> /tmp/wheelhouse-mpl312.txt
+            printf '%s\\n' 'kiwisolver==1.5.0 --hash=sha256:{self.KIWISOLVER_HASHES['cp312']}' >> /tmp/wheelhouse-mpl312.txt
+            printf '%s\\n' 'pillow==12.3.0 --hash=sha256:{self.PILLOW_HASHES['cp312']}' >> /tmp/wheelhouse-mpl312.txt
+            printf '%s\\n' 'pyparsing==3.3.2 --hash=sha256:{self.PYPARSING_HASH}' >> /tmp/wheelhouse-mpl312.txt
+            printf '%s\\n' 'python-dateutil==2.9.0.post0 --hash=sha256:{self.PYTHON_DATEUTIL_HASH}' >> /tmp/wheelhouse-mpl312.txt
+            printf '%s\\n' 'packaging==26.3 --hash=sha256:{self.PACKAGING_HASH}' >> /tmp/wheelhouse-mpl312.txt
+            printf '%s\\n' 'six==1.17.0 --hash=sha256:{self.SIX_HASH}' >> /tmp/wheelhouse-mpl312.txt
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --implementation cp --python-version 312 --abi cp312 -r /tmp/wheelhouse-mpl312.txt
+            printf '%s\\n' 'matplotlib==3.11.1 --hash=sha256:{self.MATPLOTLIB_HASHES['cp313']}' > /tmp/wheelhouse-mpl313.txt
+            printf '%s\\n' 'contourpy==1.3.3 --hash=sha256:{self.CONTOURPY_HASHES['cp313']}' >> /tmp/wheelhouse-mpl313.txt
+            printf '%s\\n' 'cycler==0.12.1 --hash=sha256:{self.CYCLER_HASH}' >> /tmp/wheelhouse-mpl313.txt
+            printf '%s\\n' 'fonttools==4.63.0 --hash=sha256:{self.FONTTOOLS_HASHES['cp313']}' >> /tmp/wheelhouse-mpl313.txt
+            printf '%s\\n' 'kiwisolver==1.5.0 --hash=sha256:{self.KIWISOLVER_HASHES['cp313']}' >> /tmp/wheelhouse-mpl313.txt
+            printf '%s\\n' 'pillow==12.3.0 --hash=sha256:{self.PILLOW_HASHES['cp313']}' >> /tmp/wheelhouse-mpl313.txt
+            printf '%s\\n' 'pyparsing==3.3.2 --hash=sha256:{self.PYPARSING_HASH}' >> /tmp/wheelhouse-mpl313.txt
+            printf '%s\\n' 'python-dateutil==2.9.0.post0 --hash=sha256:{self.PYTHON_DATEUTIL_HASH}' >> /tmp/wheelhouse-mpl313.txt
+            printf '%s\\n' 'packaging==26.3 --hash=sha256:{self.PACKAGING_HASH}' >> /tmp/wheelhouse-mpl313.txt
+            printf '%s\\n' 'six==1.17.0 --hash=sha256:{self.SIX_HASH}' >> /tmp/wheelhouse-mpl313.txt
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --implementation cp --python-version 313 --abi cp313 -r /tmp/wheelhouse-mpl313.txt
+            printf '%s\\n' 'matplotlib==3.11.1 --hash=sha256:{self.MATPLOTLIB_HASHES['cp314']}' > /tmp/wheelhouse-mpl314.txt
+            printf '%s\\n' 'contourpy==1.3.3 --hash=sha256:{self.CONTOURPY_HASHES['cp314']}' >> /tmp/wheelhouse-mpl314.txt
+            printf '%s\\n' 'cycler==0.12.1 --hash=sha256:{self.CYCLER_HASH}' >> /tmp/wheelhouse-mpl314.txt
+            printf '%s\\n' 'fonttools==4.63.0 --hash=sha256:{self.FONTTOOLS_HASHES['cp314']}' >> /tmp/wheelhouse-mpl314.txt
+            printf '%s\\n' 'kiwisolver==1.5.0 --hash=sha256:{self.KIWISOLVER_HASHES['cp314']}' >> /tmp/wheelhouse-mpl314.txt
+            printf '%s\\n' 'pillow==12.3.0 --hash=sha256:{self.PILLOW_HASHES['cp314']}' >> /tmp/wheelhouse-mpl314.txt
+            printf '%s\\n' 'pyparsing==3.3.2 --hash=sha256:{self.PYPARSING_HASH}' >> /tmp/wheelhouse-mpl314.txt
+            printf '%s\\n' 'python-dateutil==2.9.0.post0 --hash=sha256:{self.PYTHON_DATEUTIL_HASH}' >> /tmp/wheelhouse-mpl314.txt
+            printf '%s\\n' 'packaging==26.3 --hash=sha256:{self.PACKAGING_HASH}' >> /tmp/wheelhouse-mpl314.txt
+            printf '%s\\n' 'six==1.17.0 --hash=sha256:{self.SIX_HASH}' >> /tmp/wheelhouse-mpl314.txt
+            /opt/python/cp311-cp311/bin/python -m pip download --no-deps --only-binary=:all: --require-hashes --dest /cache/wheelhouse --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --implementation cp --python-version 314 --abi cp314 -r /tmp/wheelhouse-mpl314.txt
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0
             sha256sum /cache/wheelhouse/auditwheel-6.8.0-*.whl > /cache/wheelhouse/auditwheel-sha256.txt
             /opt/python/cp311-cp311/bin/python -m pip download --no-deps --dest /cache/wheelhouse abi3audit==0.0.26
@@ -2482,6 +2898,17 @@ jobs:
             python /cache/check-sbom.py --format 'CycloneDX 1.5' --cargo-metadata /cache/wheelhouse/cargo-metadata.json
             /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/lp-3.11
             /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp311']}
+            printf '%s\\n' 'matplotlib==3.11.1 --hash=sha256:{self.MATPLOTLIB_HASHES['cp311']}' > /tmp/mpl311.txt
+            printf '%s\\n' 'contourpy==1.3.3 --hash=sha256:{self.CONTOURPY_HASHES['cp311']}' >> /tmp/mpl311.txt
+            printf '%s\\n' 'cycler==0.12.1 --hash=sha256:{self.CYCLER_HASH}' >> /tmp/mpl311.txt
+            printf '%s\\n' 'fonttools==4.63.0 --hash=sha256:{self.FONTTOOLS_HASHES['cp311']}' >> /tmp/mpl311.txt
+            printf '%s\\n' 'kiwisolver==1.5.0 --hash=sha256:{self.KIWISOLVER_HASHES['cp311']}' >> /tmp/mpl311.txt
+            printf '%s\\n' 'pillow==12.3.0 --hash=sha256:{self.PILLOW_HASHES['cp311']}' >> /tmp/mpl311.txt
+            printf '%s\\n' 'pyparsing==3.3.2 --hash=sha256:{self.PYPARSING_HASH}' >> /tmp/mpl311.txt
+            printf '%s\\n' 'python-dateutil==2.9.0.post0 --hash=sha256:{self.PYTHON_DATEUTIL_HASH}' >> /tmp/mpl311.txt
+            printf '%s\\n' 'packaging==26.3 --hash=sha256:{self.PACKAGING_HASH}' >> /tmp/mpl311.txt
+            printf '%s\\n' 'six==1.17.0 --hash=sha256:{self.SIX_HASH}' >> /tmp/mpl311.txt
+            /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/mpl311.txt
             # pip's --hash only exists inside requirements files.
             printf '%s\\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel311.txt
             /tmp/lp-3.11/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel311.txt
@@ -2493,6 +2920,17 @@ jobs:
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp312-cp312/bin/python -m venv --clear /tmp/lp-3.12
             /tmp/lp-3.12/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp312']}
+            printf '%s\\n' 'matplotlib==3.11.1 --hash=sha256:{self.MATPLOTLIB_HASHES['cp312']}' > /tmp/mpl312.txt
+            printf '%s\\n' 'contourpy==1.3.3 --hash=sha256:{self.CONTOURPY_HASHES['cp312']}' >> /tmp/mpl312.txt
+            printf '%s\\n' 'cycler==0.12.1 --hash=sha256:{self.CYCLER_HASH}' >> /tmp/mpl312.txt
+            printf '%s\\n' 'fonttools==4.63.0 --hash=sha256:{self.FONTTOOLS_HASHES['cp312']}' >> /tmp/mpl312.txt
+            printf '%s\\n' 'kiwisolver==1.5.0 --hash=sha256:{self.KIWISOLVER_HASHES['cp312']}' >> /tmp/mpl312.txt
+            printf '%s\\n' 'pillow==12.3.0 --hash=sha256:{self.PILLOW_HASHES['cp312']}' >> /tmp/mpl312.txt
+            printf '%s\\n' 'pyparsing==3.3.2 --hash=sha256:{self.PYPARSING_HASH}' >> /tmp/mpl312.txt
+            printf '%s\\n' 'python-dateutil==2.9.0.post0 --hash=sha256:{self.PYTHON_DATEUTIL_HASH}' >> /tmp/mpl312.txt
+            printf '%s\\n' 'packaging==26.3 --hash=sha256:{self.PACKAGING_HASH}' >> /tmp/mpl312.txt
+            printf '%s\\n' 'six==1.17.0 --hash=sha256:{self.SIX_HASH}' >> /tmp/mpl312.txt
+            /tmp/lp-3.12/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/mpl312.txt
             # pip's --hash only exists inside requirements files.
             printf '%s\\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel312.txt
             /tmp/lp-3.12/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel312.txt
@@ -2504,6 +2942,17 @@ jobs:
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp313-cp313/bin/python -m venv --clear /tmp/lp-3.13
             /tmp/lp-3.13/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp313']}
+            printf '%s\\n' 'matplotlib==3.11.1 --hash=sha256:{self.MATPLOTLIB_HASHES['cp313']}' > /tmp/mpl313.txt
+            printf '%s\\n' 'contourpy==1.3.3 --hash=sha256:{self.CONTOURPY_HASHES['cp313']}' >> /tmp/mpl313.txt
+            printf '%s\\n' 'cycler==0.12.1 --hash=sha256:{self.CYCLER_HASH}' >> /tmp/mpl313.txt
+            printf '%s\\n' 'fonttools==4.63.0 --hash=sha256:{self.FONTTOOLS_HASHES['cp313']}' >> /tmp/mpl313.txt
+            printf '%s\\n' 'kiwisolver==1.5.0 --hash=sha256:{self.KIWISOLVER_HASHES['cp313']}' >> /tmp/mpl313.txt
+            printf '%s\\n' 'pillow==12.3.0 --hash=sha256:{self.PILLOW_HASHES['cp313']}' >> /tmp/mpl313.txt
+            printf '%s\\n' 'pyparsing==3.3.2 --hash=sha256:{self.PYPARSING_HASH}' >> /tmp/mpl313.txt
+            printf '%s\\n' 'python-dateutil==2.9.0.post0 --hash=sha256:{self.PYTHON_DATEUTIL_HASH}' >> /tmp/mpl313.txt
+            printf '%s\\n' 'packaging==26.3 --hash=sha256:{self.PACKAGING_HASH}' >> /tmp/mpl313.txt
+            printf '%s\\n' 'six==1.17.0 --hash=sha256:{self.SIX_HASH}' >> /tmp/mpl313.txt
+            /tmp/lp-3.13/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/mpl313.txt
             # pip's --hash only exists inside requirements files.
             printf '%s\\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel313.txt
             /tmp/lp-3.13/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel313.txt
@@ -2515,6 +2964,17 @@ jobs:
             test "$INSTALLED_VERSION" = "$CARGO_VERSION"
             /opt/python/cp314-cp314/bin/python -m venv --clear /tmp/lp-3.14
             /tmp/lp-3.14/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse numpy==2.4.6 --hash=sha256:{self.NUMPY_HASHES['cp314']}
+            printf '%s\\n' 'matplotlib==3.11.1 --hash=sha256:{self.MATPLOTLIB_HASHES['cp314']}' > /tmp/mpl314.txt
+            printf '%s\\n' 'contourpy==1.3.3 --hash=sha256:{self.CONTOURPY_HASHES['cp314']}' >> /tmp/mpl314.txt
+            printf '%s\\n' 'cycler==0.12.1 --hash=sha256:{self.CYCLER_HASH}' >> /tmp/mpl314.txt
+            printf '%s\\n' 'fonttools==4.63.0 --hash=sha256:{self.FONTTOOLS_HASHES['cp314']}' >> /tmp/mpl314.txt
+            printf '%s\\n' 'kiwisolver==1.5.0 --hash=sha256:{self.KIWISOLVER_HASHES['cp314']}' >> /tmp/mpl314.txt
+            printf '%s\\n' 'pillow==12.3.0 --hash=sha256:{self.PILLOW_HASHES['cp314']}' >> /tmp/mpl314.txt
+            printf '%s\\n' 'pyparsing==3.3.2 --hash=sha256:{self.PYPARSING_HASH}' >> /tmp/mpl314.txt
+            printf '%s\\n' 'python-dateutil==2.9.0.post0 --hash=sha256:{self.PYTHON_DATEUTIL_HASH}' >> /tmp/mpl314.txt
+            printf '%s\\n' 'packaging==26.3 --hash=sha256:{self.PACKAGING_HASH}' >> /tmp/mpl314.txt
+            printf '%s\\n' 'six==1.17.0 --hash=sha256:{self.SIX_HASH}' >> /tmp/mpl314.txt
+            /tmp/lp-3.14/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/mpl314.txt
             # pip's --hash only exists inside requirements files.
             printf '%s\\n' "$WHEEL --hash=sha256:$WHEEL_SHA256" > /tmp/helper-wheel314.txt
             /tmp/lp-3.14/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/helper-wheel314.txt
@@ -2657,6 +3117,35 @@ jobs:
                 output,
                 "workspace architecture: OK\nphase3a2 static contract: OK\nphase3a2 wheel evidence: OK\n",
             )
+
+    def test_repository_rustup_init_pin_matches_checker_pin(self) -> None:
+        workflow = (ROOT / ".github/workflows/phase3a2-wheel.yml").read_text(encoding="utf-8")
+        checker = CHECKER.read_text(encoding="utf-8")
+        workflow_pins = re.findall(
+            r"(?m)^[ \t]*PHASE3A2_RUSTUP_INIT_SHA256:[ \t]*[\"']([0-9a-f]{64})[\"'][ \t]*(?:#.*)?$",
+            workflow,
+        )
+        checker_pins = re.findall(
+            r'(?m)^PHASE3A2_RUSTUP_INIT_SHA256\s*=\s*"([0-9a-f]{64})"$',
+            checker,
+        )
+        self.assertEqual(workflow_pins, [self.RUSTUP_INIT_HASH])
+        self.assertEqual(checker_pins, [self.RUSTUP_INIT_HASH])
+
+    def test_rustup_init_workflow_pin_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / ".github/workflows/phase3a2-wheel.yml"
+            tampered_hash = "0" * 64
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    f'PHASE3A2_RUSTUP_INIT_SHA256: "{self.RUSTUP_INIT_HASH}"',
+                    f'PHASE3A2_RUSTUP_INIT_SHA256: "{tampered_hash}"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "rustup-init digest must match the reviewed checker pin")
 
     def test_static_contract_does_not_require_runtime_manifest(self) -> None:
         with self.fixture() as temporary:
@@ -3588,6 +4077,202 @@ jobs:
             path.write_text(json.dumps(value), encoding="utf-8")
 
         self.assert_rejected(mutate, "private path or credential text is not redacted", evidence=True)
+
+    # Matplotlib runtime dependency (workstream-manager decision on task
+    # t_6b45a197): admitted exactly while the Phase-3B backend allowance is
+    # active, because backend.py genuinely imports Matplotlib; the historical
+    # rejection keeps applying to the pre-Phase-3B baseline (fail-closed).
+    def test_matplotlib_dependency_is_admitted_under_phase3b_allowance(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "pyproject.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                .replace(
+                    'dependencies = ["numpy==2.4.6"]',
+                    'dependencies = ["numpy==2.4.6", "matplotlib>=3.11,<3.12"]',
+                )
+                # A Matplotlib mention activates the sanctioned-entry-point
+                # rule, so the Phase-3B identity table must be present too.
+                + '\n[project.entry-points."matplotlib.backend"]\n'
+                'lumenplot = "lumenplot_mpl.backend"\n',
+                encoding="utf-8",
+            )
+            # Activation sentinel for the Phase-3B allowance: the adapter file
+            # itself. Content mirrors the admitted shape (docstring only: no
+            # pyplot import, no public render_png surface).
+            (root / "python/lumenplot_mpl/backend.py").write_text(
+                '"""Phase-3B backend adapter sentinel."""\n',
+                encoding="utf-8",
+            )
+            # The remaining obligations of the active Phase-3B allowance: the
+            # raster-pipeline Cargo pins, the split bridge source layout, and
+            # the whole-frame seam alongside the private line seam.
+            manifest_path = root / "crates/lumenplot-python/Cargo.toml"
+            manifest_path.write_text(
+                manifest_path.read_text(encoding="utf-8").replace(
+                    'numpy = { version = "=0.29.0", default-features = false }',
+                    'numpy = { version = "=0.29.0", default-features = false }\n'
+                    'png = { version = "=0.18.1", default-features = false }\n'
+                    'tiny-skia = { version = "=0.12.0", default-features = false, features = ["std"] }',
+                ),
+                encoding="utf-8",
+            )
+            lib_path = root / "crates/lumenplot-python/src/lib.rs"
+            lib_path.write_text(
+                lib_path.read_text(encoding="utf-8").replace(
+                    "    module.add_function(wrap_pyfunction!(render_line_png, module)?)?;\n",
+                    "    module.add_function(wrap_pyfunction!(render_line_png, module)?)?;\n"
+                    "    module.add_function(wrap_pyfunction!(render_frame_png, module)?)?;\n",
+                ),
+                encoding="utf-8",
+            )
+            (root / "crates/lumenplot-python/src/frame.rs").write_text(
+                "//! Whole-frame rasterizer seam.\n"
+                "use pyo3::prelude::*;\n\n"
+                "#[pyfunction]\n"
+                "fn render_frame_png() -> PyResult<Vec<u8>> {\n"
+                "    Ok(Vec::new())\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+        with self.fixture() as temporary:
+            root = Path(temporary)
+            mutate(root)
+            returncode, output = self.run_checker(root)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(
+                output,
+                "workspace architecture: OK\nphase3a2 static contract: OK\n",
+            )
+
+    def test_matplotlib_dependency_stays_forbidden_without_phase3b(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "pyproject.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    'dependencies = ["numpy==2.4.6"]',
+                    'dependencies = ["numpy==2.4.6", "matplotlib>=3.11,<3.12"]',
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "phase3a2 pyproject: Matplotlib dependency is forbidden")
+
+
+class Phase3BTextPathAllowanceTests(Phase3A2WheelEvidenceMutationTests):
+    """PRAC-A-T lane (task t_1c790b2b): the package-file allowance set.
+
+    python/lumenplot_mpl/textpath.py consumes the documented public
+    matplotlib.textpath/matplotlib.path APIs for the O-12 TextToPath
+    boundary. The substring ban must therefore admit exactly that third
+    file while the Phase-3B activation sentinel fires and keep rejecting
+    it everywhere else (fail-closed both directions), mirroring the
+    backend.py/__init__.py precedent.
+
+    The rich Phase-3A2 wheel-evidence fixture is reused via composition
+    of its setUp helpers so the activated Phase-3A2 obligations
+    (pyproject, workflow, pinned-actions inventory) are all present; the
+    tests only add or remove the pieces under audit.
+    """
+
+    TEXTPATH_SOURCE = '''"""Sentinel mirroring the admitted shape (docstring only)."""
+
+from matplotlib.path import Path
+from matplotlib.textpath import TextPath
+
+X = 1
+'''
+
+    def _phase3b_fixture(self, textpath_source: str | None) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        """Return ``(temporary, root)`` with the wheel-evidence baseline
+        plus an optional textpath.py, and with the Phase-3B allowance made
+        active exactly as D1's admitted-dependency test does (sentinel
+        backend.py, raster pins, split bridge sources, frame seam)."""
+        temporary = self.fixture()
+        root = Path(temporary.name)
+        package = root / "python/lumenplot_mpl"
+        if textpath_source is not None:
+            (package / "textpath.py").write_text(textpath_source, encoding="utf-8")
+        # Phase-3B activation sentinel plus its remaining static
+        # obligations, mirroring D1's admitted-shape recipe.
+        (package / "backend.py").write_text(
+            '"""Phase-3B backend adapter sentinel."""\n', encoding="utf-8"
+        )
+        manifest_path = root / "crates/lumenplot-python/Cargo.toml"
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(
+                'numpy = { version = "=0.29.0", default-features = false }',
+                'numpy = { version = "=0.29.0", default-features = false }\n'
+                'png = { version = "=0.18.1", default-features = false }\n'
+                'tiny-skia = { version = "=0.12.0", default-features = false, features = ["std"] }',
+            ),
+            encoding="utf-8",
+        )
+        lib_path = root / "crates/lumenplot-python/src/lib.rs"
+        lib_path.write_text(
+            lib_path.read_text(encoding="utf-8").replace(
+                "    module.add_function(wrap_pyfunction!(render_line_png, module)?)?;\n",
+                "    module.add_function(wrap_pyfunction!(render_line_png, module)?)?;\n"
+                "    module.add_function(wrap_pyfunction!(render_frame_png, module)?)?;\n",
+            ),
+            encoding="utf-8",
+        )
+        (root / "crates/lumenplot-python/src/frame.rs").write_text(
+            "//! Whole-frame rasterizer seam.\n"
+            "use pyo3::prelude::*;\n\n"
+            "#[pyfunction]\n"
+            "fn render_frame_png() -> PyResult<Vec<u8>> {\n"
+            "    Ok(Vec::new())\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        return temporary, root
+
+    def test_textpath_matplotlib_imports_admitted_while_phase3b_active(self) -> None:
+        temporary, root = self._phase3b_fixture(self.TEXTPATH_SOURCE)
+        try:
+            returncode, output = self.run_checker(root)
+            self.assertEqual(returncode, 0, output)
+        finally:
+            temporary.cleanup()
+
+    def test_textpath_matplotlib_imports_stay_forbidden_without_phase3b(self) -> None:
+        temporary = self.fixture()
+        try:
+            root = Path(temporary.name)
+            package = root / "python/lumenplot_mpl"
+            (package / "textpath.py").write_text(
+                self.TEXTPATH_SOURCE, encoding="utf-8"
+            )
+            returncode, output = self.run_checker(root, evidence=True)
+            self.assertNotEqual(returncode, 0)
+            self.assertIn("Matplotlib/backend surface is forbidden", output)
+        finally:
+            temporary.cleanup()
+
+    def test_pyplot_import_stays_forbidden_inside_textpath(self) -> None:
+        temporary, root = self._phase3b_fixture(
+            self.TEXTPATH_SOURCE + "import matplotlib.pyplot\n"
+        )
+        try:
+            returncode, output = self.run_checker(root)
+            self.assertNotEqual(returncode, 0)
+            self.assertIn("Matplotlib/backend surface is forbidden", output)
+        finally:
+            temporary.cleanup()
+
+    def test_unrelated_new_package_file_stays_forbidden_even_when_phase3b_active(self) -> None:
+        temporary, root = self._phase3b_fixture(None)
+        try:
+            (root / "python/lumenplot_mpl/other.py").write_text(
+                "# mentions matplotlib in prose\n", encoding="utf-8"
+            )
+            returncode, output = self.run_checker(root)
+            self.assertNotEqual(returncode, 0)
+            self.assertIn("Matplotlib/backend surface is forbidden", output)
+        finally:
+            temporary.cleanup()
 
 
 if __name__ == "__main__":

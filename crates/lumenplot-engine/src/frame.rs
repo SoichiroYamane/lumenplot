@@ -2,15 +2,92 @@
 use std::cell::Cell;
 
 use crate::bridge::{
-    LineFrame, LineFrameSpec, LinePoint, LineSegment, LineSeries, LogicalRect, SceneRevision,
-    SeriesId,
+    LineFrame, LineFrameSpec, LinePoint, LineSegment, LineSeries, LogicalRect, LogicalSize,
+    SceneRevision, SeriesId,
 };
 use crate::error::{SceneError, SceneErrorKind};
-use crate::scene::{AxisScale, SceneSnapshot};
+use crate::scene::{AxisRange, AxisScale, SceneSnapshot};
 
 pub(crate) const MAX_FRAME_SERIES: usize = 65_536;
 pub(crate) const MAX_FRAME_SEGMENTS: usize = 1_000_000;
 pub(crate) const MAX_FRAME_POINTS: usize = 1_000_000;
+
+/// Layout facts resolved once for one immutable snapshot.
+///
+/// The line slice has one plot clip today, but keeping the transform and clip
+/// inputs together makes the semantic result the single source for every
+/// consumer. Sinks receive the resolved frame; they do not reconstruct this
+/// mapping from scene state.
+#[derive(Clone, Copy)]
+struct ResolvedLayout {
+    canvas: LogicalSize,
+    plot_rect: LogicalRect,
+    logical_units_per_inch: f64,
+    x_range: AxisRange,
+    y_range: AxisRange,
+}
+
+impl ResolvedLayout {
+    fn new(
+        canvas: LogicalSize,
+        plot_rect: LogicalRect,
+        logical_units_per_inch: f64,
+        viewport: crate::scene::Viewport,
+    ) -> Result<Self, SceneError> {
+        let x_range = viewport.x();
+        let y_range = viewport.y();
+        let x_span = x_range.max() - x_range.min();
+        let y_span = y_range.max() - y_range.min();
+        if !logical_units_per_inch.is_finite()
+            || logical_units_per_inch <= 0.0
+            || !canvas.width().is_finite()
+            || !canvas.height().is_finite()
+            || canvas.width() <= 0.0
+            || canvas.height() <= 0.0
+            || !x_span.is_finite()
+            || !y_span.is_finite()
+            || x_span <= 0.0
+            || y_span <= 0.0
+            || plot_rect.x_min() < 0.0
+            || plot_rect.y_min() < 0.0
+            || plot_rect.x_max() > canvas.width()
+            || plot_rect.y_max() > canvas.height()
+        {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        Ok(Self {
+            canvas,
+            plot_rect,
+            logical_units_per_inch,
+            x_range,
+            y_range,
+        })
+    }
+
+    fn transform_point(&self, x: f64, y: f64) -> Result<LinePoint, SceneError> {
+        let x_offset = x - self.x_range.min();
+        let y_offset = self.y_range.max() - y;
+        if !x_offset.is_finite() || !y_offset.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        let x_fraction = x_offset / (self.x_range.max() - self.x_range.min());
+        let y_fraction = y_offset / (self.y_range.max() - self.y_range.min());
+        if !x_fraction.is_finite() || !y_fraction.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        let x_scaled = x_fraction * (self.plot_rect.x_max() - self.plot_rect.x_min());
+        let y_scaled = y_fraction * (self.plot_rect.y_max() - self.plot_rect.y_min());
+        if !x_scaled.is_finite() || !y_scaled.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        let display_x = self.plot_rect.x_min() + x_scaled;
+        let display_y = self.plot_rect.y_min() + y_scaled;
+        if !display_x.is_finite() || !display_y.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        Ok(LinePoint::from_parts(display_x, display_y))
+    }
+}
 
 #[cfg(test)]
 thread_local! {
@@ -31,13 +108,18 @@ pub(crate) fn resolve_line_frame(
     if scales.x() != AxisScale::Linear || scales.y() != AxisScale::Linear {
         return Err(SceneError::new(SceneErrorKind::UnsupportedCapability));
     }
+    let layout = ResolvedLayout::new(
+        canvas,
+        plot_rect,
+        logical_units_per_inch,
+        snapshot.state.viewport(),
+    )?;
 
     let series_map = snapshot.state.series_map();
     if series_map.len() > MAX_FRAME_SERIES {
         return Err(SceneError::new(SceneErrorKind::CapacityExceeded));
     }
 
-    let viewport = snapshot.state.viewport();
     let mut frame_series = Vec::new();
     reserve(&mut frame_series, series_map.len())?;
     let mut counts = Counts::default();
@@ -60,9 +142,14 @@ pub(crate) fn resolve_line_frame(
             let mut transformed = Vec::new();
             reserve(&mut transformed, source_points.len())?;
             for point in source_points {
-                transformed.push(transform_point(point.x, point.y, viewport, plot_rect)?);
+                transformed.push(layout.transform_point(point.x, point.y)?);
             }
-            append_clipped_structural_segment(&mut segments, &transformed, plot_rect, &mut counts)?;
+            append_clipped_structural_segment_with_clips(
+                &mut segments,
+                &transformed,
+                std::slice::from_ref(&layout.plot_rect),
+                &mut counts,
+            )?;
         }
         let bridge_id = SeriesId::from_engine(*id);
         frame_series.push(LineSeries::from_parts(bridge_id, style, segments));
@@ -70,9 +157,9 @@ pub(crate) fn resolve_line_frame(
 
     Ok(LineFrame::from_parts(
         SceneRevision::from_engine(snapshot.revision()),
-        canvas,
-        plot_rect,
-        logical_units_per_inch,
+        layout.canvas,
+        layout.plot_rect,
+        layout.logical_units_per_inch,
         background,
         frame_series,
     ))
@@ -97,61 +184,28 @@ fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<(), SceneError> 
         .map_err(|_| SceneError::new(SceneErrorKind::AllocationFailed))
 }
 
-fn transform_point(
-    x: f64,
-    y: f64,
-    viewport: crate::scene::Viewport,
-    plot_rect: LogicalRect,
-) -> Result<LinePoint, SceneError> {
-    let x_range = viewport.x();
-    let y_range = viewport.y();
-    let x_span = x_range.max() - x_range.min();
-    let y_span = y_range.max() - y_range.min();
-    let plot_width = plot_rect.x_max() - plot_rect.x_min();
-    let plot_height = plot_rect.y_max() - plot_rect.y_min();
-    if !x_span.is_finite()
-        || !y_span.is_finite()
-        || !plot_width.is_finite()
-        || !plot_height.is_finite()
-        || x_span <= 0.0
-        || y_span <= 0.0
-        || plot_width <= 0.0
-        || plot_height <= 0.0
-    {
-        return Err(SceneError::new(SceneErrorKind::InvalidInput));
-    }
-
-    let x_offset = x - x_range.min();
-    let y_offset = y_range.max() - y;
-    if !x_offset.is_finite() || !y_offset.is_finite() {
-        return Err(SceneError::new(SceneErrorKind::InvalidInput));
-    }
-    let x_fraction = x_offset / x_span;
-    let y_fraction = y_offset / y_span;
-    if !x_fraction.is_finite() || !y_fraction.is_finite() {
-        return Err(SceneError::new(SceneErrorKind::InvalidInput));
-    }
-    let x_scaled = x_fraction * plot_width;
-    let y_scaled = y_fraction * plot_height;
-    if !x_scaled.is_finite() || !y_scaled.is_finite() {
-        return Err(SceneError::new(SceneErrorKind::InvalidInput));
-    }
-    let display_x = plot_rect.x_min() + x_scaled;
-    let display_y = plot_rect.y_min() + y_scaled;
-    if !display_x.is_finite() || !display_y.is_finite() {
-        return Err(SceneError::new(SceneErrorKind::InvalidInput));
-    }
-    Ok(LinePoint::from_parts(display_x, display_y))
-}
-
 fn append_clipped_structural_segment(
     output: &mut Vec<LineSegment>,
     points: &[LinePoint],
     plot_rect: LogicalRect,
     counts: &mut Counts,
 ) -> Result<(), SceneError> {
+    append_clipped_structural_segment_with_clips(
+        output,
+        points,
+        std::slice::from_ref(&plot_rect),
+        counts,
+    )
+}
+
+fn append_clipped_structural_segment_with_clips(
+    output: &mut Vec<LineSegment>,
+    points: &[LinePoint],
+    clips: &[LogicalRect],
+    counts: &mut Counts,
+) -> Result<(), SceneError> {
     if points.len() == 1 {
-        if point_inside(points[0], plot_rect) {
+        if clips.iter().all(|clip| point_inside(points[0], *clip)) {
             let mut path = Vec::new();
             append_path_point(&mut path, points[0], counts)?;
             push_output_segment(output, path, counts)?;
@@ -161,7 +215,7 @@ fn append_clipped_structural_segment(
 
     let mut current: Option<Vec<LinePoint>> = None;
     for pair in points.windows(2) {
-        let clipped = clip_segment(pair[0], pair[1], plot_rect)?;
+        let clipped = clip_segment_stack(pair[0], pair[1], clips)?;
         let Some((enter, exit)) = clipped else {
             flush_path(output, &mut current, counts)?;
             continue;
@@ -245,6 +299,34 @@ fn clip_segment(
     } else {
         Ok(Some((enter, exit)))
     }
+}
+
+/// Intersect a segment with each transformed clip in declaration order.
+///
+/// The interval remains in the original segment's parameter space, so a
+/// later clip can remove an exit/re-entry run without reconnecting it to a
+/// neighboring structural segment.
+fn clip_segment_stack(
+    first: LinePoint,
+    second: LinePoint,
+    clips: &[LogicalRect],
+) -> Result<Option<(f64, f64)>, SceneError> {
+    let mut enter: f64 = 0.0;
+    let mut exit: f64 = 1.0;
+    for clip in clips {
+        let Some((clip_enter, clip_exit)) = clip_segment(first, second, *clip)? else {
+            return Ok(None);
+        };
+        enter = enter.max(clip_enter);
+        exit = exit.min(clip_exit);
+        if !enter.is_finite() || !exit.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        if enter > exit {
+            return Ok(None);
+        }
+    }
+    Ok(Some((enter, exit)))
 }
 
 fn interpolate(first: LinePoint, second: LinePoint, ratio: f64) -> Result<LinePoint, SceneError> {
@@ -524,6 +606,46 @@ mod tests {
     }
 
     #[test]
+    fn ordered_clip_stack_intersects_each_clip_without_reconnecting_runs() {
+        let outer = LogicalRect::new(0.0, 0.0, 10.0, 10.0).expect("outer");
+        let inner = LogicalRect::new(2.0, 2.0, 8.0, 8.0).expect("inner");
+        let points = [
+            LinePoint::from_parts(-1.0, 5.0),
+            LinePoint::from_parts(11.0, 5.0),
+            LinePoint::from_parts(-1.0, 5.0),
+        ];
+        let mut output = Vec::new();
+        let mut counts = Counts::default();
+        append_clipped_structural_segment_with_clips(
+            &mut output,
+            &points,
+            &[outer, inner],
+            &mut counts,
+        )
+        .expect("stacked clip");
+        assert_eq!(output.len(), 2);
+        assert_close(output[0].points()[0].x(), 2.0);
+        assert_close(output[0].points()[1].x(), 8.0);
+        assert_close(output[1].points()[0].x(), 8.0);
+        assert_close(output[1].points()[1].x(), 2.0);
+
+        let disjoint = LogicalRect::new(12.0, 0.0, 14.0, 10.0).expect("disjoint");
+        let mut output = Vec::new();
+        let mut counts = Counts::default();
+        append_clipped_structural_segment_with_clips(
+            &mut output,
+            &[
+                LinePoint::from_parts(-1.0, 5.0),
+                LinePoint::from_parts(11.0, 5.0),
+            ],
+            &[outer, disjoint],
+            &mut counts,
+        )
+        .expect("disjoint clip stack");
+        assert!(output.is_empty());
+    }
+
+    #[test]
     fn all_boundary_crossings_and_exact_boundary_points_are_retained() {
         let rect = LogicalRect::new(0.0, 0.0, 10.0, 10.0).expect("rect");
         let cases = [
@@ -621,6 +743,38 @@ mod tests {
             error.kind(),
             crate::bridge::SceneErrorKind::UnsupportedCapability
         );
+    }
+
+    #[test]
+    fn resolved_frame_keeps_the_published_snapshot_after_later_state_changes() {
+        let view = Viewport::from_bounds(0.0, 10.0, 0.0, 10.0).expect("view");
+        let mut scene = PlotScene::new(view, AxisScales::new(AxisScale::Linear, AxisScale::Linear))
+            .expect("scene");
+        let old_snapshot = scene.snapshot();
+        let old_frame = old_snapshot.resolve_line_frame(&spec()).expect("old frame");
+
+        {
+            let mut transaction = scene.transaction();
+            transaction
+                .add_series(
+                    SeriesData::from_owned_xy(
+                        SeriesTopology::ArbitraryXY,
+                        vec![0.0, 10.0],
+                        vec![0.0, 10.0],
+                    )
+                    .expect("data"),
+                )
+                .expect("series");
+            transaction.commit().expect("commit");
+        }
+
+        assert!(old_frame.series().is_empty());
+        let current_frame = scene
+            .snapshot()
+            .resolve_line_frame(&spec())
+            .expect("current frame");
+        assert!(current_frame.revision() > old_frame.revision());
+        assert_eq!(current_frame.series().len(), 1);
     }
 
     #[test]

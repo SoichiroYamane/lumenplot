@@ -93,6 +93,25 @@ METAL_TARGET_EXTERNAL_DEPENDENCIES = {
 }
 # The exact Cargo target-gate expression the pinned edges live behind.
 METAL_TARGET_GATE = 'cfg(target_os = "macos")'
+WGPU_EXTERNAL_DEPENDENCIES = {
+    "wgpu": {
+        "version": "=29.0.4",
+        "default-features": False,
+        "features": ["std", "wgsl", "vulkan"],
+    },
+}
+WGPU_SOURCE_FILES = {"src/lib.rs", "src/shader.rs"}
+WGPU_SHADER_PATH = "shaders/line.wgsl"
+WGPU_SHADER_SHA256 = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3"
+# Option A from the accepted architecture decision permits only the accepted
+# system-device boundary.  These are exact path, symbol, signature, and
+# statement anchors; they are not a crate-wide unsafe waiver.
+METAL_FFI_SOURCE_PATH = "src/device.rs"
+METAL_FFI_EXTERN_SIGNATURE = "fn MTLCreateSystemDefaultDevice() -> *mut AnyObject;"
+METAL_FFI_CALL_STATEMENTS = (
+    "let raw = unsafe { MTLCreateSystemDefaultDevice() };",
+    "let inner = unsafe { Retained::from_raw(raw) }?;",
+)
 EXPORT_TYPES = {"ExportErrorKind", "ExportError", "PngSpec"}
 EXPORT_ENUM_VARIANTS = {
     "ExportErrorKind": {
@@ -584,13 +603,55 @@ PHASE3A2_MATURIN_WHEEL_SHA256 = "dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13
 # Probed from
 # https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
 # and cross-checked against the published rustup-init.sha256 sidecar.
-PHASE3A2_RUSTUP_INIT_SHA256 = "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+PHASE3A2_RUSTUP_INIT_SHA256 = "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
 PHASE3A2_NUMPY_WHEEL_SHA256 = {
     "cp311": "89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93",
     "cp312": "90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853",
     "cp313": "a7830bab239b79cda9c08c2da014761cafb48da6150e1da17ac06283f43b6089",
     "cp314": "a2c306dea656c12c68f51f4cea133cbe78ca7435eb28c735eac1d3ebe73be6e8",
 }
+# Hash-pinned Matplotlib runtime stack: the Phase-3B backend dependency
+# (`matplotlib>=3.11,<3.12`) must resolve offline (--no-index) in every
+# runtime venv cell, so the exact reviewed wheels are pre-provisioned per
+# CPython minor version alongside NumPy.  Compiled wheels resolve to their
+# newest published manylinux tags on PyPI (the cp311-cp313 builds ship
+# under the manylinux2014 alias); digests probed from the PyPI release
+# pages and cross-checked against local `pip download --no-deps` runs.
+PHASE3A2_MATPLOTLIB_WHEEL_SHA256 = {
+    "cp311": "aee55e9041211bf84302ab55ec3965df18dd90ae19f8b58332a7feaf208bfe83",
+    "cp312": "ba8f811b8ddfac493734d6af0b2dff96919d0c28ca0d641858dab4262777c6ea",
+    "cp313": "b0a19dcf73406d3746d25a5ed42d713604c9a3e024d129b102852b0d941cb9f3",
+    "cp314": "5af0dcda57d471440a7b5b623e70e0a61003518443d9098f211a96ecfbbc25be",
+}
+PHASE3A2_CONTOURPY_WHEEL_SHA256 = {
+    "cp311": "51e79c1f7470158e838808d4a996fa9bac72c498e93d8ebe5119bc1e6becb0db",
+    "cp312": "4d00e655fcef08aba35ec9610536bfe90267d7ab5ba944f7032549c55a146da1",
+    "cp313": "4debd64f124ca62069f313a9cb86656ff087786016d76927ae2cf37846b006c9",
+    "cp314": "f64836de09927cba6f79dcd00fdd7d5329f3fccc633468507079c829ca4db4e3",
+}
+PHASE3A2_CYCLER_WHEEL_SHA256 = "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30"
+PHASE3A2_FONTTOOLS_WHEEL_SHA256 = {
+    "cp311": "d76ac49f929aecaf82d83250b8347e099d7aecba0f4726c1d9b6df3b8bb5fe18",
+    "cp312": "58dc6bb86a78d782f00f9190ca02c119cf5bbe2807536e361e18d42019f877d8",
+    "cp313": "22135da48a348785c5e2d5d2d9d6bec5ed44adacbaeb9db12d9493bf6c6bfa68",
+    "cp314": "445af2eab030a16b9171ea8bdda7ebf7d96bda2df88ee182a464252f6e05e20d",
+}
+PHASE3A2_KIWISOLVER_WHEEL_SHA256 = {
+    "cp311": "2517e24d7315eb51c10664cdb865195df38ab74456c677df67bb47f12d088a27",
+    "cp312": "bb5136fb5352d3f422df33f0c879a1b0c204004324150cc3b5e3c4f310c9049f",
+    "cp313": "332b4f0145c30b5f5ad9374881133e5aa64320428a57c2c2b61e9d891a51c2f3",
+    "cp314": "80aa065ffd378ff784822a6d7c3212f2d5f5e9c3589614b5c228b311fd3063ac",
+}
+PHASE3A2_PILLOW_WHEEL_SHA256 = {
+    "cp311": "23d27a3e0307ec2244cc51e7287b919aa68d097504ebe19df4e76a98a3eea5bd",
+    "cp312": "78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91",
+    "cp313": "0847a763afefb695bc912d7c131e7e0632d4edc1d8698f58ddabec8e46b8b6d3",
+    "cp314": "251bf95b67017e27b13d82f5b326234ca62d70f9cf4c2b9032de2358a3b12c7b",
+}
+PHASE3A2_PYPARSING_WHEEL_SHA256 = "850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d"
+PHASE3A2_PYTHON_DATEUTIL_WHEEL_SHA256 = "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"
+PHASE3A2_PACKAGING_WHEEL_SHA256 = "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c"
+PHASE3A2_SIX_WHEEL_SHA256 = "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
 PHASE3A2_SCHEMA = "lumenplot.phase3a2-wheel-evidence.v1"
 PHASE3A2_INTERPRETERS = {
     "3.11": "/opt/python/cp311-cp311/bin/python",
@@ -2995,6 +3056,23 @@ def _phase3a2_expected_prefetch_downloads() -> list[str]:
             f"--implementation cp --python-version {python_version} "
             f"--abi {version} -r /tmp/wheelhouse-numpy{python_version}.txt"
         )
+    # Matplotlib runtime stack: same requirements-file hash-pin channel as
+    # NumPy, one cell per supported CPython minor version.  The compiled
+    # wheels publish under the manylinux2014 alias (including the cp314
+    # fonttools/kiwisolver builds), so every download also accepts the
+    # manylinux2014_x86_64 platform tag; the manylinux_2_28 tag stays listed
+    # so pure-Python and newer-tagged wheels keep resolving.
+    for version in PHASE3A2_MATPLOTLIB_WHEEL_SHA256:
+        python_version = version.removeprefix("cp")
+        platforms = (
+            "--platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64"
+        )
+        downloads.append(
+            f"{interpreter} -m pip download --no-deps --only-binary=:all: --require-hashes "
+            f"--dest /cache/wheelhouse {platforms} "
+            f"--implementation cp --python-version {python_version} "
+            f"--abi {version} -r /tmp/wheelhouse-mpl{python_version}.txt"
+        )
     downloads.append(
         f"{interpreter} -m pip download --no-deps --dest /cache/wheelhouse auditwheel==6.8.0"
     )
@@ -3145,16 +3223,29 @@ def _phase3a2_activation_reasons(root: Path) -> list[str]:
     return reasons
 
 
-PHASE3A2_PHASE3B_PACKAGE_FILES = frozenset({"backend.py", "__init__.py"})
+PHASE3A2_PHASE3B_PACKAGE_FILES = frozenset(
+    {
+        "__init__.py",
+        "backend.py",
+        "backend_preflight.py",
+        "backend_support.py",
+        "backend_types.py",
+        "textpath.py",
+    }
+)
 # While the Phase-3B allowance is active, these are the ONLY matplotlib
-# shapes still rejected inside the two phase3b-owned package files; every
+# shapes still rejected inside the phase3b-owned package files; every
 # other occurrence (qualified chains such as matplotlib.lines.Line2D,
 # rcParams access, docstring prose) is admitted because the backend module
-# itself is the adapter. Workstream-manager decision on task t_52f05497.
+# itself is the adapter and textpath.py consumes the documented public
+# matplotlib.textpath/matplotlib.path APIs for the O-12 TextToPath
+# boundary (workstream-manager decisions 1-5, PRAC-A-T lane). The
+# substring ban keeps applying to every other package file and to the
+# whole pre-Phase-3B baseline: fail-closed both ways. Workstream-manager
+# decision on task t_52f05497; textpath addition on task t_1c790b2b.
 PHASE3A2_PHASE3B_MATPLOTLIB_FORBIDDEN_SHAPES = (
-    re.compile(r"^import matplotlib\.pylot"),
-    re.compile(r"^from matplotlib import"),
-    re.compile(r"^import matplotlib\.pylot as"),
+    re.compile(r"^\s*import matplotlib\.pyplot\b"),
+    re.compile(r"^\s*from matplotlib import\b"),
 )
 
 
@@ -3195,6 +3286,20 @@ def _render_api_activation_reason(root: Path) -> str | None:
     source_dir = root / "crates" / "lumenplot-render-api" / "src"
     if any(path.suffix == ".rs" for path in source_dir.glob("*.rs") if path.name != "lib.rs"):
         return "crates/lumenplot-render-api/src/*.rs beyond src/lib.rs"
+    return None
+
+
+def _wgpu_activation_reason(root: Path) -> str | None:
+    """Return why the portable renderer static contract activates, or None."""
+
+    source_dir = root / "crates" / "lumenplot-render-wgpu" / "src"
+    if any(path.suffix == ".rs" for path in source_dir.glob("*.rs") if path.name != "lib.rs"):
+        return "crates/lumenplot-render-wgpu/src/*.rs beyond src/lib.rs"
+    manifest = _read_toml(root / "crates/lumenplot-render-wgpu/Cargo.toml", root, [])
+    if isinstance(manifest, dict):
+        dependencies = manifest.get("dependencies")
+        if isinstance(dependencies, dict) and dependencies.get("wgpu") == WGPU_EXTERNAL_DEPENDENCIES["wgpu"]:
+            return "crates/lumenplot-render-wgpu/Cargo.toml wgpu dependency"
     return None
 
 
@@ -3247,6 +3352,70 @@ def _check_render_api_source(package_dir: Path, root: Path, errors: list[str]) -
                 errors.append(f"package lumenplot-render-api: {label} is not allowed")
 
 
+WGPU_FORBIDDEN_CODE_PATTERNS = (
+    FORBIDDEN_CODE_PATTERNS[0],
+    FORBIDDEN_CODE_PATTERNS[1],
+    (
+        "higher-level frontend code",
+        re.compile(r"\b(?:python|matplotlib|numpy|pyo3|winit|raw_window_handle)\b", re.I),
+    ),
+    (
+        "Metal backend naming",
+        re.compile(r"\b(?:metal|mtl|objc2)\b", re.I),
+    ),
+)
+
+
+def _check_wgpu_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the bounded portable renderer and static shader artifact lane."""
+
+    source_dir = package_dir / "src"
+    rust_files = (
+        {path.relative_to(package_dir).as_posix() for path in source_dir.rglob("*.rs")}
+        if source_dir.is_dir()
+        else set()
+    )
+    if rust_files != WGPU_SOURCE_FILES:
+        missing = sorted(WGPU_SOURCE_FILES - rust_files)
+        extra = sorted(rust_files - WGPU_SOURCE_FILES)
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ",".join(missing))
+        if extra:
+            details.append("extra " + ",".join(extra))
+        errors.append(
+            "package lumenplot-render-wgpu: exact source inventory mismatch"
+            + (" (" + "; ".join(details) + ")" if details else "")
+        )
+
+    for module_path in sorted(source_dir.rglob("*.rs")):
+        try:
+            module_source = module_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            errors.append(
+                f"package lumenplot-render-wgpu: cannot read {_logical_path(module_path, root)}"
+            )
+            continue
+        module_code = _strip_rust_comments_and_literals(module_source)
+        if NO_MANGLE_RE.search(module_code):
+            errors.append("package lumenplot-render-wgpu: exported ABI is not allowed")
+        for label, pattern in WGPU_FORBIDDEN_CODE_PATTERNS:
+            if pattern.search(module_code):
+                errors.append(f"package lumenplot-render-wgpu: {label} is not allowed")
+
+    shader_path = package_dir / WGPU_SHADER_PATH
+    try:
+        shader_bytes = shader_path.read_bytes()
+    except (OSError, UnicodeError):
+        errors.append(
+            f"package lumenplot-render-wgpu: cannot read {_logical_path(shader_path, root)}"
+        )
+    else:
+        digest = hashlib.sha256(shader_bytes).hexdigest()
+        if digest != WGPU_SHADER_SHA256:
+            errors.append("package lumenplot-render-wgpu: static shader hash mismatch")
+
+
 def _metal_activation_reason(root: Path) -> str | None:
     """Return why the B2-P Metal-lane static contract activates, or None.
 
@@ -3278,7 +3447,7 @@ def _metal_activation_reason(root: Path) -> str | None:
 
 
 def _phase3a2_phase3b_matplotlib_forbidden(source: str) -> bool:
-    """Detect pyplot-import regressions in the two phase3b-owned files."""
+    """Detect pyplot-import regressions inside the allowance-set package files."""
     return any(
         shape.match(line) is not None
         for line in source.splitlines()
@@ -3343,7 +3512,15 @@ def _phase3a2_check_pyproject(root: Path, errors: list[str]) -> None:
     if project.get("requires-python") != ">=3.11,<3.15":
         errors.append("phase3a2 pyproject: Requires-Python must be >=3.11,<3.15")
     dependencies = project.get("dependencies", [])
-    if isinstance(dependencies, list) and any("matplotlib" in str(item).lower() for item in dependencies):
+    # Phase-3B: while the backend adapter exists, the distribution genuinely
+    # imports Matplotlib (backend.py and its Agg whole-frame fallback), so the
+    # historical rejection no longer applies to a declared runtime dependency;
+    # it keeps applying to the pre-Phase-3B baseline (fail-closed both ways).
+    if (
+        isinstance(dependencies, list)
+        and any("matplotlib" in str(item).lower() for item in dependencies)
+        and _phase3b_activation_reason(root) is None
+    ):
         errors.append("phase3a2 pyproject: Matplotlib dependency is forbidden")
     phase3b_active = _phase3b_activation_reason(root) is not None
     lowered_project = str(project).lower()
@@ -3379,8 +3556,10 @@ def _phase3a2_check_python_package(root: Path, errors: list[str]) -> None:
         lowered = source.lower()
         if "matplotlib" in lowered or re.search(r"\bbackend\b", lowered):
             # Phase-3B: backend.py is the adapter itself and __init__.py
-            # hosts it; while the allowance is active only pyplot-import
-            # shapes stay forbidden inside those two files.
+            # hosts it; textpath.py consumes the documented public
+            # matplotlib.textpath API for the O-12 TextToPath boundary.
+            # While the allowance is active only pyplot-import shapes stay
+            # forbidden inside those three files (fail-closed both ways).
             if not (
                 phase3b_active
                 and path.name in PHASE3A2_PHASE3B_PACKAGE_FILES
@@ -3501,6 +3680,12 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
     shell_code = _phase3a2_strip_shell_comments("\n".join(run_blocks))
     docker_runs = _phase3a2_docker_run_segments(shell_code)
     repositories = _phase3a2_check_workflow_actions(text, errors)
+    rustup_init_pins = re.findall(
+        r"(?m)^[ \t]*PHASE3A2_RUSTUP_INIT_SHA256:[ \t]*[\"']([0-9a-f]{64})[\"'][ \t]*(?:#.*)?$",
+        text,
+    )
+    if rustup_init_pins != [PHASE3A2_RUSTUP_INIT_SHA256]:
+        errors.append("phase3a2 workflow: rustup-init digest must match the reviewed checker pin")
     required_fragments = (
         ("pull_request", "pull_request trigger"),
         ("push:", "push trigger"),
@@ -3770,6 +3955,30 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         for digest in PHASE3A2_NUMPY_WHEEL_SHA256.values():
             if digest not in prefetch:
                 errors.append("phase3a2 workflow: missing hash-pinned NumPy 2.4.6 runtime wheel")
+        # The Phase-3B backend dependency (`matplotlib>=3.11,<3.12`) must
+        # resolve offline inside every runtime venv cell, so its exact wheel
+        # stack is reviewed here with the same hash-pin channel as NumPy.
+        for stack in (
+            PHASE3A2_MATPLOTLIB_WHEEL_SHA256,
+            PHASE3A2_CONTOURPY_WHEEL_SHA256,
+            PHASE3A2_FONTTOOLS_WHEEL_SHA256,
+            PHASE3A2_KIWISOLVER_WHEEL_SHA256,
+            PHASE3A2_PILLOW_WHEEL_SHA256,
+        ):
+            for digest in stack.values():
+                if digest not in prefetch:
+                    errors.append(
+                        "phase3a2 workflow: missing hash-pinned Matplotlib runtime wheel"
+                    )
+        for digest in (
+            PHASE3A2_CYCLER_WHEEL_SHA256,
+            PHASE3A2_PYPARSING_WHEEL_SHA256,
+            PHASE3A2_PYTHON_DATEUTIL_WHEEL_SHA256,
+            PHASE3A2_PACKAGING_WHEEL_SHA256,
+            PHASE3A2_SIX_WHEEL_SHA256,
+        ):
+            if digest not in prefetch:
+                errors.append("phase3a2 workflow: missing hash-pinned Matplotlib runtime wheel")
         # pip's --hash is a requirements-file-only option, so the reviewed
         # digests must be staged into one-line requirements files before the
         # download commands consume them; assert each exact staging line.
@@ -3779,7 +3988,63 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
                 f"printf '%s\\n' 'numpy==2.4.6 --hash=sha256:{digest}' > /tmp/wheelhouse-numpy{version.removeprefix('cp')}.txt"
                 for version, digest in PHASE3A2_NUMPY_WHEEL_SHA256.items()
             ),
+            *(
+                f"printf '%s\\n' 'matplotlib==3.11.1 --hash=sha256:{digest}' > /tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt"
+                for version, digest in PHASE3A2_MATPLOTLIB_WHEEL_SHA256.items()
+            ),
+            *(
+                f"printf '%s\\n' 'contourpy==1.3.3 --hash=sha256:{digest}' >> /tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt"
+                for version, digest in PHASE3A2_CONTOURPY_WHEEL_SHA256.items()
+            ),
+            *(
+                f"printf '%s\\n' 'cycler==0.12.1 --hash=sha256:{PHASE3A2_CYCLER_WHEEL_SHA256}' >> /tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt"
+                for version in PHASE3A2_MATPLOTLIB_WHEEL_SHA256
+            ),
+            *(
+                f"printf '%s\\n' 'fonttools==4.63.0 --hash=sha256:{digest}' >> /tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt"
+                for version, digest in PHASE3A2_FONTTOOLS_WHEEL_SHA256.items()
+            ),
+            *(
+                f"printf '%s\\n' 'kiwisolver==1.5.0 --hash=sha256:{digest}' >> /tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt"
+                for version, digest in PHASE3A2_KIWISOLVER_WHEEL_SHA256.items()
+            ),
+            *(
+                f"printf '%s\\n' 'pillow==12.3.0 --hash=sha256:{digest}' >> /tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt"
+                for version, digest in PHASE3A2_PILLOW_WHEEL_SHA256.items()
+            ),
+            *(
+                f"printf '%s\\n' 'pyparsing==3.3.2 --hash=sha256:{PHASE3A2_PYPARSING_WHEEL_SHA256}' >> /tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt"
+                for version in PHASE3A2_MATPLOTLIB_WHEEL_SHA256
+            ),
+            *(
+                f"printf '%s\\n' 'python-dateutil==2.9.0.post0 --hash=sha256:{PHASE3A2_PYTHON_DATEUTIL_WHEEL_SHA256}' >> /tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt"
+                for version in PHASE3A2_MATPLOTLIB_WHEEL_SHA256
+            ),
+            *(
+                f"printf '%s\\n' 'packaging==26.3 --hash=sha256:{PHASE3A2_PACKAGING_WHEEL_SHA256}' >> /tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt"
+                for version in PHASE3A2_MATPLOTLIB_WHEEL_SHA256
+            ),
+            *(
+                f"printf '%s\\n' 'six==1.17.0 --hash=sha256:{PHASE3A2_SIX_WHEEL_SHA256}' >> /tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt"
+                for version in PHASE3A2_MATPLOTLIB_WHEEL_SHA256
+            ),
         )
+        # One create (`>`) plus nine appends (`>>`) must target each cell's
+        # requirements file, so every file carries the full ten-wheel stack.
+        mpl_staging_counts = {
+            f"/tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt": sum(
+                staging_line.rstrip().endswith(
+                    f"/tmp/wheelhouse-mpl{version.removeprefix('cp')}.txt"
+                )
+                for staging_line in staging_lines
+            )
+            for version in PHASE3A2_MATPLOTLIB_WHEEL_SHA256
+        }
+        if any(count != 10 for count in mpl_staging_counts.values()):
+            errors.append(
+                "phase3a2 workflow: each Matplotlib requirements file must carry "
+                "the full ten-wheel runtime stack"
+            )
         if any(staging_line not in prefetch for staging_line in staging_lines):
             errors.append(
                 "phase3a2 workflow: prefetch lacks an exact requirements-file hash pin "
@@ -3876,6 +4141,38 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
         numpy_install = f"numpy==2.4.6 --hash=sha256:{PHASE3A2_NUMPY_WHEEL_SHA256['cp' + version.replace('.', '')]}"
         if numpy_install not in cell:
             errors.append(f"phase3a2 workflow: runtime cell {version} lacks its exact hash-pinned NumPy wheel")
+        # The Phase-3B backend dependency resolves offline, so each runtime
+        # venv installs the exact hash-pinned Matplotlib stack BEFORE the
+        # helper wheel; otherwise pip would try to resolve
+        # `matplotlib>=3.11,<3.12` with --no-index and fail the cell.
+        mpl_tag = version.replace(".", "")
+        mpl_requirements = f"/tmp/mpl{mpl_tag}.txt"
+        if (
+            f"printf '%s\\n' 'matplotlib==3.11.1 --hash=sha256:{PHASE3A2_MATPLOTLIB_WHEEL_SHA256['cp' + mpl_tag]}' > {mpl_requirements}"
+            not in cell
+            or f"-r {mpl_requirements}" not in cell
+            or PHASE3A2_CONTOURPY_WHEEL_SHA256["cp" + mpl_tag] not in cell
+            or PHASE3A2_CYCLER_WHEEL_SHA256 not in cell
+            or PHASE3A2_FONTTOOLS_WHEEL_SHA256["cp" + mpl_tag] not in cell
+            or PHASE3A2_KIWISOLVER_WHEEL_SHA256["cp" + mpl_tag] not in cell
+            or PHASE3A2_PILLOW_WHEEL_SHA256["cp" + mpl_tag] not in cell
+            or PHASE3A2_PYPARSING_WHEEL_SHA256 not in cell
+            or PHASE3A2_PYTHON_DATEUTIL_WHEEL_SHA256 not in cell
+            or PHASE3A2_PACKAGING_WHEEL_SHA256 not in cell
+            or PHASE3A2_SIX_WHEEL_SHA256 not in cell
+        ):
+            errors.append(
+                f"phase3a2 workflow: runtime cell {version} lacks its exact "
+                "hash-pinned Matplotlib runtime stack"
+            )
+        elif cell.index(numpy_install) > cell.index(f"-r {mpl_requirements}") or (
+            "-r /tmp/helper-wheel" in cell
+            and cell.index(f"-r {mpl_requirements}") > cell.index("-r /tmp/helper-wheel")
+        ):
+            errors.append(
+                f"phase3a2 workflow: runtime cell {version} must install NumPy, "
+                "then the Matplotlib stack, before the helper wheel"
+            )
         for fragment, label in (
             ('-r /tmp/helper-wheel', "identical helper-wheel install"),
             ("--hash=sha256:$WHEEL_SHA256", "hash-pinned helper-wheel install"),
@@ -4231,16 +4528,126 @@ def _check_bench_source(package_dir: Path, root: Path, errors: list[str]) -> Non
         errors.append("package lumenplot-bench: public item is not allowed in src/lib.rs")
 
 
-def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> None:
-    """Enforce the B2-P Metal-lane stub contract while the sentinel is active.
+def _normalise_rust_whitespace(source: str) -> str:
+    """Compare a small allowlisted Rust fragment without accepting new items."""
 
-    The prototype lane may carry Rust source beyond `src/lib.rs` only while
-    `_metal_activation_reason` fires.  Unlike the accepted O-08 bench
-    inventory, the prototype module set is deliberately not pinned yet; the
-    follow-up prototype task owns that decision.  `src/lib.rs` itself must
-    remain documentation-only with no public items so the crate boundary
-    never widens from documentation.
+    return " ".join(source.split())
+
+
+def _metal_raw_extern_c(source: str, position: int) -> bool:
+    """Return whether *position* has an ``extern`` whose ABI value is ``C``."""
+
+    cursor = position + len("extern")
+    # The code-only pass blanks ABI string literals, so inspect the raw source
+    # here.  Rust comments are token trivia; skip them without changing the
+    # source offset used by the caller.  Block comments may nest.
+    while cursor < len(source):
+        if source[cursor].isspace():
+            cursor += 1
+            continue
+        if source.startswith("//", cursor):
+            newline = source.find("\n", cursor + 2)
+            if newline < 0:
+                return False
+            cursor = newline + 1
+            continue
+        if source.startswith("/*", cursor):
+            depth = 1
+            cursor += 2
+            while cursor < len(source) and depth:
+                if source.startswith("/*", cursor):
+                    depth += 1
+                    cursor += 2
+                elif source.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+            if depth:
+                return False
+            continue
+        break
+    abi_source = source[cursor:]
+    quoted_match = re.match(r'"([^"\\]*)"(?!\w)', abi_source)
+    if quoted_match is not None:
+        return quoted_match.group(1) == "C"
+
+    # Rust raw strings may use any matching number of hash delimiters.  Treat
+    # each spelling whose semantic value is exactly ``C`` as the same ABI token;
+    # raw spelling does not create another FFI allowance.  Reject a trailing
+    # identifier or hash so an invalid token prefix cannot inherit the match.
+    raw_match = re.match(r'r(?P<hashes>#*)"C"(?P=hashes)(?![\w#])', abi_source)
+    return raw_match is not None
+
+
+def _metal_allowlisted_positions(
+    relative_path: str,
+    source: str,
+    code: str,
+) -> tuple[set[int], set[int]]:
+    """Return exact allowed ``unsafe`` and ``extern "C"`` token positions.
+
+    The exception is deliberately structural and count-checked.  A matching
+    token in any other file, a duplicate call, a changed declaration body, or
+    an additional item receives no allowance and is reported by the caller.
     """
+
+    if relative_path != METAL_FFI_SOURCE_PATH:
+        return set(), set()
+
+    allowed_unsafe: set[int] = set()
+    allowed_extern: set[int] = set()
+
+    # The two accepted call sites are exact statements, not expression or
+    # symbol-prefix patterns.  Requiring one occurrence of each prevents a
+    # copied call from inheriting the exception.
+    statement_positions: dict[str, list[int]] = {
+        statement: [] for statement in METAL_FFI_CALL_STATEMENTS
+    }
+    line_start = 0
+    for line in code.splitlines(keepends=True):
+        normalised = _normalise_rust_whitespace(line)
+        for statement in METAL_FFI_CALL_STATEMENTS:
+            if normalised == statement:
+                unsafe_position = line.find("unsafe")
+                if unsafe_position >= 0:
+                    statement_positions[statement].append(line_start + unsafe_position)
+        line_start += len(line)
+    for positions in statement_positions.values():
+        if len(positions) == 1:
+            allowed_unsafe.add(positions[0])
+
+    # The declaration is the sole item in the exact unsafe extern block.  The
+    # raw source is consulted only to preserve the ABI string literal, which
+    # the normal lexical pass intentionally blanks.
+    if code.count("fn MTLCreateSystemDefaultDevice") != 1:
+        return allowed_unsafe, allowed_extern
+    for unsafe_match in re.finditer(r"\bunsafe\b", code):
+        cursor = unsafe_match.end()
+        while cursor < len(code) and code[cursor].isspace():
+            cursor += 1
+        if not code.startswith("extern", cursor):
+            continue
+        extern_position = cursor
+        if not _metal_raw_extern_c(source, extern_position):
+            continue
+        opening = code.find("{", extern_position + len("extern"))
+        if opening >= len(code):
+            continue
+        closing = _find_matching_brace(code, opening)
+        if closing >= len(code):
+            continue
+        body = _normalise_rust_whitespace(code[opening + 1 : closing])
+        if body != _normalise_rust_whitespace(METAL_FFI_EXTERN_SIGNATURE):
+            continue
+        allowed_unsafe.add(unsafe_match.start())
+        allowed_extern.add(extern_position)
+        break
+    return allowed_unsafe, allowed_extern
+
+
+def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the B2-P Metal source and confined FFI-boundary contract."""
 
     source_dir = package_dir / "src"
     rust_files = sorted(
@@ -4262,6 +4669,35 @@ def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> Non
         errors.append("package lumenplot-render-metal: public item is not allowed in src/lib.rs")
     if NO_MANGLE_RE.search(code):
         errors.append("package lumenplot-render-metal: exported ABI is not allowed")
+
+    # Defense-in-depth over the complete source set.  Only the exact
+    # named device declaration and its two ownership-preserving call sites are
+    # exempt; all other unsafe or extern declarations fail closed.  The source
+    # inventory itself remains open for later prototype modules; each future
+    # module inherits no FFI allowance.
+    for module_path in sorted(source_dir.rglob("*.rs")):
+        try:
+            module_source = module_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            errors.append(
+                f"package lumenplot-render-metal: cannot read {_logical_path(module_path, root)}"
+            )
+            continue
+        module_code = _strip_rust_comments_and_literals(module_source)
+        relative_path = module_path.relative_to(source_dir.parent).as_posix()
+        allowed_unsafe, allowed_extern = _metal_allowlisted_positions(
+            relative_path,
+            module_source,
+            module_code,
+        )
+        for unsafe_match in re.finditer(r"\bunsafe\b", module_code):
+            if unsafe_match.start() not in allowed_unsafe:
+                errors.append("package lumenplot-render-metal: unsafe code is not allowed")
+        if NO_MANGLE_RE.search(module_code):
+            errors.append("package lumenplot-render-metal: exported ABI is not allowed")
+        for extern_match in re.finditer(r"\bextern\b", module_code):
+            if extern_match.start() not in allowed_extern:
+                errors.append('package lumenplot-render-metal: extern "C" is not allowed')
 
 
 def _check_package_source(
@@ -4286,6 +4722,8 @@ def _check_package_source(
         and _render_api_activation_reason(root) is not None
     ):
         _check_render_api_source(package_dir, root, errors)
+    elif package_name == "lumenplot-render-wgpu" and _wgpu_activation_reason(root) is not None:
+        _check_wgpu_source(package_dir, root, errors)
     elif package_name == "lumenplot-render-metal" and _metal_activation_reason(root) is not None:
         _check_metal_source(package_dir, root, errors)
     else:
@@ -4310,6 +4748,11 @@ def _check_dependencies(
         and _metal_activation_reason(root) is not None
     ):
         expected_external = METAL_TARGET_EXTERNAL_DEPENDENCIES
+    elif (
+        package_name == "lumenplot-render-wgpu"
+        and _wgpu_activation_reason(root) is not None
+    ):
+        expected_external = WGPU_EXTERNAL_DEPENDENCIES
     elif package_name == "lumenplot-python" and phase3a2_active:
         expected_external = PHASE3A2_PYTHON_DEPENDENCIES
         if phase3b_active:

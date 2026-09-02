@@ -8,8 +8,10 @@ Matplotlib, and everything here may change without notice.
 What it does:
 
 1. selects the lumenplot Matplotlib backend *before* any figure work;
-2. builds a strict-eligible frame: one axes with ``axison`` disabled and
-   one ``Line2D`` with explicit butt caps and miter joins;
+2. builds an undecorated frame as its own fixture choice (decorated axes
+   are strict-eligible too): one axes with decorations disabled through its
+   public API and one
+   ``Line2D`` with explicit butt caps and miter joins;
 3. writes ``quickstart.png`` at 144 DPI into the working directory.
 
 Run it::
@@ -37,10 +39,17 @@ OUTPUT_PATH = "quickstart.png"
 
 
 def main() -> int:
-    # Strict mode (the default profile) renders only the eligible trace:
-    # a plain Figure (no pyplot global state), one axes with axison turned
-    # off, and a single Line2D whose stroke style matches the fixed native
-    # contract (butt caps, miter joins; no markers, dashes, or titles).
+    # Strict mode renders the eligible trace. This example keeps the frame
+    # undecorated as its own fixture choice: a plain Figure (no pyplot global
+    # state) with one axes whose decorations are turned off through the public
+    # API, plus a single Line2D
+    # whose stroke style matches the fixed native contract (butt caps, miter
+    # joins; no markers, dashes, or titles).
+    #
+    # Turning decorations off is not an eligibility requirement — decorated
+    # frames are strict-eligible too since PR #63 / ADR-0015 §4a (solid major
+    # gridlines, major ticks, spines render natively, subject to that
+    # amendment's conditions: facecolor 'none', label-less ticks).
     #
     # Hybrid mode keeps the same strict native path first but falls back to
     # whole-frame Agg output with a structured diagnostic whenever content
@@ -48,9 +57,9 @@ def main() -> int:
     #
     #     canvas = FigureCanvasLumenPlot(fig, mode="hybrid")
     fig = figure.Figure(figsize=(4.0, 3.0), dpi=100)
-    canvas = FigureCanvasLumenPlot(fig)
+    _ = FigureCanvasLumenPlot(fig)
     ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
-    ax.axison = False
+    ax.set_axis_off()
     ax.add_line(
         Line2D(
             [0.0, 2.5, 5.0, 7.5, 10.0],

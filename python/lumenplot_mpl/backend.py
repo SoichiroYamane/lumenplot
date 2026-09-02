@@ -4,7 +4,7 @@ Implements the accepted public surface contract recorded in
 ``docs/architecture/api-0005-phase3b-public-matplotlib-backend-surface.md``
 (API 0005) and ``docs/adr/0015-phase3b-public-matplotlib-adapter-contract.md``
 (ADR 0015), within the lane decisions fixed by the Phase-3B workstream
-(parent task t_3339d0b5 comment thread):
+(the accepted Phase-3B workstream):
 
 - identity: distribution ``lumenplot-mpl``, package ``lumenplot_mpl``,
   backend module ``lumenplot_mpl.backend``, loader
@@ -25,6 +25,17 @@ Mode policy: the constructor kwarg ``mode`` selects ``"strict"`` (default)
 or ``"hybrid"`` (ADR 0015 §12 ordered delivery). Strict mode renders only
 the whitelisted eligible trace and raises
 :class:`LumenPlotUnsupportedError` before any target write otherwise.
+Since the PRAC-A-D amendment of ADR 0015 §4, the eligible trace includes
+one standard ``Axes`` with decorations enabled: solid major gridlines,
+major tick strokes, and spine edges are rendered natively as explicit
+path commands ahead of the axes' content lines. Visible minor tick
+content, non-solid grid styles, an opaque axes facecolor, titles, axis
+labels, and tick labels remain outside the slice and raise.
+Since the PRAC-A-L amendment of ADR 0015 §4a a standard Axes legend
+(``matplotlib.legend.Legend``, single-column, line entries) is eligible
+as well: its frame, handle strokes, and entry labels render as explicit
+path commands with geometry handed over by Matplotlib's own legend
+layout.
 Hybrid mode first attempts exactly the strict native path and, only when
 that raises the stable ``unsupported-capability`` failure, succeeds with a
 whole-frame Agg fallback: stock public ``FigureCanvasAgg`` PNG output plus
@@ -45,13 +56,20 @@ from __future__ import annotations
 
 import io
 import math
-import numbers
 import os
 from typing import Any
 
 import matplotlib
 from matplotlib.backend_bases import FigureCanvasBase, FigureManagerBase
-from matplotlib.path import Path
+
+from lumenplot_mpl.backend_preflight import _EligibilityPreflight
+from lumenplot_mpl.backend_types import (
+    LumenPlotFallbackDiagnostic,
+    LumenPlotPngResult,
+    LumenPlotUnsupportedError,
+    _UNSUPPORTED_TOKEN,
+)
+
 
 __all__ = [
     "FigureCanvas",
@@ -72,195 +90,51 @@ required_interactive_framework = None
 #: Manager identity is unchanged; diagnostics live on the canvas only.
 FigureManager = FigureManagerBase
 
-# Stable API-0002 token reused by every strict-unsupported failure of this
-# slice. The token is the machine contract; messages are non-contract.
-_UNSUPPORTED_TOKEN = "unsupported-capability"
+#: LP-FUNC-035 ordering contract, stated once for the whole adapter.
+#:
+#: This is the single normative description of how the emission stage
+#: reproduces Matplotlib Agg's ``Axes.draw`` paint order; every stage
+#: that touches ordering cites this text instead of restating its own
+#: copy (W2-comp-fix-v2 review item: one contract, one home).
+#:
+#: 1. Sort input. ``Axes.draw`` sorts ``ax.get_children()`` minus
+#:    ``ax.patch`` with Python's stable ``sorted`` keyed on zorder;
+#:    equal-zorder ties keep enumeration (add) order across primitive
+#:    classes. The adapter mirrors both halves: the single stable sort
+#:    runs over every eligible child of an axes at once, and tie rank
+#:    comes from the public ``Axes.get_children`` enumeration index --
+#:    never from artist class, type name, or container membership.
+#:
+#: 2. Patch exclusion. Agg removes the axes' background patch from the
+#:    sorted list and prepends it after sorting, so the background paints
+#:    below every child whatever its zorder -- even negative ones. The
+#:    adapter's eligibility walk excludes ``ax.patch`` (and every other
+#:    structural artist) from the content surface for the same reason,
+#:    and strict mode renders no axes-background fill command at all: an
+#:    opaque facecolor is refused, so exclusion cannot reorder anything.
+#:
+#: 3. Decoration placement. Gridline and tick strokes ride their Axis
+#:    unit's public zorder (default 1.5); spine edges ride the Spine
+#:    artists' own public zorder (default 2.5). At the default surface
+#:    this keeps grid/tick strokes below default content lines (z 2) --
+#:    the ratified Axis-unit model Agg actually paints -- while inverted
+#:    or negative zorders interleave exactly as Agg paints them. Tick
+#:    label glyphs stay appended after all axes content: the text wire-up
+#:    owns their emission position and Agg itself always paints labels
+#:    last within the decoration surface.
+#:
+#: 4. Outside-the-sort artists. Images, legends, tables, texts outside
+#:    the tick-label wire-up, rasterized artists (``rasterization_zorder``
+#:    splitting), and every non-whitelisted class are outside this
+#:    contract: they never enter the sort because they are not eligible
+#:    content -- they refuse in preflight (strict) or fall back whole-
+#:    frame through Agg (hybrid), so no silent reordering exists.
+_ZORDER_CONTRACT_DOC = """LP-FUNC-035 ordering contract (backend.py header).
 
-#: Opaque black used when an artist carries no explicit stroke/fill color.
-_RGBA_BLACK = (0, 0, 0, 255)
-
-class LumenPlotFallbackDiagnostic:
-    """Immutable structured fallback record (API 0005 §3).
-
-    Field content follows the accepted diagnostic envelope; exact naming is
-    the workstream-fixed spelling. Instances are immutable after creation
-    and carry no behavior beyond observation.
-    """
-
-    __slots__ = (
-        "_fallback_type",
-        "_generation",
-        "_kind",
-        "_output_format",
-        "_representation",
-        "_scope",
-        "_type_context",
-    )
-
-    def __init__(
-        self,
-        *,
-        kind: str,
-        type: str | None,  # noqa: A002 - contract field name
-        generation: int,
-        output_format: str = "png",
-        scope: str = "whole-frame",
-        representation: str = "raster",
-        fallback_type: str = "matplotlib-agg",
-    ) -> None:
-        object.__setattr__(self, "_kind", kind)
-        object.__setattr__(self, "_type_context", type)
-        object.__setattr__(self, "_generation", int(generation))
-        object.__setattr__(self, "_output_format", output_format)
-        object.__setattr__(self, "_scope", scope)
-        object.__setattr__(self, "_representation", representation)
-        object.__setattr__(self, "_fallback_type", fallback_type)
-
-    def __setattr__(self, name: str, value: Any) -> None:  # pragma: no cover
-        raise AttributeError("LumenPlotFallbackDiagnostic is immutable")
-
-    def __delattr__(self, name: str) -> None:  # pragma: no cover
-        raise AttributeError("LumenPlotFallbackDiagnostic is immutable")
-
-    @property
-    def kind(self) -> str:
-        """Stable token: ``unsupported-capability`` or a fallback token."""
-        return self._kind
-
-    @property
-    def type(self) -> str | None:  # noqa: A003 - contract field name
-        """Public artist or callback type context."""
-        return self._type_context
-
-    @property
-    def generation(self) -> int:
-        """Non-negative per-canvas attempt number."""
-        return self._generation
-
-    @property
-    def output_format(self) -> str:
-        return self._output_format
-
-    @property
-    def scope(self) -> str:
-        return self._scope
-
-    @property
-    def representation(self) -> str:
-        return self._representation
-
-    @property
-    def fallback_type(self) -> str:
-        return self._fallback_type
-
-    def __repr__(self) -> str:
-        return (
-            "LumenPlotFallbackDiagnostic("
-            f"kind={self._kind!r}, type={self._type_context!r}, "
-            f"generation={self._generation}, "
-            f"output_format={self._output_format!r}, "
-            f"scope={self._scope!r}, "
-            f"representation={self._representation!r}, "
-            f"fallback_type={self._fallback_type!r})"
-        )
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, LumenPlotFallbackDiagnostic):
-            return NotImplemented
-        return (
-            self._kind == other._kind
-            and self._type_context == other._type_context
-            and self._generation == other._generation
-            and self._output_format == other._output_format
-            and self._scope == other._scope
-            and self._representation == other._representation
-            and self._fallback_type == other._fallback_type
-        )
-
-    def __hash__(self) -> int:
-        return hash(
-            (
-                self._kind,
-                self._type_context,
-                self._generation,
-                self._output_format,
-                self._scope,
-                self._representation,
-                self._fallback_type,
-            )
-        )
-
-
-class LumenPlotPngResult:
-    """Owned PNG bytes plus immutable diagnostics (API 0005 §3).
-
-    The bytes are owned by the result; ``diagnostics`` is an immutable
-    tuple of :class:`LumenPlotFallbackDiagnostic`. Native success carries
-    an empty tuple.
-    """
-
-    __slots__ = ("_diagnostics", "_png_bytes")
-
-    def __init__(self, png_bytes: bytes, diagnostics: tuple) -> None:
-        object.__setattr__(self, "_png_bytes", bytes(png_bytes))
-        object.__setattr__(self, "_diagnostics", tuple(diagnostics))
-
-    def __setattr__(self, name: str, value: Any) -> None:  # pragma: no cover
-        raise AttributeError("LumenPlotPngResult is immutable")
-
-    def __delattr__(self, name: str) -> None:  # pragma: no cover
-        raise AttributeError("LumenPlotPngResult is immutable")
-
-    @property
-    def png_bytes(self) -> bytes:
-        """The owned PNG byte string."""
-        return self._png_bytes
-
-    @property
-    def diagnostics(self) -> tuple:
-        """Immutable diagnostics tuple (empty on native success)."""
-        return self._diagnostics
-
-    def __repr__(self) -> str:
-        return (
-            "LumenPlotPngResult("
-            f"{len(self._png_bytes)} bytes, "
-            f"{len(self._diagnostics)} diagnostic(s))"
-        )
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, LumenPlotPngResult):
-            return NotImplemented
-        return (
-            self._png_bytes == other._png_bytes
-            and self._diagnostics == other._diagnostics
-        )
-
-    def __hash__(self) -> int:
-        return hash((self._png_bytes, self._diagnostics))
-
-
-class LumenPlotUnsupportedError(RuntimeError):
-    """Strict-mode unsupported-capability failure.
-
-    Raised before any target write when preflight rejects the request in
-    strict mode. ``code`` carries the stable API-0002 token; the message is
-    non-contract human text.
-    """
-
-    def __init__(self, message: str, *, code: str = _UNSUPPORTED_TOKEN,
-                 type_context: str | None = None,
-                 generation: int | None = None) -> None:
-        super().__init__(message)
-        self.code = code
-        self.type_context = type_context
-        self.generation = generation
-
-
-# ---------------------------------------------------------------------------
-# Native seam (deferred import)
-# ---------------------------------------------------------------------------
-
+The normative text lives in the module comment block above; stages cite
+this constant's name when they depend on one of its clauses so a future
+editor finds every touchpoint from one search.
+"""
 
 def _native():
     """Return the private ``lumenplot_mpl._native`` extension module.
@@ -271,373 +145,6 @@ def _native():
     from lumenplot_mpl import _native as module
 
     return module
-
-
-def _rgba8(color: Any, alpha: float | None = None) -> tuple[int, int, int, int]:
-    """Convert a Matplotlib color to an unpremultiplied 0-255 RGBA tuple.
-
-    Uses only the public ``matplotlib.colors.to_rgba``. A ``None`` alpha
-    keeps the color's own alpha; otherwise the explicit alpha multiplies
-    it. Values quantize by rounding half away from overflow and clamp.
-    """
-    r, g, b, a = matplotlib.colors.to_rgba(color)
-    if alpha is not None:
-        a = float(alpha) * a
-    channel = (
-        int(round(min(max(r, 0.0), 1.0) * 255)),
-        int(round(min(max(g, 0.0), 1.0) * 255)),
-        int(round(min(max(b, 0.0), 1.0) * 255)),
-        int(round(min(max(a, 0.0), 1.0) * 255)),
-    )
-    if channel[3] == 0:
-        # ADR-0015 §5: fully transparent strokes encode RGB as zero.
-        return (0, 0, 0, 0)
-    return channel
-
-
-def _finite(value: Any) -> bool:
-    # numpy integer/floating scalars (what Line2D.get_{x,y}data returns for
-    # int or float input) are not Python int/float instances, so accept any
-    # numbers.Real except bool.
-    if isinstance(value, bool) or not isinstance(value, numbers.Real):
-        return False
-    return math.isfinite(float(value))
-
-
-class _EligibilityPreflight:
-    """Two-stage eligibility preflight (ADR 0015 §3-4, API 0005 §4).
-
-    Stage one checks the static documented-public object whitelist; stage
-    two runs exactly one public ``RendererBase`` collector traversal and
-    asserts the exact eligible trace of one figure-background ``draw_path``
-    plus per-line single-stroke ``draw_path`` calls. The collector is an
-    observation: it never mutates the Figure. Any other renderer callback,
-    unknown artist type, non-affine transform, non-rectangular clip, or
-    style outside the fixed supported set records an explicit unsupported
-    reason.
-    """
-
-    # Documented-public artist whitelist for this slice.
-    _ARTIST_WHITELIST = (matplotlib.lines.Line2D,)
-
-    # RendererBase callbacks the collector may observe, in the exact order
-    # and multiplicity the eligible trace allows.
-    _ELIGIBLE_CALLBACKS = ("draw_path",)
-
-    def __init__(self) -> None:
-        self.reasons: list[tuple[str | None, str]] = []
-        self.background_seen = False
-        self.background_rgbface: Any = None
-        self.line_paths = 0
-        self._clip_points: Any = None
-        self._height_px = 0
-
-    def unsupported(self, reason: str, type_context: str | None = None) -> None:
-        self.reasons.append((type_context, reason))
-
-    # -- stage one: static whitelist ------------------------------------
-
-    def check_static(self, figure: matplotlib.figure.Figure) -> None:
-        for ax in figure.get_axes():
-            if not bool(getattr(ax, "axison", True)):
-                continue
-            self.unsupported("axes decorations are enabled", type(ax).__name__)
-        for artist in self._iterate_content_artists(figure):
-            if not isinstance(artist, self._ARTIST_WHITELIST):
-                self.unsupported(
-                    f"artist {type(artist).__name__} is outside the "
-                    "supported whitelist",
-                    type(artist).__name__,
-                )
-                continue
-            self._check_line2d_static(artist)
-
-    def _iterate_content_artists(self, figure: matplotlib.figure.Figure):
-        """Yield drawable content artists, not structural containers.
-
-        The Figure/Axes objects, their patch, spines, axis containers, and
-        tick wrappers are structural: with ``axison`` disabled they draw
-        nothing, and the stage-two collector trace rejects them if they
-        ever emit a callback.
-        """
-        yield from figure.images
-        yield from figure.lines
-        yield from figure.patches
-        yield from figure.texts
-        yield from figure.artists
-        yield from figure.legends
-        for ax in figure.get_axes():
-            yield from ax.lines
-            yield from ax.collections
-            yield from ax.images
-            yield from ax.patches
-            yield from ax.tables
-            yield from ax.texts
-            yield from ax.artists
-            if ax.get_legend() is not None:
-                yield ax.get_legend()
-
-    def _check_line2d_static(self, line: matplotlib.lines.Line2D) -> None:
-        name = type(line).__name__
-        if line.get_marker() != "None":
-            self.unsupported("markers are unsupported in strict mode", name)
-        if line.get_drawstyle() != "default":
-            self.unsupported("non-default drawstyle is unsupported", name)
-        if line.is_dashed():
-            self.unsupported("dashed strokes are unsupported in strict mode", name)
-        if line.get_linewidth() < 0:
-            self.unsupported("negative line width", name)
-        if line.get_path_effects():
-            self.unsupported("path effects are unsupported", name)
-        if line.get_sketch_params() is not None:
-            self.unsupported("sketch parameters are unsupported", name)
-        if line.get_snap() is not None:
-            self.unsupported("explicit snap is unsupported", name)
-        if line.get_url() is not None:
-            self.unsupported("hyperlinks are unsupported", name)
-        # ADR-0015 §5: the native request supports exactly Butt cap and
-        # Miter join. Effective styles outside that set are rejected, not
-        # approximated; Matplotlib's defaults (projecting/round) must be
-        # overridden explicitly by strict-mode callers.
-        cap = str(line.get_solid_capstyle())
-        join = str(line.get_solid_joinstyle())
-        if cap != "butt":
-            self.unsupported(
-                f"solid cap style {cap!r} is unsupported; "
-                "strict mode requires 'butt'",
-                name,
-            )
-        if join != "miter":
-            self.unsupported(
-                f"solid join style {join!r} is unsupported; "
-                "strict mode requires 'miter'",
-                name,
-            )
-        if line.get_gid() is None:
-            return
-
-        # -- stage two: public RendererBase collector ------------------------
-
-    def collect(self, figure: matplotlib.figure.Figure) -> None:
-        """Run one collector traversal through a public RendererBase.
-
-        Builds the exact eligible trace: exactly one figure-background
-        ``draw_path`` followed by one single-stroke ``draw_path`` per
-        whitelisted Line2D. Any other renderer callback or unexpected path
-        shape records an unsupported reason.
-        """
-        from matplotlib.backend_bases import RendererBase
-
-        collected: list[dict] = []
-
-        class _Collector(RendererBase):
-            def draw_path(self, gc, path, transform, rgbFace=None):  # noqa: N802
-                collected.append(
-                    {
-                        "gc": gc,
-                        "path": path,
-                        "transform": transform,
-                        "rgbFace": rgbFace,
-                    }
-                )
-
-            def __getattr__(self, name):  # pragma: no cover - defensive
-                raise AttributeError(name)
-
-        collector = _Collector()
-        for name in self._ELIGIBLE_CALLBACKS:
-            if not hasattr(RendererBase, name):  # pragma: no cover - defensive
-                self.unsupported(f"renderer callback {name} unavailable")
-                return
-        figure.draw(collector)
-
-        if not collected:
-            self.unsupported("no drawable content observed", "Figure")
-            return
-        first = collected[0]
-        background = first["rgbFace"]
-        if background is None:
-            self.unsupported("first draw_path is not a filled background")
-        elif len(first["path"].vertices) != 5:
-            self.unsupported("figure background is not a closed rectangle")
-        else:
-            self.background_seen = True
-            self.background_rgbface = background
-            self._check_background_style(first)
-
-        for call in collected[1:]:
-            self.line_paths += 1
-            self._check_line_call(call)
-
-    def _check_background_style(self, call: dict) -> None:
-        gc = call["gc"]
-        if bool(gc.get_antialiased()):
-            self.unsupported("antialiased figure background is unsupported")
-        if gc.get_linewidth() != 0.0:
-            self.unsupported("stroked figure background is unsupported")
-
-    def _check_line_call(self, call: dict) -> None:
-        path = call["path"]
-        codes = path.codes
-        if codes is not None and len(codes):
-            code_values = {int(code) for code in codes}
-            allowed = {
-                int(Path.MOVETO),
-                int(Path.LINETO),
-                int(Path.CLOSEPOLY),
-                0,
-            }
-            if not code_values <= allowed:
-                self.unsupported("curved path segments are unsupported")
-        vertices = path.vertices
-        if len(vertices) < 2:
-            self.unsupported("degenerate single-vertex stroke")
-        gc = call["gc"]
-        if gc.get_dashes()[1] is not None:
-            self.unsupported("dashed strokes are unsupported in strict mode")
-        if gc.get_sketch_params() is not None:
-            self.unsupported("sketch parameters are unsupported")
-        if gc.get_snap() is not None:
-            self.unsupported("explicit snap is unsupported")
-        clip_rect = gc.get_clip_rectangle()
-        if clip_rect is None:
-            self.unsupported("absent rectangular clip where required")
-        else:
-            points = clip_rect.get_points()
-            if not (
-                _finite(points[0][0])
-                and _finite(points[0][1])
-                and _finite(points[1][0])
-                and _finite(points[1][1])
-            ):
-                self.unsupported("non-finite clip rectangle")
-        if gc.get_clip_path() != (None, None):
-            self.unsupported("non-rectangular custom clip is unsupported")
-        elif clip_rect is not None:
-            # Remember the validated rectangular clip so the request can
-            # carry an explicit clip_rect. Every eligible stroke of this
-            # slice shares one axes rectangle.
-            if self._clip_points is None:
-                self._clip_points = points
-
-    # -- geometry assembly -----------------------------------------------
-
-    def build_frame_spec(
-        self,
-        figure: matplotlib.figure.Figure,
-        *,
-        width_px: int,
-        height_px: int,
-        output_dpi: float,
-    ) -> dict:
-        """Build the ``render_frame_png`` spec from public getters.
-
-        Rendering sources geometry through the data route: public Line2D
-        data plus public linear increasing Axes limits feed one temporary
-        affine request; the collected path only reconciles affine and clip
-        behavior. Background color comes from the collected figure patch.
-        """
-        commands: list[dict] = []
-        background_rgba = _RGBA_BLACK
-        self._height_px = int(height_px)
-        for ax in figure.get_axes():
-            if bool(getattr(ax, "axison", True)):
-                # Preflight already recorded this as unsupported.
-                continue
-            xlim = ax.get_xlim()
-            ylim = ax.get_ylim()
-            if ax.get_xscale() != "linear" or ax.get_yscale() != "linear":
-                continue
-            if not (xlim[0] < xlim[1] and ylim[0] < ylim[1]):
-                continue
-            bbox = ax.get_window_extent()
-            x0, y0 = bbox.x0, bbox.y0
-            w, h = bbox.width, bbox.height
-
-            def to_px_x(x: Any, _x0=x0, _w=w, _lim=xlim) -> Any:
-                return _x0 + (float(x) - _lim[0]) / (_lim[1] - _lim[0]) * _w
-
-            def to_px_y(y: Any, _y0=y0, _h=h, _lim=ylim) -> Any:
-                return _y0 + (float(y) - _lim[0]) / (_lim[1] - _lim[0]) * _h
-
-            if self._clip_points is None:
-                self._clip_points = ((x0, y0), (x0 + w, y0 + h))
-
-            for line in ax.get_lines():
-                spec = self._line_command(line, to_px_x, to_px_y)
-                if spec is not None:
-                    commands.append(spec)
-
-        if self.background_rgbface is not None:
-            background_rgba = _rgba8(self.background_rgbface)
-        return {
-            "width_px": int(width_px),
-            "height_px": int(height_px),
-            "output_dpi": float(output_dpi),
-            "commands": commands,
-            "background_rgba": list(background_rgba),
-        }
-
-    def _line_command(self, line, to_px_x, to_px_y):
-        name = type(line).__name__
-        if not isinstance(line, matplotlib.lines.Line2D):
-            self.unsupported("non-line artist reached rendering", name)
-            return None
-        xdata = list(line.get_xdata())
-        ydata = list(line.get_ydata())
-        if len(xdata) != len(ydata) or not xdata:
-            self.unsupported("mismatched or empty line data", name)
-            return None
-        vertices = [
-            [to_px_x(x), to_px_y(y)]
-            for x, y in zip(xdata, ydata)
-            if _finite(x) and _finite(y)
-        ]
-        if len(vertices) < 2:
-            self.unsupported("fewer than two finite points", name)
-            return None
-        stroke = _rgba8(line.get_color(), line.get_alpha())
-        cap = str(line.get_solid_capstyle())
-        join = str(line.get_solid_joinstyle())
-        if cap != "butt" or join != "miter":
-            # Stage one already rejected non-Butt/Miter effective styles
-            # (ADR-0015 §5); reaching here means the collector trace and
-            # static whitelist disagreed, which is an internal fault.
-            self.unsupported(
-                f"effective cap/join {cap!r}/{join!r} outside the fixed "
-                "strict-mode style set",
-                name,
-            )
-        # The validated rectangular clip, in top-left pixel space with
-        # exclusive right/bottom edges (frozen seam contract).
-        clip_rect: list[float] | None = None
-        if self._clip_points is not None:
-            (cx0, cy0), (cx1, cy1) = self._clip_points
-            left = min(cx0, cx1)
-            right = max(cx0, cx1)
-            bottom = min(cy0, cy1)
-            top = max(cy0, cy1)
-            clip_rect = [
-                float(left),
-                float(self._height_px - top),
-                float(right - left),
-                float(top - bottom),
-            ]
-        return {
-            "kind": "path",
-            "vertices": [[float(vx), float(vy)] for vx, vy in vertices],
-            "codes": None,
-            "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-            "stroke_rgba": list(stroke),
-            "line_width_pt": float(line.get_linewidth()),
-            "cap": cap,
-            "join": join,
-            "dash_offset_pt": 0.0,
-            "dashes": None,
-            "fill_rule": "nonzero",
-            "antialias": True,
-            "clip_rect": clip_rect,
-        }
 
 
 # ---------------------------------------------------------------------------
@@ -823,7 +330,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
             if dpi is None:
                 dpi = rc
         if dpi in (None, "figure"):
-            return float(getattr(self.figure, "_original_dpi", self.figure.dpi))
+            return float(self.figure.dpi)
         if isinstance(dpi, str):
             raise LumenPlotUnsupportedError(f"invalid dpi {dpi!r}")
         value = float(dpi)
@@ -885,7 +392,16 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
             try:
                 preflight = _EligibilityPreflight()
                 preflight.check_static(figure)
-                preflight.collect(figure)
+                # The collector needs the real canvas geometry up front:
+                # ``Text.draw`` consults the renderer's canvas size and
+                # display flip while laying out each label, so stale
+                # defaults here would misplace every anchor it reports.
+                preflight.collect(
+                    figure,
+                    width_px=width_px,
+                    height_px=height_px,
+                    dpi=output_dpi,
+                )
                 if preflight.reasons:
                     type_context, reason = preflight.reasons[0]
                     raise LumenPlotUnsupportedError(
@@ -908,6 +424,19 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
                     height_px=height_px,
                     output_dpi=output_dpi,
                 )
+                # Geometry assembly records its own refusals
+                # (``_line_command``: mismatched/empty data, fewer than
+                # two finite points -- LP-FUNC-034 fixtures exercise the
+                # all-non-finite row case). They must gate the render
+                # exactly like collector-stage reasons, still before any
+                # seam call.
+                if preflight.reasons:
+                    type_context, reason = preflight.reasons[0]
+                    raise LumenPlotUnsupportedError(
+                        f"unsupported content in strict mode: {reason}",
+                        type_context=type_context,
+                        generation=generation,
+                    )
             except LumenPlotUnsupportedError as error:
                 if error.generation is None:
                     error.generation = generation
@@ -1021,3 +550,10 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
 
 #: Class alias fixed by API 0005 §1 (backend module identity).
 FigureCanvas = FigureCanvasLumenPlot
+
+
+
+# Keep provisional public record identities anchored at the backend module.
+LumenPlotFallbackDiagnostic.__module__ = __name__
+LumenPlotPngResult.__module__ = __name__
+LumenPlotUnsupportedError.__module__ = __name__

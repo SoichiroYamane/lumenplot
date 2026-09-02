@@ -61,7 +61,9 @@ actions:
     release: v7.0.1
     source_ref: refs/tags/v7.0.1
     commit: 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-    used_by: []
+    used_by:
+      - .github/workflows/phase3a2-wheel.yml
+      - .github/workflows/phase3b-wheel-evidence.yml
     provenance_command: git ls-remote https://github.com/actions/upload-artifact.git refs/tags/v7.0.1
     observed_resolution: 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
     note: >-

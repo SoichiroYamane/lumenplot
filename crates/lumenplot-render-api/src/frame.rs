@@ -10,6 +10,9 @@
 
 use std::fmt;
 
+use crate::packet::{
+    DeviceGeneration, PacketValidationError, RenderPacket, RenderPacketBuilder, WorkGeneration,
+};
 use lumenplot_engine::bridge::{
     AxisScale, AxisScales, LineFrameSpec, LineStyle, LogicalRect, LogicalSize, PlotScene,
     SceneError as EngineSceneError, SceneErrorKind as EngineSceneErrorKind, SceneRevision,
@@ -18,6 +21,23 @@ use lumenplot_engine::bridge::{
 
 /// Maximum series per scene, mirroring the engine's frame-resolution cap.
 pub(crate) const MAX_FRAME_SERIES: usize = 65_536;
+/// Maximum width or height accepted by the process-local seam.
+pub(crate) const MAX_FRAME_DIMENSION: u32 = 16_384;
+/// Maximum canvas pixels accepted before any renderer-side allocation.
+pub(crate) const MAX_FRAME_PIXELS: usize = 16_777_216;
+
+/// Backend-neutral layout resolved from one engine snapshot.
+///
+/// This stays private to the render boundary. Interactive consumers and the
+/// internal packet validator read these facts from the same value instead of
+/// independently reconstructing canvas or clip geometry.
+#[derive(Clone, Copy)]
+pub(crate) struct ResolvedLayout {
+    pub(crate) canvas: LogicalSize,
+    pub(crate) plot_rect: LogicalRect,
+    pub(crate) logical_units_per_inch: f64,
+    pub(crate) background: SrgbRgba8,
+}
 
 /// Error shape for seam construction and scene resolution.
 ///
@@ -38,6 +58,13 @@ impl FrameSeamError {
     /// Sanitized human-readable description.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub(crate) fn from_packet_error(kind: FrameSeamErrorKind, message: &'static str) -> Self {
+        Self {
+            kind,
+            message: message.to_string(),
+        }
     }
 }
 
@@ -86,7 +113,7 @@ fn engine_error(error: &EngineSceneError) -> FrameSeamError {
 /// Guard mirrored from the engine's frame-resolution cap, factored out so the
 /// boundary stays testable without constructing tens of thousands of series.
 pub(crate) fn ensure_series_capacity(series_count: usize) -> Result<(), FrameSeamError> {
-    if series_count + 1 > MAX_FRAME_SERIES {
+    if series_count >= MAX_FRAME_SERIES {
         return Err(FrameSeamError {
             kind: FrameSeamErrorKind::CapacityExceeded,
             message: "capacity is exceeded".to_string(),
@@ -139,6 +166,30 @@ impl SceneHandle {
     /// Resolves the current scene state into a whole-packet immutable
     /// description under `spec`.
     pub fn resolve_frame(&self, spec: &FrameSpec) -> Result<FramePacket, FrameSeamError> {
+        let initial_work = WorkGeneration::initial();
+        let initial_device = DeviceGeneration::initial();
+        let builder = RenderPacketBuilder::new(initial_work, initial_device);
+        let packet = self
+            .resolve_render_packet(spec, &builder, initial_work, initial_device)
+            .map_err(PacketValidationError::into_frame_error)?;
+        Ok(packet.frame().clone())
+    }
+
+    /// Resolves a frame candidate and validates it for an internal renderer.
+    pub(crate) fn resolve_render_packet(
+        &self,
+        spec: &FrameSpec,
+        builder: &RenderPacketBuilder,
+        work_generation: WorkGeneration,
+        device_generation: DeviceGeneration,
+    ) -> Result<RenderPacket, PacketValidationError> {
+        let frame = self
+            .resolve_frame_candidate(spec)
+            .map_err(PacketValidationError::from_frame_error)?;
+        builder.build(frame, work_generation, device_generation)
+    }
+
+    fn resolve_frame_candidate(&self, spec: &FrameSpec) -> Result<FramePacket, FrameSeamError> {
         let snapshot = self.scene.snapshot();
         let frame = snapshot
             .resolve_line_frame(&spec.inner)
@@ -160,10 +211,14 @@ impl SceneHandle {
             revision: PacketRevision(snapshot.revision()),
             canvas_px: spec.canvas_px,
             dots_per_inch: spec.dots_per_inch,
-            canvas_logical: frame.canvas(),
-            plot_rect: frame.plot_rect(),
-            logical_units_per_inch: frame.logical_units_per_inch(),
-            background: frame.background(),
+            layout: ResolvedLayout {
+                canvas: frame.canvas(),
+                plot_rect: frame.plot_rect(),
+                logical_units_per_inch: frame.logical_units_per_inch(),
+                background: frame.background(),
+            },
+            line_color: spec.line_color,
+            line_width_px: spec.line_width_px,
             series,
         })
     }
@@ -190,6 +245,8 @@ pub struct FrameSpec {
     inner: LineFrameSpec,
     canvas_px: [u32; 2],
     dots_per_inch: f64,
+    line_color: SrgbRgba8,
+    line_width_px: f64,
 }
 
 impl FrameSpec {
@@ -214,6 +271,20 @@ impl FrameSpec {
             return Err(invalid_input(
                 "canvas must be at least one pixel wide and tall",
             ));
+        }
+        if width_px > MAX_FRAME_DIMENSION || height_px > MAX_FRAME_DIMENSION {
+            return Err(invalid_input("canvas exceeds the supported dimension"));
+        }
+        let pixel_count = usize::try_from(width_px)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height_px)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .ok_or_else(|| invalid_input("canvas exceeds the supported pixel count"))?;
+        if pixel_count > MAX_FRAME_PIXELS {
+            return Err(invalid_input("canvas exceeds the supported pixel count"));
         }
         let [x_min, y_min, x_max, y_max] = plot_rect_px;
         if x_min >= x_max || y_min >= y_max || x_max > width_px || y_max > height_px {
@@ -242,6 +313,8 @@ impl FrameSpec {
             inner,
             canvas_px,
             dots_per_inch,
+            line_color,
+            line_width_px,
         })
     }
 
@@ -262,14 +335,13 @@ impl FrameSpec {
 /// read-only input for their prepare / draw / present steps.
 #[derive(Clone)]
 pub struct FramePacket {
-    revision: PacketRevision,
-    canvas_px: [u32; 2],
-    dots_per_inch: f64,
-    canvas_logical: LogicalSize,
-    plot_rect: LogicalRect,
-    logical_units_per_inch: f64,
-    background: SrgbRgba8,
-    series: Vec<PacketSeries>,
+    pub(crate) revision: PacketRevision,
+    pub(crate) canvas_px: [u32; 2],
+    pub(crate) dots_per_inch: f64,
+    pub(crate) layout: ResolvedLayout,
+    pub(crate) line_color: SrgbRgba8,
+    pub(crate) line_width_px: f64,
+    pub(crate) series: Vec<PacketSeries>,
 }
 
 impl FramePacket {
@@ -290,22 +362,32 @@ impl FramePacket {
 
     /// Canvas size in logical units.
     pub fn canvas_logical(&self) -> LogicalSize {
-        self.canvas_logical
+        self.layout.canvas
     }
 
     /// Plot rectangle in logical units.
     pub fn plot_rect(&self) -> LogicalRect {
-        self.plot_rect
+        self.layout.plot_rect
     }
 
     /// Logical units-per-inch recorded on the resolved frame.
     pub fn logical_units_per_inch(&self) -> f64 {
-        self.logical_units_per_inch
+        self.layout.logical_units_per_inch
     }
 
     /// Fill color of the plot background.
     pub fn background(&self) -> SrgbRgba8 {
-        self.background
+        self.layout.background
+    }
+
+    /// Encoded straight-sRGB line color resolved for this frame.
+    pub fn line_color(&self) -> SrgbRgba8 {
+        self.line_color
+    }
+
+    /// Line width in display pixels resolved for this frame.
+    pub fn line_width_px(&self) -> f64 {
+        self.line_width_px
     }
 
     /// Resolved line series in display space.
@@ -317,7 +399,7 @@ impl FramePacket {
 /// One resolved line series in display space.
 #[derive(Clone, Default)]
 pub struct PacketSeries {
-    segments: Vec<PacketSegment>,
+    pub(crate) segments: Vec<PacketSegment>,
 }
 
 impl PacketSeries {
@@ -330,7 +412,7 @@ impl PacketSeries {
 /// One clipped polyline segment in display space.
 #[derive(Clone, Default)]
 pub struct PacketSegment {
-    points: Vec<PacketPoint>,
+    pub(crate) points: Vec<PacketPoint>,
 }
 
 impl PacketSegment {
@@ -343,8 +425,8 @@ impl PacketSegment {
 /// One display-space vertex.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PacketPoint {
-    x: f64,
-    y: f64,
+    pub(crate) x: f64,
+    pub(crate) y: f64,
 }
 
 impl PacketPoint {
@@ -413,6 +495,8 @@ mod tests {
         let packet = handle.resolve_frame(&fixture_spec()).expect("packet");
         assert_eq!(packet.canvas_px(), [CANVAS_W, CANVAS_H]);
         assert_eq!(packet.dots_per_inch(), 100.0);
+        assert!(packet.line_color() == SrgbRgba8::new(31, 119, 180, 255));
+        assert_eq!(packet.line_width_px(), 2.0);
         assert_eq!(packet.revision(), handle.revision());
         assert_eq!(packet.series().len(), 1);
         let total_points: usize = packet.series()[0]
@@ -435,6 +519,30 @@ mod tests {
         let first = packet.series()[0].segments()[0].points()[0];
         assert!((first.x() - 60.0).abs() < 1e-9);
         assert!((first.y() - 305.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn packet_exposes_one_resolved_logical_layout_to_consumers() {
+        let handle = fixture_handle();
+        let packet = handle.resolve_frame(&fixture_spec()).expect("packet");
+
+        assert_eq!(packet.canvas_logical().width(), f64::from(CANVAS_W));
+        assert_eq!(packet.canvas_logical().height(), f64::from(CANVAS_H));
+        assert_eq!(packet.plot_rect().x_min(), 60.0);
+        assert_eq!(packet.plot_rect().y_min(), 40.0);
+        assert_eq!(packet.plot_rect().x_max(), 780.0);
+        assert_eq!(packet.plot_rect().y_max(), 570.0);
+        assert_eq!(packet.logical_units_per_inch(), 1.0);
+        let background = packet.background();
+        assert_eq!(
+            (
+                background.r(),
+                background.g(),
+                background.b(),
+                background.a()
+            ),
+            (255, 255, 255, 255,)
+        );
     }
 
     #[test]
@@ -555,6 +663,9 @@ mod tests {
     fn series_capacity_boundary_matches_engine_cap() {
         ensure_series_capacity(MAX_FRAME_SERIES - 1).expect("just below cap");
         let error = ensure_series_capacity(MAX_FRAME_SERIES).expect_err("one past the cap");
+        assert_eq!(error.kind(), FrameSeamErrorKind::CapacityExceeded);
+        let error =
+            ensure_series_capacity(usize::MAX).expect_err("maximum count must not overflow");
         assert_eq!(error.kind(), FrameSeamErrorKind::CapacityExceeded);
     }
 

@@ -118,6 +118,104 @@ callback cause explicit unsupported handling in strict mode or whole-frame Agg
 fallback in hybrid mode. An axes-on fixture (patch/axis/tick/text/spine
 callbacks present) is a negative test fixture, never an eligible input.
 
+#### 4a. Decorated-axes amendment (PRAC-A-D lane, 2026-08-25)
+
+Amended by the accepted PRAC-A-D lane decision (parent workstream t_3339d0b5
+comment thread): a standard `Axes` with decorations enabled (`axison=True`)
+joins the eligible surface so that `LP-FUNC-003` axes decoration rendering
+works natively in this slice. The eligible collector grammar widens from the
+fixed trace above to its balanced-group form: after the figure background
+stroke, each axes group may contain balanced artist subgroups (the
+decoration surface and per-line `line2d` groups) whose only stroke events
+are `new_gc()` + `draw_path`. Any other renderer callback (text, markers,
+images, collections, quad mesh, Gouraud triangles) still raises through the
+unbound public `RendererBase` and maps to explicit unsupported handling —
+never a silent base-class no-op.
+
+The decorated surface rendered natively, per axes, ahead of that axes'
+content lines and clipped to its own rectangle:
+
+1. solid (`linestyle == '-'`, not dashed) visible major gridlines at
+   in-view major tick locations, one full-span segment per location;
+2. major tick strokes on each visible edge line, length
+   `markersize * dpi_eff / 72` px outward from the edge;
+3. visible spine edges of the axes rectangle, emitted with the §5 fixed
+   stroke surface (Butt cap, Miter join); spine width, color, alpha, and
+   visibility are honored, spine-local cap/join styles are normalized,
+   not approximated.
+
+Still outside the slice and refused with an explicit reason: any axes
+facecolor other than `'none'` (this slice emits no fill command), titles,
+axis labels, offset text, tick label text (the T-lane deliverable), visible
+minor tick lines or minor gridlines (major-only slice), non-solid gridline
+styles, subplotspec/gridspec child axes, and any non-exact `Axes` subclass.
+An undecorated fixture (`axison=False`) remains eligible unchanged.
+
+#### 4b. Legend amendment (PRAC-A-L lane, 2026-08-26)
+
+Amended by the accepted PRAC-A-L legend lane decision (2026-08-26): the
+standard `matplotlib.legend.Legend` attached to an eligible Axes joins the
+strict surface so that F-11 legend rendering works natively in this slice.
+Per LP-MPL-020 the whitelist entry, collector-trace expectation, style
+contract, and fixtures landed together.
+
+The eligible legend object is narrow by contract:
+
+- exactly `matplotlib.legend.Legend` (subclasses refuse), attached to a
+  standard `Axes` (`Legend.axes`); figure-level legends refuse;
+- single column (verified from the public legend layout geometry;
+  multi-column layouts refuse);
+- no shadow, no title text;
+- one or more entries, each pairing a plain `Line2D` handle with a visible
+  non-empty label; every other handle type refuses;
+- each handle re-checks through the fixed line stroke surface
+  (`_check_line2d_static`: butt cap, miter join, solid, no markers, default
+  drawstyle — the legend never relaxes its owner's style contract);
+- each label re-checks through the tick-label text contract plus a positive
+  font-size guard (no math/TeX, no path effects, no leading/trailing
+  whitespace, no newlines).
+
+The collector grammar widens accordingly. Since the LP-FUNC-035 D2
+amendment (interleaved class-mixed acceptance, order-free axes body) the
+axes group carries no whole-trace ordering to widen; the legend's own
+group structure is what matters: one balanced `legend` group inside the
+axes group containing (frame-on legends) one `patch` group carrying the
+rounded frame outline and (per entry, in draw order) one `line2d` group
+with the proxy handle stroke and one `text` group whose `draw_text`
+callback must match the statically enumerated legend label queue. Legend
+geometry provenance:
+Matplotlib's own `Legend.draw` layout executes under the collector and hands
+over display-space geometry — the frame path arrives already transformed to
+display pixels (the collector records its affine flag), and each handle
+stroke arrives in handlebox-local coordinates with its layout affine, which
+the adapter applies explicitly. The adapter never re-derives legend layout
+algebra from getters; drift between static enumeration and the live stream
+refuses through the existing label cross-check.
+
+Rendered commands, ordered by the compositing contract below (LP-FUNC-035
+D1): the frame outline and handle strokes ride as one bundle at the
+`Legend` artist's real public zorder inside the axes' single stable sort —
+exactly where Matplotlib paints the legend relative to decorations and
+content lines (default zorder 5 paints above default content; negative
+content zorders sink below it):
+
+1. the frame outline as one filled+stroked path command (`decoration:
+   "legend_frame"`): facecolor from the collected patch face, edge color /
+   width / alpha from the collected graphics context, identity transform,
+   full-canvas clip. This is the slice's only sanctioned curved outline
+   (`BoxStyle.Round` MOVETO/LINETO/CURVE3/CLOSEPOLY); other code sets, a
+   polygonal frame, hatching, dashes, sketch, or path effects refuse;
+2. one polyline per handle (`decoration: "legend_handle"`) with the §5
+   stroke surface resolved from the collected graphics context;
+3. one glyph-path command per entry label via the public `textpath`
+   module (`decoration: "legend_label"`), identical route to tick labels.
+
+Still outside the slice and refused with an explicit reason: figure-level
+legends, legend subclasses, multi-column layouts, shadows, titles,
+non-`Line2D` handles, handles violating the stroke contract, empty legends,
+unsupported label text, and any legend on axes whose projection is
+unsupported by this slice.
+
 ### 5. Fixed-style guards, no approximation (hazard 5)
 
 The native request supports exactly the Phase-2 private frame style surface:

@@ -267,6 +267,72 @@ class TestRenderPng(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Figure background reaches the native seam (API 0005 §6, D2 fix lane)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestSpecBackgroundRgba(unittest.TestCase):
+    """The spec must carry the collected figure facecolor as RGBA.
+
+    The adapter collects one figure-background ``draw_path`` whose
+    ``rgbFace`` is the effective figure RGBA (ADR 0015 §6) and sends it as
+    ``background_rgba``; the native seam seeds its canvas with it. Before
+    the D2 fix the key was silently dropped and strict-mode output lost
+    the figure background entirely.
+    """
+
+    def setUp(self):
+        self._patcher = _install_stub_native()
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def test_default_figure_facecolor_reaches_spec_as_opaque_white(self):
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        self.assertIn("background_rgba", spec)
+        self.assertEqual(list(spec["background_rgba"]), [255, 255, 255, 255])
+
+    def test_explicit_facecolor_is_converted_to_rgba8(self):
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        fig.set_facecolor((0.5, 0.8, 0.25))
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        self.assertEqual(
+            list(spec["background_rgba"]),
+            [128, 204, 64, 255],
+        )
+
+    def test_transparent_figure_facecolor_is_unsupported_strict(self):
+        """A fully transparent figure patch never yields an rgbFace.
+
+        Matplotlib skips the fill entirely, so the collector sees no filled
+        background ``draw_path`` and strict mode rejects the frame before
+        any spec exists. Alpha-0 seed canonicalization itself is pinned
+        Rust-side (``transparent_background_stays_canonical_zero_rgb``).
+        """
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        fig.set_facecolor((1.0, 0.0, 0.0, 0.0))
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
+            canvas.render_png()
+
+    def test_background_rgba_channels_are_ints_in_range(self):
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        channels = list(spec["background_rgba"])
+        self.assertEqual(len(channels), 4)
+        for channel in channels:
+            self.assertIsInstance(channel, int)
+            self.assertGreaterEqual(channel, 0)
+            self.assertLessEqual(channel, 255)
+
+
+# ---------------------------------------------------------------------------
 # Effective savefig DPI and fractional-figsize geometry matrix (API 0005 §5/§6)
 # ---------------------------------------------------------------------------
 
@@ -461,6 +527,235 @@ class TestStructuralParity(unittest.TestCase):
 
 
 @unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestDecoratedAxesSpec(unittest.TestCase):
+    """Spec-level geometry of the decoration path commands (PRAC-A-D).
+
+    These tests pin the adapter's public-getter geometry contract: tick and
+    spine endpoints are computed from documented getters exactly as an
+    independent reimplementation would compute them.
+    """
+
+    def setUp(self):
+        self._patcher = _install_stub_native()
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def _render(self, build, figsize=(2.0, 1.0)):
+        fig = figure.Figure(figsize=figsize, dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.set_facecolor("none")  # no axes fill in this slice
+        # Tick label glyphs are the T-lane deliverable.
+        ax.tick_params(labelbottom=False, labelleft=False)
+        ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
+        build(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        return fig, ax, spec
+
+    @staticmethod
+    def _deco_commands(spec):
+        return [c for c in (spec["commands"] or []) if "decoration" in c]
+
+    @staticmethod
+    def _grid_commands(spec):
+        return [c for c in TestDecoratedAxesSpec._deco_commands(spec)
+                if c["decoration"] == "gridline"]
+
+    def test_command_order_and_line_last(self):
+        """Default-zorder axes keep gridline/tick strokes below content.
+
+        LP-FUNC-035 (D1): the spec reproduces Agg's ``Axes.draw``
+        z-order. At the default surface the Axis unit's decorations
+        (solid major gridlines, major tick strokes) still precede every
+        default content line, while spine edges (zorder 2.5) legitimately
+        paint above them -- exactly as Agg composes this fixture.
+        """
+        _, _, spec = self._render(lambda ax: ax.grid(True))
+        commands = spec["commands"] or []
+        axis_deco_idx = [
+            i for i, c in enumerate(commands)
+            if c.get("decoration") in ("gridline", "tick")
+        ]
+        line_idx = [i for i, c in enumerate(commands)
+                    if "decoration" not in c]
+        self.assertTrue(axis_deco_idx)
+        self.assertTrue(line_idx)
+        self.assertLess(max(axis_deco_idx), min(line_idx))
+        # Spines ride their real zorder above default content lines.
+        spine_idx = [i for i, c in enumerate(commands)
+                     if c.get("decoration") == "spine"]
+        self.assertTrue(spine_idx)
+        self.assertGreater(min(spine_idx), max(line_idx))
+
+    def test_grid_geometry_matches_public_getters(self):
+        """Gridline endpoints equal the public window-extent computation."""
+        import numpy as np
+
+        fig, ax, spec = self._render(
+            lambda ax: ax.grid(True, color="#123456", linewidth=1.5)
+        )
+        bbox = ax.get_window_extent()
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        grids = self._grid_commands(spec)
+        # One vertical line per in-view major x tick plus one horizontal
+        # line per in-view major y tick (which='major' slice).
+        xlocs = [float(x) for x in ax.xaxis.get_ticklocs()
+                 if xlim[0] <= float(x) <= xlim[1]]
+        ylocs = [float(y) for y in ax.yaxis.get_ticklocs()
+                 if ylim[0] <= float(y) <= ylim[1]]
+        self.assertEqual(len(grids), len(xlocs) + len(ylocs))
+
+        def px(x):
+            return bbox.x0 + (x - xlim[0]) / (xlim[1] - xlim[0]) * bbox.width
+
+        def py(y):
+            return bbox.y0 + (y - ylim[0]) / (ylim[1] - ylim[0]) * bbox.height
+
+        expected = set()
+        for x in xlocs:
+            expected.add((round(px(x), 9), round(bbox.y0, 9),
+                          round(px(x), 9), round(bbox.y1, 9)))
+        for y in ylocs:
+            expected.add((round(bbox.x0, 9), round(py(y), 9),
+                          round(bbox.x1, 9), round(py(y), 9)))
+        got = set()
+        for c in grids:
+            v = c["vertices"]
+            self.assertEqual(len(v), 2)
+            got.add((round(v[0][0], 9), round(v[0][1], 9),
+                     round(v[1][0], 9), round(v[1][1], 9)))
+        self.assertEqual(len(got), len(grids))  # no duplicated commands
+        self.assertEqual(got, expected)
+        for c in grids:
+            self.assertEqual(c["stroke_rgba"], [0x12, 0x34, 0x56, 255])
+            self.assertEqual(c["line_width_pt"], 1.5)
+            self.assertIsNotNone(c["clip_rect"])
+
+    def test_tick_geometry_matches_public_getters(self):
+        """Bottom/left major ticks: outward length pt -> px at edges."""
+        import numpy as np
+
+        fig, ax, spec = self._render(lambda ax: None)
+        dpi_scale = fig.dpi / 72.0
+        bbox = ax.get_window_extent()
+        height_px = fig.bbox.height
+        ticks = [c for c in self._deco_commands(spec)
+                 if c["decoration"] == "tick"]
+        # Default rc: bottom and left only.
+        self.assertGreater(len(ticks), 0)
+        for c in ticks:
+            v = c["vertices"]
+            self.assertEqual(len(v), 2)
+            self.assertEqual(c["cap"], "butt")
+            # Ticks protrude outside the axes rectangle, so their clip is
+            # the full canvas (Agg does not clip tick marks either).
+            self.assertEqual(c["clip_rect"][0], 0.0)
+        # Every tick touches an axes edge; the other endpoint sits
+        # length_pt * dpi/72 pixels away along x or y (outward).
+        for c in ticks:
+            (x0, y0), (x1, y1) = c["vertices"]
+            on_edge = (
+                abs(y0 - bbox.y0) < 1e-6 or abs(y0 - bbox.y1) < 1e-6
+                or abs(x0 - bbox.x0) < 1e-6 or abs(x0 - bbox.x1) < 1e-6
+            )
+            self.assertTrue(on_edge, f"tick not anchored: {c['vertices']}")
+            dx, dy = abs(x1 - x0), abs(y1 - y0)
+            self.assertTrue(
+                (dx > 0) != (dy > 0), f"tick not axis-aligned: {c['vertices']}"
+            )
+            length = dx or dy
+            self.assertAlmostEqual(length, 3.5 * dpi_scale, places=6)
+
+    def test_spine_commands_cover_the_axes_rectangle(self):
+        """Visible default spines draw the four rectangle edges exactly."""
+        fig, ax, spec = self._render(lambda ax: None)
+        bbox = ax.get_window_extent()
+        height_px = fig.bbox.height
+        spines = [c for c in self._deco_commands(spec)
+                  if c["decoration"] == "spine"]
+        self.assertEqual(len(spines), 4)
+        edges = set()
+        for c in spines:
+            v = c["vertices"]
+            self.assertEqual(len(v), 2)
+            self.assertEqual(c["cap"], "butt")
+            self.assertEqual(c["join"], "miter")
+            self.assertEqual(c["clip_rect"], [
+                bbox.x0, height_px - bbox.y1,
+                bbox.width, bbox.height,
+            ])
+            (x0, y0), (x1, y1) = v
+            edges.add((round(x0, 6), round(y0, 6),
+                       round(x1, 6), round(y1, 6)))
+        expected = {
+            (bbox.x0, bbox.y0, bbox.x1, bbox.y0),      # bottom
+            (bbox.x0, bbox.y1, bbox.x1, bbox.y1),      # top
+            (bbox.x0, bbox.y0, bbox.x0, bbox.y1),      # left
+            (bbox.x1, bbox.y0, bbox.x1, bbox.y1),      # right
+        }
+        normalized = {
+            tuple(sorted([(e[0], e[1]), (e[2], e[3])]))
+            for e in edges
+        }
+        expected_normalized = {
+            tuple(sorted([(x0, y0), (x1, y1)]))
+            for (x0, y0, x1, y1) in expected
+        }
+        self.assertEqual(normalized, expected_normalized)
+
+    def test_two_axes_figure_groups_decorations_per_axes(self):
+        """A 2x1 figure emits two axes groups; decorations stay clipped to
+        their own axes rectangle and precede their own lines."""
+        fig = figure.Figure(figsize=(2.0, 2.0), dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        ax0 = fig.add_axes([0.1, 0.55, 0.8, 0.35])
+        ax1 = fig.add_axes([0.1, 0.1, 0.8, 0.35])
+        for ax in (ax0, ax1):
+            ax.set_facecolor("none")  # no axes fill in this slice
+            # Tick label glyphs are the T-lane deliverable.
+            ax.tick_params(labelbottom=False, labelleft=False)
+            ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
+            ax.grid(True)
+            ax.set_xlim(0.0, 10.0)
+            ax.set_ylim(0.0, 5.0)
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None and spec["commands"] is not None
+
+        clips = []
+        for c in spec["commands"]:
+            clip = c["clip_rect"]
+            self.assertIsNotNone(clip)
+            # Tick strokes carry the canvas clip; everything else carries
+            # its own axes rectangle.
+            if c.get("decoration") == "tick":
+                continue
+            clips.append((clip[0], clip[1]))
+        # Each axes' commands share its own clip origin; the two origins differ.
+        unique = sorted(set(clips))
+        self.assertEqual(len(unique), 2)
+        # LP-FUNC-035 (D1): each axes' Axis-unit decorations (gridline,
+        # tick) still precede its default content lines, while spine
+        # edges (zorder 2.5) paint above them per Agg's z-order.
+        axis_deco_idx = [
+            i for i, c in enumerate(spec["commands"])
+            if c.get("decoration") in ("gridline", "tick")
+        ]
+        line_idx = [i for i, c in enumerate(spec["commands"])
+                    if "decoration" not in c]
+        self.assertLess(max(axis_deco_idx[: len(axis_deco_idx) // 2]),
+                        min(line_idx[: len(line_idx) // 2]))
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
 class TestStrictUnsupported(unittest.TestCase):
     """Strict mode: unsupported features must NOT silently render."""
 
@@ -477,16 +772,25 @@ class TestStrictUnsupported(unittest.TestCase):
         ax.set_ylim(0.0, 5.0)
         return canvas
 
-    def test_axes_decorations_unsupported(self):
+    def test_decorated_axes_are_strict_eligible(self):
+        """A plain axison=True axes is accepted since the PRAC-A-D contract
+        amendment (ADR 0015 §4): spines, major ticks, and solid major
+        gridlines render natively as path commands (LP-FUNC-003).
+        The lane contract renders no axes background fill and no tick label
+        text, so the eligible fixture carries ``facecolor='none'`` and
+        label-less ticks."""
         fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
         canvas = backend_mod.FigureCanvasLumenPlot(fig)
-        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])  # axison stays True
-        ax.add_line(Line2D([0, 1], [0, 1]))
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])  # decorations on (default)
+        ax.set_facecolor("none")
+        ax.tick_params(labelbottom=False, labelleft=False)
+        ax.add_line(Line2D([0, 1], [0, 1], color="red", linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
         ax.set_xlim(0, 10)
         ax.set_ylim(0, 5)
-        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
-            canvas.render_png()
-        self.assertEqual(ctx.exception.code, "unsupported-capability")
+        result = canvas.render_png()
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        self.assertEqual(result.diagnostics, ())
 
     def test_dashed_line_unsupported(self):
         canvas = self._canvas_with(
@@ -503,11 +807,22 @@ class TestStrictUnsupported(unittest.TestCase):
             canvas.render_png()
 
     def test_drawstyle_unsupported(self):
-        canvas = self._canvas_with(
-            lambda ax: ax.add_line(Line2D([0, 1], [0, 1], drawstyle="steps-pre"))
-        )
+        """Non-whitelisted drawstyles stay refused. Since LP-FUNC-034 the
+        step family (steps-pre/post/mid + the ``steps`` alias) is eligible
+        via exact vertex generation (test_phase3b_steps.py), so this
+        negative pins a value outside that family. Line2D validates
+        spellings at construction; the unknown value is injected through
+        the private attribute backing ``get_drawstyle()``."""
+        canvas = self._canvas_with(self._build_unknown_drawstyle)
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
             canvas.render_png()
+
+    @staticmethod
+    def _build_unknown_drawstyle(ax):
+        # Inject after add_line: Axes autolim walks the expanded path,
+        # so the unknown drawstyle must not exist yet.
+        ax.add_line(Line2D([0, 1], [0, 1], color="red"))
+        ax.lines[0]._drawstyle = "steps-diagonal"
 
     def test_text_unsupported(self):
         def build(ax):
@@ -521,12 +836,297 @@ class TestStrictUnsupported(unittest.TestCase):
         """Strict failure must raise even though Agg is importable."""
         fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
         canvas = backend_mod.FigureCanvasLumenPlot(fig)
-        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])  # decorations on
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.set_facecolor("0.9")  # axes background outside the whitelist
         ax.add_line(Line2D([0, 1], [0, 1]))
         ax.set_xlim(0, 10)
         ax.set_ylim(0, 5)
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
             fig.savefig(io.BytesIO(), format="png")
+
+
+# ---------------------------------------------------------------------------
+# Decorated axes: spines / major ticks / major gridlines (PRAC-A-D,
+# ADR 0015 §4 amendment, LP-FUNC-003)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestDecoratedAxesEligibility(unittest.TestCase):
+    """Static whitelist surface of the decorated-axes amendment."""
+
+    def _canvas_with(self, build, figsize=(2.0, 1.0)):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        fig = figure.Figure(figsize=figsize, dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        build(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        return canvas
+
+    @staticmethod
+    def _plain_line(ax):
+        ax.set_facecolor("none")  # no axes fill in this slice
+        # Tick label glyphs became eligible with the PRAC-A-W wire-up;
+        # this fixture keeps them off so the class pins the stroke-only
+        # surface independently of the text lane.
+        ax.tick_params(labelbottom=False, labelleft=False)
+        ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
+
+    def test_decorated_axes_render_strict(self):
+        """AC (a): a default decorated axes is strict-eligible."""
+        canvas = self._canvas_with(self._plain_line)
+        result = canvas.render_png()
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        self.assertEqual(result.diagnostics, ())
+
+    def test_decorated_axes_render_hybrid_without_diagnostic(self):
+        """The decorated path is native, so hybrid must not fall back."""
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="hybrid")
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        self._plain_line(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        spec = _StubNativeModule.last_spec
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec["commands"])
+
+    def test_minor_ticks_unsupported(self):
+        """AC (b): any visible minor tick content is explicitly refused."""
+        def build(ax):
+            self._plain_line(ax)
+            ax.minorticks_on()
+
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+            self._canvas_with(build).render_png()
+        self.assertIn("minor tick", str(ctx.exception))
+
+    def test_minor_gridlines_unsupported(self):
+        """Minor gridlines are outside the which='major' slice."""
+        def build(ax):
+            self._plain_line(ax)
+            ax.minorticks_on()
+            ax.grid(True, which="minor")
+
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
+            self._canvas_with(build).render_png()
+
+    def test_non_solid_gridline_style_unsupported(self):
+        """AC (c): non-solid major grid linestyle is explicitly refused."""
+        def build(ax):
+            self._plain_line(ax)
+            ax.grid(True, linestyle="--")
+
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+            self._canvas_with(build).render_png()
+        self.assertIn("solid", str(ctx.exception))
+
+    def test_axes_background_patch_unsupported(self):
+        """AC (d): an axes facecolor other than 'none' is refused."""
+        def build(ax):
+            self._plain_line(ax)
+            ax.set_facecolor("lightblue")
+
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+            self._canvas_with(build).render_png()
+        self.assertIn("background", str(ctx.exception))
+
+    def test_hidden_spines_are_not_drawn_but_visible_ones_are(self):
+        """Hiding all spines stays eligible; the spec then carries no
+        spine commands (visibility is honored per spine)."""
+        def build(ax):
+            for side in ax.spines:
+                ax.spines[side].set_visible(False)
+            self._plain_line(ax)
+
+        canvas = self._canvas_with(build)
+        result = canvas.render_png()
+        commands = _StubNativeModule.last_spec["commands"]
+        self.assertIsNotNone(commands)
+        kinds = [c.get("decoration") for c in commands]
+        self.assertNotIn("spine", kinds)
+        self.assertEqual(result.diagnostics, ())
+
+    def test_tick_label_text_is_still_unsupported(self):
+        """Titles/axis labels stay outside the strict slice: text support is
+        scoped to tick label glyphs (the PRAC-A-W wire-up), so a title must
+        not silently disappear."""
+        def build(ax):
+            self._plain_line(ax)
+            ax.set_title("hello")
+
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
+            self._canvas_with(build).render_png()
+
+
+# ---------------------------------------------------------------------------
+# Tick label wire-up (PRAC-A-W, ADR 0015 §4a + T-lane deliverable)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestTickLabelWireUp(unittest.TestCase):
+    """End-to-end behavior of the tick-label text lane.
+
+    Eligibility: a default decorated axes with visible major tick labels
+    renders natively; labels become ``kind: "path"`` glyph commands built
+    by the public T-lane module. Unsupported text surfaces keep refusing.
+    """
+
+    def _canvas_with(self, build, figsize=(2.0, 1.0), **canvas_kwargs):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        fig = figure.Figure(figsize=figsize, dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, **canvas_kwargs)
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        self._axes_created = [ax]
+        build(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        return canvas
+
+    def _visible_labels(self):
+        """Public-API expectation: the non-empty visible major labels."""
+        labels = []
+        for ax in getattr(self, "_axes_created", []):
+            for axis in (ax.xaxis, ax.yaxis):
+                for label in axis.get_majorticklabels():
+                    if label.get_visible() and label.get_text() != "":
+                        labels.append(label.get_text())
+        return labels
+
+    @staticmethod
+    def _labeled_line(ax):
+        ax.set_facecolor("none")
+        ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
+
+    def test_decorated_axes_with_labels_render_strict(self):
+        """AC (a): a default decorated axes carrying visible tick labels is
+        strict-eligible end to end."""
+        canvas = self._canvas_with(self._labeled_line)
+        result = canvas.render_png()
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        self.assertEqual(result.diagnostics, ())
+        self.assertEqual(canvas.last_diagnostics, ())
+
+    def test_tick_label_commands_present_in_spec(self):
+        """AC (b): each visible label contributes one frozen-seam path
+        command whose fill surface matches the T-lane contract."""
+        canvas = self._canvas_with(self._labeled_line)
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        commands = _StubNativeModule.last_spec["commands"]
+        self.assertIsNotNone(commands)
+        paths = [c for c in commands if c.get("kind") == "path"
+                 and c.get("fill_rgba") is not None
+                 and c.get("stroke_rgba") is None]
+        self.assertTrue(paths, "no filled glyph path commands in spec")
+        for command in paths:
+            self.assertEqual(command["fill_rgba"], [0, 0, 0, 255])
+            self.assertIsNone(command["stroke_rgba"])
+            self.assertEqual(command["line_width_pt"], 0.0)
+            self.assertEqual(command["cap"], "butt")
+            self.assertEqual(command["join"], "miter")
+            self.assertIsNone(command["dashes"])
+            self.assertEqual(
+                command["transform"], [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+            )
+        # Default x ticks are 0/5/10 and y ticks 0/1..5 -> eight labels,
+        # each contributing exactly one whole-outline path command.
+        self.assertEqual(len(paths), len(self._visible_labels()))
+        # Placement: the frozen seam's vertex frame is bottom-left origin
+        # (the seam applies its own display flip), so x-axis label ink must
+        # sit BELOW the axes rectangle in that frame. This band geometry
+        # pins the anchor pipeline against sign flips the stub seam itself
+        # cannot observe.
+        for command in paths:
+            ys = [v[1] for v in command["vertices"]]
+            xs = [v[0] for v in command["vertices"]]
+            if all(x < 18.0 for x in xs):
+                # A y-axis label: entirely left of the axes edge.
+                self.assertGreater(min(ys), 0.0)
+            else:
+                # An x-axis label: entirely below the axes bottom edge
+                # (seam y = 10 for this fixture); an unflipped top-left
+                # regression lands these near y >= 90 instead.
+                self.assertLess(
+                    max(ys),
+                    12.0,
+                    f"label misplaced: {command['vertices'][:3]}",
+                )
+
+
+    def test_hybrid_label_axes_fall_back_with_one_diagnostic(self):
+        """AC (c): while any part of a labeled decorated axes is outside the
+        strict slice, hybrid mode must not render it natively: the attempt
+        fails unsupported and falls back to one whole-frame Agg diagnostic."""
+        canvas = self._canvas_with(
+            lambda ax: (
+                ax.set_facecolor("none"),
+                ax.add_line(Line2D([0, 10], [0, 5], linestyle="--")),
+            ),
+            mode="hybrid",
+        )
+        result = canvas.render_png()
+        self.assertEqual(len(result.diagnostics), 1)
+        diagnostic = result.diagnostics[0]
+        self.assertEqual(diagnostic.kind, "unsupported-capability")
+        self.assertEqual(diagnostic.scope, "whole-frame")
+        self.assertEqual(diagnostic.representation, "raster")
+        self.assertEqual(diagnostic.fallback_type, "matplotlib-agg")
+
+    def test_minor_ticks_with_labels_unsupported(self):
+        """AC (d): enabling minor ticks keeps the frame explicitly refused;
+        strict support covers major tick labels only."""
+
+        def build(ax):
+            self._labeled_line(ax)
+            ax.minorticks_on()
+
+        fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        build(ax)
+        ax.set_xlim(0, 10)
+        ax.set_ylim(0, 5)
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+            canvas.render_png()
+        message = str(ctx.exception)
+        self.assertTrue(
+            ("minor" in message) or ("tick" in message),
+            f"diagnostic lost the unsupported reason: {message!r}",
+        )
+
+    def test_two_axes_labels_render_strict_per_axes(self):
+        """AC (e): two stacked decorated axes with labels render natively;
+        every axes' labels appear in the shared spec."""
+        def build(ax):
+            self._labeled_line(ax)
+            ax.set_xticks([0, 10])
+            ax.set_yticks([0, 5])
+
+        canvas = self._canvas_with(build, figsize=(2.0, 2.0))
+        result = canvas.render_png()
+        self.assertEqual(result.diagnostics, ())
+        commands = _StubNativeModule.last_spec["commands"]
+        paths = [c for c in commands if c.get("kind") == "path"
+                 and c.get("fill_rgba") is not None]
+        # Both stacked axes keep default label visibility, so the shared
+        # spec carries every visible label of every created axes.
+        self.assertEqual(len(paths), len(self._visible_labels()))
+        self.assertGreaterEqual(len(paths), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -1082,6 +1682,17 @@ class TestStrokeWidths(unittest.TestCase):
         if not hasattr(_native, "render_frame_png"):
             self.skipTest("render_frame_png not present yet")
 
+        def has_red_influence(pixel: bytes) -> bool:
+            """Any pixel the red stroke visibly tinted.
+
+            With the opaque white canvas seed (D2 fix) a thin stroke never
+            reaches full pixel coverage, so blends run toward white and a
+            pure-red predicate would miss them; red-dominance survives at
+            every positive coverage.
+            """
+            r, g, b = pixel[0], pixel[1], pixel[2]
+            return bool(r > g and r > b)
+
         covered_rows = {}
         for width_pt in (0.5, 1.0, 2.0):
             fig, canvas = _eligible_canvas(
@@ -1099,16 +1710,21 @@ class TestStrokeWidths(unittest.TestCase):
             result = canvas.render_png()
             del fig, canvas
             _, height, rows = _decode_rgba8(result.png_bytes)
-            # Alpha-weighted coverage of one mid column: proportional to
-            # physical thickness and strictly growing, because each wider
+            # Ink-weighted coverage of one mid column. With the opaque
+            # white canvas seed (D2 fix) every pixel is alpha-saturated,
+            # so the historical alpha sum cannot discriminate widths;
+            # the pure-red stroke over white shows up as a green-channel
+            # deficit proportional to physical thickness, and each wider
             # stroke contains the narrower one around the same centerline.
             mid_x = 50
-            coverage = sum(rows[y][mid_x * 4 + 3] for y in range(height))
+            coverage = sum(
+                255 - rows[y][mid_x * 4 + 1] for y in range(height)
+            )
             self.assertGreater(coverage, 0,
                                f"no stroke ink at {width_pt} pt")
             ys = [
                 y for y in range(height)
-                if _is_red(rows[y][mid_x * 4:mid_x * 4 + 4])
+                if has_red_influence(rows[y][mid_x * 4:mid_x * 4 + 4])
             ]
             self.assertTrue(ys, f"no opaque ink at {width_pt} pt")
             # All ink stays within the axes band around the mid row.
@@ -1411,6 +2027,47 @@ class TestHybridFallback(unittest.TestCase):
         # The temporary Agg canvas is restored even after success.
         self.assertIs(canvas.figure, fig)
         self.assertIs(fig.canvas, canvas)
+
+    def test_fallback_resolves_dpi_none_through_savefig_rcparam(self):
+        # ADR-0015 §6 / API 0005 §5: ``dpi=None`` resolves through
+        # rcParams ``savefig.dpi`` for BOTH delivery paths, so a numeric rc
+        # value must drive the whole-frame Agg fallback pixel size exactly
+        # like it drives the native strict geometry (mirrors the strict-side
+        # ``test_dpi_none_uses_numeric_savefig_rcparam``).
+        def build(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        with matplotlib.rc_context({"savefig.dpi": 300.0}):
+            fig, canvas = _hybrid_canvas_with(
+                build, figsize=(2.0, 1.0), dpi=100
+            )
+            result = canvas.render_png()
+        # 2x1 inches at the effective 300 dpi -- not the figure dpi.
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (600, 300))
+        self.assertEqual(len(result.diagnostics), 1)
+        del fig
+
+    def test_fallback_chains_figure_rcparam_to_original_dpi(self):
+        # ``savefig.dpi='figure'`` chains through the figure's original
+        # construction DPI on the fallback path as well, never through any
+        # temporary render state (mirrors the strict-side
+        # ``test_dpi_none_chains_figure_rcparam_to_original_dpi``).
+        def build(ax):
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        with matplotlib.rc_context({"savefig.dpi": "figure"}):
+            fig, canvas = _hybrid_canvas_with(
+                build, figsize=(2.0, 1.0), dpi=175
+            )
+            result = canvas.render_png()
+        # 2x1 inches at the original figure DPI of 175.
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (350, 175))
+        self.assertEqual(len(result.diagnostics), 1)
+        del fig
 
     def test_print_figure_uses_fallback_in_hybrid_mode(self):
         def build(ax):

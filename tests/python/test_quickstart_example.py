@@ -119,7 +119,7 @@ class QuickstartStructureTests(unittest.TestCase):
         # off, butt caps, miter joins, and none of the elements strict mode
         # rejects (titles/text/markers/dashes).
         source = QUICKSTART.read_text(encoding="utf-8")
-        self.assertIn("axison = False", source)
+        self.assertIn("set_axis_off()", source)
         self.assertIn('solid_capstyle="butt"', source)
         self.assertIn('solid_joinstyle="miter"', source)
         for forbidden in ("set_title", ".text(", "marker=", "linestyle"):
