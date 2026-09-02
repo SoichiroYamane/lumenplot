@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -13,6 +14,9 @@ from pathlib import Path
 from typing import Any
 
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
+WGPU_LOCK_SHA256 = "719d1f74b4681242f44ba01942fbc80b1cce40846798548845740e4b15ce1769"
+WGPU_PACKAGE_VERSION = "29.0.4"
+WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
 
 EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
     "adler2": {
@@ -49,7 +53,7 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "version": "1.25.2",
         "checksum": "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797",
         "license": "Zlib OR Apache-2.0 OR MIT",
-        "dependencies": set(),
+        "dependencies": {"bytemuck_derive"},
     },
     "cfg-if": {
         "version": "1.0.4",
@@ -127,7 +131,7 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "version": "0.2.19",
         "checksum": "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841",
         "license": "MIT OR Apache-2.0",
-        "dependencies": {"autocfg"},
+        "dependencies": {"autocfg", "libm"},
     },
     # B2-P Metal prototype lane (workstream-manager decision on task
     # t_50138c06): transitive closure of the macOS-target-gated objc2 edges
@@ -161,19 +165,19 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "version": "0.3.2",
         "checksum": "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272",
         "license": "MIT",
-        "dependencies": {"objc2", "objc2-core-foundation"},
+        "dependencies": {"bitflags", "objc2", "objc2-core-foundation"},
     },
     "objc2-metal": {
         "version": "0.3.2",
         "checksum": "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794",
         "license": "Zlib OR Apache-2.0 OR MIT",
-        "dependencies": {"objc2", "objc2-foundation"},
+        "dependencies": {"bitflags", "objc2", "objc2-foundation"},
     },
     "numpy": {
         "version": "0.29.0",
         "checksum": "6a5b15d63a5ff39e378daed0e1340d3a5964703ea9712eb09a0dc66fade996f4",
         "license": "BSD-2-Clause",
-        "dependencies": {"libc", "ndarray", "num-complex", "num-integer", "num-traits", "pyo3", "pyo3-build-config", "rustc-hash"},
+        "dependencies": {"libc", "ndarray", "num-complex", "num-integer", "num-traits", "pyo3", "pyo3-build-config", "rustc-hash 2.1.3"},
     },
     "once_cell": {
         "version": "1.21.4",
@@ -227,13 +231,13 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "version": "0.29.2",
         "checksum": "73225868fc1cd84eef2c3c230ddb91273bf1de46aeb8a4248da76d32a0924a1c",
         "license": "MIT OR Apache-2.0",
-        "dependencies": {"proc-macro2", "pyo3-macros-backend", "quote", "syn"},
+        "dependencies": {"proc-macro2", "pyo3-macros-backend", "quote", "syn 2.0.119"},
     },
     "pyo3-macros-backend": {
         "version": "0.29.2",
         "checksum": "571575aa3749fa6216757dd47d2a3e7ef360f329a40f0666a9fbd14889024952",
         "license": "MIT OR Apache-2.0",
-        "dependencies": {"heck", "proc-macro2", "quote", "syn"},
+        "dependencies": {"heck", "proc-macro2", "quote", "syn 2.0.119"},
     },
     "quote": {
         "version": "1.0.47",
@@ -299,13 +303,18 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
 
 EXPECTED_WORKSPACE_DEPENDENCIES = {
     "lumenplot": {"lumenplot-engine", "lumenplot-export"},
-    "lumenplot-bench": {"lumenplot", "lumenplot-engine", "lumenplot-render-api"},
+    "lumenplot-bench": {
+        "lumenplot",
+        "lumenplot-engine",
+        "lumenplot-render-api",
+        "lumenplot-render-wgpu",
+    },
     "lumenplot-engine": set(),
     "lumenplot-export": {"lumenplot-engine", "png", "tiny-skia"},
     "lumenplot-python": {"lumenplot", "numpy", "png", "pyo3", "tiny-skia"},
     "lumenplot-render-api": {"lumenplot-engine"},
     "lumenplot-render-metal": {"lumenplot-render-api", "objc2", "objc2-foundation", "objc2-metal"},
-    "lumenplot-render-wgpu": {"lumenplot-render-api"},
+    "lumenplot-render-wgpu": {"lumenplot-render-api", "wgpu"},
     "lumenplot-runtime": {"lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
 }
@@ -338,14 +347,25 @@ def check_lock(root: Path, errors: list[str]) -> None:
             errors.append(f"Cargo.lock contains a duplicate package {key!r}")
         actual[key] = package
 
+    wgpu_active = f"wgpu@{WGPU_PACKAGE_VERSION}" in actual
     expected_keys = {f"{name}@{data['version']}" for name, data in EXPECTED_REGISTRY.items()}
     expected_keys.update(f"{name}@0.1.0" for name in EXPECTED_WORKSPACE_DEPENDENCIES)
+    if wgpu_active:
+        # The wgpu lane has a large target-expanded transitive closure.  Keep
+        # its complete lockfile inventory fail-closed with a checked-in digest,
+        # while retaining the package-level diagnostics for the pre-existing
+        # workspace entries below.
+        lock_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+        if lock_digest != WGPU_LOCK_SHA256:
+            errors.append("Cargo.lock wgpu inventory hash drift")
     if set(actual) != expected_keys:
         missing = sorted(expected_keys - set(actual))
         extra = sorted(set(actual) - expected_keys)
+        # The digest above covers every wgpu transitive package.  Do not turn
+        # those target-expanded packages into a false "unexpected" error.
         if missing:
             errors.append("Cargo.lock missing packages: " + ",".join(missing))
-        if extra:
+        if extra and not wgpu_active:
             errors.append("Cargo.lock has unexpected packages: " + ",".join(extra))
 
     for name, expected in EXPECTED_REGISTRY.items():
@@ -363,6 +383,13 @@ def check_lock(root: Path, errors: list[str]) -> None:
         }
         if dependencies != expected["dependencies"]:
             errors.append(f"Cargo.lock dependency graph drift for {name}")
+    if wgpu_active:
+        package = actual.get(f"wgpu@{WGPU_PACKAGE_VERSION}")
+        if package is not None:
+            if package.get("source") != REGISTRY_SOURCE:
+                errors.append("Cargo.lock source drift for wgpu")
+            if package.get("checksum") != WGPU_PACKAGE_SHA256:
+                errors.append("Cargo.lock checksum drift for wgpu")
 
     for name, expected in EXPECTED_WORKSPACE_DEPENDENCIES.items():
         package = actual.get(f"{name}@0.1.0")
@@ -403,21 +430,35 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         errors.append("cargo metadata package list is missing")
         return
     registry_packages = {
-        package["name"]: package
+        (package["name"], package["version"]): package
         for package in packages
         if isinstance(package, dict)
-        and isinstance(package.get("source"), str)
-        and package["source"] == REGISTRY_SOURCE
+        and isinstance(package.get("name"), str)
+        and isinstance(package.get("version"), str)
+        and package.get("source") == REGISTRY_SOURCE
     }
-    if set(registry_packages) != set(EXPECTED_REGISTRY):
-        missing = sorted(set(EXPECTED_REGISTRY) - set(registry_packages))
-        extra = sorted(set(registry_packages) - set(EXPECTED_REGISTRY))
+    expected_keys = {
+        (name, expected["version"]) for name, expected in EXPECTED_REGISTRY.items()
+    }
+    wgpu_active = ("wgpu", WGPU_PACKAGE_VERSION) in registry_packages
+    if wgpu_active:
+        missing = sorted(expected_keys - set(registry_packages))
+        if missing:
+            errors.append(
+                "metadata missing registry packages: "
+                + ",".join(f"{name}@{version}" for name, version in missing)
+            )
+    elif {name for name, _ in registry_packages} != set(EXPECTED_REGISTRY):
+        actual_names = {name for name, _ in registry_packages}
+        missing = sorted(set(EXPECTED_REGISTRY) - actual_names)
+        extra = sorted(actual_names - set(EXPECTED_REGISTRY))
         if missing:
             errors.append("metadata missing registry packages: " + ",".join(missing))
         if extra:
             errors.append("metadata has unexpected registry packages: " + ",".join(extra))
+
     for name, expected in EXPECTED_REGISTRY.items():
-        package = registry_packages.get(name)
+        package = registry_packages.get((name, expected["version"]))
         if package is None:
             continue
         if package.get("version") != expected["version"]:
@@ -426,6 +467,11 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
             errors.append(f"metadata license drift for {name}")
         if package.get("source") != REGISTRY_SOURCE:
             errors.append(f"metadata source drift for {name}")
+
+    if wgpu_active:
+        wgpu_package = registry_packages["wgpu", WGPU_PACKAGE_VERSION]
+        if wgpu_package.get("license") != "MIT OR Apache-2.0":
+            errors.append("metadata license drift for wgpu")
 
     package_names_by_id = {
         package["id"]: package["name"]
@@ -440,7 +486,7 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         for node in nodes
         if isinstance(node, dict) and isinstance(node.get("id"), str)
     }
-    for name, expected_dependencies in EXPECTED_REGISTRY.items():
+    for name, expected in EXPECTED_REGISTRY.items():
         node = nodes_by_name.get(name)
         if node is None:
             errors.append(f"metadata resolution is missing {name}")
@@ -450,7 +496,10 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
             for dependency in node.get("dependencies", [])
             if isinstance(dependency, str)
         }
-        if dependencies != EXPECTED_REGISTRY[name]["dependencies"]:
+        expected_dependencies = {
+            dependency.split(" ", 1)[0] for dependency in expected["dependencies"]
+        }
+        if dependencies != expected_dependencies:
             errors.append(f"metadata dependency graph drift for {name}")
     for name, expected_dependencies in EXPECTED_WORKSPACE_DEPENDENCIES.items():
         node = nodes_by_name.get(name)
@@ -465,7 +514,7 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         if dependencies != expected_dependencies:
             errors.append(f"metadata dependency graph drift for workspace package {name}")
 
-    direct_features = {"png": [], "tiny-skia": ["std"]}
+    direct_features = {"png": [], "tiny-skia": ["std"], "wgpu": ["std", "vulkan", "wgsl"]}
     for name, expected_features in direct_features.items():
         node = nodes_by_name.get(name)
         if node is None:
@@ -484,19 +533,32 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
                 if Path(str(target.get("src_path", ""))).name != "build.rs":
                     errors.append(f"build script target drift for {package.get('name')}")
     if build_scripts != {
+        "ash",
         "crc32fast",
+        "crunchy",
         "libc",
+        "libm",
         "matrixmultiply",
+        "naga",
         "num-traits",
         "numpy",
         "objc2",
+        "parking_lot_core",
         "portable-atomic",
         "portable-atomic-util",
         "proc-macro2",
         "pyo3",
         "pyo3-ffi",
         "quote",
+        "rustversion",
         "target-lexicon",
+        "thiserror",
+        "wasm-bindgen",
+        "wasm-bindgen-shared",
+        "wgpu",
+        "wgpu-core",
+        "wgpu-hal",
+        "zerocopy",
     }:
         errors.append("dependency build-script inventory drift")
 

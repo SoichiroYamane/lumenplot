@@ -308,6 +308,12 @@ jobs:
           printf '%s  %s\n' "$WHEEL_SHA256" "$WHEEL" > "$WHEEL.sha256"
           sha256sum --check "$WHEEL.sha256"
 
+          # The build-site PYTHONPATH is only for audit/build tooling.  Do not
+          # let it satisfy runtime-venv requirements from outside the venv:
+          # pip would otherwise skip packaging and the other Matplotlib
+          # dependencies as already installed, leaving the wheel smoke test
+          # with an incomplete environment.
+          unset PYTHONPATH
           /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/work/venv311
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93' > /tmp/numpy311.txt
           /tmp/work/venv311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy311.txt

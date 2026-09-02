@@ -292,7 +292,7 @@ impl ResourceTable {
         Self {
             clips: vec![ClipResource {
                 id: LogicalResourceId::from_parts(CLIP_RESOURCE_SLOT, RESOURCE_GENERATION),
-                bounds: frame.plot_rect,
+                bounds: frame.layout.plot_rect,
             }],
             styles: vec![StyleResource {
                 id: LogicalResourceId::from_parts(STYLE_RESOURCE_SLOT, RESOURCE_GENERATION),
@@ -336,8 +336,8 @@ impl ResourceTable {
             }
             if !valid_rect(
                 clip.bounds,
-                frame.canvas_logical.width(),
-                frame.canvas_logical.height(),
+                frame.layout.canvas.width(),
+                frame.layout.canvas.height(),
             ) {
                 return Err(PacketValidationError::new(
                     PacketValidationErrorKind::InvalidResourceReference,
@@ -373,7 +373,7 @@ impl ResourceTable {
                 "packet has no clip resource",
             )
         })?;
-        if clip.bounds != frame.plot_rect {
+        if clip.bounds != frame.layout.plot_rect {
             return Err(PacketValidationError::new(
                 PacketValidationErrorKind::InvalidResourceReference,
                 "packet clip reference does not match its frame",
@@ -494,8 +494,8 @@ fn validate_frame(frame: &FramePacket) -> Result<FrameStats, PacketValidationErr
         ));
     }
 
-    let canvas_width = frame.canvas_logical.width();
-    let canvas_height = frame.canvas_logical.height();
+    let canvas_width = frame.layout.canvas.width();
+    let canvas_height = frame.layout.canvas.height();
     if !canvas_width.is_finite()
         || !canvas_height.is_finite()
         || canvas_width <= 0.0
@@ -508,7 +508,7 @@ fn validate_frame(frame: &FramePacket) -> Result<FrameStats, PacketValidationErr
             "packet canvas geometry is invalid",
         ));
     }
-    if !valid_rect(frame.plot_rect, canvas_width, canvas_height) {
+    if !valid_rect(frame.layout.plot_rect, canvas_width, canvas_height) {
         return Err(PacketValidationError::new(
             PacketValidationErrorKind::FrameInvalid,
             "packet plot geometry is invalid",
@@ -516,8 +516,8 @@ fn validate_frame(frame: &FramePacket) -> Result<FrameStats, PacketValidationErr
     }
     if !frame.dots_per_inch.is_finite()
         || frame.dots_per_inch <= 0.0
-        || !frame.logical_units_per_inch.is_finite()
-        || frame.logical_units_per_inch <= 0.0
+        || !frame.layout.logical_units_per_inch.is_finite()
+        || frame.layout.logical_units_per_inch <= 0.0
         || !frame.line_width_px.is_finite()
         || frame.line_width_px <= 0.0
         || frame.line_width_px > MAX_PACKET_LINE_WIDTH

@@ -32,6 +32,8 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    # hexf-parse 0.2.1, a crates.io transitive dependency of naga/wgpu 29.0.4.
+    "CC0-1.0",
     "ISC",
     "MIT",
     "Unicode-3.0",

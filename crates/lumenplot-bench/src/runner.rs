@@ -16,15 +16,15 @@
 //! profiles are never mixed within a run. The currently executable paths:
 //!
 //! - `strict` / `hybrid`: the accepted private PNG facade
-//!   (`lumenplot::__private::render_line_png`) — the only complete
-//!   accept-to-present-return surface today. Both names drive that single
-//!   implemented path until the policy split they name exists.
+//!   (`lumenplot::__private::render_line_png`) — a CPU render-return path with
+//!   no window surface or physical present observation. Both names drive that
+//!   single implemented path until the policy split they name exists.
 //! - `accelerated`: the accepted M1 frame seam
-//!   (`lumenplot_render_api::SceneHandle::resolve_frame`). The measured span
-//!   covers packet construction plus scene resolution only: the CPU-side
-//!   seam has no present step yet, so the scheduler interval cannot claim to
-//!   end at a present return and every block reports that gap as an
-//!   inconclusive reason (nulls stay null; nothing is zero-substituted).
+//!   (`lumenplot_render_api::SceneHandle::resolve_frame`) followed by the
+//!   portable offscreen renderer's GPU submission and blocking readback. The
+//!   scheduler interval ends at readback return, not a display present; GPU
+//!   timestamps, queue-domain timestamps, and scanout remain unavailable and
+//!   are emitted as null.
 //! - `native`: no implementation exists on this host family, so the runner
 //!   refuses before producing any artifact (exit code 2). A run that
 //!   executed zero frames can never satisfy the manifest schema (every block
@@ -45,11 +45,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use lumenplot_engine::bridge::{SrgbRgba8, Viewport};
 use lumenplot_render_api::SceneHandle;
+use lumenplot_render_wgpu::Renderer;
 
-use crate::clocks::{ClockBoard, GPU_SPAN, QUEUE_SPAN, SCANOUT_MARKER, SCHEDULER_SPAN};
+use crate::clocks::{
+    ClockBoard, GPU_SPAN, QUEUE_SPAN, READBACK_RETURN_SPAN, RENDER_RETURN_SPAN, SCANOUT_MARKER,
+};
 use crate::manifest::{
-    BOOTSTRAP_SEED, BlockSummary, Environment, Fixture, Manifest, emit_clock_entry, emit_manifest,
-    emit_pooled,
+    BOOTSTRAP_SEED, BlockSummary, CounterSummary, Environment, Fixture, Manifest, Measurement,
+    emit_clock_entry, emit_manifest, emit_pooled,
 };
 
 /// Fixed fixture size required by the O-08 contract (decision D3).
@@ -66,6 +69,10 @@ pub(crate) const BLOCK_COUNT: usize = 5;
 pub(crate) const MIN_FRAMES_PER_BLOCK: usize = 1000;
 /// Unmeasured warm-up frames ahead of every measured stretch.
 pub(crate) const WARMUP_FRAMES: usize = 25;
+
+const CPU_RENDER_SEMANTICS: &str =
+    "CPU-monotonic acceptance through the private CPU render return; not display-present latency";
+const ACCELERATED_READBACK_SEMANTICS: &str = "CPU-monotonic acceptance through portable offscreen render/readback return; no surface present or scanout";
 
 /// Execution profile selected exactly once per run via `--profile`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,6 +120,34 @@ fn profile_unavailability(profile: Profile) -> Option<&'static str> {
         ),
         Profile::Strict | Profile::Hybrid | Profile::Accelerated => None,
     }
+}
+
+fn scheduler_span(profile: Profile) -> &'static str {
+    match profile {
+        Profile::Accelerated => READBACK_RETURN_SPAN,
+        Profile::Strict | Profile::Hybrid | Profile::Native => RENDER_RETURN_SPAN,
+    }
+}
+
+fn scheduler_semantics(profile: Profile) -> &'static str {
+    match profile {
+        Profile::Accelerated => ACCELERATED_READBACK_SEMANTICS,
+        Profile::Strict | Profile::Hybrid | Profile::Native => CPU_RENDER_SEMANTICS,
+    }
+}
+
+/// Probe the accelerated renderer before the output directory is created.
+///
+/// A missing adapter/device is an unavailable cell, not a reason to emit a
+/// schema-shaped manifest with invented frames or quantiles. Each fresh child
+/// still creates its own renderer after this parent-side fail-closed probe.
+fn probe_profile(profile: Profile) -> Result<(), String> {
+    if profile != Profile::Accelerated {
+        return Ok(());
+    }
+    Renderer::new()
+        .map(|_| ())
+        .map_err(|error| format!("portable accelerated renderer is unavailable: {error}"))
 }
 
 /// Deterministic xorshift64* generator (no external crates).
@@ -272,10 +307,31 @@ fn detect_display_scale() -> f64 {
     1.0
 }
 
+fn detect_rustc_version() -> String {
+    let Ok(output) = Command::new("rustc").arg("--version").output() else {
+        return "unknown".to_string();
+    };
+    if !output.status.success() {
+        return "unknown".to_string();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 /// Detect the run environment; unknown descriptors degrade to "unknown"/null
 /// (they are provenance metadata, not gate observations, so they do not flip
 /// the run status on their own).
-pub(crate) fn detect_environment() -> Environment {
+pub(crate) fn detect_environment(profile: &str) -> Environment {
+    let render_backend = match profile {
+        "accelerated" => "portable-wgpu-offscreen-readback",
+        "strict" | "hybrid" => "cpu-private-png-facade",
+        _ => "unavailable",
+    };
     Environment {
         os: std::env::consts::OS.to_string(),
         os_version: read_trimmed("/etc/os-release")
@@ -288,6 +344,13 @@ pub(crate) fn detect_environment() -> Environment {
         arch: std::env::consts::ARCH.to_string(),
         kernel: read_trimmed("/proc/sys/kernel/osrelease").unwrap_or_else(|| "unknown".to_string()),
         cpu: detect_cpu_model(),
+        toolchain: detect_rustc_version(),
+        build_profile: if cfg!(debug_assertions) {
+            "debug".to_string()
+        } else {
+            "release".to_string()
+        },
+        render_backend: render_backend.to_string(),
         gpu_vendor: None,
         gpu_device: None,
         gpu_driver: None,
@@ -300,7 +363,12 @@ pub(crate) fn detect_environment() -> Environment {
 }
 
 /// Serialize one samples line: `{block, frame, clocks:{...nulls}}`.
-fn samples_line(block_index: u32, frame_index: usize, scheduler_ns: Option<u64>) -> String {
+fn samples_line(
+    block_index: u32,
+    frame_index: usize,
+    scheduler_clock: &str,
+    scheduler_ns: Option<u64>,
+) -> String {
     fn clock_field(out: &mut String, name: &str, value: Option<u64>, first: bool) {
         if !first {
             out.push_str(", ");
@@ -319,7 +387,7 @@ fn samples_line(block_index: u32, frame_index: usize, scheduler_ns: Option<u64>)
     line.push_str(", \"frame_index\": ");
     line.push_str(&frame_index.to_string());
     line.push_str(", \"clocks\": {");
-    clock_field(&mut line, SCHEDULER_SPAN, scheduler_ns, true);
+    clock_field(&mut line, scheduler_clock, scheduler_ns, true);
     clock_field(&mut line, GPU_SPAN, None, false);
     clock_field(&mut line, QUEUE_SPAN, None, false);
     clock_field(&mut line, SCANOUT_MARKER, None, false);
@@ -337,8 +405,27 @@ fn run_block_in_process(
     frames: usize,
     out_dir: &str,
 ) -> Result<BlockSummary, String> {
+    let block_started_at_utc = utc_now_rfc3339();
     let (xs, ys) = build_fixture_xy();
     let board = ClockBoard::detect();
+    let scheduler_clock = scheduler_span(profile);
+
+    // Keep renderer creation and scene/data setup outside the measured frame
+    // interval. A renderer failure is returned before this block creates any
+    // sample file, and the parent-side probe prevents this path from leaving a
+    // partial run on an unavailable host.
+    let (accelerated_scene, accelerated_spec, mut accelerated_renderer) =
+        if profile == Profile::Accelerated {
+            (
+                Some(build_scene(&xs, &ys)?),
+                Some(build_frame_spec()?),
+                Some(Renderer::new().map_err(|error| {
+                    format!("accelerated renderer could not be created: {error}")
+                })?),
+            )
+        } else {
+            (None, None, None)
+        };
 
     let samples_path = format!("{out_dir}/samples-{block_index}.jsonl");
     let mut samples_out = File::create(&samples_path)
@@ -348,16 +435,23 @@ fn run_block_in_process(
     // block statistics describe steady state rather than startup.
     match profile {
         Profile::Accelerated => {
-            let scene = build_scene(&xs, &ys)?;
-            let spec = build_frame_spec()?;
+            let scene = accelerated_scene.as_ref().expect("accelerated scene");
+            let spec = accelerated_spec.as_ref().expect("accelerated spec");
+            let renderer = accelerated_renderer.as_mut().expect("accelerated renderer");
             for _ in 0..WARMUP_FRAMES {
-                let _packet = scene.resolve_frame(&spec);
+                let packet = scene
+                    .resolve_frame(spec)
+                    .map_err(|error| format!("accelerated warm-up resolution failed: {error}"))?;
+                renderer
+                    .render(&packet)
+                    .map_err(|error| format!("accelerated warm-up render failed: {error}"))?;
             }
         }
         _ => {
             for _ in 0..WARMUP_FRAMES {
                 let request = build_frame_request(&xs, &ys)?;
-                let _pixels = lumenplot::__private::render_line_png(request);
+                lumenplot::__private::render_line_png(request)
+                    .map_err(|error| format!("CPU warm-up render failed: {}", error.message()))?;
             }
         }
     }
@@ -365,28 +459,39 @@ fn run_block_in_process(
     let mut scheduler_samples: Vec<u64> = Vec::with_capacity(frames);
     match profile {
         Profile::Accelerated => {
-            // The seam scene is immutable during measurement: per-frame work
-            // is packet construction plus resolution only. The scheduler
-            // interval therefore ends at resolve_frame returning, NOT at a
-            // present return -- recorded as an inconclusive reason so no
-            // accept-to-present claim is ever made from this path.
-            let scene = build_scene(&xs, &ys)?;
-            let spec = build_frame_spec()?;
+            // The scene and renderer are retained for the block: each measured
+            // frame resolves a packet and submits it to the portable offscreen
+            // renderer, whose blocking readback is the measured boundary. No
+            // window surface or physical display-present operation exists in
+            // this path.
+            let scene = accelerated_scene.as_ref().expect("accelerated scene");
+            let spec = accelerated_spec.as_ref().expect("accelerated spec");
+            let renderer = accelerated_renderer.as_mut().expect("accelerated renderer");
             for frame_index in 0..frames {
-                // Borrowed captures: the seam scene and spec stay fixed for
-                // the whole block; only resolve_frame's work is measured.
-                let (clocks, resolved) = board.observe_frame(|| scene.resolve_frame(&spec));
+                // Borrowed captures: the scene, spec, and renderer stay fixed
+                // for the whole block; setup and pipeline warm-up are outside
+                // the measured interval.
+                let (clocks, resolved) = board.observe_frame(|| {
+                    let packet = scene
+                        .resolve_frame(spec)
+                        .map_err(|error| format!("frame resolution failed: {error}"))?;
+                    renderer
+                        .render(&packet)
+                        .map_err(|error| format!("offscreen render failed: {error}"))?;
+                    Ok::<(), String>(())
+                });
                 if let Err(error) = resolved {
-                    return Err(format!(
-                        "block {block_index} frame {frame_index} failed to render: {}",
-                        error.message()
-                    ));
+                    return Err(format!("block {block_index} frame {frame_index}: {error}"));
                 }
-                drop(resolved);
                 if let Some(scheduler_ns) = clocks.scheduler_ns {
                     scheduler_samples.push(scheduler_ns);
                 }
-                let line = samples_line(block_index, frame_index, clocks.scheduler_ns);
+                let line = samples_line(
+                    block_index,
+                    frame_index,
+                    scheduler_clock,
+                    clocks.scheduler_ns,
+                );
                 writeln!(samples_out, "{line}")
                     .map_err(|error| format!("cannot write {samples_path}: {error}"))?;
             }
@@ -407,7 +512,12 @@ fn run_block_in_process(
                 if let Some(scheduler_ns) = clocks.scheduler_ns {
                     scheduler_samples.push(scheduler_ns);
                 }
-                let line = samples_line(block_index, frame_index, clocks.scheduler_ns);
+                let line = samples_line(
+                    block_index,
+                    frame_index,
+                    scheduler_clock,
+                    clocks.scheduler_ns,
+                );
                 writeln!(samples_out, "{line}")
                     .map_err(|error| format!("cannot write {samples_path}: {error}"))?;
             }
@@ -433,7 +543,7 @@ fn run_block_in_process(
     Ok(BlockSummary {
         block_index,
         pid: std::process::id(),
-        started_at_utc: utc_now_rfc3339(),
+        started_at_utc: block_started_at_utc,
         frame_count: frames,
         p50_ns: nearest_rank(&scheduler_samples, 0.50),
         p95_ns: nearest_rank(&scheduler_samples, 0.95),
@@ -447,10 +557,10 @@ fn run_block_in_process(
 /// during this assembly. Callers run this BEFORE event acceptance (see
 /// `run_block_in_process`, which builds the request ahead of
 /// `ClockBoard::observe_frame`), so the copy cost lies OUTSIDE the measured
-/// scheduler span `event_accept_to_present_return`: that span starts at the
+/// scheduler span `event_accept_to_render_return`: that span starts at the
 /// accept timestamp and ends when the facade render call returns, and thus
 /// measures rendering only, with fixture assembly excluded identically for
-/// every frame.
+/// every frame. It is not a display-present or scanout measurement.
 fn build_frame_request(
     xs: &[f64],
     ys: &[f64],
@@ -485,8 +595,8 @@ fn build_frame_request(
 /// over the canonical 0..1 view holding the same 10k-point monotone-in-x
 /// line series as the facade path.
 ///
-/// The scene is built OUTSIDE the measured span; per-frame work is packet
-/// construction plus resolution only.
+/// The scene is built OUTSIDE the measured span; per-frame work resolves a
+/// packet and submits it to the retained portable offscreen renderer.
 fn build_scene(xs: &[f64], ys: &[f64]) -> Result<SceneHandle, String> {
     let viewport = Viewport::from_bounds(0.0, 1.0, 0.0, 1.0)
         .map_err(|error| format!("fixture view rejected: {}", error.message()))?;
@@ -563,6 +673,23 @@ pub(crate) fn run_block_child(args: &[String]) -> Result<(), String> {
     let block_index = block_index.ok_or("missing --block-index")?;
     let frames = frames.ok_or("missing --frames")?;
 
+    // The parent refuses unavailable profiles before spawning children, but
+    // this mode is still a callable executable entry point. Keep the child
+    // fail-closed when invoked directly so `native` cannot accidentally run
+    // through the CPU fallback branch.
+    if let Some(reason) = profile_unavailability(profile) {
+        return Err(format!(
+            "profile '{}' cannot run: {reason}",
+            profile.as_str()
+        ));
+    }
+    if usize::try_from(block_index).map_or(true, |index| index >= BLOCK_COUNT) {
+        return Err(format!("--block-index must be in 0..{BLOCK_COUNT}"));
+    }
+    if frames < MIN_FRAMES_PER_BLOCK {
+        return Err(format!("--frames must be at least {MIN_FRAMES_PER_BLOCK}"));
+    }
+
     let summary = run_block_in_process(profile, block_index, frames, &out_dir)?;
     println!("# block {block_index} complete (fresh pid {})", summary.pid);
     println!(
@@ -616,25 +743,80 @@ pub(crate) fn parse_block_summary(line: &str) -> Option<BlockSummary> {
 
 /// Collect every scheduler observation from the retained raw sample files
 /// for the descriptive-only pooled statistics.
-fn read_pooled_scheduler_values(out_dir: &str) -> Vec<u64> {
+///
+/// A completed child must have one finite scheduler observation per measured
+/// frame. Missing files, malformed rows, or an unavailable scheduler value
+/// therefore invalidate the run instead of producing a partial pooled result.
+fn read_pooled_scheduler_values(out_dir: &str, scheduler_clock: &str) -> Result<Vec<u64>, String> {
     let mut pooled = Vec::new();
     for block_index in 0..BLOCK_COUNT {
         let path = format!("{out_dir}/samples-{block_index}.jsonl");
-        let Ok(file) = File::open(&path) else {
-            continue;
-        };
-        let marker = format!("\"{SCHEDULER_SPAN}\": ");
-        for line in BufReader::new(file).lines().map_while(Result::ok) {
-            if let Some(start) = line.find(&marker) {
-                let rest = &line[start + marker.len()..];
-                let end = rest.find([',', '}']).unwrap_or(rest.len());
-                if let Ok(value) = rest[..end].trim().parse::<u64>() {
-                    pooled.push(value);
-                }
-            }
+        let file = File::open(&path).map_err(|error| format!("cannot read {path}: {error}"))?;
+        let marker = format!("\"{scheduler_clock}\": ");
+        for (line_number, line) in BufReader::new(file).lines().enumerate() {
+            let line = line.map_err(|error| format!("cannot read {path}: {error}"))?;
+            let start = line.find(&marker).ok_or_else(|| {
+                format!(
+                    "{path}:{}: missing scheduler clock {scheduler_clock:?}",
+                    line_number + 1
+                )
+            })?;
+            let rest = &line[start + marker.len()..];
+            let end = rest.find([',', '}']).unwrap_or(rest.len());
+            let value = rest[..end].trim().parse::<u64>().map_err(|_| {
+                format!(
+                    "{path}:{}: scheduler clock {scheduler_clock:?} must be a number",
+                    line_number + 1
+                )
+            })?;
+            pooled.push(value);
         }
     }
-    pooled
+    Ok(pooled)
+}
+
+fn counter_summary(profile: Profile, blocks: &[BlockSummary]) -> CounterSummary<'static> {
+    let measured_frames = blocks.iter().fold(0usize, |total, block| {
+        total.saturating_add(block.frame_count)
+    });
+    let warmup_frames = BLOCK_COUNT.saturating_mul(WARMUP_FRAMES);
+    let accelerated = profile == Profile::Accelerated;
+    CounterSummary {
+        status: if accelerated {
+            "partial"
+        } else {
+            "unavailable"
+        },
+        warmup_frames,
+        measured_frames,
+        warmup_render_calls: warmup_frames,
+        render_calls: measured_frames,
+        resolve_calls: accelerated.then_some(measured_frames),
+        offscreen_readbacks: accelerated.then_some(measured_frames),
+        // These two zeroes are scoped to this Rust benchmark executable, which
+        // does not enter Python or Matplotlib. They are not adapter-profile
+        // zero-Python evidence.
+        python_callbacks: accelerated.then_some(0),
+        matplotlib_dispatch: accelerated.then_some(0),
+        // The owning renderer/adapter does not expose these counters yet.
+        // Keep them null instead of inferring values from source structure.
+        ffi_calls: None,
+        shader_compilations: None,
+        pipeline_creations: None,
+        font_shaping: None,
+        lod_regenerations: None,
+        upload_bytes: None,
+        heap_allocations: None,
+        fallback_events: accelerated.then_some(0),
+        gpu_timestamp_queries: None,
+        queue_completion_observations: None,
+        scanout_markers: None,
+        note: if accelerated {
+            "Rust harness counters plus offscreen readback count; lower-level renderer counters are unavailable and this is not a display-present or standard-adapter gate"
+        } else {
+            "CPU facade harness call counts only; adapter Python/Matplotlib/fallback counters are unavailable and this is not a native gate"
+        },
+    }
 }
 
 /// Execute one full run: 5 fresh-process blocks, manifest assembly, gates.
@@ -647,6 +829,18 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
     // schema (every block must carry frame_count >= min_frames_per_block),
     // so there is no valid "empty" manifest to emit for this cell.
     if let Some(reason) = profile_unavailability(profile) {
+        eprintln!(
+            "bench: profile '{}' cannot run on this host: {reason}",
+            profile.as_str()
+        );
+        eprintln!("bench: no manifest or samples were written; the O-08 cell stays unmeasured");
+        return 2;
+    }
+
+    // Probe the real accelerated path before creating output. If this host has
+    // no portable adapter/device, keep the cell NOT_RUN rather than falling
+    // back to the old CPU seam or emitting fabricated block evidence.
+    if let Err(reason) = probe_profile(profile) {
         eprintln!(
             "bench: profile '{}' cannot run on this host: {reason}",
             profile.as_str()
@@ -704,6 +898,20 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
             return 2;
         };
         match parse_block_summary(summary_line) {
+            Some(summary) if usize::try_from(summary.block_index).ok() != Some(block_index) => {
+                eprintln!(
+                    "bench: block {block_index} returned summary for block {}",
+                    summary.block_index
+                );
+                return 2;
+            }
+            Some(summary) if summary.frame_count < MIN_FRAMES_PER_BLOCK => {
+                eprintln!(
+                    "bench: block {block_index} returned only {} frames",
+                    summary.frame_count
+                );
+                return 2;
+            }
             Some(summary) => blocks.push(summary),
             None => {
                 eprintln!("bench: block {block_index} summary unparsable: {summary_line}");
@@ -713,7 +921,8 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
     }
 
     let board = ClockBoard::detect();
-    let descriptors = board.descriptors();
+    let scheduler_clock = scheduler_span(profile);
+    let descriptors = board.descriptors(scheduler_clock);
     let descriptor_lines: Vec<String> = descriptors
         .iter()
         .map(|descriptor| {
@@ -728,9 +937,27 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
     let clock_lines = descriptor_lines.join("\n");
     let any_clock_available = descriptors.iter().any(|descriptor| descriptor.available);
 
-    let mut pooled = read_pooled_scheduler_values(out_dir);
+    let mut pooled = match read_pooled_scheduler_values(out_dir, scheduler_clock) {
+        Ok(values) => values,
+        Err(error) => {
+            eprintln!("bench: raw sample validation failed: {error}");
+            return 2;
+        }
+    };
+    let expected_sample_count = blocks.iter().fold(0usize, |total, block| {
+        total.saturating_add(block.frame_count)
+    });
+    if pooled.len() != expected_sample_count {
+        eprintln!(
+            "bench: raw sample count {} does not match block total {}",
+            pooled.len(),
+            expected_sample_count
+        );
+        return 2;
+    }
     pooled.sort_unstable();
     let pooled_line = emit_pooled(
+        scheduler_clock,
         pooled.len(),
         nearest_rank(&pooled, 0.50),
         nearest_rank(&pooled, 0.95),
@@ -745,13 +972,18 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
         ));
     }
     if profile == Profile::Accelerated {
-        // The M1 seam is CPU-side only: resolve_frame returns a packet, and
-        // no present step exists. The scheduler interval ends at resolution,
-        // never at a present return -- so no accept-to-present claim is
-        // allowed from this profile's artifacts.
+        // The portable path is an offscreen GPU submission plus blocking
+        // readback. It owns no window surface, physical present, or scanout
+        // marker, so the scheduler interval is explicitly not an
+        // input-to-display claim.
         inconclusive_reasons.push(
-            "accelerated profile measures seam packet construction plus \
-             scene resolution only; the surface has no present step yet"
+            "accelerated profile measures packet resolution plus portable offscreen \
+             render/readback; no window surface, physical present, or scanout is observed"
+                .to_string(),
+        );
+    } else {
+        inconclusive_reasons.push(
+            "strict/hybrid profiles measure the CPU PNG facade return; no window surface, physical present, or scanout is observed"
                 .to_string(),
         );
     }
@@ -770,11 +1002,20 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
         canvas_px: [FIXTURE_CANVAS_WIDTH_PX, FIXTURE_CANVAS_HEIGHT_PX],
         dpi: FIXTURE_DPI,
     };
-    let environment = detect_environment();
+    let environment = detect_environment(profile.as_str());
+    let measurement = Measurement {
+        scheduler_clock,
+        scheduler_semantics: scheduler_semantics(profile),
+        present_observed: false,
+        scanout_observed: false,
+    };
+    let counters = counter_summary(profile, &blocks);
     let manifest = Manifest {
         run_id: &derive_run_id(pid),
         generated_at_utc: &utc_now_rfc3339(),
         profile: profile.as_str(),
+        measurement: &measurement,
+        counters: &counters,
         fixture: &fixture,
         environment: &environment,
         clock_lines: &clock_lines,
@@ -802,6 +1043,7 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::emit_counters;
 
     #[test]
     fn profile_round_trips_all_four_names() {
@@ -811,6 +1053,15 @@ mod tests {
         }
         assert!(Profile::parse("native ").is_none());
         assert!(Profile::parse("").is_none());
+    }
+
+    #[test]
+    fn scheduler_boundaries_are_profile_specific_and_never_present_claims() {
+        assert_eq!(scheduler_span(Profile::Strict), RENDER_RETURN_SPAN);
+        assert_eq!(scheduler_span(Profile::Hybrid), RENDER_RETURN_SPAN);
+        assert_eq!(scheduler_span(Profile::Accelerated), READBACK_RETURN_SPAN);
+        assert!(!scheduler_semantics(Profile::Strict).contains("accept-to-present"));
+        assert!(!scheduler_semantics(Profile::Accelerated).contains("accept-to-present"));
     }
 
     #[test]
@@ -947,6 +1198,9 @@ mod tests {
             arch: "test-arch".to_string(),
             kernel: "test-kernel".to_string(),
             cpu: "test-cpu \"quoted\"".to_string(),
+            toolchain: "test-toolchain".to_string(),
+            build_profile: "release".to_string(),
+            render_backend: "cpu-private-png-facade".to_string(),
             gpu_vendor: None,
             gpu_device: None,
             gpu_driver: None,
@@ -977,7 +1231,7 @@ mod tests {
             },
         ];
         let reasons = vec!["clock domain 'gpu' has no instrumentation".to_string()];
-        let descriptors = ClockBoard::detect().descriptors();
+        let descriptors = ClockBoard::detect().descriptors(RENDER_RETURN_SPAN);
         let clock_lines = descriptors
             .iter()
             .map(|descriptor| {
@@ -990,11 +1244,26 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let pooled_line = emit_pooled(2 * MIN_FRAMES_PER_BLOCK, Some(10), Some(20), Some(30));
+        let pooled_line = emit_pooled(
+            RENDER_RETURN_SPAN,
+            2 * MIN_FRAMES_PER_BLOCK,
+            Some(10),
+            Some(20),
+            Some(30),
+        );
+        let measurement = Measurement {
+            scheduler_clock: RENDER_RETURN_SPAN,
+            scheduler_semantics: CPU_RENDER_SEMANTICS,
+            present_observed: false,
+            scanout_observed: false,
+        };
+        let counters = counter_summary(Profile::Strict, &blocks);
         let manifest = Manifest {
             run_id: "run-id",
             generated_at_utc: "2026-08-24T00:00:00.000Z",
             profile: "strict",
+            measurement: &measurement,
+            counters: &counters,
             fixture: &fixture,
             environment: &environment,
             clock_lines: &clock_lines,
@@ -1016,6 +1285,8 @@ mod tests {
             "\"run_id\"",
             "\"generated_at_utc\"",
             "\"profile\": \"strict\"",
+            "\"measurement\"",
+            "\"counters\"",
             "\"fixture\"",
             "\"environment\"",
             "\"protocol\"",
@@ -1033,13 +1304,37 @@ mod tests {
         }
         // Unavailable block quantiles serialize as null, never zero.
         assert!(document.contains("\"p99_ns\": null"));
+        assert!(document.contains("\"scheduler_clock\": \"event_accept_to_render_return\""));
+        assert!(document.contains("\"present_observed\": false"));
+        assert!(document.contains("\"upload_bytes\": null"));
         // Escaping keeps embedded quotes intact inside strings.
         assert!(document.contains(r#"test-cpu \"quoted\""#));
     }
 
     #[test]
+    fn counter_summary_distinguishes_harness_zeroes_from_unavailable_adapter_values() {
+        let blocks = vec![BlockSummary {
+            block_index: 0,
+            pid: 1,
+            started_at_utc: "2026-08-24T00:00:00.000Z".to_string(),
+            frame_count: MIN_FRAMES_PER_BLOCK,
+            p50_ns: Some(1),
+            p95_ns: Some(2),
+            p99_ns: Some(3),
+        }];
+        let accelerated = emit_counters(&counter_summary(Profile::Accelerated, &blocks));
+        assert!(accelerated.contains("\"python_callbacks\": 0"));
+        assert!(accelerated.contains("\"fallback_events\": 0"));
+        assert!(accelerated.contains("\"upload_bytes\": null"));
+
+        let strict = emit_counters(&counter_summary(Profile::Strict, &blocks));
+        assert!(strict.contains("\"python_callbacks\": null"));
+        assert!(strict.contains("\"fallback_events\": null"));
+    }
+
+    #[test]
     fn environment_detection_degrades_without_panicking() {
-        let environment = detect_environment();
+        let environment = detect_environment("strict");
         assert!(!environment.os.is_empty());
         assert!(!environment.arch.is_empty());
         assert!(!environment.cpu.is_empty());
@@ -1095,6 +1390,39 @@ mod tests {
             "refused run must not write a manifest"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn direct_block_runner_refuses_unavailable_or_short_protocol_inputs() {
+        let native_args = [
+            "--internal-block-runner",
+            "--profile",
+            "native",
+            "--block-index",
+            "0",
+            "--frames",
+            "1000",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let native_error = run_block_child(&native_args).expect_err("native must refuse");
+        assert!(native_error.contains("cannot run"), "{native_error}");
+
+        let short_args = [
+            "--internal-block-runner",
+            "--profile",
+            "strict",
+            "--block-index",
+            "0",
+            "--frames",
+            "999",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let short_error = run_block_child(&short_args).expect_err("short block must refuse");
+        assert!(short_error.contains("at least 1000"), "{short_error}");
     }
 
     #[test]

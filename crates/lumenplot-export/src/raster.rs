@@ -17,6 +17,7 @@ pub(crate) const MAX_PATH_POINTS: usize = 1_000_000;
 // `Mask::fill_path`, rejects bounds outside `SCALAR_MAX * 0.25`. Keep this
 // local precondition aligned with that pinned dependency version.
 const TINY_SKIA_SAFE_PATH_BOUND: f32 = f32::MAX * 0.25;
+const MAX_CLIP_STACK: usize = 4;
 
 #[derive(Clone, Copy)]
 struct ClipRect {
@@ -26,12 +27,55 @@ struct ClipRect {
     y_max: f64,
 }
 
+/// Ordered intersection stack for the sink-local rectangular clips.
+///
+/// The current line frame contributes one plot clip. Keeping a bounded stack
+/// here makes the ordering explicit without adding a public layout schema or
+/// allocating while a raster plan is assembled.
+#[derive(Clone, Copy)]
+struct ClipStack {
+    rects: [ClipRect; MAX_CLIP_STACK],
+    len: usize,
+}
+
+impl ClipStack {
+    fn from_rects(rects: &[ClipRect]) -> Result<Self, ExportError> {
+        if rects.is_empty() || rects.len() > MAX_CLIP_STACK {
+            return Err(ExportError::invalid_input());
+        }
+        let mut stack = Self {
+            rects: [rects[0]; MAX_CLIP_STACK],
+            len: rects.len(),
+        };
+        stack.rects[..rects.len()].copy_from_slice(rects);
+        Ok(stack)
+    }
+
+    fn coverage(self, x: usize, y: usize) -> f64 {
+        let x = x as f64;
+        let y = y as f64;
+        let mut x_min: f64 = 0.0;
+        let mut y_min: f64 = 0.0;
+        let mut x_max: f64 = f64::INFINITY;
+        let mut y_max: f64 = f64::INFINITY;
+        for clip in &self.rects[..self.len] {
+            x_min = x_min.max(clip.x_min);
+            y_min = y_min.max(clip.y_min);
+            x_max = x_max.min(clip.x_max);
+            y_max = y_max.min(clip.y_max);
+        }
+        let x_overlap = (x_max.min(x + 1.0) - x_min.max(x)).max(0.0);
+        let y_overlap = (y_max.min(y + 1.0) - y_min.max(y)).max(0.0);
+        (x_overlap * y_overlap).clamp(0.0, 1.0)
+    }
+}
+
 pub(crate) struct RasterPlan {
     width: u32,
     height: u32,
     pixel_count: usize,
     scale: f64,
-    clip: ClipRect,
+    clips: ClipStack,
     output_estimate: usize,
 }
 
@@ -68,11 +112,13 @@ impl RasterPlan {
 
         let clip = frame.plot_rect();
         let clip = ClipRect {
-            x_min: clip.x_min() * scale,
-            y_min: clip.y_min() * scale,
-            x_max: clip.x_max() * scale,
-            y_max: clip.y_max() * scale,
+            x_min: checked_scale(clip.x_min(), scale)?,
+            y_min: checked_scale(clip.y_min(), scale)?,
+            x_max: checked_scale(clip.x_max(), scale)?,
+            y_max: checked_scale(clip.y_max(), scale)?,
         };
+        let canvas_width = checked_scale(canvas.width(), scale)?;
+        let canvas_height = checked_scale(canvas.height(), scale)?;
         if ![clip.x_min, clip.y_min, clip.x_max, clip.y_max]
             .iter()
             .all(|value| value.is_finite())
@@ -80,11 +126,12 @@ impl RasterPlan {
             || clip.y_min < 0.0
             || clip.x_min >= clip.x_max
             || clip.y_min >= clip.y_max
-            || clip.x_max > canvas.width() * scale
-            || clip.y_max > canvas.height() * scale
+            || clip.x_max > canvas_width
+            || clip.y_max > canvas_height
         {
             return Err(ExportError::invalid_input());
         }
+        let clips = ClipStack::from_rects(std::slice::from_ref(&clip))?;
 
         let mut path_points = 0usize;
         for series in frame.series() {
@@ -157,7 +204,7 @@ impl RasterPlan {
             height,
             pixel_count,
             scale,
-            clip,
+            clips,
             output_estimate,
         })
     }
@@ -183,12 +230,9 @@ impl RasterPlan {
     }
 
     pub(crate) fn clip_a8(&self, x: usize, y: usize) -> u8 {
-        let x = x as f64;
-        let y = y as f64;
-        let x_overlap = (self.clip.x_max.min(x + 1.0) - self.clip.x_min.max(x)).max(0.0);
-        let y_overlap = (self.clip.y_max.min(y + 1.0) - self.clip.y_min.max(y)).max(0.0);
-        let area = (x_overlap * y_overlap).clamp(0.0, 1.0);
-        quantize_round_half_even(area)
+        // A8 quantization is the sink's deterministic round-half-even snap;
+        // the semantic frame remains fractional until this point.
+        quantize_round_half_even(self.clips.coverage(x, y))
     }
 }
 
@@ -196,8 +240,8 @@ fn checked_dimension(logical_dimension: f64, scale: f64) -> Result<u32, ExportEr
     if !logical_dimension.is_finite() || logical_dimension <= 0.0 {
         return Err(ExportError::invalid_input());
     }
-    let pixels = logical_dimension * scale;
-    if !pixels.is_finite() || pixels <= 0.0 {
+    let pixels = checked_scale(logical_dimension, scale)?;
+    if pixels <= 0.0 {
         return Err(ExportError::capacity_exceeded());
     }
     let rounded_up = pixels.ceil();
@@ -206,6 +250,14 @@ fn checked_dimension(logical_dimension: f64, scale: f64) -> Result<u32, ExportEr
     }
     let rounded_up = rounded_up as u64;
     u32::try_from(rounded_up).map_err(|_| ExportError::capacity_exceeded())
+}
+
+fn checked_scale(value: f64, scale: f64) -> Result<f64, ExportError> {
+    let scaled = value * scale;
+    if !value.is_finite() || !scale.is_finite() || !scaled.is_finite() {
+        return Err(ExportError::capacity_exceeded());
+    }
+    Ok(scaled)
 }
 
 #[cfg(test)]
@@ -313,8 +365,8 @@ fn zero_mask_data(pixel_count: usize) -> Result<Vec<u8>, ExportError> {
 }
 
 fn to_pixel_point(x: f64, y: f64, plan: &RasterPlan) -> Result<[f32; 2], ExportError> {
-    let x = x * plan.scale();
-    let y = y * plan.scale();
+    let x = checked_scale(x, plan.scale())?;
+    let y = checked_scale(y, plan.scale())?;
     validate_pixel_point(x, y, 1.0, plan.width(), plan.height())?;
     Ok([x as f32, y as f32])
 }
@@ -390,7 +442,7 @@ mod tests {
             height: 2,
             pixel_count: 4,
             scale: 1.0,
-            clip,
+            clips: ClipStack::from_rects(&[clip]).expect("clip stack"),
             output_estimate: 0,
         };
         assert_eq!(plan.clip_a8(0, 0), quantize_round_half_even(0.375));
@@ -400,10 +452,55 @@ mod tests {
     }
 
     #[test]
+    fn clip_stack_uses_the_intersection_of_each_declared_clip() {
+        let stack = ClipStack::from_rects(&[
+            ClipRect {
+                x_min: 0.25,
+                y_min: 0.5,
+                x_max: 1.75,
+                y_max: 1.5,
+            },
+            ClipRect {
+                x_min: 0.5,
+                y_min: 0.75,
+                x_max: 1.25,
+                y_max: 1.25,
+            },
+        ])
+        .expect("clip stack");
+        assert_eq!(
+            quantize_round_half_even(stack.coverage(0, 0)),
+            quantize_round_half_even(0.125)
+        );
+        assert_eq!(
+            quantize_round_half_even(stack.coverage(1, 1)),
+            quantize_round_half_even(0.0625)
+        );
+        assert_eq!(stack.coverage(2, 0), 0.0);
+
+        assert!(ClipStack::from_rects(&[]).is_err());
+        let clip = ClipRect {
+            x_min: 0.0,
+            y_min: 0.0,
+            x_max: 1.0,
+            y_max: 1.0,
+        };
+        assert!(ClipStack::from_rects(&[clip; MAX_CLIP_STACK + 1]).is_err());
+    }
+
+    #[test]
     fn dimensions_use_checked_ceil() {
         assert_eq!(checked_dimension(1.0, 1.0).expect("dimension"), 1);
         assert_eq!(checked_dimension(1.01, 1.0).expect("dimension"), 2);
         assert!(checked_dimension(16_384.1, 1.0).is_err());
+    }
+
+    #[test]
+    fn logical_to_device_scale_rejects_nonfinite_products() {
+        let error = checked_scale(f64::MAX, 2.0).expect_err("overflow");
+        assert_eq!(error.kind(), ExportErrorKind::CapacityExceeded);
+        let error = checked_scale(f64::NAN, 1.0).expect_err("non-finite value");
+        assert_eq!(error.kind(), ExportErrorKind::CapacityExceeded);
     }
 
     #[test]

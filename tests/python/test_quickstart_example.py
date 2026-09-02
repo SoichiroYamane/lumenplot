@@ -57,10 +57,34 @@ class QuickstartRunTests(unittest.TestCase):
 
     def test_quickstart_exits_zero_and_writes_png(self) -> None:
         with tempfile.TemporaryDirectory() as workdir:
+            inherited_env = {**os.environ}
+            installed_env = {key: value for key, value in inherited_env.items() if key != "PYTHONPATH"}
+            installed_probe = subprocess.run(
+                [sys.executable, "-c", "from lumenplot_mpl import _native"],
+                cwd=workdir,
+                env=installed_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
+            if installed_probe.returncode == 0:
+                run_env = installed_env
+            else:
+                run_env = {
+                    **inherited_env,
+                    "PYTHONPATH": os.pathsep.join(
+                        part
+                        for part in (
+                            str(REPO_ROOT / "python"),
+                            inherited_env.get("PYTHONPATH", ""),
+                        )
+                        if part
+                    ),
+                }
             completed = subprocess.run(
                 [sys.executable, str(QUICKSTART)],
                 cwd=workdir,
-                env={**os.environ},
+                env=run_env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=120,

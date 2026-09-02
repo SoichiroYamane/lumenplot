@@ -36,6 +36,9 @@ pub(crate) struct Environment {
     pub(crate) arch: String,
     pub(crate) kernel: String,
     pub(crate) cpu: String,
+    pub(crate) toolchain: String,
+    pub(crate) build_profile: String,
+    pub(crate) render_backend: String,
     pub(crate) gpu_vendor: Option<String>,
     pub(crate) gpu_device: Option<String>,
     pub(crate) gpu_driver: Option<String>,
@@ -57,11 +60,51 @@ pub(crate) struct BlockSummary {
     pub(crate) p99_ns: Option<u64>,
 }
 
+/// Explicit boundary semantics for the scheduler-domain samples.
+pub(crate) struct Measurement<'a> {
+    pub(crate) scheduler_clock: &'a str,
+    pub(crate) scheduler_semantics: &'a str,
+    pub(crate) present_observed: bool,
+    pub(crate) scanout_observed: bool,
+}
+
+/// Counters recorded for one benchmark run.
+///
+/// The harness counters are concrete observations of work performed by this
+/// runner. Lower-level counters remain nullable until the owning renderer or
+/// adapter exposes instrumentation; null is intentionally different from a
+/// measured zero.
+pub(crate) struct CounterSummary<'a> {
+    pub(crate) status: &'a str,
+    pub(crate) warmup_frames: usize,
+    pub(crate) measured_frames: usize,
+    pub(crate) warmup_render_calls: usize,
+    pub(crate) render_calls: usize,
+    pub(crate) resolve_calls: Option<usize>,
+    pub(crate) offscreen_readbacks: Option<usize>,
+    pub(crate) python_callbacks: Option<u64>,
+    pub(crate) matplotlib_dispatch: Option<u64>,
+    pub(crate) ffi_calls: Option<u64>,
+    pub(crate) shader_compilations: Option<u64>,
+    pub(crate) pipeline_creations: Option<u64>,
+    pub(crate) font_shaping: Option<u64>,
+    pub(crate) lod_regenerations: Option<u64>,
+    pub(crate) upload_bytes: Option<u64>,
+    pub(crate) heap_allocations: Option<u64>,
+    pub(crate) fallback_events: Option<u64>,
+    pub(crate) gpu_timestamp_queries: Option<u64>,
+    pub(crate) queue_completion_observations: Option<u64>,
+    pub(crate) scanout_markers: Option<u64>,
+    pub(crate) note: &'a str,
+}
+
 /// Everything needed to render the final manifest document.
 pub(crate) struct Manifest<'a> {
     pub(crate) run_id: &'a str,
     pub(crate) generated_at_utc: &'a str,
     pub(crate) profile: &'a str,
+    pub(crate) measurement: &'a Measurement<'a>,
+    pub(crate) counters: &'a CounterSummary<'a>,
     pub(crate) fixture: &'a Fixture,
     pub(crate) environment: &'a Environment,
     pub(crate) clock_lines: &'a str,
@@ -116,16 +159,105 @@ pub(crate) fn emit_clock_entry(name: &str, domain: &str, unit: &str, available: 
     entry
 }
 
+/// Emit the explicit timing claim boundary for a run.
+pub(crate) fn emit_measurement(measurement: &Measurement<'_>) -> String {
+    let mut output = String::new();
+    output.push_str("{\"scheduler_clock\": ");
+    write_json_string(&mut output, measurement.scheduler_clock);
+    output.push_str(", \"scheduler_domain\": \"cpu-monotonic\", \"scheduler_semantics\": ");
+    write_json_string(&mut output, measurement.scheduler_semantics);
+    output.push_str(", \"present_observed\": ");
+    output.push_str(if measurement.present_observed {
+        "true"
+    } else {
+        "false"
+    });
+    output.push_str(", \"scanout_observed\": ");
+    output.push_str(if measurement.scanout_observed {
+        "true"
+    } else {
+        "false"
+    });
+    output.push('}');
+    output
+}
+
+fn write_optional_usize(out: &mut String, value: Option<usize>) {
+    match value {
+        Some(number) => {
+            let _ = write!(out, "{}", number);
+        }
+        None => out.push_str("null"),
+    }
+}
+
+/// Emit the run-level counter inventory without turning unavailable values
+/// into fabricated zeroes.
+pub(crate) fn emit_counters(counters: &CounterSummary<'_>) -> String {
+    let mut output = String::new();
+    output.push_str("{\"status\": ");
+    write_json_string(&mut output, counters.status);
+    let _ = write!(
+        output,
+        ", \"warmup_frames\": {}, \"measured_frames\": {}, \
+         \"warmup_render_calls\": {}, \"render_calls\": {}",
+        counters.warmup_frames,
+        counters.measured_frames,
+        counters.warmup_render_calls,
+        counters.render_calls,
+    );
+    output.push_str(", \"resolve_calls\": ");
+    write_optional_usize(&mut output, counters.resolve_calls);
+    output.push_str(", \"offscreen_readbacks\": ");
+    write_optional_usize(&mut output, counters.offscreen_readbacks);
+    for (name, value) in [
+        ("python_callbacks", counters.python_callbacks),
+        ("matplotlib_dispatch", counters.matplotlib_dispatch),
+        ("ffi_calls", counters.ffi_calls),
+        ("shader_compilations", counters.shader_compilations),
+        ("pipeline_creations", counters.pipeline_creations),
+        ("font_shaping", counters.font_shaping),
+        ("lod_regenerations", counters.lod_regenerations),
+        ("upload_bytes", counters.upload_bytes),
+        ("heap_allocations", counters.heap_allocations),
+        ("fallback_events", counters.fallback_events),
+        ("gpu_timestamp_queries", counters.gpu_timestamp_queries),
+        (
+            "queue_completion_observations",
+            counters.queue_completion_observations,
+        ),
+        ("scanout_markers", counters.scanout_markers),
+    ] {
+        output.push_str(", \"");
+        output.push_str(name);
+        output.push_str("\": ");
+        match value {
+            Some(number) => {
+                let _ = write!(output, "{number}");
+            }
+            None => output.push_str("null"),
+        }
+    }
+    output.push_str(", \"note\": ");
+    write_json_string(&mut output, counters.note);
+    output.push('}');
+    output
+}
+
 /// Emit the descriptive-only pooled block for the manifest.
 pub(crate) fn emit_pooled(
+    clock_name: &str,
     frame_count: usize,
     p50_ns: Option<u64>,
     p95_ns: Option<u64>,
     p99_ns: Option<u64>,
 ) -> String {
     let mut pooled = String::new();
-    pooled
-        .push_str("{\"note\": \"descriptive only; gate uses max_block_p99_ns\", \"frame_count\": ");
+    pooled.push_str("{\"clock\": ");
+    write_json_string(&mut pooled, clock_name);
+    pooled.push_str(
+        ", \"note\": \"descriptive only; gate uses max_block_p99_ns\", \"frame_count\": ",
+    );
     let _ = write!(pooled, "{frame_count}");
     pooled.push_str(", \"p50_ns\": ");
     write_optional_number(&mut pooled, p50_ns);
@@ -148,6 +280,12 @@ pub(crate) fn emit_manifest(manifest: &Manifest<'_>) -> String {
     write_json_string(&mut out, manifest.generated_at_utc);
     out.push_str(",\n  \"profile\": ");
     write_json_string(&mut out, manifest.profile);
+
+    out.push_str(",\n  \"measurement\": ");
+    out.push_str(&emit_measurement(manifest.measurement));
+
+    out.push_str(",\n  \"counters\": ");
+    out.push_str(&emit_counters(manifest.counters));
 
     out.push_str(",\n  \"fixture\": {\n    \"id\": ");
     write_json_string(&mut out, manifest.fixture.id);
@@ -172,6 +310,12 @@ pub(crate) fn emit_manifest(manifest: &Manifest<'_>) -> String {
     write_json_string(&mut out, &environment.kernel);
     out.push_str(",\n    \"cpu\": ");
     write_json_string(&mut out, &environment.cpu);
+    out.push_str(",\n    \"toolchain\": ");
+    write_json_string(&mut out, &environment.toolchain);
+    out.push_str(",\n    \"build_profile\": ");
+    write_json_string(&mut out, &environment.build_profile);
+    out.push_str(",\n    \"render_backend\": ");
+    write_json_string(&mut out, &environment.render_backend);
     out.push_str(",\n    \"gpu\": ");
     match (
         &environment.gpu_vendor,
