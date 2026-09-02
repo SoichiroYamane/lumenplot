@@ -121,6 +121,15 @@ def reset_metal_crate_to_baseline(root: Path) -> None:
 def reset_runtime_viewer_to_baseline(root: Path) -> None:
     """Restore the paired M4 crates to their documentation-only baseline."""
 
+    runtime_source_dir = root / "crates/lumenplot-runtime/src"
+    if runtime_source_dir.is_dir():
+        for stale in sorted(runtime_source_dir.iterdir()):
+            if stale.name == "lib.rs":
+                continue
+            if stale.is_dir():
+                shutil.rmtree(stale)
+            else:
+                stale.unlink()
     (root / "crates/lumenplot-runtime/src/lib.rs").write_text(
         BASELINE_RUNTIME_SOURCE,
         encoding="utf-8",
@@ -1856,6 +1865,10 @@ fn body_macro_is_below_root_scope() {
         shutil.copy2(
             ROOT / "crates/lumenplot-runtime/src/lib.rs",
             root / "crates/lumenplot-runtime/src/lib.rs",
+        )
+        shutil.copy2(
+            ROOT / "crates/lumenplot-runtime/src/input.rs",
+            root / "crates/lumenplot-runtime/src/input.rs",
         )
         shutil.copy2(
             ROOT / "crates/lumenplot-viewer/src/lib.rs",

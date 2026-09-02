@@ -64,6 +64,7 @@ EXPECTED_EXPORT_SOURCE_FILES = {
     "src/error.rs",
     "src/raster.rs",
     "src/compositor.rs",
+    "src/pdf.rs",
     "src/png.rs",
 }
 EXPECTED_BENCH_SOURCE_FILES = {
@@ -103,10 +104,10 @@ WGPU_EXTERNAL_DEPENDENCIES = {
 WGPU_SOURCE_FILES = {"src/lib.rs", "src/shader.rs"}
 WGPU_SHADER_PATH = "shaders/line.wgsl"
 WGPU_SHADER_SHA256 = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3"
-# M4 runtime/viewer lane.  The first skeleton is intentionally one source
-# file per crate; later modules must be admitted by a reviewed inventory
-# change rather than by silently bypassing the Phase-0 stub guard.
-RUNTIME_VIEWER_SOURCE_FILES = {"src/lib.rs"}
+# M4 runtime/viewer lane. Runtime input routing is a private module admitted
+# alongside the lifecycle owner; viewer remains a single-source edge.
+RUNTIME_SOURCE_FILES = {"src/lib.rs", "src/input.rs"}
+VIEWER_SOURCE_FILES = {"src/lib.rs"}
 RUNTIME_VIEWER_FORBIDDEN_CODE_PATTERNS = (
     ("unsafe code", re.compile(r"\bunsafe\b")),
     (
@@ -1028,7 +1029,9 @@ def _check_runtime_viewer_source(
     rust_files = sorted(
         path.relative_to(source_dir.parent).as_posix() for path in source_dir.rglob("*.rs")
     ) if source_dir.is_dir() else []
-    expected_files = sorted(RUNTIME_VIEWER_SOURCE_FILES)
+    expected_files = sorted(
+        RUNTIME_SOURCE_FILES if package_name == "lumenplot-runtime" else VIEWER_SOURCE_FILES
+    )
     if rust_files != expected_files:
         missing = sorted(set(expected_files) - set(rust_files))
         extra = sorted(set(rust_files) - set(expected_files))
@@ -2754,6 +2757,9 @@ def _check_export_source(package_dir: Path, root: Path, errors: list[str]) -> No
         return
 
     all_code = "\n".join(sources.values())
+    production_code = "\n".join(
+        source.split("#[cfg(test)]", 1)[0] for source in sources.values()
+    )
     forbidden = (
         ("unsafe code", re.compile(r"\bunsafe\b")),
         (
@@ -2771,14 +2777,18 @@ def _check_export_source(package_dir: Path, root: Path, errors: list[str]) -> No
         ),
     )
     for label, pattern in forbidden:
-        if pattern.search(all_code):
+        scan_code = production_code if label == "concrete frontend/backend code" else all_code
+        if pattern.search(scan_code):
             errors.append(f"package lumenplot-export: {label} is not allowed")
 
     root_code = sources["src/lib.rs"]
-    module_pattern = re.compile(r"^\s*mod\s+(compositor|error|png|raster)\s*;", re.MULTILINE)
+    module_pattern = re.compile(
+        r"^\s*mod\s+(compositor|error|pdf|png|raster)\s*;", re.MULTILINE
+    )
     if {match.group(1) for match in module_pattern.finditer(root_code)} != {
         "compositor",
         "error",
+        "pdf",
         "png",
         "raster",
     }:

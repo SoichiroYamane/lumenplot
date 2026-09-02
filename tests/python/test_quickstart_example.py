@@ -60,7 +60,17 @@ class QuickstartRunTests(unittest.TestCase):
             completed = subprocess.run(
                 [sys.executable, str(QUICKSTART)],
                 cwd=workdir,
-                env={**os.environ},
+                env={
+                    **os.environ,
+                    "PYTHONPATH": os.pathsep.join(
+                        part
+                        for part in (
+                            str(REPO_ROOT / "python"),
+                            os.environ.get("PYTHONPATH", ""),
+                        )
+                        if part
+                    ),
+                },
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=120,

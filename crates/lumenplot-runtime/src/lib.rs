@@ -21,6 +21,8 @@ use std::thread::{self, ThreadId};
 
 use lumenplot_render_wgpu::{RenderError, RenderErrorKind, Renderer};
 
+mod input;
+
 const MAX_SURFACES: usize = 64;
 const MAX_SURFACE_DIMENSION: u32 = 16_384;
 
