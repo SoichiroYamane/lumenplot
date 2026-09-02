@@ -30,7 +30,7 @@ const MAX_SURFACE_DIMENSION: u32 = 16_384;
 pub enum LoopMode {
     /// The standalone viewer owns the blocking native loop boundary.
     NativeOwned,
-    /// An embedding host owns the loop and calls [`EngineSession::pump_once`].
+    /// An embedding host owns the loop and drives the internal pump boundary.
     HostPumped,
 }
 
@@ -313,6 +313,9 @@ pub struct EngineSession {
     work_generation: WorkGeneration,
     device_generation: DeviceGeneration,
     latest_scene_revision: Option<SceneRevision>,
+    // The internal host-pump entry is staged until an accepted transport
+    // drives it outside the lifecycle tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     pumping: bool,
     _main_thread_only: PhantomData<Rc<()>>,
 }
@@ -424,7 +427,8 @@ impl EngineSession {
     }
 
     /// Pumps one nonblocking host-owned loop iteration.
-    pub fn pump_once(&mut self) -> Result<LoopOutcome, RuntimeError> {
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn pump_once(&mut self) -> Result<LoopOutcome, RuntimeError> {
         self.ensure_owner()?;
         if !matches!(self.loop_mode, LoopMode::HostPumped) {
             return Err(RuntimeError::new(

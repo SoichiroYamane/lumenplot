@@ -125,6 +125,10 @@ VIEWER_FORBIDDEN_CODE_PATTERNS = RUNTIME_VIEWER_FORBIDDEN_CODE_PATTERNS + (
         re.compile(r"\b(?:wgpu|winit|window)\b", re.I),
     ),
 )
+RUNTIME_VIEWER_PUBLIC_PUMP_PATTERNS = {
+    "lumenplot-runtime": re.compile(r"\bpub\s+fn\s+pump_once\b"),
+    "lumenplot-viewer": re.compile(r"\bpub\s+fn\s+pump\b"),
+}
 # Option A from the accepted architecture decision permits only the accepted
 # system-device boundary.  These are exact path, symbol, signature, and
 # statement anchors; they are not a crate-wide unsafe waiver.
@@ -1046,6 +1050,9 @@ def _check_runtime_viewer_source(
         return
     if NO_MANGLE_RE.search(code):
         errors.append(f"package {package_name}: exported ABI is not allowed")
+    public_pump = RUNTIME_VIEWER_PUBLIC_PUMP_PATTERNS[package_name]
+    if public_pump.search(code):
+        errors.append(f"package {package_name}: generic pump API must remain internal")
     patterns = (
         VIEWER_FORBIDDEN_CODE_PATTERNS
         if package_name == "lumenplot-viewer"

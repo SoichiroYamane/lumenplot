@@ -78,11 +78,6 @@ impl Viewer {
         self.session.run_native_loop()
     }
 
-    /// Pumps one explicit host-owned loop iteration.
-    pub fn pump(&mut self) -> Result<LoopOutcome, RuntimeError> {
-        self.session.pump_once()
-    }
-
     /// Creates one session-owned logical surface.
     pub fn create_surface(&mut self, size: [u32; 2]) -> Result<SurfaceId, RuntimeError> {
         self.session.create_surface(size)
@@ -185,25 +180,15 @@ mod tests {
     }
 
     #[test]
-    fn show_and_pump_follow_the_declared_loop_mode() {
+    fn show_respects_the_declared_loop_mode_without_public_pump_api() {
         let mut native = Viewer::new(scene(), LoopMode::NativeOwned);
         assert_eq!(
             native.show().expect("native show"),
             LoopOutcome::NativeLoopEntered
         );
-        assert_eq!(
-            native
-                .pump()
-                .expect_err("native viewer is not host-pumped")
-                .kind(),
-            lumenplot_runtime::RuntimeErrorKind::HostLoopMisuse
-        );
 
         let mut host = Viewer::new(scene(), LoopMode::HostPumped);
-        assert_eq!(
-            host.pump().expect("host pump"),
-            LoopOutcome::HostPumpCompleted
-        );
+        assert_eq!(host.loop_mode(), LoopMode::HostPumped);
         assert_eq!(
             host.show().expect_err("host retains loop ownership").kind(),
             lumenplot_runtime::RuntimeErrorKind::HostLoopMisuse
@@ -213,7 +198,6 @@ mod tests {
     #[test]
     fn viewer_delegates_surface_and_terminal_lifecycle_without_resurrection() {
         let mut viewer = Viewer::new(scene(), LoopMode::HostPumped);
-        viewer.pump().expect("host pump");
         let surface = viewer.create_surface([320, 240]).expect("surface");
         assert_eq!(
             viewer.resize(surface, [640, 480]).expect("resize"),

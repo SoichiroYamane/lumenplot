@@ -1935,6 +1935,36 @@ fn body_macro_is_below_root_scope() {
             "package lumenplot-viewer: concrete runtime backend code is not allowed",
         )
 
+    def test_runtime_public_pump_api_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_runtime_viewer_lane(root)
+            path = root / "crates/lumenplot-runtime/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace("fn pump_once(", "pub fn pump_once(", 1),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-runtime: generic pump API must remain internal",
+        )
+
+    def test_viewer_public_pump_api_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_runtime_viewer_lane(root)
+            path = root / "crates/lumenplot-viewer/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source + "\npub fn pump(&mut self) {}\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-viewer: generic pump API must remain internal",
+        )
+
     def add_bench_module_files(self, root: Path) -> None:
         """Write the exact accepted bench inventory except ``src/lib.rs``."""
 
