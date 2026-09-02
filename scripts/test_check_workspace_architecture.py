@@ -87,6 +87,16 @@ BASELINE_METAL_SOURCE = """//! Private B2-P prototype documentation stub for the
 //! Binding implementation is deferred until its accepted bridge contract lands.
 """
 
+BASELINE_RUNTIME_SOURCE = """//! Private Phase-0 documentation stub for runtime lifecycle ownership.
+//!
+//! Runtime implementation is deferred until the renderer boundary is ready.
+"""
+
+BASELINE_VIEWER_SOURCE = """//! Private Phase-0 documentation stub for the standalone viewer edge.
+//!
+//! Viewer implementation is deferred until facade and runtime contracts land.
+"""
+
 
 def reset_metal_crate_to_baseline(root: Path) -> None:
     source = root / "crates/lumenplot-render-metal/src/lib.rs"
@@ -108,6 +118,19 @@ def reset_metal_crate_to_baseline(root: Path) -> None:
     source.write_text(BASELINE_METAL_SOURCE, encoding="utf-8")
 
 
+def reset_runtime_viewer_to_baseline(root: Path) -> None:
+    """Restore the paired M4 crates to their documentation-only baseline."""
+
+    (root / "crates/lumenplot-runtime/src/lib.rs").write_text(
+        BASELINE_RUNTIME_SOURCE,
+        encoding="utf-8",
+    )
+    (root / "crates/lumenplot-viewer/src/lib.rs").write_text(
+        BASELINE_VIEWER_SOURCE,
+        encoding="utf-8",
+    )
+
+
 class WorkspaceArchitectureMutationTests(unittest.TestCase):
     def fixture(self) -> tempfile.TemporaryDirectory[str]:
         temporary = tempfile.TemporaryDirectory(prefix="lumenplot-architecture-")
@@ -121,6 +144,7 @@ class WorkspaceArchitectureMutationTests(unittest.TestCase):
         reset_python_bridge_to_baseline(fixture_root)
         reset_bench_crate_to_baseline(fixture_root)
         reset_metal_crate_to_baseline(fixture_root)
+        reset_runtime_viewer_to_baseline(fixture_root)
         scripts_dir = fixture_root / "scripts"
         scripts_dir.mkdir()
         shutil.copy2(CHECKER, scripts_dir / CHECKER.name)
@@ -1825,6 +1849,91 @@ fn body_macro_is_below_root_scope() {
             "encode_line_frame_png has an unexpected signature",
         )
 
+
+    def activate_runtime_viewer_lane(self, root: Path) -> None:
+        """Restore the exact active M4 source pair from this checkout."""
+
+        shutil.copy2(
+            ROOT / "crates/lumenplot-runtime/src/lib.rs",
+            root / "crates/lumenplot-runtime/src/lib.rs",
+        )
+        shutil.copy2(
+            ROOT / "crates/lumenplot-viewer/src/lib.rs",
+            root / "crates/lumenplot-viewer/src/lib.rs",
+        )
+
+    def test_runtime_viewer_stub_source_still_enforced_without_pair(self) -> None:
+        def mutate(root: Path) -> None:
+            (root / "crates/lumenplot-runtime/src/lib.rs").write_text(
+                "//! partial\n\nfn hidden() {}\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-runtime: source must be documentation-only",
+        )
+
+    def test_runtime_viewer_active_pair_passes_checker(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            self.activate_runtime_viewer_lane(fixture_root)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+            self.assertIn("workspace architecture: OK", output)
+
+    def test_runtime_viewer_partial_activation_fails_closed(self) -> None:
+        def mutate(root: Path) -> None:
+            shutil.copy2(
+                ROOT / "crates/lumenplot-runtime/src/lib.rs",
+                root / "crates/lumenplot-runtime/src/lib.rs",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-runtime: source must be documentation-only",
+        )
+
+    def test_runtime_viewer_active_inventory_rejects_extra_source(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_runtime_viewer_lane(root)
+            (root / "crates/lumenplot-runtime/src/extra.rs").write_text(
+                "pub(crate) fn stray() {}\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-runtime: exact active source inventory mismatch",
+        )
+
+    def test_runtime_viewer_active_safety_boundary_rejects_unsafe_code(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_runtime_viewer_lane(root)
+            path = root / "crates/lumenplot-runtime/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8") + "\nfn forbidden() { unsafe {} }\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-runtime: unsafe code is not allowed",
+        )
+
+    def test_runtime_viewer_active_viewer_backend_ownership_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.activate_runtime_viewer_lane(root)
+            path = root / "crates/lumenplot-viewer/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8") + "\nfn forbidden() { let _: wgpu::Thing; }\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-viewer: concrete runtime backend code is not allowed",
+        )
 
     def add_bench_module_files(self, root: Path) -> None:
         """Write the exact accepted bench inventory except ``src/lib.rs``."""

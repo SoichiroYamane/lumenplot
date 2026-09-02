@@ -103,6 +103,28 @@ WGPU_EXTERNAL_DEPENDENCIES = {
 WGPU_SOURCE_FILES = {"src/lib.rs", "src/shader.rs"}
 WGPU_SHADER_PATH = "shaders/line.wgsl"
 WGPU_SHADER_SHA256 = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3"
+# M4 runtime/viewer lane.  The first skeleton is intentionally one source
+# file per crate; later modules must be admitted by a reviewed inventory
+# change rather than by silently bypassing the Phase-0 stub guard.
+RUNTIME_VIEWER_SOURCE_FILES = {"src/lib.rs"}
+RUNTIME_VIEWER_FORBIDDEN_CODE_PATTERNS = (
+    ("unsafe code", re.compile(r"\bunsafe\b")),
+    (
+        "serialization or wire code",
+        re.compile(r"\b(?:serde|bincode|postcard|rmp|wire|persistence|serialize|deserialize)\b"),
+    ),
+    (
+        "frontend bridge code",
+        re.compile(r"\b(?:python|matplotlib|numpy|pyo3)\b", re.I),
+    ),
+    ("Metal backend naming", re.compile(r"\b(?:metal|mtl|objc2)\b", re.I)),
+)
+VIEWER_FORBIDDEN_CODE_PATTERNS = RUNTIME_VIEWER_FORBIDDEN_CODE_PATTERNS + (
+    (
+        "concrete runtime backend code",
+        re.compile(r"\b(?:wgpu|winit|window)\b", re.I),
+    ),
+)
 # Option A from the accepted architecture decision permits only the accepted
 # system-device boundary.  These are exact path, symbol, signature, and
 # statement anchors; they are not a crate-wide unsafe waiver.
@@ -984,6 +1006,54 @@ def _check_stub_source(package_name: str, source_dir: Path, root: Path, errors: 
     if NO_MANGLE_RE.search(code):
         errors.append(f"package {package_name}: exported ABI is not allowed")
     _check_forbidden_code(package_name, code, errors)
+
+
+def _check_runtime_viewer_source(
+    package_name: str,
+    source_dir: Path,
+    root: Path,
+    errors: list[str],
+) -> None:
+    """Enforce the narrow active M4 source and safety boundary."""
+
+    rust_files = sorted(
+        path.relative_to(source_dir.parent).as_posix() for path in source_dir.rglob("*.rs")
+    ) if source_dir.is_dir() else []
+    expected_files = sorted(RUNTIME_VIEWER_SOURCE_FILES)
+    if rust_files != expected_files:
+        missing = sorted(set(expected_files) - set(rust_files))
+        extra = sorted(set(rust_files) - set(expected_files))
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ",".join(missing))
+        if extra:
+            details.append("extra " + ",".join(extra))
+        errors.append(
+            f"package {package_name}: exact active source inventory mismatch"
+            + (" (" + "; ".join(details) + ")" if details else "")
+        )
+        return
+
+    source_path = source_dir / "lib.rs"
+    try:
+        source = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        errors.append(f"package {package_name}: cannot read {_logical_path(source_path, root)}")
+        return
+    code = _strip_rust_comments_and_literals(source)
+    if not code.strip():
+        errors.append(f"package {package_name}: active source must contain implementation code")
+        return
+    if NO_MANGLE_RE.search(code):
+        errors.append(f"package {package_name}: exported ABI is not allowed")
+    patterns = (
+        VIEWER_FORBIDDEN_CODE_PATTERNS
+        if package_name == "lumenplot-viewer"
+        else RUNTIME_VIEWER_FORBIDDEN_CODE_PATTERNS
+    )
+    for label, pattern in patterns:
+        if pattern.search(code):
+            errors.append(f"package {package_name}: {label} is not allowed")
 
 
 def _find_matching_brace(code: str, opening: int) -> int:
@@ -3296,6 +3366,30 @@ def _wgpu_activation_reason(root: Path) -> str | None:
     return None
 
 
+def _runtime_viewer_activation_reason(root: Path) -> str | None:
+    """Return why the paired M4 runtime/viewer contract activates, or None.
+
+    Both crates must contain implementation code before either crate leaves
+    the Phase-0 documentation-only guard.  This prevents a partial lane from
+    silently gaining the active allowance and mirrors the fail-closed policy
+    used by the other staged implementation boundaries.
+    """
+
+    packages = ("lumenplot-runtime", "lumenplot-viewer")
+    active: list[str] = []
+    for package_name in packages:
+        source_path = root / "crates" / package_name / "src" / "lib.rs"
+        try:
+            source = source_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return None
+        if _strip_rust_comments_and_literals(source).strip():
+            active.append(package_name)
+    if len(active) == len(packages):
+        return "paired runtime/viewer src/lib.rs implementation"
+    return None
+
+
 RENDER_API_FORBIDDEN_CODE_PATTERNS = (
     FORBIDDEN_CODE_PATTERNS[0],
     FORBIDDEN_CODE_PATTERNS[1],
@@ -4719,6 +4813,11 @@ def _check_package_source(
         _check_wgpu_source(package_dir, root, errors)
     elif package_name == "lumenplot-render-metal" and _metal_activation_reason(root) is not None:
         _check_metal_source(package_dir, root, errors)
+    elif (
+        package_name in {"lumenplot-runtime", "lumenplot-viewer"}
+        and _runtime_viewer_activation_reason(root) is not None
+    ):
+        _check_runtime_viewer_source(package_name, package_dir / "src", root, errors)
     else:
         _check_stub_source(package_name, package_dir / "src", root, errors)
 
