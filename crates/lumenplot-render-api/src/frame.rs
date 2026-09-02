@@ -26,6 +26,19 @@ pub(crate) const MAX_FRAME_DIMENSION: u32 = 16_384;
 /// Maximum canvas pixels accepted before any renderer-side allocation.
 pub(crate) const MAX_FRAME_PIXELS: usize = 16_777_216;
 
+/// Backend-neutral layout resolved from one engine snapshot.
+///
+/// This stays private to the render boundary. Interactive consumers and the
+/// internal packet validator read these facts from the same value instead of
+/// independently reconstructing canvas or clip geometry.
+#[derive(Clone, Copy)]
+pub(crate) struct ResolvedLayout {
+    pub(crate) canvas: LogicalSize,
+    pub(crate) plot_rect: LogicalRect,
+    pub(crate) logical_units_per_inch: f64,
+    pub(crate) background: SrgbRgba8,
+}
+
 /// Error shape for seam construction and scene resolution.
 ///
 /// The message is sanitized: it carries the engine's stable kind phrase and
@@ -198,10 +211,12 @@ impl SceneHandle {
             revision: PacketRevision(snapshot.revision()),
             canvas_px: spec.canvas_px,
             dots_per_inch: spec.dots_per_inch,
-            canvas_logical: frame.canvas(),
-            plot_rect: frame.plot_rect(),
-            logical_units_per_inch: frame.logical_units_per_inch(),
-            background: frame.background(),
+            layout: ResolvedLayout {
+                canvas: frame.canvas(),
+                plot_rect: frame.plot_rect(),
+                logical_units_per_inch: frame.logical_units_per_inch(),
+                background: frame.background(),
+            },
             line_color: spec.line_color,
             line_width_px: spec.line_width_px,
             series,
@@ -323,10 +338,7 @@ pub struct FramePacket {
     pub(crate) revision: PacketRevision,
     pub(crate) canvas_px: [u32; 2],
     pub(crate) dots_per_inch: f64,
-    pub(crate) canvas_logical: LogicalSize,
-    pub(crate) plot_rect: LogicalRect,
-    pub(crate) logical_units_per_inch: f64,
-    pub(crate) background: SrgbRgba8,
+    pub(crate) layout: ResolvedLayout,
     pub(crate) line_color: SrgbRgba8,
     pub(crate) line_width_px: f64,
     pub(crate) series: Vec<PacketSeries>,
@@ -350,22 +362,22 @@ impl FramePacket {
 
     /// Canvas size in logical units.
     pub fn canvas_logical(&self) -> LogicalSize {
-        self.canvas_logical
+        self.layout.canvas
     }
 
     /// Plot rectangle in logical units.
     pub fn plot_rect(&self) -> LogicalRect {
-        self.plot_rect
+        self.layout.plot_rect
     }
 
     /// Logical units-per-inch recorded on the resolved frame.
     pub fn logical_units_per_inch(&self) -> f64 {
-        self.logical_units_per_inch
+        self.layout.logical_units_per_inch
     }
 
     /// Fill color of the plot background.
     pub fn background(&self) -> SrgbRgba8 {
-        self.background
+        self.layout.background
     }
 
     /// Resolved line series in display space.
@@ -495,6 +507,30 @@ mod tests {
         let first = packet.series()[0].segments()[0].points()[0];
         assert!((first.x() - 60.0).abs() < 1e-9);
         assert!((first.y() - 305.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn packet_exposes_one_resolved_logical_layout_to_consumers() {
+        let handle = fixture_handle();
+        let packet = handle.resolve_frame(&fixture_spec()).expect("packet");
+
+        assert_eq!(packet.canvas_logical().width(), f64::from(CANVAS_W));
+        assert_eq!(packet.canvas_logical().height(), f64::from(CANVAS_H));
+        assert_eq!(packet.plot_rect().x_min(), 60.0);
+        assert_eq!(packet.plot_rect().y_min(), 40.0);
+        assert_eq!(packet.plot_rect().x_max(), 780.0);
+        assert_eq!(packet.plot_rect().y_max(), 570.0);
+        assert_eq!(packet.logical_units_per_inch(), 1.0);
+        let background = packet.background();
+        assert_eq!(
+            (
+                background.r(),
+                background.g(),
+                background.b(),
+                background.a()
+            ),
+            (255, 255, 255, 255,)
+        );
     }
 
     #[test]
