@@ -94,7 +94,7 @@ from matplotlib.lines import Line2D
 fig = figure.Figure(figsize=(4.0, 3.0), dpi=100)
 canvas = FigureCanvasLumenPlot(fig)
 ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
-ax.axison = False         # this example keeps the frame undecorated (a fixture
+ax.set_axis_off()         # this example keeps the frame undecorated (a fixture
                           # choice — decorated axes are strict-eligible too)
 ax.add_line(
     Line2D(
@@ -129,7 +129,7 @@ solid (non-dashed) strokes without markers, and the fixed style surface shown
 above (`butt` cap, `miter` join), producing PNG output at the requested DPI.
 
 Since [PR #63](https://github.com/SoichiroYamane/lumenplot/pull/63)
-(ADR-0015 §4a), a standard `Axes` with decorations enabled (`axison=True`)
+(ADR-0015 §4a), a standard `Axes` with decorations enabled
 is also strict-eligible and renders natively: solid major gridlines, major
 tick strokes (`markersize * dpi_eff / 72` px), and visible spines in the same
 fixed `butt`/`miter` style. Decorated axes require `facecolor='none'` and

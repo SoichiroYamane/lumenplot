@@ -333,6 +333,7 @@ jobs:
           INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
           test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
           /tmp/work/venv311/bin/python -m unittest discover -s /src/tests/python
+          /tmp/work/venv311/bin/python /src/scripts/test_phase3b_runtime.py --expected-version "$CARGO_VERSION" > /evidence/phase3b-runtime-cp311.json
           /tmp/work/venv311/bin/python -c 'from lumenplot_mpl import _native; import numpy as np; _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success"); print("invalid-input")'
           /tmp/work/venv311/bin/python -c 'import importlib.metadata as metadata; print(metadata.version("lumenplot-mpl"))' > /tmp/installed-version311
           IFS= read -r INSTALLED_VERSION < /tmp/installed-version311
@@ -362,6 +363,7 @@ jobs:
           INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
           test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
           /tmp/work/venv312/bin/python -m unittest discover -s /src/tests/python
+          /tmp/work/venv312/bin/python /src/scripts/test_phase3b_runtime.py --expected-version "$CARGO_VERSION" > /evidence/phase3b-runtime-cp312.json
           /tmp/work/venv312/bin/python -c 'from lumenplot_mpl import _native; import numpy as np; _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success"); print("invalid-input")'
           /tmp/work/venv312/bin/python -c 'import importlib.metadata as metadata; print(metadata.version("lumenplot-mpl"))' > /tmp/installed-version312
           IFS= read -r INSTALLED_VERSION < /tmp/installed-version312
@@ -391,6 +393,7 @@ jobs:
           INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
           test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
           /tmp/work/venv313/bin/python -m unittest discover -s /src/tests/python
+          /tmp/work/venv313/bin/python /src/scripts/test_phase3b_runtime.py --expected-version "$CARGO_VERSION" > /evidence/phase3b-runtime-cp313.json
           /tmp/work/venv313/bin/python -c 'from lumenplot_mpl import _native; import numpy as np; _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success"); print("invalid-input")'
           /tmp/work/venv313/bin/python -c 'import importlib.metadata as metadata; print(metadata.version("lumenplot-mpl"))' > /tmp/installed-version313
           IFS= read -r INSTALLED_VERSION < /tmp/installed-version313
@@ -420,6 +423,7 @@ jobs:
           INPUT_WHEEL_SHA256="$(sha256sum "$WHEEL" | cut -d' ' -f1)"
           test "$INPUT_WHEEL_SHA256" = "$WHEEL_SHA256"
           /tmp/work/venv314/bin/python -m unittest discover -s /src/tests/python
+          /tmp/work/venv314/bin/python /src/scripts/test_phase3b_runtime.py --expected-version "$CARGO_VERSION" > /evidence/phase3b-runtime-cp314.json
           /tmp/work/venv314/bin/python -c 'from lumenplot_mpl import _native; import numpy as np; _native.render_line_png(np.array([0.0, 1.0]), np.array([0.0, 1.0]), viewport=(0.0, 1.0, 0.0, 1.0), canvas=(4.0, 4.0), plot_rect=(0.0, 0.0, 4.0, 4.0), logical_units_per_inch=72.0, output_dpi=72.0, line_rgba=(0, 0, 0, 255), line_width=1.0, background_rgba=(255, 255, 255, 255)); print("helper-success"); print("invalid-input")'
           /tmp/work/venv314/bin/python -c 'import importlib.metadata as metadata; print(metadata.version("lumenplot-mpl"))' > /tmp/installed-version314
           IFS= read -r INSTALLED_VERSION < /tmp/installed-version314
@@ -441,7 +445,23 @@ jobs:
           cp "$PWD/evidence/phase3a2-wheel-evidence.json" "$PWD/phase3a2-wheel-evidence.json"
           # The mutation-test harness builds an external-consumer crate with
           # CARGO_NET_OFFLINE=true, which resolves against the host cargo
-          # registry cache; warm it the same way ci.yml does before the run.
+          # warm it the same way ci.yml does before the run.
           cargo fetch --locked
+          python3 scripts/test_phase3b_runtime.py --verify-evidence \
+            evidence/phase3b-runtime-cp311.json \
+            evidence/phase3b-runtime-cp312.json \
+            evidence/phase3b-runtime-cp313.json \
+            evidence/phase3b-runtime-cp314.json
           python3 scripts/check_workspace_architecture.py --phase3a2-evidence
+          python3 -m unittest scripts.test_phase3b_runtime
           python3 -m unittest scripts/test_check_workspace_architecture.py
+
+      - name: Upload packaged Phase-3B runtime evidence
+        # Evidence storage only; this is not a release or publication path.
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: phase3b-public-backend-runtime
+          path: evidence/phase3b-runtime-cp*.json
+          retention-days: 7
+          if-no-files-found: error

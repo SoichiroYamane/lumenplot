@@ -3214,10 +3214,17 @@ def _phase3a2_activation_reasons(root: Path) -> list[str]:
 
 
 PHASE3A2_PHASE3B_PACKAGE_FILES = frozenset(
-    {"backend.py", "__init__.py", "textpath.py"}
+    {
+        "__init__.py",
+        "backend.py",
+        "backend_preflight.py",
+        "backend_support.py",
+        "backend_types.py",
+        "textpath.py",
+    }
 )
 # While the Phase-3B allowance is active, these are the ONLY matplotlib
-# shapes still rejected inside the three phase3b-owned package files; every
+# shapes still rejected inside the phase3b-owned package files; every
 # other occurrence (qualified chains such as matplotlib.lines.Line2D,
 # rcParams access, docstring prose) is admitted because the backend module
 # itself is the adapter and textpath.py consumes the documented public
