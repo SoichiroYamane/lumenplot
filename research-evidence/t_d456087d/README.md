@@ -4,7 +4,7 @@ Date: 2026-08-25 (JST). Environment: NixOS host, worktree
 `wt/t_d456087d` rebased on `origin/main` at `efb13a7`; native seam rebuilt
 from the merged tree (`cargo build -p lumenplot-python`, debug cdylib copied
 to `python/lumenplot_mpl/_native.abi3.so`); CPython 3.14 + Matplotlib 3.11.1
-evidence venv (`/home/sy/lp-verify/venv-evidence`) with the standard
+evidence venv (isolated evidence venv) with the standard
 LD_LIBRARY_PATH recipe.
 
 ## What is proven
