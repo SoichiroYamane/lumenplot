@@ -16,12 +16,12 @@ Phase-3B public Matplotlib adapter contract for the first implementable strict
 slice; independent review passed with no blocking findings at branch head
 `d9a7366`, and merged Phase-3A helper plus Phase-3A2 same-wheel evidence
 recorded in [ADR 0014](0014-phase3a2-pinned-manylinux-wheel-evidence.md) reconcile
-with this boundary. It freezes no implementation: no Python source,
-manifest, lockfile entry, wheel, workflow, or package artifact is authorized by
-this record. Every exact public Python surface name lives in API 0005's
-"Provisional names" section and remains unimplemented until the Phase-3B slice
-lands. The broad v1 Matplotlib requirements remain normative; this record does
-not close any full-v1 traceability row.
+with this boundary. The original record froze no implementation: no Python source, manifest,
+lockfile entry, wheel, workflow, or package artifact was authorized by the
+contract record alone. PR #89 now implements the bounded names recorded in API
+0005's "Names used by the bounded Phase-3B slice" section. The broad v1
+Matplotlib requirements remain normative; this record does not close any
+full-v1 traceability row.
 
 ## Requirement references
 
@@ -317,11 +317,11 @@ whole-frame Agg fallback, and accelerated-native explicitly deferred out of this
 slice. Errors reuse the lowercase API-0002 tokens through the existing exhaustive
 BridgeError mapping, with `LumenPlotError(RuntimeError)` remaining the only
 LumenPlot exception class; savefig/print_png keep `None` return semantics and a
-separate provisional helper returns owned bytes plus immutable diagnostics. The
+separate helper returns owned bytes plus immutable diagnostics. The
 crate DAG is unchanged: `lumenplot-python -> lumenplot ->
 {lumenplot-engine, lumenplot-export}`, with the engine free of Python and
-Matplotlib concrete types. Exact result/diagnostic field names remain in API
-0005's provisional-names section.
+Matplotlib concrete types. Exact bounded result/diagnostic field names are
+recorded in API 0005's names section.
 
 ### 12. Ordered delivery after acceptance
 

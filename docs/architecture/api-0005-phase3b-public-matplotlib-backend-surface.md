@@ -95,8 +95,8 @@ Matplotlib-compatible methods keep their contract shape:
 
 - `Figure.savefig(...)` / `canvas.print_figure(...)` / `canvas.print_png(...)`
   return `None`;
-- a separate provisional helper returns owned PNG bytes plus immutable
-  diagnostics (name in Provisional names);
+- a separate helper returns owned PNG bytes plus immutable
+  diagnostics (name in the bounded-name section below);
 - native success carries an empty diagnostics tuple;
 - hybrid success carries exactly one structured fallback diagnostic;
 - strict unsupported raises/fails with the stable `unsupported-capability`
