@@ -387,4 +387,73 @@ mod tests {
         );
         assert_eq!(series.source_len(), 2);
     }
+
+    #[test]
+    fn canonical_f64_values_survive_normalization_bit_exactly() {
+        // LP-DATA-001/002: normalization owns canonical values as f64. The
+        // near-one values are deliberately distinct in f64 but collapse when
+        // narrowed to f32, making an accidental precision conversion visible.
+        let x = vec![-0.0, f64::from_bits(1), 1.0 + 2.0 * f64::EPSILON, f64::MAX];
+        let y = vec![
+            f64::from_bits(0x8000_0000_0000_0000 | 1),
+            -f64::from_bits(1),
+            -1.0 - 2.0 * f64::EPSILON,
+            f64::MIN_POSITIVE,
+        ];
+        let normalized =
+            SeriesInput::from_owned_xy(Topology::ArbitraryXY, x.clone(), y.clone(), None)
+                .expect("finite values")
+                .into_normalized();
+
+        assert_eq!(normalized.points().len(), x.len());
+        for (index, point) in normalized.points().iter().enumerate() {
+            assert_eq!(point.source, index as u64);
+            assert_eq!(point.x.to_bits(), x[index].to_bits());
+            assert_eq!(point.y.to_bits(), y[index].to_bits());
+        }
+        assert_ne!(((x[2] as f32) as f64).to_bits(), x[2].to_bits());
+        assert_ne!(((y[2] as f32) as f64).to_bits(), y[2].to_bits());
+    }
+
+    #[test]
+    fn every_nonfinite_covered_coordinate_is_rejected() {
+        // LP-DATA-001/002 negative table: non-finite values cannot enter the
+        // canonical store, regardless of which coordinate carries them.
+        let cases = [
+            (f64::NAN, 0.0),
+            (f64::INFINITY, 0.0),
+            (f64::NEG_INFINITY, 0.0),
+            (0.0, f64::NAN),
+            (0.0, f64::INFINITY),
+            (0.0, f64::NEG_INFINITY),
+        ];
+        for (x, y) in cases {
+            let error = SeriesInput::from_owned_xy(Topology::ArbitraryXY, vec![x], vec![y], None)
+                .expect_err("non-finite covered payload must fail");
+            assert_eq!(error.kind(), SceneErrorKind::NonFiniteCanonical);
+        }
+    }
+
+    #[test]
+    fn segmented_input_rejects_empty_overlapping_adjacent_and_out_of_bounds_ranges() {
+        // The segmented constructor has an explicit structural contract:
+        // ranges are nonempty, sorted, strictly separated, and in bounds.
+        let invalid = vec![
+            vec![0..0],
+            vec![0..5],
+            vec![1..2, 0..1],
+            vec![0..1, 1..2],
+            vec![0..2, 1..3],
+        ];
+        for segments in invalid {
+            let error = SeriesInput::from_owned_xy(
+                Topology::ArbitraryXY,
+                vec![0.0, 1.0, 2.0, 3.0],
+                vec![0.0, 1.0, 2.0, 3.0],
+                Some(segments),
+            )
+            .expect_err("malformed segment ranges must fail");
+            assert_eq!(error.kind(), SceneErrorKind::InvalidInput);
+        }
+    }
 }
