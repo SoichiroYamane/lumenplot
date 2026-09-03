@@ -74,6 +74,40 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
 
         self.assert_rejected(mutate, "Cargo.lock checksum drift for wgpu")
 
+    def test_wgpu_naga_build_checksum_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "Cargo.lock"
+            source = path.read_text(encoding="utf-8")
+            marker = 'checksum = "b2bf919621e7975acb27d881bae2fb993e0d45c8e0446e85e6272971e00dc8df"'
+            self.assertIn(marker, source)
+            path.write_text(
+                source.replace(
+                    marker,
+                    'checksum = "0000000000000000000000000000000000000000000000000000000000000000"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "Cargo.lock checksum drift for naga")
+
+    def test_wgpu_sha2_build_checksum_drift_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "Cargo.lock"
+            source = path.read_text(encoding="utf-8")
+            marker = 'checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"'
+            self.assertIn(marker, source)
+            path.write_text(
+                source.replace(
+                    marker,
+                    'checksum = "0000000000000000000000000000000000000000000000000000000000000000"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_rejected(mutate, "Cargo.lock checksum drift for sha2")
+
     def test_wgpu_lock_inventory_digest_is_fail_closed(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "Cargo.lock"

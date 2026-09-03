@@ -101,6 +101,17 @@ WGPU_EXTERNAL_DEPENDENCIES = {
         "features": ["std", "wgsl", "vulkan"],
     },
 }
+WGPU_BUILD_EXTERNAL_DEPENDENCIES = {
+    "naga": {
+        "version": "=29.0.4",
+        "default-features": False,
+        "features": ["wgsl-in"],
+    },
+    "sha2": {
+        "version": "=0.10.9",
+        "default-features": False,
+    },
+}
 WGPU_SOURCE_FILES = {"src/lib.rs", "src/shader.rs"}
 WGPU_SHADER_PATH = "shaders/line.wgsl"
 WGPU_SHADER_SHA256 = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3"
@@ -4883,8 +4894,15 @@ def _check_dependencies(
             }
     else:
         expected_external = {}
+    expected_build_external = (
+        WGPU_BUILD_EXTERNAL_DEPENDENCIES
+        if package_name == "lumenplot-render-wgpu"
+        and _wgpu_activation_reason(root) is not None
+        else {}
+    )
     actual_edges: set[str] = set()
     actual_external: set[str] = set()
+    actual_build_external: set[str] = set()
     metal_gate_active = (
         package_name == "lumenplot-render-metal"
         # Same activation sentinel as the expected-inventory branch above;
@@ -4894,6 +4912,27 @@ def _check_dependencies(
     for table_path, dependencies in _walk_tables(manifest):
         if not isinstance(dependencies, dict):
             errors.append(f"package {package_name}: dependency table is invalid")
+            continue
+        if table_path == ("build-dependencies",):
+            if not expected_build_external:
+                if dependencies:
+                    errors.append(
+                        f"package {package_name}: only runtime path dependencies are allowed"
+                    )
+                continue
+            for dependency_name in sorted(dependencies):
+                specification = dependencies[dependency_name]
+                expected_specification = expected_build_external.get(dependency_name)
+                if expected_specification is None:
+                    errors.append(
+                        f"package {package_name}: external build dependency {dependency_name!r} is not allowed"
+                    )
+                elif specification != expected_specification:
+                    errors.append(
+                        f"package {package_name}: external build dependency {dependency_name!r} has an unexpected specification"
+                    )
+                else:
+                    actual_build_external.add(dependency_name)
             continue
         if table_path != ("dependencies",):
             if metal_gate_active and table_path == ("target", METAL_TARGET_GATE, "dependencies"):
@@ -4971,6 +5010,18 @@ def _check_dependencies(
         if details:
             errors.append(
                 f"package {package_name}: exact external dependency inventory mismatch ({'; '.join(details)})"
+            )
+    if actual_build_external != set(expected_build_external):
+        missing = sorted(set(expected_build_external) - actual_build_external)
+        extra = sorted(actual_build_external - set(expected_build_external))
+        details = []
+        if missing:
+            details.append(f"missing {','.join(missing)}")
+        if extra:
+            details.append(f"extra {','.join(extra)}")
+        if details:
+            errors.append(
+                f"package {package_name}: exact build dependency inventory mismatch ({'; '.join(details)})"
             )
 
 
