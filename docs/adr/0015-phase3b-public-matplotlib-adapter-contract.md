@@ -1,6 +1,6 @@
 # ADR 0015: Phase-3B public Matplotlib adapter contract
 
-- Status: **Accepted contract — Phase-3B first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence pending**
+- Status: **Accepted contract — Phase-3B first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence recorded in PR #89 CI; full compatibility/release evidence remains pending**
 - Date: 2026-08-23
 - Decision owner: architecture-authority
 - Recorded by: engineering-worker
@@ -51,11 +51,12 @@ point mechanics, point-unit linewidth semantics, style representability gaps,
 file-output semantics, and the known risks of inherited base-class format
 fallback.
 
-The repository still has no merged helper/wheel runtime evidence (Phase-3A/3A2
-implementation evidence is pending on a separate lane), and overview.md records
-the public Phase-3B contract as open. This proposal is therefore recorded now,
-against main, as a docs-only lane: it can be reviewed and reconciled with helper
-evidence without colliding with implementation work, but it authorizes none.
+The Phase-3A/3A2 helper and wheel runtime evidence is recorded in the
+CI-local same-wheel manifest, and PR #89 records the bounded Phase-3B public
+backend implementation, installed-wheel runtime smoke, hybrid default, and
+local contract-test evidence. This record remains the contract authority; it
+must not be read as a claim of full-v1 compatibility, platform support,
+accelerated-native delivery, or release readiness.
 
 ## Decision
 
@@ -376,21 +377,21 @@ Costs and residual constraints:
   comparisons are tolerance-based by design, not by omission.
 - The collector executes user artist code during preflight; this is documented,
   bounded to run before native allocation, and never a mutation.
-- Acceptance additionally requires reconciliation against merged Phase-3A/3A2
-  helper and wheel evidence; this document records no such evidence today.
+- PR #89 reconciles the bounded Phase-3B implementation with the merged
+  Phase-3A/3A2 helper and wheel evidence; full compatibility and release
+  evidence remain separate gates.
 
 ## Verification and evidence boundary
 
-Acceptance adds documentation only: two records and their index entries. No
-product source, manifests, lockfiles, CI dependencies, wheel artifacts,
-workflows, or publication settings exist for this slice yet, and no existing
-ADR/API record is edited. The workspace architecture checker and its unittest
-suite stayed green on the acceptance branch. After implementation, the governing
-verification is the API 0005 tests matrix (loader/import, collector trace,
-geometry/style oracle, native output, option/error matrix, fallback and terminal-
-failure injection, lifecycle/generation, forbidden-name scans, packaging and
-evidence gates), with any timing or compatibility-breadth claim routed through
-the benchmark skill's named-workload protocol.
+The original acceptance was documentation-only: two records and their index
+entries. Subsequent PR #89 supplies the bounded product source, manifest,
+workflow, wheel/runtime smoke, and local contract-test evidence described above.
+The governing verification remains the API 0005 tests matrix (loader/import,
+collector trace, geometry/style oracle, native output, option/error matrix,
+fallback and terminal-failure injection, lifecycle/generation, forbidden-name
+scans, packaging and evidence gates), with any timing or compatibility-breadth
+claim routed through the benchmark skill's named-workload protocol. The full-v1
+profile, platform, performance, and release gates remain open.
 
 ## Related records
 

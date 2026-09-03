@@ -109,7 +109,7 @@ def _eligible_canvas(figsize=(2.0, 1.0), dpi=100, line_kwargs=None):
     if not MATPLOTLIB_PRESENT:
         raise unittest.SkipTest("matplotlib not in this offline cell")
     fig = figure.Figure(figsize=figsize, dpi=dpi)
-    canvas = _load_backend().FigureCanvasLumenPlot(fig)
+    canvas = _load_backend().FigureCanvasLumenPlot(fig, mode="strict")
     ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
     ax.axison = False
     kwargs = {
@@ -542,7 +542,7 @@ class TestDecoratedAxesSpec(unittest.TestCase):
 
     def _render(self, build, figsize=(2.0, 1.0)):
         fig = figure.Figure(figsize=figsize, dpi=100)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
         ax.set_facecolor("none")  # no axes fill in this slice
         # Tick label glyphs are the T-lane deliverable.
@@ -713,7 +713,7 @@ class TestDecoratedAxesSpec(unittest.TestCase):
         """A 2x1 figure emits two axes groups; decorations stay clipped to
         their own axes rectangle and precede their own lines."""
         fig = figure.Figure(figsize=(2.0, 2.0), dpi=100)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         ax0 = fig.add_axes([0.1, 0.55, 0.8, 0.35])
         ax1 = fig.add_axes([0.1, 0.1, 0.8, 0.35])
         for ax in (ax0, ax1):
@@ -764,7 +764,7 @@ class TestStrictUnsupported(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
         ax.axison = False
         build(ax)
@@ -780,7 +780,7 @@ class TestStrictUnsupported(unittest.TestCase):
         text, so the eligible fixture carries ``facecolor='none'`` and
         label-less ticks."""
         fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])  # decorations on (default)
         ax.set_facecolor("none")
         ax.tick_params(labelbottom=False, labelleft=False)
@@ -835,7 +835,7 @@ class TestStrictUnsupported(unittest.TestCase):
     def test_strict_never_silently_falls_back_to_agg(self):
         """Strict failure must raise even though Agg is importable."""
         fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
         ax.set_facecolor("0.9")  # axes background outside the whitelist
         ax.add_line(Line2D([0, 1], [0, 1]))
@@ -860,7 +860,7 @@ class TestDecoratedAxesEligibility(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         fig = figure.Figure(figsize=figsize, dpi=100)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
         build(ax)
         ax.set_xlim(0.0, 10.0)
@@ -1096,7 +1096,7 @@ class TestTickLabelWireUp(unittest.TestCase):
             ax.minorticks_on()
 
         fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
         build(ax)
         ax.set_xlim(0, 10)
@@ -1227,7 +1227,7 @@ class TestDiagnosticsAndLifecycle(unittest.TestCase):
 
     def test_failed_attempt_does_not_publish(self):
         fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])  # unsupported: axison on
         ax.add_line(Line2D([0, 1], [0, 1]))
         ax.set_xlim(0, 10)
@@ -1252,7 +1252,7 @@ class TestDiagnosticsAndLifecycle(unittest.TestCase):
         with self.assertRaises(ValueError):
             backend_mod.FigureCanvasLumenPlot(fig, mode="turbo")
         canvas = backend_mod.FigureCanvasLumenPlot(fig)
-        self.assertEqual(canvas.mode, "strict")
+        self.assertEqual(canvas.mode, "hybrid")
 
 
 # ---------------------------------------------------------------------------

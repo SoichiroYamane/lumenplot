@@ -79,9 +79,13 @@ pip install .
 ```
 
 The install builds the Rust engine locally and registers the Matplotlib
-backend entry point.
+backend entry point. The source checkout intentionally does not contain a
+platform-specific `lumenplot_mpl._native` extension; run `pip install .` (or an
+equivalent maturin build) before native runtime tests. A source-only checkout
+skips native-dependent tests, while an existing but unusable extension remains
+a failure rather than being classified as setup.
 
-### Minimal example (strict mode, the default)
+### Minimal example (hybrid-explicit mode, the default)
 
 ```python
 import matplotlib
@@ -122,7 +126,7 @@ Notes:
 
 ### What strict mode supports today
 
-Strict mode (default) renders supported figures through the LumenPlot engine
+Strict mode (explicit) renders supported figures through the LumenPlot engine
 and raises an explicit `LumenPlotUnsupportedError` for anything else. The
 supported surface is deliberately narrow: `Line2D` artists on linear axes,
 solid (non-dashed) strokes without markers, and the fixed style surface shown
@@ -137,15 +141,21 @@ label-less ticks; minor ticks/gridlines, non-solid grids, titles, axis
 labels, offset text, subplotspec/gridspec children, and non-exact `Axes`
 subclasses are still refused with an explicit unsupported reason.
 
-Hybrid mode is opt-in per figure: it attempts the same native path first and,
-only on an explicit unsupported-capability failure, falls back to the whole
-frame with Matplotlib Agg, recording a diagnostic:
+Hybrid mode is the default per figure: it attempts the same native path first
+and, only on an explicit unsupported-capability failure, falls back to the
+whole frame with Matplotlib Agg, recording a diagnostic. It can also be named
+explicitly:
 
 ```python
 from lumenplot_mpl.backend import FigureCanvasLumenPlot
 
 canvas = FigureCanvasLumenPlot(fig, mode="hybrid")
 ```
+
+The current staged constructor spelling is `mode="hybrid"` (the default) or
+`mode="strict"`; it maps the bounded slice to the accepted
+`hybrid-explicit`/`strict-common-2d` roles. The canonical three-profile names
+and an end-to-end `accelerated-native` path remain later roadmap gates.
 
 Each render attempt republishes `fig.canvas.last_diagnostics`: a
 fallback leaves the single whole-frame diagnostic there; nothing degrades
@@ -189,8 +199,8 @@ any standard PNG decoder can read the file.
 
 - A stable public API or a production-ready renderer.
 - Full compatibility with Matplotlib private APIs or every custom `Artist`.
-- A claim that GPU execution, a fast path, or a particular output format is
-  already implemented.
+- A claim that complete GPU execution, a fast path, or a particular output
+  format is already supported across the v1 matrix.
 - Silent conversion, silent fallback, or silent loss of visual semantics.
 - Performance claims without a reproducible benchmark and environment record.
 
@@ -202,13 +212,17 @@ The current source snapshot contains a ten-crate Rust workspace at version
 Phase-1B the minimum Rust facade; Phase-2A/2B the private line-frame seam and the
 deterministic CPU raster/PNG sink in `crates/lumenplot-export`; Phase-3A/3A2 the
 hidden facade, private Python helper, and pinned manylinux wheel evidence; and
-the first Phase-3B slice ships the strict-mode public Matplotlib backend with an
-opt-in hybrid fallback, as documented in [Getting started](#getting-started-pre-alpha).
-These are pre-alpha implementation slices with local contract evidence — not a
-completed v1 product, support matrix, or release. The GPU render lanes remain
-documentation-only stubs: `lumenplot-render-api` holds a minimal CPU-side frame
-seam while `lumenplot-runtime`, `lumenplot-viewer`, `lumenplot-render-metal`,
-and `lumenplot-render-wgpu` are placeholder crates. `crates/lumenplot` remains
+the first Phase-3B slice ships the strict-mode public Matplotlib backend with a
+hybrid-explicit default, as documented in [Getting started](#getting-started-pre-alpha).
+PR #89 additionally records bounded private RenderPacket validation,
+offscreen wgpu line geometry/shader/readback tests, backend-neutral runtime and
+viewer state-model tests, semantic input routing, a private line-only vector
+PDF sink, and fail-closed benchmark validation. These are pre-alpha
+implementation slices with local evidence — not a completed v1 product,
+support matrix, or release. The full semantic/layout frame, real window/present
+loop, complete resource lifecycle integration, text/font/export/accessibility
+surface, real-GPU matrix, accelerated-native measurement, and release closure
+remain open. `crates/lumenplot` remains
 the sole public Rust facade, following the accepted [facade and crate dependency
 graph](docs/adr/0003-facade-and-crate-dag.md). Each package records the dual
 license, project repository, root README, and `publish = false`.
@@ -225,18 +239,25 @@ the authoritative public narrative for this baseline.
 
 ## Verification commands
 
-These are the repository gates observed during the read-only audit and are the
-commands to run again after integration. Listing a command is not a claim that
-the current partial working tree passes it.
+The reproducible contributor gate enters the declared Nix environment, builds
+the local package, uses a temporary writable Matplotlib cache, and runs the
+locked Rust, Python, architecture, dependency, traceability, and repository
+checks:
 
 ```bash
-cargo fmt --all -- --check
-cargo test --locked --workspace --all-features
-cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-cargo metadata --locked --no-deps --format-version 1
-nix flake check --all-systems --no-build --no-update-lock-file
-git diff --check
+nix develop -c bash scripts/verify.sh
 ```
+
+For an environment that already has the local package installed, the two
+explicit bypasses are available for diagnosis only:
+
+```bash
+bash scripts/verify.sh --skip-install --skip-nix
+```
+
+The bypass command is not a replacement for the default gate: native runtime
+tests must be run after a successful local build, and the Nix check must be
+reported separately when it is skipped.
 
 The final publication gate also needs a dedicated secret scanner over the
 approved working tree and reachable history. Do not treat a pattern-only scan

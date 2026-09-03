@@ -99,7 +99,7 @@ def _strict_canvas(figsize=(2.0, 1.0), dpi=100):
     if not MATPLOTLIB_PRESENT:
         raise unittest.SkipTest("matplotlib not in this offline cell")
     fig = figure.Figure(figsize=figsize, dpi=dpi)
-    canvas = _load_backend().FigureCanvasLumenPlot(fig)
+    canvas = _load_backend().FigureCanvasLumenPlot(fig, mode="strict")
     return fig, canvas
 
 

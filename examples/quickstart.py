@@ -39,7 +39,8 @@ OUTPUT_PATH = "quickstart.png"
 
 
 def main() -> int:
-    # Strict mode renders the eligible trace. This example keeps the frame
+    # The default hybrid-explicit mode attempts the native eligible trace
+    # first. This example keeps the frame
     # undecorated as its own fixture choice: a plain Figure (no pyplot global
     # state) with one axes whose decorations are turned off through the public
     # API, plus a single Line2D
@@ -51,13 +52,14 @@ def main() -> int:
     # gridlines, major ticks, spines render natively, subject to that
     # amendment's conditions: facecolor 'none', label-less ticks).
     #
-    # Hybrid mode keeps the same strict native path first but falls back to
-    # whole-frame Agg output with a structured diagnostic whenever content
-    # leaves the strict whitelist:
+    # Strict-only behavior is opt-in with:
+    #
+    #     canvas = FigureCanvasLumenPlot(fig, mode="strict")
+    # The explicit spelling of the default profile is also available:
     #
     #     canvas = FigureCanvasLumenPlot(fig, mode="hybrid")
     fig = figure.Figure(figsize=(4.0, 3.0), dpi=100)
-    _ = FigureCanvasLumenPlot(fig)
+    canvas = FigureCanvasLumenPlot(fig)
     ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
     ax.set_axis_off()
     ax.add_line(

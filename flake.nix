@@ -25,17 +25,26 @@
           # toolchains. No effect on Linux systems.
           darwinOnly =
             if pkgs.stdenv.hostPlatform.isDarwin then [ pkgs.libiconv ] else [ ];
+          pythonWithPip = pkgs.python3.withPackages (pythonPackages: [
+            pythonPackages.pip
+          ]);
+          runtimeLibs =
+            if pkgs.stdenv.hostPlatform.isLinux then
+              [ pkgs.stdenv.cc.cc.lib pkgs.zlib ]
+            else
+              [ ];
         in
         {
           default = pkgs.mkShellNoCC {
             packages = [
               pkgs.cargo
               pkgs.clippy
-              pkgs.python3
+              pythonWithPip
               pkgs.rustc
               pkgs.rustfmt
             ] ++ darwinOnly;
             RUST_BACKTRACE = "1";
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibs;
           };
         }
       );
