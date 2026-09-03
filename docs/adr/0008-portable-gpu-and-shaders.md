@@ -1,6 +1,6 @@
 # ADR 0008: Portable GPU runtime and shader artifacts
 
-- Status: **Accepted staged implementation baseline; evidence pending**
+- Status: **Accepted staged implementation baseline; bounded static/headless evidence recorded in PR #89; real-device/runtime evidence pending**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
@@ -67,7 +67,7 @@ wgpu 29.0.4 is the accepted initial comparison point because it supplies a concr
 
 ## Verification and evidence boundary
 
-Required evidence includes the portable build/runtime matrix, WGSL validator corpus, artifact hash/provenance checks, static runtime-download negative tests, ownership/thread tests, surface/device-loss recovery, OOM terminal behavior, and wgpu 29 versus later same-workload A/B results. No supported cell or dependency adoption result is claimed here.
+PR #89 records bounded line geometry preparation, headless offscreen wgpu readback tests, WGSL validator/hash/provenance checks, and static runtime-download negative checks. Required remaining evidence includes the portable build/runtime matrix, ownership/thread tests, surface/device-loss recovery, OOM terminal behavior, and wgpu 29 versus later same-workload A/B results. No supported cell or dependency adoption result is claimed here.
 
 ## Residual risks
 

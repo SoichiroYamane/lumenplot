@@ -1,7 +1,7 @@
 # LumenPlot implementation roadmap
 
 - Status: pre-alpha planning document
-- Updated: 2026-09-02
+- Updated: 2026-09-03
 - Planning unit: ordered milestones, not release dates
 - Source of truth for requirement status: [v1 traceability](requirements/traceability-v1.0.md)
 
@@ -23,26 +23,33 @@ Implemented with bounded local evidence:
   extended by the Phase-3B frame-command work;
 - the Phase-3A Python bridge and private-helper wheel evidence;
 - the Phase-3B public Matplotlib backend with strict and explicit whole-frame
-  hybrid behavior;
+  hybrid behavior, including the shipped hybrid default;
 - bounded native Matplotlib eligibility for line, decorated axes, fill, bar, and
   step geometry, with base-10 log axes and a limited Legend/text surface;
   compositing and date/unit-label code is merged, while its adopted
   traceability rows remain open pending reconciliation;
 - the M1 synchronous CPU-side frame seam and the O-08 five-block benchmark
-  harness.
+  harness;
+- bounded private RenderPacket validation with distinct scene/work/device
+  generations, origin-relative line geometry, static WGSL provenance checks,
+  and headless offscreen wgpu line rendering/readback tests;
+- a backend-neutral runtime/viewer lifecycle and semantic-input state model,
+  a private line-only vector PDF sink, and strict/hybrid benchmark validation
+  that refuses unavailable accelerated/native environments explicitly.
 
 Still absent or incomplete:
 
 - a full shared semantic/layout frame and the complete internal RenderPacket
   lifecycle from [ADR 0004](adr/0004-renderpacket-resource-lifecycle.md);
-- a portable GPU renderer: `lumenplot-render-wgpu` is still a documentation
-  stub;
-- runtime and standalone viewer implementations: both crates are still
-  documentation stubs;
+- a complete portable GPU renderer and declared real-device evidence; the
+  current wgpu implementation is a bounded headless line-rendering slice;
+- a real window/surface present loop and standalone viewer integration; the
+  current runtime/viewer implementation is a backend-neutral lifecycle and
+  input state model;
 - accelerated-native product delivery, native interaction, and declared
   platform/present evidence;
 - full retained text/layout, annotations, Legend interaction, accessibility,
-  and vector PDF output;
+  and public vector PDF output; the current PDF sink is private and line-only;
 - v1 release, support, security, and performance closure.
 
 The quarantined Metal lane is not a shortcut around these gaps. [ADR
@@ -83,10 +90,9 @@ Implement:
   compositing and date/unit-label slices, preserving bounded evidence and
   leaving LP-FUNC-035 and LP-FUNC-037 open until their acceptance evidence is
   reviewed;
-- resolve the profile-default mismatch: the accepted architecture names
-  `hybrid-explicit` as the default, while the current staged backend and README
-  use strict by default; either implement the accepted default or amend the
-  governing decision explicitly;
+- keep the implemented `hybrid` default synchronized with the accepted
+  `hybrid-explicit` profile, while retaining the current staged `strict` /
+  `hybrid` spelling until the M1 public profile-name closure;
 - make the documented local verification path enter the correct Nix/dev-shell
   environment, supply native link dependencies such as `libiconv`, install the
   Python package before integration tests, and use a writable Matplotlib cache;
@@ -348,13 +354,15 @@ The recommended immediate queue is:
 
 1. **M0 baseline reconciliation** — update traceability for the latest merged
    work, settle the profile default, and make the clean verification command
-   reliable on macOS/Nix and wheel-installed Python.
+   reliable on macOS/Nix and wheel-installed Python. The bounded M0 code and
+   evidence lanes are now merged locally; the release remains pre-alpha.
 2. **M1 adapter modularization plus packaged runtime evidence** — reduce the
    `backend.py` collision hotspot without changing public behavior, then close
    the accepted Phase-3B package matrix.
-3. **M2 packet-generation slice** — add WorkGeneration/DeviceGeneration,
-   whole-packet validation, stale rejection, and a renderer test double before
-   adding any wgpu dependency.
+3. **M2 packet/resource-lifecycle slice** — complete the shared semantic frame,
+   WorkGeneration/DeviceGeneration validation, stale rejection, renderer test
+   double, logical cache, packet leases, completion retirement, and device-loss
+   invalidation before expanding the wgpu command subset.
 
 These three slices reduce current ambiguity and implementation risk while
 creating the narrowest safe path to the first real portable GPU frame.

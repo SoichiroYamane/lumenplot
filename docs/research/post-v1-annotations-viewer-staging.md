@@ -33,6 +33,14 @@ questions for the `architecture-authority`.
 Evidence basis: all repository citations below were verified verbatim on
 origin/main @ `858acc1` on 2026-08-24.
 
+Current-status note (2026-09-03): this research note predates PR #89. Its
+references to stubs, the benchmark shell, and the pre-implementation tree are
+historical inputs, not current implementation status. The current bounded
+status is maintained in [the roadmap](../roadmap.md), [the architecture
+overview](../architecture/overview.md), and [the traceability
+registry](../requirements/traceability-v1.0.md); the full interaction,
+window/present, and accessibility lanes remain open.
+
 Terminology: "lane" means a group of open requirement rows addressable by one
 implementation thrust. The requirements vocabulary ends at Phase 5; nothing
 here introduces a new phase number. Despite the file name, the subject rows
@@ -147,20 +155,24 @@ surface would reuse this pattern; the viewer itself needs none of it.
 **Benchmark protocol shell.**
 `lumenplot-bench` implements the O-08 shape (5 fresh-process blocks of ≥1000
 measured frames, nearest-rank percentiles, seeded A/B order randomization;
-`src/runner.rs:40–66`) with all four profile names driving the single
-implemented PNG path today. `LP-PERF-008` (Legend toggle within one displayed
+`src/runner.rs:40–66`) with separate planning labels for the profile matrix;
+the current bounded Python implementation exposes only its staged strict/hybrid
+spelling, with accelerated-native still unavailable. `LP-PERF-008` (Legend toggle within one displayed
 frame) is an event-to-display measurement that cannot even start until the
 runtime/present path exists; noting the dependency here so nobody schedules
 the bench row ahead of the runtime.
 
-**Stub DAG positions already correct.**
+**Historical pre-PR #89 DAG positions.**
 `lumenplot-viewer` depends on `lumenplot` + `lumenplot-runtime`;
 `lumenplot-runtime` depends on `lumenplot-render-wgpu`; both runtime and
-viewer (and `render-api`/`render-wgpu`) are documentation-only stubs whose
-headers defer to later phases. The layering the overview fixes — frontend
-edges → facade → core → … → renderer/runtime — is already expressed in
-`Cargo.toml` edges and enforced by `scripts/check_phase2b_dependencies.py`.
-Neither lane needs a workspace-DAG change to begin.
+viewer (and `render-api`/`render-wgpu`) had documentation-only stubs whose
+headers deferred to later phases. PR #89 now supplies bounded packet,
+offscreen-renderer, runtime/viewer, and input-state implementations; the real
+window/present and full renderer/runtime lanes remain open. The layering the
+overview fixes — frontend edges → facade → core → … → renderer/runtime — is
+still expressed in `Cargo.toml` edges and enforced by
+`scripts/check_phase2b_dependencies.py`. Neither lane needs a workspace-DAG
+change to begin.
 
 ## 3. Gap map and proposed staging
 
@@ -315,7 +327,7 @@ this worktree:
 | ii | Static checker pins nothing under `docs/research/` ⇒ gate unaffected | Verification runs `scripts/check_workspace_architecture.py --root .` (exit 0, "workspace architecture: OK") and `scripts/check_phase2b_dependencies.py` (exit 0) in this worktree |
 | iii | CI workflows untouched | No `.github/workflows/` change; the wheel-evidence classifier sees no new auditwheel/manylinux/maturin/wheel vocabulary |
 | iv | Traceability rows untouched | Every row in §1 keeps its registry `Not implemented` result; neither requirements nor traceability files are modified here |
-| v | No Rust/Python schema change | No crate, module, or `python/` file is added or edited; the stub headers of `lumenplot-viewer`/`lumenplot-runtime` remain accurate |
+| v | No Rust/Python schema change | This row describes the pre-PR #89 research snapshot; current bounded runtime/viewer files exist, while no new public schema is introduced by this note |
 
 <!-- markdownlint-enable MD013 -->
 

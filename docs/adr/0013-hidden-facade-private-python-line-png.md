@@ -1,6 +1,6 @@
 # ADR 0013: Phase-3A hidden line/PNG facade and private Python helper
 
-- Status: **Accepted staged contract — Phase-3A2 private helper/package/builder same-wheel evidence is recorded (CI-local manifest; GIL CPython 3.11–3.14); Phase-3B first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence pending**
+- Status: **Accepted staged contract — Phase-3A2 private helper/package/builder same-wheel evidence is recorded (CI-local manifest; GIL CPython 3.11–3.14); Phase-3B first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence recorded in PR #89 CI; full compatibility/release evidence remains pending**
 - Date: 2026-08-21
 - Decision owner: architecture-authority
 - Recorded by: implementation-worker
@@ -12,8 +12,9 @@
 This ADR records the final staged Phase-3A decision for a bounded owned
 Python-to-native line/PNG path. It is a contract record, not an implementation
 or wheel result. It deliberately does not freeze the public Matplotlib result,
-diagnostic, canvas, warning, fallback, or root-render API; those belong to a
-separate Phase-3B decision after the private helper produces evidence.
+diagnostic, canvas, warning, fallback, or root-render API. Those are recorded in
+the separate Phase-3B decision [ADR 0015](0015-phase3b-public-matplotlib-adapter-contract.md);
+PR #89 implements a bounded public slice without changing this private boundary.
 
 ## Requirement references
 

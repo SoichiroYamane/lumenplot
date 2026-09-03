@@ -8,7 +8,7 @@
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Open-decision record: [O-06 — Window, viewer, host loop, and lifecycle semantics](../architecture/open-decisions.md#o-06-window-viewer-host-loop-and-lifecycle-semantics)
 
-This ADR records lifecycle semantics before runtime implementation. It does not claim support for an operating system, window system, notebook transport, or GPU device.
+This ADR records lifecycle semantics before the complete runtime implementation. The repository now has a bounded backend-neutral lifecycle/input state model with local tests, but this record does not claim support for an operating system, window system, notebook transport, or GPU device.
 
 ## Requirement references
 
