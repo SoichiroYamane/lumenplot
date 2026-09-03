@@ -46,14 +46,17 @@ SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd "$SCRIPT_DIR/.." && pwd)
 cd "$REPO_ROOT"
 
-MPLCONFIGDIR=$(mktemp -d "${TMPDIR:-/tmp}/lumenplot-mplconfig.XXXXXX")
+VERIFY_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/lumenplot-verify.XXXXXX")
+MPLCONFIGDIR="$VERIFY_TMPDIR/mplconfig"
+VERIFY_VENV="$VERIFY_TMPDIR/venv"
+PYTHON=python3
 export MPLCONFIGDIR
 
 cleanup() {
     status=$?
     trap - 0 HUP INT TERM
-    if ! rm -rf "$MPLCONFIGDIR"; then
-        printf 'error: failed to remove temporary MPLCONFIGDIR: %s\n' "$MPLCONFIGDIR" >&2
+    if ! rm -rf "$VERIFY_TMPDIR"; then
+        printf 'error: failed to remove temporary verification directory: %s\n' "$VERIFY_TMPDIR" >&2
         status=1
     fi
     exit "$status"
@@ -62,8 +65,8 @@ cleanup() {
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
-if [ ! -d "$MPLCONFIGDIR" ]; then
-    printf 'error: mktemp did not create MPLCONFIGDIR: %s\n' "$MPLCONFIGDIR" >&2
+if ! mkdir -p "$MPLCONFIGDIR"; then
+    printf 'error: failed to create MPLCONFIGDIR: %s\n' "$MPLCONFIGDIR" >&2
     exit 1
 fi
 if [ ! -w "$MPLCONFIGDIR" ]; then
@@ -81,7 +84,9 @@ run_gate() {
 }
 
 if [ "$skip_install" -eq 0 ]; then
-    run_gate python3 -m pip install --editable .
+    run_gate python3 -m venv "$VERIFY_VENV"
+    PYTHON="$VERIFY_VENV/bin/python"
+    run_gate "$PYTHON" -m pip install --editable .
 else
     printf '%s\n' 'Skipping local package installation (--skip-install).'
 fi
@@ -92,12 +97,12 @@ run_gate cargo check --locked --workspace --all-targets --all-features
 run_gate cargo test --locked --workspace --all-features
 run_gate cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
-run_gate python3 scripts/check_workspace_architecture.py
-run_gate python3 scripts/check_phase2b_dependencies.py
-run_gate python3 scripts/verify_traceability_coverage.py
-run_gate python3 scripts/check_docs.py
-run_gate python3 -m unittest discover -s scripts
-run_gate python3 -m unittest discover -s tests/python
+run_gate "$PYTHON" scripts/check_workspace_architecture.py
+run_gate "$PYTHON" scripts/check_phase2b_dependencies.py
+run_gate "$PYTHON" scripts/verify_traceability_coverage.py
+run_gate "$PYTHON" scripts/check_docs.py
+run_gate "$PYTHON" -m unittest discover -s scripts
+run_gate "$PYTHON" -m unittest discover -s tests/python
 
 if [ "$skip_nix" -eq 0 ]; then
     run_gate nix flake check --all-systems --no-build --no-update-lock-file
