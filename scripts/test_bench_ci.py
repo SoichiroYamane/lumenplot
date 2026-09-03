@@ -124,6 +124,7 @@ def make_run(root: Path, profile: str = "strict") -> dict:
         ],
         "blocks": blocks,
         "pooled": {
+            "clock": "event_accept_to_present_return",
             "note": "descriptive only; gate uses max_block_p99_ns",
             "frame_count": 5000,
             "p50_ns": bench_analysis.nearest_rank(all_values, 0.50),
@@ -189,6 +190,12 @@ class ProbeValidationTests(unittest.TestCase):
         errors = bench_ci.validate_run(self.root, "strict")
         self.assertTrue(any("referenced raw sample file is missing" in error for error in errors), errors)
 
+    def test_missing_clock_domain_is_rejected(self) -> None:
+        self.manifest["clocks"] = self.manifest["clocks"][:-1]
+        self.rewrite_manifest()
+        errors = bench_ci.validate_run(self.root, "strict")
+        self.assertTrue(any("scanout" in error and "missing" in error for error in errors), errors)
+
     def test_malformed_raw_json_is_rejected(self) -> None:
         (self.root / "samples-0.jsonl").write_text("{not-json}\n", encoding="utf-8")
         completed = self.run_cli()
@@ -230,6 +237,24 @@ class ProbeValidationTests(unittest.TestCase):
         errors = bench_ci.validate_run(self.root, "strict")
         self.assertTrue(any("p99_ns" in error and "does not match raw" in error for error in errors), errors)
 
+    def test_null_quantile_with_raw_scheduler_values_is_rejected(self) -> None:
+        self.manifest["blocks"][2]["p95_ns"] = None
+        self.rewrite_manifest()
+        errors = bench_ci.validate_run(self.root, "strict")
+        self.assertTrue(any("p95_ns" in error and "scheduler observations exist" in error for error in errors), errors)
+
+    def test_reported_max_p99_must_match_blocks(self) -> None:
+        self.manifest["max_block_p99_ns"] -= 1
+        self.rewrite_manifest()
+        errors = bench_ci.validate_run(self.root, "strict")
+        self.assertTrue(any("max_block_p99_ns" in error for error in errors), errors)
+
+    def test_reported_pooled_quantile_must_match_raw_samples(self) -> None:
+        self.manifest["pooled"]["p95_ns"] += 1
+        self.rewrite_manifest()
+        errors = bench_ci.validate_run(self.root, "strict")
+        self.assertTrue(any("pooled.p95_ns" in error for error in errors), errors)
+
     def test_unavailable_clock_must_remain_null(self) -> None:
         path = self.root / "samples-1.jsonl"
         rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -257,6 +282,56 @@ class ProbeValidationTests(unittest.TestCase):
         self.rewrite_manifest()
         errors = bench_ci.validate_run(self.root, "strict")
         self.assertTrue(any("complete is not allowed" in error for error in errors), errors)
+
+    def test_complete_status_with_missing_pooled_summary_is_rejected(self) -> None:
+        self.manifest["status"] = "complete"
+        self.manifest["inconclusive_reasons"] = []
+        self.manifest["clocks"][1]["available"] = True
+        self.manifest["clocks"][2]["available"] = True
+        self.manifest["clocks"][3]["available"] = True
+        self.manifest["pooled"] = None
+        self.rewrite_manifest()
+        errors = bench_ci.validate_run(self.root, "strict")
+        self.assertTrue(any("pooled" in error and "complete" in error for error in errors), errors)
+
+    def test_complete_status_with_null_available_observation_is_rejected(self) -> None:
+        self.manifest["status"] = "complete"
+        self.manifest["inconclusive_reasons"] = []
+        path = self.root / "samples-0.jsonl"
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        rows[0]["clocks"]["event_accept_to_present_return"] = None
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+        self.rewrite_manifest()
+        errors = bench_ci.validate_run(self.root, "strict")
+        self.assertTrue(any("complete runs require available clock" in error for error in errors), errors)
+
+    def test_symlink_manifest_is_rejected(self) -> None:
+        if not hasattr(Path, "symlink_to"):
+            self.skipTest("symlinks are unavailable")
+        target = self.root.parent / "manifest-target.json"
+        target.write_text((self.root / "manifest.json").read_text(encoding="utf-8"), encoding="utf-8")
+        (self.root / "manifest.json").unlink()
+        try:
+            (self.root / "manifest.json").symlink_to(target)
+        except OSError as error:
+            self.skipTest(f"symlink creation unavailable: {error}")
+        try:
+            errors = bench_ci.validate_run(self.root, "strict")
+            self.assertTrue(any("manifest" in error and "regular file" in error for error in errors), errors)
+        finally:
+            target.unlink(missing_ok=True)
+
+    def test_symlink_raw_sample_is_rejected(self) -> None:
+        target = self.root / "samples-1.jsonl"
+        path = self.root / "samples-0.jsonl"
+        path.unlink()
+        try:
+            path.symlink_to(target)
+        except OSError as error:
+            self.skipTest(f"symlink creation unavailable: {error}")
+        errors = bench_ci.validate_run(self.root, "strict")
+        self.assertTrue(any("symlinks are not accepted" in error for error in errors), errors)
+        self.assertTrue(any("not a regular file" in error for error in errors), errors)
 
 
 class WorkflowContractTests(unittest.TestCase):

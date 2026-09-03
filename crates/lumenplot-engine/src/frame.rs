@@ -487,6 +487,45 @@ mod tests {
     }
 
     #[test]
+    fn large_absolute_coordinates_are_reduced_before_display_mapping() {
+        // The accepted Phase-1/2 frame boundary keeps geometry in f64 and
+        // subtracts the viewport origin before scaling. A direct absolute
+        // f64-to-f32 conversion would collapse these nearby scientific
+        // coordinates, while the existing origin-relative frame remains
+        // distinguishable and bounded for a sink-local conversion.
+        let origin = 1.0e15_f64;
+        let view = Viewport::from_bounds(origin, origin + 10.0, origin - 10.0, origin + 10.0)
+            .expect("large finite view");
+        let mut scene = PlotScene::new(view, AxisScales::new(AxisScale::Linear, AxisScale::Linear))
+            .expect("scene");
+        {
+            let mut transaction = scene.transaction();
+            transaction
+                .add_series(
+                    SeriesData::from_owned_xy(
+                        SeriesTopology::ArbitraryXY,
+                        vec![origin, origin + 5.0, origin + 10.0],
+                        vec![origin - 10.0, origin, origin + 10.0],
+                    )
+                    .expect("series"),
+                )
+                .expect("add series");
+            transaction.commit().expect("commit");
+        }
+        let frame = scene.snapshot().resolve_line_frame(&spec()).expect("frame");
+        let points = frame.series()[0].segments()[0].points();
+
+        assert_eq!((origin as f32), ((origin + 10.0) as f32));
+        assert_close(points[0].x(), 10.0);
+        assert_close(points[1].x(), 50.0);
+        assert_close(points[2].x(), 90.0);
+        assert_close(points[0].y(), 60.0);
+        assert_close(points[1].y(), 40.0);
+        assert_close(points[2].y(), 20.0);
+        assert_ne!(points[0].x(), points[2].x());
+    }
+
+    #[test]
     fn series_order_is_ascending_even_after_identity_burn() {
         let view = Viewport::from_bounds(0.0, 10.0, 0.0, 10.0).expect("view");
         let mut scene = PlotScene::new(view, AxisScales::new(AxisScale::Linear, AxisScale::Linear))
