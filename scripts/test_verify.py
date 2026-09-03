@@ -119,6 +119,7 @@ exit 98
             self.assertNotIn("-m pip install --editable .", commands)
             self.assertNotIn("unexpected nix invocation", commands)
             self.assertIn("cargo fmt --all -- --check", commands)
+            self.assertIn("python3 scripts/check_docs.py", commands)
             self.assertIn("git diff --check", commands)
 
     @staticmethod

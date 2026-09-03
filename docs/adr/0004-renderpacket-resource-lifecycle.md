@@ -86,7 +86,7 @@ A public or serialized packet would freeze backend resource ownership and make a
 
 ## Verification and evidence boundary
 
-Required evidence includes property tests for packet completeness and invalid-resource rejection, generation-mismatch tests, dependency-direction/type scans, immutable publication tests, lease/fence retirement tests, device-loss invalidation/rebuild tests, and negative checks for public constructors, serde/wire formats, and persistence. This ADR is not evidence that those tests or a renderer exist.
+Bounded implementation evidence currently covers packet completeness, invalid-resource rejection, generation-mismatch tests, dependency-direction/type scans, immutable publication, and negative checks for public constructors/serde/wire formats/persistence. The complete evidence obligation still includes property coverage, lease/fence retirement, and device-loss invalidation/rebuild tests; this ADR is not itself evidence that those remaining tests or a complete renderer exist.
 
 ## Residual risks
 

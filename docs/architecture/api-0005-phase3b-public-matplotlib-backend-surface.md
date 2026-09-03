@@ -1,6 +1,6 @@
 # API 0005: Phase-3B public Matplotlib backend surface
 
-- Status: **Accepted staged surface contract — Phase-3B first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence pending**
+- Status: **Accepted staged surface contract — Phase-3B first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence recorded in PR #89 CI; full compatibility/release evidence remains pending**
 - Date: 2026-08-23
 - Decision owner: architecture-authority
 - Recorded by: engineering-worker
@@ -13,12 +13,12 @@
 
 This record is the accepted surface companion to ADR 0015. It details the
 public backend module surface, the result/diagnostic separation, file-output
-semantics, and the eligibility/tests boundary for the first Phase-3B slice. It
-authorizes no implementation: until ADR 0015 and this record are accepted, no
-Python source, `backend.py`, manifest entry, entry point, wheel, or workflow
-may be created for this surface. All exact Python names in
-[Provisional names](#provisional-names--non-contract-until-phase-3b-acceptance)
-are non-contract placeholders subject to the acceptance decision.
+semantics, and the eligibility/tests boundary for the first Phase-3B slice. PR #89 implements this bounded surface and records installed-wheel/runtime
+smoke evidence; the record does not claim full-v1 compatibility, platform
+support, accelerated-native delivery, or release readiness. The exact names in
+[Names used by the bounded Phase-3B slice](#names-used-by-the-bounded-phase-3b-slice)
+are the names used by the bounded slice; any public change requires an explicit
+contract amendment rather than silent drift.
 
 ## Requirement references
 
@@ -34,9 +34,10 @@ API 0003 froze the Phase-3A private helper boundary and deliberately left every
 Phase-3B public schema open. The completed read-only public-backend research on
 Matplotlib 3.11.1 supplies the observed callback signatures, loader mechanics,
 file-output semantics, and risk inventory that this proposal turns into a
-reviewable surface definition. Helper/package/wheel runtime evidence remains
-pending on a separate lane; this proposal records a schema candidate for
-reconciliation against that evidence, not a shipped result.
+reviewable surface definition. Phase-3A2 helper/package/wheel evidence is recorded in the CI-local same-wheel
+manifest, and PR #89 records the bounded public-backend implementation and
+installed-wheel runtime smoke; the remaining full-v1 compatibility evidence is
+still open.
 
 ## Decision
 
@@ -231,10 +232,11 @@ already-evidenced Linux wheel cell; Matplotlib 3.10, other platforms, and
 free-threaded interpreters remain unclaimed future cells. No performance,
 platform, or compatibility-percentage claim exists anywhere in this proposal.
 
-## Provisional names — non-contract until Phase-3B acceptance
+## Names used by the bounded Phase-3B slice
 
-Every name below is a placeholder for review discussion. Acceptance decides the
-final spelling; implementation must not ship any of these names before then.
+The names below were provisional during the pre-implementation review and are
+the names used by the bounded PR #89 implementation. They do not expand the
+full-v1 surface; changing them requires an explicit contract amendment.
 
 ```text
 canvas method        render_png() -> LumenPlotPngResult          (owned-bytes helper)
@@ -251,9 +253,9 @@ ignore mode may exist if a warning mode is accepted.
 
 ## Alternatives considered
 
-- **Freezing exact public names now** was rejected: API 0003 keeps Phase-3B
-  schemas deliberately open until helper evidence lands, so names stay
-  provisional while the structural contract is reviewable.
+- **Freezing exact public names before helper evidence** was rejected: API 0003
+  kept Phase-3B schemas open until helper evidence landed. PR #89 now records
+  the bounded names above; future changes require an explicit amendment.
 - **Callback-route rendering** was rejected for rendering (simplification loses
   source resolution/NaN gaps) and kept for proof/reconciliation.
 - **Returning rich objects from savefig/print_png** was rejected: it breaks
@@ -279,12 +281,12 @@ acceptance and evidence gates.
 
 ## Verification and evidence boundary
 
-Acceptance changes documentation only: one new record. It adds no
-product source, manifests, lockfiles, CI dependencies, wheels, workflows, or
-publication settings, and edits no existing record. The workspace architecture
-checker and unittest suite stayed green on the acceptance branch. Traceability rows for
+The original acceptance of this record changed documentation only. Subsequent
+PR #89 supplies the bounded product source, manifests, workflow, wheel/runtime
+smoke, and local contract-test evidence described above. Traceability rows for
 full-v1 Matplotlib requirements remain `Not implemented`/`Not measured`/
-`environment required`; acceptance here changes none of them.
+`environment required` unless separately closed by their named evidence gates;
+this record does not turn a bounded slice into a release claim.
 
 ## Related records
 

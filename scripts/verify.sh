@@ -95,6 +95,7 @@ run_gate cargo clippy --locked --workspace --all-targets --all-features -- -D wa
 run_gate python3 scripts/check_workspace_architecture.py
 run_gate python3 scripts/check_phase2b_dependencies.py
 run_gate python3 scripts/verify_traceability_coverage.py
+run_gate python3 scripts/check_docs.py
 run_gate python3 -m unittest discover -s scripts
 run_gate python3 -m unittest discover -s tests/python
 

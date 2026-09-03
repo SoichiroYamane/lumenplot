@@ -47,7 +47,7 @@ is made. The following statements are fixed canon, quoted verbatim:
   dependency integration."
 - [Traceability §Source-section and phase consistency checks](../requirements/traceability-v1.0.md):
   "SVG is a v1 `SHOULD` and non-blocking; PNG and PDF are v1 `MUST` outputs."
-- [Roadmap §5](../../roadmap.md): supported platforms, provenance, CI gates,
+- [Roadmap §5](../roadmap.md): supported platforms, provenance, CI gates,
   and build/release evidence precede broad external contribution and any
   production-readiness reassessment — packaging-order context for when export
   evidence lands, not whether it is required.
