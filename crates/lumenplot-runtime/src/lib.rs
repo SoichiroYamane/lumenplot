@@ -15,6 +15,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::cell::{Cell, RefCell, RefMut};
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::thread::{self, ThreadId};
@@ -25,6 +27,7 @@ mod input;
 
 const MAX_SURFACES: usize = 64;
 const MAX_SURFACE_DIMENSION: u32 = 16_384;
+const MAX_PENDING_WORK: usize = 64;
 
 /// Explicit ownership mode for the runtime loop.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -290,6 +293,162 @@ struct SurfaceSlot {
     state: SurfaceState,
 }
 
+/// Internal outcome for bounded derived work.
+///
+/// Cancellation and stale dropping are scheduler control flow. They are kept
+/// separate here so tests can prove that a cancelled ticket is never accepted
+/// as ready work without expanding the public runtime result surface.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum WorkOutcome {
+    Ready,
+    Cancelled,
+    StaleDropped,
+}
+
+/// Opaque key for one queued derived-work candidate.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct WorkTicket {
+    scene_revision: SceneRevision,
+    generation: WorkGeneration,
+}
+
+/// Small bounded queue used by the runtime's derived-work boundary.
+///
+/// The queue deliberately stores only generation-bearing tickets. It does not
+/// retain a Scene, packet, backend object, or caller buffer. Repeated
+/// submissions for one scene/work pair share a key; a newer scene or runtime
+/// generation evicts older keys before publication.
+struct WorkQueue {
+    capacity: usize,
+    pending: VecDeque<WorkTicket>,
+    cancelled_count: usize,
+    stale_dropped_count: usize,
+}
+
+impl WorkQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            pending: VecDeque::new(),
+            cancelled_count: 0,
+            stale_dropped_count: 0,
+        }
+    }
+
+    fn enqueue(
+        &mut self,
+        scene_revision: SceneRevision,
+        generation: WorkGeneration,
+    ) -> Result<(), RuntimeError> {
+        let ticket = WorkTicket {
+            scene_revision,
+            generation,
+        };
+        if self.pending.contains(&ticket) {
+            return Ok(());
+        }
+        if self.pending.len() >= self.capacity {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ResourceInvalid,
+                "derived-work queue capacity is exhausted",
+            ));
+        }
+        self.pending.try_reserve(1).map_err(|_| {
+            RuntimeError::new(
+                RuntimeErrorKind::OutOfMemory,
+                "derived-work queue allocation failed",
+            )
+        })?;
+        self.pending.push_back(ticket);
+        Ok(())
+    }
+
+    fn outcome(&mut self, ticket: WorkTicket, current_generation: WorkGeneration) -> WorkOutcome {
+        if ticket.generation != current_generation
+            || !self.pending.iter().any(|pending| *pending == ticket)
+        {
+            self.stale_dropped_count = self.stale_dropped_count.saturating_add(1);
+            return WorkOutcome::StaleDropped;
+        }
+        WorkOutcome::Ready
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn cancel(&mut self, ticket: WorkTicket) -> WorkOutcome {
+        let Some(index) = self.pending.iter().position(|pending| *pending == ticket) else {
+            self.stale_dropped_count = self.stale_dropped_count.saturating_add(1);
+            return WorkOutcome::StaleDropped;
+        };
+        let _ = self.pending.remove(index);
+        self.cancelled_count = self.cancelled_count.saturating_add(1);
+        WorkOutcome::Cancelled
+    }
+
+    fn cancel_older_than(&mut self, scene_revision: SceneRevision) {
+        let mut dropped = 0;
+        self.pending.retain(|ticket| {
+            let keep = ticket.scene_revision >= scene_revision;
+            if !keep {
+                dropped += 1;
+            }
+            keep
+        });
+        self.stale_dropped_count = self.stale_dropped_count.saturating_add(dropped);
+    }
+
+    fn cancel_except(&mut self, current_generation: WorkGeneration) {
+        let mut cancelled = 0;
+        self.pending.retain(|ticket| {
+            let keep = ticket.generation == current_generation;
+            if !keep {
+                cancelled += 1;
+            }
+            keep
+        });
+        self.cancelled_count = self.cancelled_count.saturating_add(cancelled);
+    }
+
+    fn cancel_all(&mut self) {
+        self.cancelled_count = self.cancelled_count.saturating_add(self.pending.len());
+        self.pending.clear();
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn cancelled_count(&self) -> usize {
+        self.cancelled_count
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn stale_dropped_count(&self) -> usize {
+        self.stale_dropped_count
+    }
+}
+
+/// RAII guard that cannot leave the host-pump reentrancy flag set after an
+/// early return or a future panic boundary.
+struct PumpGuard<'a> {
+    pumping: &'a mut bool,
+}
+
+impl<'a> PumpGuard<'a> {
+    fn new(pumping: &'a mut bool) -> Self {
+        *pumping = true;
+        Self { pumping }
+    }
+}
+
+impl Drop for PumpGuard<'_> {
+    fn drop(&mut self) {
+        *self.pumping = false;
+    }
+}
+
 /// Main-thread-owned session around the portable renderer lifecycle.
 ///
 /// ```compile_fail
@@ -315,6 +474,8 @@ pub struct EngineSession {
     work_generation: WorkGeneration,
     device_generation: DeviceGeneration,
     latest_scene_revision: Option<SceneRevision>,
+    highest_requested_scene_revision: Cell<Option<SceneRevision>>,
+    work_queue: RefCell<WorkQueue>,
     // The internal host-pump entry is staged until an accepted transport
     // drives it outside the lifecycle tests.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -360,6 +521,8 @@ impl EngineSession {
             work_generation: WorkGeneration::initial(),
             device_generation: DeviceGeneration::initial(),
             latest_scene_revision: None,
+            highest_requested_scene_revision: Cell::new(None),
+            work_queue: RefCell::new(WorkQueue::new(MAX_PENDING_WORK)),
             pumping: false,
             _main_thread_only: PhantomData,
         }
@@ -445,8 +608,8 @@ impl EngineSession {
             ));
         }
 
-        self.pumping = true;
-        let result = match self.state {
+        let _pump_guard = PumpGuard::new(&mut self.pumping);
+        match self.state {
             SessionState::Created => {
                 self.state = SessionState::Running;
                 Ok(LoopOutcome::HostPumpCompleted)
@@ -464,9 +627,7 @@ impl EngineSession {
                 RuntimeErrorKind::Closed,
                 "session is closed",
             )),
-        };
-        self.pumping = false;
-        result
+        }
     }
 
     /// Creates one logical surface owned by this main-thread session.
@@ -497,11 +658,13 @@ impl EngineSession {
 
     /// Observes a logical surface state.
     pub fn surface_state(&self, id: SurfaceId) -> Result<SurfaceState, RuntimeError> {
+        self.ensure_observable()?;
         self.find_surface(id).map(|surface| surface.state)
     }
 
     /// Observes a logical surface size.
     pub fn surface_size(&self, id: SurfaceId) -> Result<[u32; 2], RuntimeError> {
+        self.ensure_observable()?;
         self.find_surface(id).map(|surface| surface.size)
     }
 
@@ -514,13 +677,14 @@ impl EngineSession {
         self.ensure_owner()?;
         self.ensure_not_terminal()?;
         validate_surface_size(size)?;
+        self.find_surface(id)?;
         let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
         let surface = self.find_surface_mut(id)?;
         surface.size = size;
         if !matches!(surface.state, SurfaceState::Suspended | SurfaceState::Lost) {
             surface.state = SurfaceState::ReconfigurePending;
         }
-        self.work_generation = next_work;
         Ok(LifecycleOutcome::Resized)
     }
 
@@ -539,8 +703,8 @@ impl EngineSession {
             ));
         }
         let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
         self.find_surface_mut(id)?.state = SurfaceState::Suspended;
-        self.work_generation = next_work;
         Ok(LifecycleOutcome::Suspended)
     }
 
@@ -551,8 +715,8 @@ impl EngineSession {
         let current = self.find_surface(id)?.state;
         if matches!(current, SurfaceState::Suspended) {
             let next_work = self.next_work_generation()?;
+            self.commit_work_generation(next_work)?;
             self.find_surface_mut(id)?.state = SurfaceState::ReconfigurePending;
-            self.work_generation = next_work;
             return Ok(LifecycleOutcome::Resumed);
         }
         if matches!(current, SurfaceState::Lost) {
@@ -573,8 +737,8 @@ impl EngineSession {
             return Ok(LifecycleOutcome::AlreadyLost);
         }
         let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
         self.find_surface_mut(id)?.state = SurfaceState::Lost;
-        self.work_generation = next_work;
         Ok(LifecycleOutcome::SurfaceLost)
     }
 
@@ -590,8 +754,8 @@ impl EngineSession {
             ));
         }
         let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
         self.find_surface_mut(id)?.state = SurfaceState::ReconfigurePending;
-        self.work_generation = next_work;
         Ok(LifecycleOutcome::SurfaceRecreated)
     }
 
@@ -615,8 +779,8 @@ impl EngineSession {
         }
         let next_device = self.device_generation.next()?;
         let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
         self.device_generation = next_device;
-        self.work_generation = next_work;
         self.state = SessionState::DeviceLost;
         self.renderer = None;
         for surface in &mut self.surfaces {
@@ -678,9 +842,12 @@ impl EngineSession {
             }
         };
         let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
         self.renderer = Some(replacement);
         self.state = SessionState::Running;
-        self.work_generation = next_work;
+        for surface in &mut self.surfaces {
+            surface.state = SurfaceState::ReconfigurePending;
+        }
         Ok(LifecycleOutcome::DeviceRebuilt)
     }
 
@@ -696,6 +863,7 @@ impl EngineSession {
         if matches!(self.state, SessionState::OutOfMemory) {
             return Ok(LifecycleOutcome::AlreadyOutOfMemory);
         }
+        self.borrow_work_queue_mut()?.cancel_all();
         self.state = SessionState::OutOfMemory;
         self.renderer = None;
         for surface in &mut self.surfaces {
@@ -705,12 +873,31 @@ impl EngineSession {
     }
 
     /// Issues a token carrying the current work and device generations.
+    ///
+    /// Issuing a newer scene revision advances an owner-thread watermark. Any
+    /// older token already held by derived work is therefore dropped even if
+    /// it completes before the newer token is submitted.
     pub fn begin_submission(
         &self,
         scene_revision: SceneRevision,
     ) -> Result<SubmissionToken, RuntimeError> {
         self.ensure_owner()?;
         self.ensure_running()?;
+        let highest = self.highest_requested_scene_revision.get();
+        let current_work_generation = self.work_generation;
+        let mut work_queue = self.borrow_work_queue_mut()?;
+        if highest.is_none_or(|current| scene_revision > current) {
+            work_queue.cancel_older_than(scene_revision);
+        }
+        let is_older = highest.is_some_and(|current| scene_revision < current);
+        if !is_older {
+            work_queue.enqueue(scene_revision, current_work_generation)?;
+        }
+        drop(work_queue);
+        if highest.is_none_or(|current| scene_revision > current) {
+            self.highest_requested_scene_revision
+                .set(Some(scene_revision));
+        }
         Ok(SubmissionToken {
             scene_revision,
             work_generation: self.work_generation,
@@ -732,29 +919,46 @@ impl EngineSession {
         {
             return Ok(SubmissionOutcome::StaleDropped);
         }
-        if self
-            .latest_scene_revision
-            .is_some_and(|latest| token.scene_revision < latest)
-        {
+        let highest_requested = self.highest_requested_scene_revision.get();
+        let latest_observed = self.latest_scene_revision;
+        let watermark = highest_requested.into_iter().chain(latest_observed).max();
+        if watermark.is_some_and(|latest| token.scene_revision < latest) {
             return Ok(SubmissionOutcome::StaleDropped);
         }
-        self.latest_scene_revision = Some(token.scene_revision);
 
-        let surface = self.find_surface_mut(id)?;
-        if matches!(surface.state, SurfaceState::Suspended) {
-            return Ok(SubmissionOutcome::Skipped(SkipReason::Suspended));
-        }
-        if matches!(surface.state, SurfaceState::Lost) {
+        // Validate the target before recording a publication watermark. A
+        // failed submission must not mutate the runtime's observed revision.
+        let surface_state = self.find_surface(id)?.state;
+        if matches!(surface_state, SurfaceState::Lost) {
             return Err(RuntimeError::new(
                 RuntimeErrorKind::ResourceInvalid,
                 "surface must be recreated before submission",
             ));
         }
+        let ticket = WorkTicket {
+            scene_revision: token.scene_revision,
+            generation: token.work_generation,
+        };
+        let current_work_generation = self.work_generation;
+        if !matches!(
+            self.borrow_work_queue_mut()?
+                .outcome(ticket, current_work_generation),
+            WorkOutcome::Ready
+        ) {
+            return Ok(SubmissionOutcome::StaleDropped);
+        }
+        if latest_observed.is_none_or(|latest| token.scene_revision > latest) {
+            self.latest_scene_revision = Some(token.scene_revision);
+        }
+        if matches!(surface_state, SurfaceState::Suspended) {
+            return Ok(SubmissionOutcome::Skipped(SkipReason::Suspended));
+        }
         match condition {
             SurfaceCondition::Occluded => Ok(SubmissionOutcome::Skipped(SkipReason::Occluded)),
             SurfaceCondition::Timeout => Ok(SubmissionOutcome::Skipped(SkipReason::Timeout)),
             SurfaceCondition::Ready => {
-                if matches!(surface.state, SurfaceState::ReconfigurePending) {
+                if matches!(surface_state, SurfaceState::ReconfigurePending) {
+                    let surface = self.find_surface_mut(id)?;
                     surface.state = SurfaceState::Active;
                     Ok(SubmissionOutcome::Reconfigured)
                 } else {
@@ -770,6 +974,7 @@ impl EngineSession {
         if matches!(self.state, SessionState::Closed) {
             return Ok(LifecycleOutcome::AlreadyClosed);
         }
+        self.borrow_work_queue_mut()?.cancel_all();
         self.state = SessionState::Closed;
         self.renderer = None;
         self.surfaces.clear();
@@ -781,6 +986,18 @@ impl EngineSession {
             Err(RuntimeError::new(
                 RuntimeErrorKind::HostLoopMisuse,
                 "runtime operation must run on its owner thread",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ensure_observable(&self) -> Result<(), RuntimeError> {
+        self.ensure_owner()?;
+        if matches!(self.state, SessionState::Closed) {
+            Err(RuntimeError::new(
+                RuntimeErrorKind::Closed,
+                "session is closed",
             ))
         } else {
             Ok(())
@@ -829,6 +1046,21 @@ impl EngineSession {
 
     fn next_work_generation(&self) -> Result<WorkGeneration, RuntimeError> {
         self.work_generation.next()
+    }
+
+    fn commit_work_generation(&mut self, generation: WorkGeneration) -> Result<(), RuntimeError> {
+        self.borrow_work_queue_mut()?.cancel_except(generation);
+        self.work_generation = generation;
+        Ok(())
+    }
+
+    fn borrow_work_queue_mut(&self) -> Result<RefMut<'_, WorkQueue>, RuntimeError> {
+        self.work_queue.try_borrow_mut().map_err(|_| {
+            RuntimeError::new(
+                RuntimeErrorKind::Reentrancy,
+                "derived-work queue is already borrowed",
+            )
+        })
     }
 
     fn find_surface(&self, id: SurfaceId) -> Result<&SurfaceSlot, RuntimeError> {
@@ -1076,6 +1308,8 @@ mod tests {
         let newer = session
             .begin_submission(SceneRevision::new(2))
             .expect("new token");
+        assert_eq!(session.work_queue.borrow().pending_len(), 1);
+        assert_eq!(session.work_queue.borrow().cancelled_count(), 1);
         assert_eq!(
             session
                 .submit(surface, newer, SurfaceCondition::Ready)
@@ -1120,10 +1354,15 @@ mod tests {
     fn out_of_memory_is_terminal_and_close_is_idempotent() {
         let mut session = running(LoopMode::HostPumped);
         let surface = session.create_surface([64, 64]).expect("surface");
+        let token = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("token");
         assert_eq!(
             session.handle_out_of_memory().expect("oom"),
             LifecycleOutcome::TerminalOutOfMemory
         );
+        assert_eq!(session.work_queue.borrow().pending_len(), 0);
+        assert_eq!(session.work_queue.borrow().cancelled_count(), 1);
         assert_eq!(
             session.handle_out_of_memory().expect("idempotent oom"),
             LifecycleOutcome::AlreadyOutOfMemory
@@ -1137,15 +1376,7 @@ mod tests {
         );
         assert_eq!(
             session
-                .submit(
-                    surface,
-                    SubmissionToken {
-                        scene_revision: SceneRevision::new(1),
-                        work_generation: session.work_generation(),
-                        device_generation: session.device_generation(),
-                    },
-                    SurfaceCondition::Ready,
-                )
+                .submit(surface, token, SurfaceCondition::Ready)
                 .expect_err("oom rejects submissions")
                 .kind(),
             RuntimeErrorKind::OutOfMemory
@@ -1166,6 +1397,24 @@ mod tests {
             LifecycleOutcome::AlreadyClosed
         );
         assert!(session.is_closed());
+        assert_eq!(
+            session.pump_once().expect_err("closed host pump").kind(),
+            RuntimeErrorKind::Closed
+        );
+        assert_eq!(
+            session
+                .create_surface([64, 64])
+                .expect_err("closed session cannot create surfaces")
+                .kind(),
+            RuntimeErrorKind::Closed
+        );
+        assert_eq!(
+            session
+                .surface_state(surface)
+                .expect_err("closed session cannot observe surfaces")
+                .kind(),
+            RuntimeErrorKind::Closed
+        );
     }
 
     #[test]
@@ -1192,5 +1441,226 @@ mod tests {
             RuntimeErrorKind::InvalidInput
         );
         assert_eq!(RuntimeErrorKind::OutOfMemory.as_str(), "out-of-memory");
+
+        let queue_borrow = session.work_queue.borrow_mut();
+        assert_eq!(
+            session
+                .begin_submission(SceneRevision::new(1))
+                .expect_err("nested queue access")
+                .kind(),
+            RuntimeErrorKind::Reentrancy
+        );
+        drop(queue_borrow);
+
+        session.handle_device_loss().expect("device loss");
+        assert_eq!(
+            session
+                .pump_once()
+                .expect_err("device loss blocks host pumping")
+                .kind(),
+            RuntimeErrorKind::DeviceLost
+        );
+        assert!(!session.pumping, "pump guard must release on an error");
+    }
+
+    #[test]
+    fn bounded_work_queue_exposes_capacity_cancellation_and_stale_ordering() {
+        let generation = WorkGeneration::initial();
+        let mut queue = WorkQueue::new(2);
+        let first = WorkTicket {
+            scene_revision: SceneRevision::new(1),
+            generation,
+        };
+        let second = WorkTicket {
+            scene_revision: SceneRevision::new(2),
+            generation,
+        };
+        queue
+            .enqueue(first.scene_revision, generation)
+            .expect("first ticket");
+        queue
+            .enqueue(second.scene_revision, generation)
+            .expect("second ticket");
+        assert_eq!(queue.pending_len(), 2);
+        assert_eq!(
+            queue
+                .enqueue(SceneRevision::new(3), generation)
+                .expect_err("bounded queue must reject excess work")
+                .kind(),
+            RuntimeErrorKind::ResourceInvalid
+        );
+
+        assert_eq!(queue.cancel(first), WorkOutcome::Cancelled);
+        assert_eq!(queue.pending_len(), 1);
+        assert_eq!(queue.outcome(second, generation), WorkOutcome::Ready);
+        assert_eq!(queue.cancel(second), WorkOutcome::Cancelled);
+        assert_eq!(queue.pending_len(), 0);
+        assert_eq!(queue.outcome(second, generation), WorkOutcome::StaleDropped);
+        assert_eq!(queue.cancelled_count(), 2);
+        assert_eq!(queue.stale_dropped_count(), 1);
+    }
+
+    #[test]
+    fn submission_admission_reports_bounded_queue_backpressure() {
+        let session = running(LoopMode::HostPumped);
+        session.work_queue.borrow_mut().capacity = 0;
+        assert_eq!(
+            session
+                .begin_submission(SceneRevision::new(1))
+                .expect_err("zero-capacity queue"),
+            RuntimeError::new(
+                RuntimeErrorKind::ResourceInvalid,
+                "derived-work queue capacity is exhausted",
+            )
+        );
+        assert_eq!(session.highest_requested_scene_revision.get(), None);
+    }
+
+    #[test]
+    fn generation_advance_cancels_pending_work_before_publication() {
+        let mut session = running(LoopMode::HostPumped);
+        let surface = session.create_surface([64, 64]).expect("surface");
+        let old_generation = session.work_generation();
+        let ticket = WorkTicket {
+            scene_revision: SceneRevision::new(1),
+            generation: old_generation,
+        };
+        session
+            .work_queue
+            .borrow_mut()
+            .enqueue(ticket.scene_revision, old_generation)
+            .expect("queued work");
+        assert_eq!(session.work_queue.borrow().pending_len(), 1);
+
+        session.resize(surface, [96, 96]).expect("resize");
+        assert_ne!(session.work_generation(), old_generation);
+        assert_eq!(session.work_queue.borrow().pending_len(), 0);
+        assert_eq!(
+            session
+                .work_queue
+                .borrow_mut()
+                .outcome(ticket, session.work_generation()),
+            WorkOutcome::StaleDropped
+        );
+        assert_eq!(session.work_queue.borrow().cancelled_count(), 1);
+    }
+
+    #[test]
+    fn issued_scene_revisions_reserve_a_stale_watermark() {
+        let mut session = running(LoopMode::NativeOwned);
+        let surface = session.create_surface([64, 64]).expect("surface");
+        let old = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("old token");
+        let newer = session
+            .begin_submission(SceneRevision::new(2))
+            .expect("new token");
+        assert_eq!(session.work_queue.borrow().pending_len(), 1);
+        assert_eq!(session.work_queue.borrow().stale_dropped_count(), 1);
+
+        assert_eq!(
+            session
+                .submit(surface, old, SurfaceCondition::Ready)
+                .expect("old result is dropped"),
+            SubmissionOutcome::StaleDropped
+        );
+        assert_eq!(
+            session
+                .submit(surface, newer, SurfaceCondition::Ready)
+                .expect("new result"),
+            SubmissionOutcome::Ready
+        );
+    }
+
+    #[test]
+    fn failed_surface_submission_does_not_publish_its_revision() {
+        let mut session = running(LoopMode::HostPumped);
+        let token = session
+            .begin_submission(SceneRevision::new(7))
+            .expect("token");
+        let invalid = SurfaceId(u64::MAX);
+        assert_eq!(
+            session
+                .submit(invalid, token, SurfaceCondition::Ready)
+                .expect_err("unknown surface"),
+            RuntimeError::new(RuntimeErrorKind::ResourceInvalid, "surface is invalid")
+        );
+        assert_eq!(session.latest_scene_revision, None);
+    }
+
+    #[test]
+    fn device_loss_invalidates_work_and_failed_recovery_preserves_loss() {
+        let mut session = running(LoopMode::HostPumped);
+        let surface = session.create_surface([64, 64]).expect("surface");
+        let ticket = WorkTicket {
+            scene_revision: SceneRevision::new(1),
+            generation: session.work_generation(),
+        };
+        session
+            .work_queue
+            .borrow_mut()
+            .enqueue(ticket.scene_revision, ticket.generation)
+            .expect("queued work");
+        let previous_device = session.device_generation();
+
+        assert_eq!(
+            session.handle_device_loss().expect("device loss"),
+            LifecycleOutcome::DeviceLost
+        );
+        assert_ne!(session.device_generation(), previous_device);
+        assert_eq!(
+            session.surface_state(surface).expect("lost state"),
+            SurfaceState::Lost
+        );
+        assert_eq!(session.work_queue.borrow().pending_len(), 0);
+        assert_eq!(
+            session
+                .work_queue
+                .borrow_mut()
+                .outcome(ticket, session.work_generation()),
+            WorkOutcome::StaleDropped
+        );
+        assert_eq!(
+            session
+                .recover_device()
+                .expect_err("state-only recovery remains explicit")
+                .kind(),
+            RuntimeErrorKind::RecoveryFailed
+        );
+        assert_eq!(
+            session.surface_state(surface).expect("still lost"),
+            SurfaceState::Lost
+        );
+    }
+
+    #[test]
+    fn generation_exhaustion_and_queue_backpressure_are_atomic() {
+        assert_eq!(
+            WorkGeneration(u64::MAX)
+                .next()
+                .expect_err("work generation overflow")
+                .kind(),
+            RuntimeErrorKind::Internal
+        );
+        assert_eq!(
+            DeviceGeneration(u64::MAX)
+                .next()
+                .expect_err("device generation overflow")
+                .kind(),
+            RuntimeErrorKind::Internal
+        );
+
+        let mut queue = WorkQueue::new(1);
+        queue
+            .enqueue(SceneRevision::new(1), WorkGeneration::initial())
+            .expect("first bounded ticket");
+        assert_eq!(
+            queue
+                .enqueue(SceneRevision::new(2), WorkGeneration::initial())
+                .expect_err("queue capacity")
+                .kind(),
+            RuntimeErrorKind::ResourceInvalid
+        );
+        assert_eq!(queue.pending_len(), 1);
     }
 }
