@@ -217,10 +217,11 @@ hybrid-explicit default, as documented in [Getting started](#getting-started-pre
 PR #89 additionally records bounded private RenderPacket validation,
 offscreen wgpu line geometry/shader/readback tests, backend-neutral runtime and
 viewer state-model tests, semantic input routing, a private line-only vector
-PDF sink, and fail-closed benchmark validation. These are pre-alpha
+PDF sink, and fail-closed benchmark validation. PR #91 adds a bounded logical
+resource cache/lease/fence/device-generation model. These are pre-alpha
 implementation slices with local evidence — not a completed v1 product,
 support matrix, or release. The full semantic/layout frame, real window/present
-loop, complete resource lifecycle integration, text/font/export/accessibility
+loop, full renderer-owner resource lifecycle integration, text/font/export/accessibility
 surface, real-GPU matrix, accelerated-native measurement, and release closure
 remain open. `crates/lumenplot` remains
 the sole public Rust facade, following the accepted [facade and crate dependency
