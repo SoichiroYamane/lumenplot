@@ -5,9 +5,12 @@ native seam and decodes the emitted PNG. Before the D2 fix the canvas was
 fully transparent regardless of figure facecolor.
 """
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/home/sy/dev/rust/lumenplot/.worktrees/t_f62d90a3/python")
-sys.path.insert(0, "/home/sy/dev/rust/lumenplot/.worktrees/t_f62d90a3/tests/python")
+REPO = Path(__file__).resolve().parents[2]
+
+sys.path.insert(0, str(REPO / "python"))
+sys.path.insert(0, str(REPO / "tests" / "python"))
 
 import matplotlib
 matplotlib.use("module://lumenplot_mpl.backend")
