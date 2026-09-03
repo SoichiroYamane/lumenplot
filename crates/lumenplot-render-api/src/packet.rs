@@ -18,7 +18,7 @@ use crate::frame::{
 const MAX_PACKET_POINTS: usize = 1_000_000;
 const MAX_PACKET_SEGMENTS: usize = 1_000_000;
 const MAX_PACKET_DRAWS: usize = 1_000_000;
-const MAX_PACKET_RESOURCES: usize = 4;
+pub(crate) const MAX_PACKET_RESOURCES: usize = 4;
 const MAX_PACKET_LINE_WIDTH: f64 = 16_384.0;
 const RESOURCE_GENERATION: u32 = 1;
 const CLIP_RESOURCE_SLOT: u32 = 1;
@@ -250,14 +250,26 @@ impl RenderPacket {
         self.scene_revision
     }
 
-    #[cfg(test)]
-    fn work_generation(&self) -> WorkGeneration {
+    #[allow(dead_code)]
+    pub(crate) fn work_generation(&self) -> WorkGeneration {
         self.work_generation
     }
 
-    #[cfg(test)]
-    fn device_generation(&self) -> DeviceGeneration {
+    #[allow(dead_code)]
+    pub(crate) fn device_generation(&self) -> DeviceGeneration {
         self.device_generation
+    }
+
+    /// Logical resource identities validated as part of this packet.
+    #[allow(dead_code)]
+    pub(crate) fn resource_ids(&self) -> impl Iterator<Item = LogicalResourceId> + '_ {
+        self.resources.ids()
+    }
+
+    /// Number of logical resources validated as part of this packet.
+    #[allow(dead_code)]
+    pub(crate) fn resource_count(&self) -> usize {
+        self.resources.len()
     }
 
     #[cfg(test)]
@@ -266,8 +278,8 @@ impl RenderPacket {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct LogicalResourceId {
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct LogicalResourceId {
     slot: u32,
     generation: u32,
 }
@@ -392,6 +404,17 @@ impl ResourceTable {
             ));
         }
         Ok(())
+    }
+
+    fn ids(&self) -> impl Iterator<Item = LogicalResourceId> + '_ {
+        self.clips
+            .iter()
+            .map(|clip| clip.id)
+            .chain(self.styles.iter().map(|style| style.id))
+    }
+
+    fn len(&self) -> usize {
+        self.clips.len().saturating_add(self.styles.len())
     }
 
     fn has_clip(&self, id: LogicalResourceId) -> bool {

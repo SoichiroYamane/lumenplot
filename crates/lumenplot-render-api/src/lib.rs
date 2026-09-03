@@ -13,6 +13,8 @@
 
 mod frame;
 mod packet;
+#[allow(dead_code)]
+mod resources;
 
 pub use crate::frame::{
     FramePacket, FrameSeamError, FrameSeamErrorKind, FrameSpec, PacketPoint, PacketRevision,
