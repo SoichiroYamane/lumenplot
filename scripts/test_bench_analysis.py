@@ -97,6 +97,13 @@ def make_manifest(profile: str = "strict") -> dict:
                 "available": True,
                 "description": "queue completion observation",
             },
+            {
+                "name": "scanout_marker",
+                "domain": "scanout",
+                "unit": "ns",
+                "available": True,
+                "description": "scanout marker observation",
+            },
         ],
         "blocks": [
             {
@@ -113,7 +120,7 @@ def make_manifest(profile: str = "strict") -> dict:
         ],
         "pooled": {
             "clock": "event_accept_to_present_requested",
-            "frames": 5000,
+            "frame_count": 5000,
             "p50_ns": 11_800_000.0,
             "p95_ns": 23_900_000.0,
             "p99_ns": 119_700_000.0,
@@ -164,6 +171,14 @@ class NearestRankQuantileTests(unittest.TestCase):
     def test_empty_list_raises(self) -> None:
         with self.assertRaises(ValueError):
             bench.nearest_rank([], 0.5)
+
+    def test_malformed_quantile_or_sample_is_rejected(self) -> None:
+        for quantile in (-0.1, float("nan"), float("inf"), 1.1):
+            with self.subTest(quantile=quantile):
+                with self.assertRaises(ValueError):
+                    bench.nearest_rank([1.0, 2.0], quantile)
+        with self.assertRaises(ValueError):
+            bench.nearest_rank([1.0, float("nan")], 0.5)
 
 
 class PairedBootstrapTests(unittest.TestCase):
@@ -298,7 +313,10 @@ class ManifestValidationTests(unittest.TestCase):
         manifest["clocks"][0].update(name="event_accept_to_input", domain="scheduler")
         manifest["clocks"][1].update(name="queue_gpu_done", domain="queue")
         manifest["clocks"][2].update(name="scanout_marker", domain="scanout")
-        manifest["clocks"].append({"name": "blit_gpu", "domain": "gpu", "available": False})
+        manifest["clocks"][3].update(name="blit_gpu", domain="gpu", available=False)
+        manifest["pooled"]["clock"] = "event_accept_to_input"
+        manifest["status"] = "inconclusive"
+        manifest["inconclusive_reasons"] = ["GPU clock unavailable"]
         errors = self.validate(manifest)
         self.assertEqual(errors, [], errors)
 
@@ -337,6 +355,10 @@ class ManifestValidationTests(unittest.TestCase):
         manifest = make_manifest()
         manifest["blocks"][0]["pid"] = 0
         self.assertTrue(any("pid" in e for e in self.validate(manifest)))
+
+        manifest = make_manifest()
+        manifest["blocks"][1]["pid"] = manifest["blocks"][0]["pid"]
+        self.assertTrue(any("distinct pid" in e for e in self.validate(manifest)))
 
         manifest = make_manifest()
         manifest["blocks"][0]["started_at_utc"] = "not-a-stamp"
@@ -505,6 +527,34 @@ class ManifestValidationTests(unittest.TestCase):
             any("p99_ns" in e for e in self.validate(manifest)),
             "null quantile under a complete run must be rejected",
         )
+
+    def test_every_clock_domain_is_required(self) -> None:
+        manifest = make_manifest()
+        manifest["clocks"] = manifest["clocks"][:-1]
+        errors = self.validate(manifest)
+        self.assertTrue(any("scanout" in error and "missing" in error for error in errors), errors)
+
+    def test_complete_status_requires_available_clock_observations(self) -> None:
+        manifest = make_manifest()
+        manifest["clocks"][2]["available"] = False
+        errors = self.validate(manifest)
+        self.assertTrue(any("complete status requires" in error for error in errors), errors)
+
+    def test_pooled_and_gate_quantiles_have_valid_shapes(self) -> None:
+        manifest = make_manifest()
+        manifest["pooled"]["p95_ns"] = manifest["pooled"]["p50_ns"] - 1
+        errors = self.validate(manifest)
+        self.assertTrue(any("pooled" in error and "p50_ns" in error for error in errors), errors)
+
+        manifest = make_manifest()
+        manifest["pooled"]["frame_count"] -= 1
+        errors = self.validate(manifest)
+        self.assertTrue(any("pooled.frame_count" in error for error in errors), errors)
+
+        manifest = make_manifest()
+        manifest["max_block_p99_ns"] -= 1
+        errors = self.validate(manifest)
+        self.assertTrue(any("max_block_p99_ns" in error for error in errors), errors)
 
     def test_present_but_null_fields_are_rejected(self) -> None:
         # Round-4 finding B: an explicit JSON null satisfies neither the
@@ -803,6 +853,12 @@ class QuantilesCommandTests(unittest.TestCase):
             "bad-clocks-shape.jsonl": json.dumps(
                 {"block_index": 0, "frame_index": 0, "clocks": []}
             ) + "\n",
+            "negative-clock-value.jsonl": json.dumps(
+                {"block_index": 0, "frame_index": 0, "clocks": {"t": -1}}
+            ) + "\n",
+            "nonfinite-clock-value.jsonl": (
+                '{"block_index": 0, "frame_index": 0, "clocks": {"t": NaN}}\n'
+            ),
         }
         for name, text in cases.items():
             with self.subTest(file=name):
@@ -811,6 +867,16 @@ class QuantilesCommandTests(unittest.TestCase):
                 completed = run_cli("--quantiles", str(path), "--clock", "t")
                 self.assertEqual(completed.returncode, 2, completed.stdout)
                 self.assertTrue(completed.stderr.startswith("ERROR:"), completed.stderr)
+
+    def test_missing_requested_clock_exits_two(self) -> None:
+        path = self.root / "missing-clock.jsonl"
+        path.write_text(
+            json.dumps({"block_index": 0, "frame_index": 0, "clocks": {"other": 1}}) + "\n",
+            encoding="utf-8",
+        )
+        completed = run_cli("--quantiles", str(path), "--clock", "requested")
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("is missing", completed.stderr)
 
     def test_requires_clock_argument(self) -> None:
         path, _ = sample_jsonl(self.root / "samples.jsonl")
@@ -848,7 +914,7 @@ class CompareCommandTests(unittest.TestCase):
         self.assertIn("| 0 | 1000 | 1000 | 100000000 | 85000000 | -15000000 | -15.00% |", report)
         self.assertIn("| 4 | 1000 | 1000 | 120000000 | 113000000 | -7000000 | -5.83% |", report)
         self.assertIn("Max block p99 (gate statistic, ns)", report)
-        self.assertIn('"frames": 5000', report)
+        self.assertIn('"frame_count": 5000', report)
         self.assertIn("seed=20260824", report)
         self.assertIn("resamples=10000", report)
         self.assertIn("Overall: COMPLETE", report)

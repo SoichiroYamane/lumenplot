@@ -13,7 +13,6 @@ Exit codes: 0 valid evidence, 2 invalid or incomplete evidence.
 from __future__ import annotations
 
 import argparse
-import math
 import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -37,25 +36,7 @@ def _is_regular_file(path: Path) -> bool:
 
 def _is_finite_nonnegative_number(value: Any) -> bool:
     """Reject Python's non-standard JSON NaN/Infinity values as evidence."""
-    return (
-        bench_analysis.is_number(value)
-        and (not isinstance(value, float) or math.isfinite(value))
-        and value >= 0
-    )
-
-
-def _nonfinite_number_errors(value: Any, path: str = "manifest") -> list[str]:
-    """Find NaN/Infinity accepted by Python's permissive JSON decoder."""
-    errors: list[str] = []
-    if isinstance(value, float) and not math.isfinite(value):
-        errors.append(f"{path}: non-finite numbers are not valid benchmark evidence")
-    elif isinstance(value, dict):
-        for key, child in value.items():
-            errors.extend(_nonfinite_number_errors(child, f"{path}.{key}"))
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            errors.extend(_nonfinite_number_errors(child, f"{path}[{index}]"))
-    return errors
+    return bench_analysis.is_finite_nonnegative_number(value)
 
 
 def _safe_sample_path(raw_path: Any, block_index: int) -> tuple[str | None, str | None]:
@@ -149,6 +130,11 @@ def _validate_sample(
                 errors.append(
                     f"{path}:{position + 1}: unavailable clock {name!r} must be null"
                 )
+            if status == "complete" and name not in unavailable_clocks and value is None:
+                errors.append(
+                    f"{path}:{position + 1}: complete runs require available clock "
+                    f"{name!r} to have an observation"
+                )
 
     if scheduler_name is not None and isinstance(frame_count, int) and not isinstance(
         frame_count, bool
@@ -157,8 +143,7 @@ def _validate_sample(
             row["clocks"][scheduler_name]
             for row in rows
             if isinstance(row.get("clocks"), dict)
-            and bench_analysis.is_number(row["clocks"].get(scheduler_name))
-            and row["clocks"].get(scheduler_name) >= 0
+            and _is_finite_nonnegative_number(row["clocks"].get(scheduler_name))
         ]
         for field, quantile in (
             ("p50_ns", 0.50),
@@ -166,7 +151,18 @@ def _validate_sample(
             ("p99_ns", 0.99),
         ):
             reported = block.get(field)
-            if reported is not None and values:
+            if not values:
+                if reported is not None:
+                    errors.append(
+                        f"{path}: block {block_index} {field} must be null when "
+                        "the scheduler clock has no observations"
+                    )
+            elif reported is None:
+                errors.append(
+                    f"{path}: block {block_index} {field} must report the "
+                    "nearest-rank value when scheduler observations exist"
+                )
+            else:
                 expected = bench_analysis.nearest_rank(values, quantile)
                 if reported != expected:
                     errors.append(
@@ -210,7 +206,6 @@ def validate_run(output_dir: Path, expected_profile: str) -> list[str]:
             errors.extend(
                 f"manifest: {error}" for error in bench_analysis.validate_manifest(manifest)
             )
-            errors.extend(_nonfinite_number_errors(manifest))
             if isinstance(manifest, dict) and manifest.get("profile") != expected_profile:
                 errors.append(
                     "manifest.profile: does not match the selected CI profile "
@@ -254,7 +249,7 @@ def validate_run(output_dir: Path, expected_profile: str) -> list[str]:
         clock["name"]
         for clock in clocks
         if isinstance(clock, dict)
-        and clock.get("available") is False
+        and clock.get("available") is not True
         and isinstance(clock.get("name"), str)
     }
     if unavailable_clocks and status == "complete":
@@ -314,11 +309,19 @@ def validate_run(output_dir: Path, expected_profile: str) -> list[str]:
             rows_by_block[block["block_index"]] = rows
 
     # Validate the descriptive pooled values emitted by the current runner when
-    # present. ``pooled: null`` remains valid for an inconclusive future cell;
-    # the authoritative manifest validator handles that nullable boundary.
+    # present. ``pooled: null`` remains valid for an inconclusive cell with no
+    # scheduler observations; the authoritative manifest validator handles the
+    # nullable boundary and this block checks the raw-value relationship.
     pooled = manifest.get("pooled")
+    if status == "complete" and pooled is None:
+        errors.append("pooled: complete status requires a pooled descriptive summary")
     if isinstance(pooled, dict) and rows_by_block and scheduler_name is not None:
         total_rows = sum(len(rows) for rows in rows_by_block.values())
+        if pooled.get("clock") != scheduler_name:
+            errors.append(
+                "pooled.clock: must equal the scheduler clock used for block quantiles "
+                f"({scheduler_name!r}), got {pooled.get('clock')!r}"
+            )
         pooled_count = pooled.get("frame_count")
         if pooled_count != total_rows:
             errors.append(
@@ -330,22 +333,52 @@ def validate_run(output_dir: Path, expected_profile: str) -> list[str]:
             for rows in rows_by_block.values()
             for row in rows
             if isinstance(row.get("clocks"), dict)
-            and bench_analysis.is_number(row["clocks"].get(scheduler_name))
-            and row["clocks"].get(scheduler_name) >= 0
+            and _is_finite_nonnegative_number(row["clocks"].get(scheduler_name))
         ]
-        if values:
-            for field, quantile in (
-                ("p50_ns", 0.50),
-                ("p95_ns", 0.95),
-                ("p99_ns", 0.99),
-            ):
-                reported = pooled.get(field)
+        for field, quantile in (
+            ("p50_ns", 0.50),
+            ("p95_ns", 0.95),
+            ("p99_ns", 0.99),
+        ):
+            reported = pooled.get(field)
+            if not values:
+                if reported is not None:
+                    errors.append(
+                        f"pooled.{field}: must be null when the scheduler clock "
+                        "has no observations"
+                    )
+            elif reported is None:
+                errors.append(
+                    f"pooled.{field}: must report the nearest-rank value when "
+                    "scheduler observations exist"
+                )
+            else:
                 expected = bench_analysis.nearest_rank(values, quantile)
                 if reported != expected:
                     errors.append(
                         f"pooled.{field}: {reported!r} does not match raw "
                         f"{scheduler_name} nearest-rank value {expected!r}"
                     )
+
+    if rows_by_block:
+        block_p99_values = [
+            block["p99_ns"]
+            for block in blocks
+            if isinstance(block, dict)
+            and _is_finite_nonnegative_number(block.get("p99_ns"))
+        ]
+        expected_max = max(block_p99_values) if block_p99_values else None
+        reported_max = manifest.get("max_block_p99_ns")
+        if expected_max is None:
+            if reported_max is not None:
+                errors.append(
+                    "max_block_p99_ns: must be null when every block p99 is unavailable"
+                )
+        elif reported_max != expected_max:
+            errors.append(
+                "max_block_p99_ns: must equal the maximum available block p99 "
+                f"({expected_max!r}), got {reported_max!r}"
+            )
 
     return errors
 
