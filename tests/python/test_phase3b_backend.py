@@ -508,6 +508,8 @@ class TestStructuralParity(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(got), np.asarray(expected), rtol=0)
 
     def test_nan_gaps_do_not_reconnect(self):
+        import numpy as np
+
         fig, canvas = _eligible_canvas(
             figsize=(2.0, 1.0),
             dpi=100,
@@ -522,7 +524,29 @@ class TestStructuralParity(unittest.TestCase):
         spec = _StubNativeModule.last_spec
         assert spec is not None
         vertices = spec["commands"][0]["vertices"]
-        self.assertEqual(len(vertices), 3)  # NaN row dropped, no bridging
+        self.assertEqual(len(vertices), 4)  # NaN row retained as a pen lift
+        self.assertTrue(np.isfinite(vertices[0]).all())
+        self.assertTrue(np.isfinite(vertices[1]).all())
+        self.assertFalse(np.isfinite(vertices[2]).all())
+        self.assertTrue(np.isfinite(vertices[3]).all())
+        del fig
+
+    def test_all_nonfinite_rows_remain_an_explicit_refusal(self):
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        ax = fig.get_axes()[0]
+        ax.lines[0].remove()
+        ax.add_line(
+            Line2D(
+                [float("nan"), float("nan")],
+                [0.0, 1.0],
+                color="red",
+                linewidth=2.0,
+                solid_capstyle="butt",
+                solid_joinstyle="miter",
+            )
+        )
+        with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
+            canvas.render_png()
         del fig
 
 

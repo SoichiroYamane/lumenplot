@@ -14,9 +14,42 @@ from pathlib import Path
 from typing import Any
 
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
-WGPU_LOCK_SHA256 = "719d1f74b4681242f44ba01942fbc80b1cce40846798548845740e4b15ce1769"
+WGPU_LOCK_SHA256 = "0b356e844f17bae939968e8c81b3b46a189a23a7782ce9379d2c7fe1763b0546"
 WGPU_PACKAGE_VERSION = "29.0.4"
 WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
+WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
+    "naga": {
+        "version": "29.0.4",
+        "checksum": "b2bf919621e7975acb27d881bae2fb993e0d45c8e0446e85e6272971e00dc8df",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "arrayvec",
+            "bit-set",
+            "bitflags",
+            "cfg-if",
+            "cfg_aliases",
+            "codespan-reporting",
+            "half",
+            "hashbrown 0.16.1",
+            "hexf-parse",
+            "indexmap",
+            "libm",
+            "log",
+            "num-traits",
+            "once_cell",
+            "rustc-hash 1.1.0",
+            "spirv",
+            "thiserror",
+            "unicode-ident",
+        },
+    },
+    "sha2": {
+        "version": "0.10.9",
+        "checksum": "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {"cfg-if", "cpufeatures", "digest"},
+    },
+}
 
 EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
     "adler2": {
@@ -314,7 +347,7 @@ EXPECTED_WORKSPACE_DEPENDENCIES = {
     "lumenplot-python": {"lumenplot", "numpy", "png", "pyo3", "tiny-skia"},
     "lumenplot-render-api": {"lumenplot-engine"},
     "lumenplot-render-metal": {"lumenplot-render-api", "objc2", "objc2-foundation", "objc2-metal"},
-    "lumenplot-render-wgpu": {"lumenplot-render-api", "wgpu"},
+    "lumenplot-render-wgpu": {"lumenplot-render-api", "naga", "sha2", "wgpu"},
     "lumenplot-runtime": {"lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
 }
@@ -390,6 +423,22 @@ def check_lock(root: Path, errors: list[str]) -> None:
                 errors.append("Cargo.lock source drift for wgpu")
             if package.get("checksum") != WGPU_PACKAGE_SHA256:
                 errors.append("Cargo.lock checksum drift for wgpu")
+        for name, expected in WGPU_BUILD_REGISTRY.items():
+            package = actual.get(f"{name}@{expected['version']}")
+            if package is None:
+                errors.append(f"Cargo.lock missing WGPU build package {name}")
+                continue
+            if package.get("source") != REGISTRY_SOURCE:
+                errors.append(f"Cargo.lock source drift for {name}")
+            if package.get("checksum") != expected["checksum"]:
+                errors.append(f"Cargo.lock checksum drift for {name}")
+            dependencies = {
+                dependency
+                for dependency in package.get("dependencies", [])
+                if isinstance(dependency, str)
+            }
+            if dependencies != expected["dependencies"]:
+                errors.append(f"Cargo.lock dependency graph drift for {name}")
 
     for name, expected in EXPECTED_WORKSPACE_DEPENDENCIES.items():
         package = actual.get(f"{name}@0.1.0")
@@ -472,6 +521,17 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         wgpu_package = registry_packages["wgpu", WGPU_PACKAGE_VERSION]
         if wgpu_package.get("license") != "MIT OR Apache-2.0":
             errors.append("metadata license drift for wgpu")
+        for name, expected in WGPU_BUILD_REGISTRY.items():
+            package = registry_packages.get((name, expected["version"]))
+            if package is None:
+                errors.append(f"metadata missing WGPU build package {name}")
+                continue
+            if package.get("version") != expected["version"]:
+                errors.append(f"metadata version drift for {name}")
+            if package.get("license") != expected["license"]:
+                errors.append(f"metadata license drift for {name}")
+            if package.get("source") != REGISTRY_SOURCE:
+                errors.append(f"metadata source drift for {name}")
 
     package_names_by_id = {
         package["id"]: package["name"]
@@ -513,6 +573,22 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         }
         if dependencies != expected_dependencies:
             errors.append(f"metadata dependency graph drift for workspace package {name}")
+    if wgpu_active:
+        for name, expected in WGPU_BUILD_REGISTRY.items():
+            node = nodes_by_name.get(name)
+            if node is None:
+                errors.append(f"metadata resolution is missing {name}")
+                continue
+            dependencies = {
+                package_names_by_id.get(dependency, dependency)
+                for dependency in node.get("dependencies", [])
+                if isinstance(dependency, str)
+            }
+            expected_dependencies = {
+                dependency.split(" ", 1)[0] for dependency in expected["dependencies"]
+            }
+            if dependencies != expected_dependencies:
+                errors.append(f"metadata dependency graph drift for {name}")
 
     direct_features = {"png": [], "tiny-skia": ["std"], "wgpu": ["std", "vulkan", "wgsl"]}
     for name, expected_features in direct_features.items():
@@ -536,6 +612,7 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         "ash",
         "crc32fast",
         "crunchy",
+        "generic-array",
         "libc",
         "libm",
         "matrixmultiply",
