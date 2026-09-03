@@ -38,6 +38,7 @@
 //! machinery future paired fixtures rely on. The chosen order is logged on
 //! the child's info stream.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::process::Command;
@@ -405,6 +406,9 @@ fn run_block_in_process(
     frames: usize,
     out_dir: &str,
 ) -> Result<BlockSummary, String> {
+    if frames < MIN_FRAMES_PER_BLOCK {
+        return Err(format!("frames must be at least {MIN_FRAMES_PER_BLOCK}"));
+    }
     let block_started_at_utc = utc_now_rfc3339();
     let (xs, ys) = build_fixture_xy();
     let board = ClockBoard::detect();
@@ -855,6 +859,7 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
     }
 
     let mut blocks = Vec::with_capacity(BLOCK_COUNT);
+    let mut block_pids = HashSet::with_capacity(BLOCK_COUNT);
     for block_index in 0..BLOCK_COUNT {
         let executable = match std::env::current_exe() {
             Ok(path) => path,
@@ -909,6 +914,13 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
                 eprintln!(
                     "bench: block {block_index} returned only {} frames",
                     summary.frame_count
+                );
+                return 2;
+            }
+            Some(summary) if !block_pids.insert(summary.pid) => {
+                eprintln!(
+                    "bench: block {block_index} reused pid {}; blocks are not fresh processes",
+                    summary.pid
                 );
                 return 2;
             }
