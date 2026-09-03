@@ -58,6 +58,7 @@ from __future__ import annotations
 import io
 import math
 import os
+import threading
 from typing import Any
 
 import matplotlib
@@ -68,6 +69,10 @@ from lumenplot_mpl.backend_types import (
     LumenPlotFallbackDiagnostic,
     LumenPlotPngResult,
     LumenPlotUnsupportedError,
+    _BACKEND_UNAVAILABLE_TOKEN,
+    _INTERNAL_TOKEN,
+    _INVALID_INPUT_TOKEN,
+    _OUT_OF_MEMORY_TOKEN,
     _UNSUPPORTED_TOKEN,
 )
 
@@ -173,6 +178,10 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         self._mode = mode
         self._generation = 0
         self._last_diagnostics: tuple = ()
+        # This lock covers only adapter-owned counters/publication state.
+        # It is never held while invoking a Matplotlib callback or a caller
+        # supplied writer, preserving the reentrancy boundary in ADR 0015.
+        self._publication_lock = threading.Lock()
         super().__init__(figure)
 
     @property
@@ -183,7 +192,8 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
     @property
     def last_diagnostics(self) -> tuple:
         """Read-only observation of the last published diagnostics."""
-        return tuple(self._last_diagnostics)
+        with self._publication_lock:
+            return tuple(self._last_diagnostics)
 
     # -- helper API -------------------------------------------------------
 
@@ -201,18 +211,18 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         ``write(bytes)`` call and is never closed; path-like targets are
         written by the adapter.
         """
-        result = self._render(dpi=dpi, **kwargs)
-        if target is not None:
-            try:
+        generation: int | None = None
+        try:
+            result, generation = self._render_attempt(dpi=dpi, **kwargs)
+            if target is not None:
+                self._ensure_current_generation(generation)
                 self._write_target(target, result.png_bytes)
-            except BaseException:
-                # The render succeeded but publication failed. ADR-0015 §9:
-                # a failed attempt must not leave previously published
-                # diagnostics behind, so stale fallback state is never
-                # reported.
-                self._last_diagnostics = ()
-                raise
-        return result
+            self._publish_result(generation, result)
+            return result
+        except BaseException:
+            if generation is not None:
+                self._clear_diagnostics_if_current(generation)
+            raise
 
     # -- Matplotlib-compatible output methods -----------------------------
 
@@ -227,15 +237,16 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         """
         orientation = kwargs.pop("orientation", "portrait")
         if orientation not in ("portrait", "landscape"):
-            raise LumenPlotUnsupportedError(
+            self._raise_output_error(
                 f"orientation {orientation!r} is unsupported",
+                code=_INVALID_INPUT_TOKEN,
             )
         if metadata:
-            raise LumenPlotUnsupportedError(
+            self._raise_output_error(
                 "non-empty PNG metadata is unsupported natively",
             )
         if pil_kwargs:
-            raise LumenPlotUnsupportedError(
+            self._raise_output_error(
                 "non-empty pil_kwargs are unsupported natively",
             )
         dpi = kwargs.pop("dpi", None)
@@ -243,26 +254,26 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         edgecolor = kwargs.pop("edgecolor", None)
         bbox_inches_restore = kwargs.pop("bbox_inches_restore", None)
         if bbox_inches_restore not in (None,):
-            raise LumenPlotUnsupportedError(
+            self._raise_output_error(
                 "bbox_inches output is unsupported natively",
             )
         if kwargs:
             unexpected = ", ".join(sorted(kwargs))
-            raise LumenPlotUnsupportedError(
+            self._raise_output_error(
                 f"unsupported print_png option(s): {unexpected}",
             )
         del facecolor, edgecolor
-        result = self._render(dpi=dpi)
-        if filename_or_obj is not None:
-            try:
+        generation: int | None = None
+        try:
+            result, generation = self._render_attempt(dpi=dpi)
+            if filename_or_obj is not None:
+                self._ensure_current_generation(generation)
                 self._write_target(filename_or_obj, result.png_bytes)
-            except BaseException:
-                # The render succeeded but publication failed (e.g. an
-                # OSError from the target). ADR-0015 §9: a failed attempt
-                # must not leave previously published diagnostics behind,
-                # so stale fallback state is never reported.
-                self._last_diagnostics = ()
-                raise
+            self._publish_result(generation, result)
+        except BaseException:
+            if generation is not None:
+                self._clear_diagnostics_if_current(generation)
+            raise
 
     def print_figure(self, filename, dpi=None, facecolor=None, edgecolor=None,
                      orientation="portrait", format=None, *,
@@ -274,38 +285,47 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         instead of silently selecting another registered encoder.
         """
         if format is None and isinstance(filename, (str, os.PathLike)):
-            from pathlib import PurePath
-
             name = os.fspath(filename)
-            suffix = PurePath(name).suffix.lstrip(".").lower()
+            suffix = os.fsdecode(os.path.splitext(name)[1]).lstrip(".").lower()
             format = suffix or None
-            if format is None and isinstance(filename, str):
+            if format is None:
                 # Match the base-class convention of appending the default
                 # extension to an extensionless filename.
-                filename = filename.rstrip(".") + "." + self.get_default_filetype()
+                if isinstance(name, bytes):
+                    filename = name.rstrip(b".") + b"." + (
+                        self.get_default_filetype().encode("ascii")
+                    )
+                else:
+                    filename = name.rstrip(".") + "." + self.get_default_filetype()
                 format = "png"
         if format is None:
             format = self.get_default_filetype()
         format = str(format).lower()
         if format != "png":
-            raise LumenPlotUnsupportedError(
+            self._raise_output_error(
                 f"format {format!r} is unsupported; only 'png' exists",
             )
         if bbox_inches is not None:
-            raise LumenPlotUnsupportedError(
+            self._raise_output_error(
                 "bbox_inches output is unsupported natively",
             )
         if bbox_extra_artists:
-            raise LumenPlotUnsupportedError(
+            self._raise_output_error(
                 "bbox_extra_artists are unsupported natively",
             )
         if pad_inches is not None and bbox_inches is None:
-            pass
+            self._raise_output_error(
+                "non-default padding is unsupported natively",
+            )
         if backend is not None:
-            raise LumenPlotUnsupportedError(
+            self._raise_output_error(
                 "alternative backend selection is unsupported",
             )
-        effective_dpi = self._resolve_dpi(dpi)
+        try:
+            effective_dpi = self._resolve_dpi(dpi)
+        except BaseException:
+            self._clear_published_diagnostics()
+            raise
         try:
             self.print_png(
                 filename,
@@ -315,6 +335,8 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
                 edgecolor=edgecolor,
             )
         finally:
+            # ``print_png`` owns publication after its target write.  Keep
+            # this method's return shape compatible with Matplotlib.
             pass
 
     # -- internal render pipeline -----------------------------------------
@@ -326,17 +348,28 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         falls back to rcParams ``savefig.dpi``, which may be a number or
         itself ``'figure'``.
         """
-        if dpi is None or dpi == "figure":
-            rc = matplotlib.rcParams["savefig.dpi"]
-            if dpi is None:
-                dpi = rc
-        if dpi in (None, "figure"):
-            return float(self.figure.dpi)
-        if isinstance(dpi, str):
-            raise LumenPlotUnsupportedError(f"invalid dpi {dpi!r}")
-        value = float(dpi)
+        requested = (
+            matplotlib.rcParams["savefig.dpi"] if dpi is None else dpi
+        )
+        if isinstance(requested, str):
+            if requested == "figure":
+                return float(self.figure.dpi)
+            raise LumenPlotUnsupportedError(
+                f"invalid dpi {requested!r}",
+                code=_INVALID_INPUT_TOKEN,
+            )
+        try:
+            value = float(requested)
+        except (OverflowError, TypeError, ValueError) as error:
+            raise LumenPlotUnsupportedError(
+                f"invalid dpi {requested!r}",
+                code=_INVALID_INPUT_TOKEN,
+            ) from error
         if not math.isfinite(value) or value <= 0:
-            raise LumenPlotUnsupportedError(f"invalid dpi {dpi!r}")
+            raise LumenPlotUnsupportedError(
+                f"invalid dpi {requested!r}",
+                code=_INVALID_INPUT_TOKEN,
+            )
         return value
 
     def _render(self, *, dpi: float | str | None = None,
@@ -350,13 +383,48 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         failure (missing native seam, internal errors) propagates in both
         modes.
         """
-        generation = self._generation + 1
-        self._generation = generation
-        self._last_diagnostics = ()
+        result, generation = self._render_attempt(dpi=dpi, **kwargs)
+        self._publish_result(generation, result)
+        return result
 
+    def _render_attempt(
+        self,
+        *,
+        dpi: float | str | None = None,
+        **kwargs: Any,
+    ) -> tuple[LumenPlotPngResult, int]:
+        """Render one attempt and return its result with its generation.
+
+        Publication is deliberately separate from rendering. Callers that
+        write to an external target publish only after that write succeeds;
+        callers that only request owned bytes publish immediately after this
+        method returns.
+        """
+        generation = self._begin_attempt()
         try:
-            return self._render_strict(generation=generation, dpi=dpi,
-                                       **kwargs)
+            return self._render_attempt_body(
+                generation=generation,
+                dpi=dpi,
+                **kwargs,
+            ), generation
+        except BaseException:
+            self._clear_diagnostics_if_current(generation)
+            raise
+
+    def _render_attempt_body(
+        self,
+        *,
+        generation: int,
+        dpi: float | str | None = None,
+        **kwargs: Any,
+    ) -> LumenPlotPngResult:
+        """Run strict-first dispatch for an already-started attempt."""
+        try:
+            return self._render_strict(
+                generation=generation,
+                dpi=dpi,
+                **kwargs,
+            )
         except LumenPlotUnsupportedError as error:
             if error.code != _UNSUPPORTED_TOKEN or self._mode != "hybrid":
                 raise
@@ -368,6 +436,59 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
                 reason=reason,
                 type_context=type_context,
             )
+
+    def _begin_attempt(self) -> int:
+        """Spend one generation and clear the previous observation."""
+        with self._publication_lock:
+            generation = self._generation + 1
+            self._generation = generation
+            self._last_diagnostics = ()
+            return generation
+
+    def _ensure_current_generation(self, generation: int) -> None:
+        """Reject a result superseded by a newer render attempt."""
+        with self._publication_lock:
+            current = self._generation
+        if current != generation:
+            raise LumenPlotUnsupportedError(
+                "render attempt became stale before publication",
+                code=_INTERNAL_TOKEN,
+                generation=generation,
+            )
+
+    def _publish_result(
+        self, generation: int, result: LumenPlotPngResult
+    ) -> None:
+        """Atomically publish diagnostics for the current generation."""
+        with self._publication_lock:
+            if self._generation != generation:
+                raise LumenPlotUnsupportedError(
+                    "render attempt became stale before publication",
+                    code=_INTERNAL_TOKEN,
+                    generation=generation,
+                )
+            self._last_diagnostics = tuple(result.diagnostics)
+
+    def _clear_diagnostics_if_current(self, generation: int) -> None:
+        """Clear failed-attempt state without clobbering newer output."""
+        with self._publication_lock:
+            if self._generation == generation:
+                self._last_diagnostics = ()
+
+    def _clear_published_diagnostics(self) -> None:
+        """Clear diagnostics for a rejected output request."""
+        with self._publication_lock:
+            self._last_diagnostics = ()
+
+    def _raise_output_error(
+        self,
+        message: str,
+        *,
+        code: str = _UNSUPPORTED_TOKEN,
+    ) -> None:
+        """Raise a stable output guard error after clearing stale state."""
+        self._clear_published_diagnostics()
+        raise LumenPlotUnsupportedError(message, code=code)
 
     def _render_strict(self, *, generation: int,
                        dpi: float | str | None = None,
@@ -384,11 +505,35 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         original_figure_dpi = float(figure.dpi)
         figure.dpi = output_dpi
         try:
-            width_in, height_in = figure.get_size_inches()
-            width_px = int(round(float(width_in) * output_dpi))
-            height_px = int(round(float(height_in) * output_dpi))
+            try:
+                width_in, height_in = figure.get_size_inches()
+                width_in = float(width_in)
+                height_in = float(height_in)
+                width_px = int(round(width_in * output_dpi))
+                height_px = int(round(height_in * output_dpi))
+            except (OverflowError, TypeError, ValueError) as error:
+                raise LumenPlotUnsupportedError(
+                    "figure size is not representable for PNG output",
+                    code=_INVALID_INPUT_TOKEN,
+                    generation=generation,
+                ) from error
+            if (
+                not math.isfinite(width_in)
+                or not math.isfinite(height_in)
+                or width_in <= 0.0
+                or height_in <= 0.0
+            ):
+                raise LumenPlotUnsupportedError(
+                    "figure size must be finite and positive",
+                    code=_INVALID_INPUT_TOKEN,
+                    generation=generation,
+                )
             if width_px <= 0 or height_px <= 0:
-                raise LumenPlotUnsupportedError("non-positive canvas size")
+                raise LumenPlotUnsupportedError(
+                    "non-positive canvas size",
+                    code=_INVALID_INPUT_TOKEN,
+                    generation=generation,
+                )
 
             try:
                 preflight = _EligibilityPreflight()
@@ -442,9 +587,10 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
                 if error.generation is None:
                     error.generation = generation
                 raise
-            except (ValueError, TypeError, RuntimeError) as error:
+            except (OverflowError, ValueError, TypeError, RuntimeError) as error:
                 raise LumenPlotUnsupportedError(
                     f"preflight traversal failed: {error}",
+                    code=_INTERNAL_TOKEN,
                     generation=generation,
                 ) from error
 
@@ -454,9 +600,29 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         return LumenPlotPngResult(png_bytes, ())
 
     def _call_native(self, spec: dict, generation: int) -> bytes:
-        native = _native()
-        render_frame_png = getattr(native, "render_frame_png", None)
+        try:
+            native = _native()
+        except (AttributeError, ImportError) as error:
+            raise LumenPlotUnsupportedError(
+                "the private lumenplot_mpl._native backend is unavailable",
+                code=_BACKEND_UNAVAILABLE_TOKEN,
+                generation=generation,
+            ) from error
+        try:
+            render_frame_png = getattr(native, "render_frame_png", None)
+        except (AttributeError, ImportError) as error:
+            raise LumenPlotUnsupportedError(
+                "the private lumenplot_mpl._native backend is unavailable",
+                code=_BACKEND_UNAVAILABLE_TOKEN,
+                generation=generation,
+            ) from error
         if render_frame_png is not None:
+            if not callable(render_frame_png):
+                raise LumenPlotUnsupportedError(
+                    "the private lumenplot_mpl._native backend is invalid",
+                    code=_BACKEND_UNAVAILABLE_TOKEN,
+                    generation=generation,
+                )
             try:
                 data = render_frame_png(spec)
             except ValueError as error:
@@ -469,13 +635,21 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
                 # it into a whole-frame Agg fallback.
                 raise LumenPlotUnsupportedError(
                     f"native seam rejected the frame spec: {error}",
-                    code="internal",
+                    code=_INTERNAL_TOKEN,
                     generation=generation,
                 ) from error
             except RuntimeError as error:
+                native_code = getattr(error, "code", None)
+                if native_code not in (
+                    _BACKEND_UNAVAILABLE_TOKEN,
+                    _INVALID_INPUT_TOKEN,
+                    _OUT_OF_MEMORY_TOKEN,
+                    _INTERNAL_TOKEN,
+                ):
+                    native_code = _INTERNAL_TOKEN
                 raise LumenPlotUnsupportedError(
-                    f"native raster failure: {error}",
-                    code="internal",
+                    "native raster failure",
+                    code=native_code,
                     generation=generation,
                 ) from error
             if not isinstance(data, (bytes, bytearray)):
@@ -491,7 +665,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         raise LumenPlotUnsupportedError(
             "the private lumenplot_mpl._native.render_frame_png seam is "
             "not available in this environment",
-            code="backend-unavailable",
+            code=_BACKEND_UNAVAILABLE_TOKEN,
             generation=generation,
         )
 
@@ -509,8 +683,9 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         PNG output at the requested effective DPI, then restores any
         temporary canvas state even on failure. Success publishes exactly
         one structured diagnostic describing reason, type context,
-        generation, output format, and raster/vector scope; a failed
-        fallback attempt publishes nothing.
+        generation, output format, and raster/vector scope in the returned
+        result; the caller publishes it only after any external write
+        succeeds. A failed fallback attempt publishes nothing.
         """
         from matplotlib.backends.backend_agg import FigureCanvasAgg
 
@@ -532,8 +707,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
             representation="raster",
             fallback_type="matplotlib-agg",
         )
-        self._last_diagnostics = (diagnostic,)
-        return LumenPlotPngResult(png_bytes, self._last_diagnostics)
+        return LumenPlotPngResult(png_bytes, (diagnostic,))
 
     def _write_target(self, target: Any, data: bytes) -> None:
         """Write finished bytes to path-like or binary file-like targets.
@@ -543,10 +717,18 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         are never closed. ``OSError`` propagates unchanged.
         """
         if hasattr(target, "write") and callable(target.write):
-            target.write(data)
+            written = target.write(data)
+            if written is not None and written != len(data):
+                raise OSError(
+                    f"short write: expected {len(data)} bytes, wrote {written}"
+                )
             return
         with open(os.fspath(target), "wb") as handle:
-            handle.write(data)
+            written = handle.write(data)
+            if written != len(data):
+                raise OSError(
+                    f"short write: expected {len(data)} bytes, wrote {written}"
+                )
 
 
 #: Class alias fixed by API 0005 §1 (backend module identity).
