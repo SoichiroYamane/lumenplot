@@ -195,7 +195,7 @@ class TestUnrepresentableUnitData(unittest.TestCase):
 
     def test_unrepresentable_conversion_is_explicitly_refused(self) -> None:
         fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
-        canvas = self.backend.FigureCanvasLumenPlot(fig)
+        canvas = self.backend.FigureCanvasLumenPlot(fig, mode="strict")
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
         ax.axison = False
         line = _UnrepresentableProcessedLine(

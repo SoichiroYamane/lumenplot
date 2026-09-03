@@ -1,4 +1,4 @@
-"""Public Phase-3B Matplotlib backend adapter (first strict-mode slice).
+"""Public Phase-3B Matplotlib backend adapter (bounded strict/hybrid slice).
 
 Implements the accepted public surface contract recorded in
 ``docs/architecture/api-0005-phase3b-public-matplotlib-backend-surface.md``
@@ -21,8 +21,9 @@ Implements the accepted public surface contract recorded in
 - documented public Matplotlib APIs only: no private names anywhere in this
   module.
 
-Mode policy: the constructor kwarg ``mode`` selects ``"strict"`` (default)
-or ``"hybrid"`` (ADR 0015 §12 ordered delivery). Strict mode renders only
+Mode policy: the constructor kwarg ``mode`` selects ``"strict"`` or
+``"hybrid"`` (the default, corresponding to the accepted
+``hybrid-explicit`` profile). Strict mode renders only
 the whitelisted eligible trace and raises
 :class:`LumenPlotUnsupportedError` before any target write otherwise.
 Since the PRAC-A-D amendment of ADR 0015 §4, the eligible trace includes
@@ -153,7 +154,7 @@ def _native():
 
 
 class FigureCanvasLumenPlot(FigureCanvasBase):
-    """Public Phase-3B canvas: strict-mode native PNG rendering.
+    """Public Phase-3B canvas with hybrid-explicit default and strict PNG mode.
 
     Adapter-owned state is limited to an immutable last-publication record
     (``last_diagnostics``) and a monotonic per-canvas generation counter.
@@ -164,7 +165,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
 
     filetypes = filetypes
 
-    def __init__(self, figure=None, *, mode: str = "strict"):
+    def __init__(self, figure=None, *, mode: str = "hybrid"):
         if mode not in ("strict", "hybrid"):
             raise ValueError(
                 f"mode must be 'strict' or 'hybrid', got {mode!r}"

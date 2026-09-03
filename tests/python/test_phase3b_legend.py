@@ -158,7 +158,7 @@ def _legend_canvas(frameon=True, build=None):
     if not MATPLOTLIB_PRESENT:
         raise unittest.SkipTest("matplotlib not in this offline cell")
     fig = figure.Figure(figsize=(3.0, 2.0), dpi=100)
-    canvas = backend_mod.FigureCanvasLumenPlot(fig)
+    canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
     ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
     ax.set_facecolor("none")
     ax.tick_params(labelbottom=False, labelleft=False)
@@ -281,7 +281,7 @@ class TestLegendEligibility(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         fig = figure.Figure(figsize=(3.0, 2.0), dpi=100)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
         ax.set_facecolor("none")
         ax.tick_params(labelbottom=False, labelleft=False)
@@ -730,7 +730,7 @@ class TestLegendCompositingPixelParity(unittest.TestCase):
     @staticmethod
     def _render_native(frameon):
         fig = _mixed_figure(frameon=frameon)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         return canvas.render_png()
 
     def test_legend_interleaves_by_real_zorder_decoded_pixels(self):
