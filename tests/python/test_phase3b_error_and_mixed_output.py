@@ -541,5 +541,156 @@ class TestMixedOutputRasterLimit(unittest.TestCase):
         self.assertEqual(signature.parameters["output_format"].default, "png")
 
 
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
+class TestTerminalAdapterErrors(unittest.TestCase):
+    """Terminal failures never become a hybrid visual fallback."""
+
+    def setUp(self):
+        _StubNativeModule.last_spec = None
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_invalid_dpi_is_terminal_before_any_write_or_agg_call(self):
+        fig, canvas = _hybrid_canvas_with(_eligible_axes)
+        target = io.BytesIO()
+        with unittest.mock.patch.object(
+            figure.Figure,
+            "savefig",
+            side_effect=AssertionError("invalid input reached Agg"),
+        ):
+            with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+                canvas.render_png(target, dpi=0.0)
+        self.assertEqual(ctx.exception.code, "invalid-input")
+        self.assertEqual(ctx.exception.category, "input")
+        self.assertEqual(target.getvalue(), b"")
+        self.assertEqual(canvas.last_diagnostics, ())
+        self.assertEqual(canvas._generation, 1)
+        del fig
+
+    def test_import_failure_is_explicit_backend_unavailable(self):
+        fig, canvas = _strict_canvas()
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        _eligible_axes(ax)
+        real_backend = _load_backend()
+        target = io.BytesIO()
+        with unittest.mock.patch.object(
+            real_backend, "_native", side_effect=ImportError("extension missing")
+        ):
+            with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+                canvas.render_png(target)
+        self.assertEqual(ctx.exception.code, "backend-unavailable")
+        self.assertEqual(ctx.exception.category, "backend")
+        self.assertEqual(target.getvalue(), b"")
+        self.assertEqual(canvas.last_diagnostics, ())
+        del fig
+
+    def test_preflight_runtime_failure_is_terminal_internal(self):
+        fig, canvas = _hybrid_canvas_with(_eligible_axes)
+        real_backend = _load_backend()
+        target = io.BytesIO()
+        with unittest.mock.patch.object(
+            real_backend._EligibilityPreflight,
+            "collect",
+            side_effect=RuntimeError("collector implementation failure"),
+        ), unittest.mock.patch.object(
+            figure.Figure,
+            "savefig",
+            side_effect=AssertionError("internal failure reached Agg"),
+        ):
+            with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
+                canvas.render_png(target)
+        self.assertEqual(ctx.exception.code, "internal")
+        self.assertEqual(ctx.exception.category, "internal")
+        self.assertEqual(target.getvalue(), b"")
+        self.assertEqual(canvas.last_diagnostics, ())
+        del fig
+
+    def test_short_write_is_terminal_and_does_not_publish_diagnostic(self):
+        def build(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+
+        class ShortWriter:
+            def __init__(self):
+                self.calls = 0
+
+            def write(self, data):
+                self.calls += 1
+                return len(data) - 1
+
+        writer = ShortWriter()
+        with self.assertRaises(OSError):
+            canvas.render_png(writer)
+        self.assertEqual(writer.calls, 1)
+        self.assertEqual(canvas.last_diagnostics, ())
+        del fig
+
+    def test_fallback_diagnostic_is_published_only_after_target_write(self):
+        def build(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 1], [0, 1], linestyle="--"))
+            ax.set_xlim(0, 10)
+            ax.set_ylim(0, 5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+        observations = []
+
+        class ObservingWriter:
+            def write(self, data):
+                observations.append(canvas.last_diagnostics)
+                return len(data)
+
+        result = canvas.render_png(ObservingWriter())
+        self.assertEqual(observations, [()])
+        self.assertEqual(len(result.diagnostics), 1)
+        self.assertEqual(canvas.last_diagnostics, result.diagnostics)
+        self.assertEqual(result.diagnostics[0].kind, "unsupported-capability")
+        del fig
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
+class TestMixedEligibleAndUnsupportedOutput(unittest.TestCase):
+    """One unsupported child selects exactly one whole-frame fallback."""
+
+    def setUp(self):
+        _StubNativeModule.last_spec = None
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_hybrid_mixed_frame_never_partially_publishes_native_output(self):
+        def build(ax):
+            _eligible_axes(ax)
+            ax.add_line(
+                Line2D(
+                    [0.0, 10.0],
+                    [5.0, 0.0],
+                    color="blue",
+                    marker="o",
+                    solid_capstyle="butt",
+                    solid_joinstyle="miter",
+                )
+            )
+
+        fig, canvas = _hybrid_canvas_with(build)
+        result = canvas.render_png()
+        self.assertIsNone(_StubNativeModule.last_spec)
+        self.assertEqual(len(result.diagnostics), 1)
+        diagnostic = result.diagnostics[0]
+        self.assertEqual(diagnostic.kind, "unsupported-capability")
+        self.assertEqual(diagnostic.type, "Line2D")
+        self.assertEqual(diagnostic.scope, "whole-frame")
+        self.assertEqual(diagnostic.representation, "raster")
+        self.assertEqual(diagnostic.output_format, "png")
+        self.assertEqual(diagnostic.fallback_type, "matplotlib-agg")
+        self.assertEqual(canvas.last_diagnostics, result.diagnostics)
+        del fig
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
