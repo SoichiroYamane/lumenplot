@@ -322,3 +322,50 @@ External:
   (<https://matplotlib.org/stable/gallery/mplot3d/>)
 - matplotlib issue 3919, mplot3d intersecting-artist layering limitation
   (<https://github.com/matplotlib/matplotlib/issues/3919>)
+
+## Spike annex — 2026-09-03: throwaway projection-math prototype
+
+Scope: LP-FUNC-025 exploratory spike only; v1 non-goal, no engine,
+adapter, schema, or contract change. The prototype is pure-stdlib
+Python in scratch `/tmp/lumenplot-3d-spike-t_d118c542/proj_spike.py`
+(full output log beside it); none of it enters the repo. This annex
+is the only repo change from the spike.
+
+What was tried (mirrors the §§1–3a framing):
+
+- mplot3d-style elev/azim view rotation plus orthographic and pinhole
+  (f=3) projection of a unit cube at elev=30, azim=-60.
+- Painter's-algorithm check on two intersecting axis-plane triangles:
+  centroid-depth order vs per-side true front along the shared edge.
+- Centroid-key sort timing for n = 1k / 10k / 100k random triangles
+  (CPython 3.14, Ryzen 7 PRO 7840U, single run, sort only, no raster).
+- f64-to-f32 quantization of a data cluster near 1e6 with origin 0.0
+  vs origin 1e6 (the §6-Q2 origin-placement question in miniature).
+
+Measured numbers:
+
+- Cube: origin goes to view (0,0,0); (1,1,1) goes to view
+  (1.366,-0.817,0.683), ortho2d (1.366,-0.817); perspective f=3 gives
+  (1.113,-0.666): the projection choice moves output by ~19%, so the
+  Q1 default is user-visible, not an internal detail.
+- Painter: centroid depths tie exactly (A = B = +0.3943, global order
+  arbitrary), yet the true front is B on one side of the intersection
+  (+0.553 vs +0.758) and A on the other (+0.813 vs +0.608). Any single
+  global order is wrong on one side — the mplot3d-class artifact (§4).
+- Sort: 0.2 ms (1k), 1.9 ms (10k), 28.5 ms (100k), roughly
+  linearithmic; sorting is cheap next to any real raster cost, which
+  was NOT measured here.
+- f32: worst |err| 2.5e-02 with origin 0.0 vs 1.5e-09 with origin 1e6
+  (about 7 orders of magnitude): origin-relative conversion matters
+  and Q2 stands as asked.
+
+Open questions / residuals:
+
+- Q1 (projection default) and Q2 (z-origin placement) are confirmed as
+  the two decisions any future slice must take first; this spike takes
+  neither and sets no precedent.
+- Painter sort scope per bounded batch (§3a) and scatter alignment (Q3)
+  were not prototyped; the depth-buffered route (§3b) is untouched.
+- Zero-impact: `git diff --name-only origin/main` shows only this file;
+  `scripts/check_workspace_architecture.py` and `git diff --check` are
+  re-run as PR evidence (see the spike PR description).
