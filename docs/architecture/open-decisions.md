@@ -61,13 +61,13 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ### O-04 — Internal RenderPacket schema and resource lifecycle
 
-- State: Accepted — bounded packet validation/generation evidence recorded; full renderer-owner cache/lease/fence integration and device-loss evidence pending
+- State: Accepted — bounded packet validation/generation and logical cache/lease/fence model evidence recorded in PR #91; full renderer-owner integration, device-loss rebuild, and environment evidence pending
 - Decision owner: architecture-authority
 - Needed before: renderer fan-out
 - Record: [ADR 0004 — RenderPacket and renderer resource lifecycle](../adr/0004-renderpacket-resource-lifecycle.md)
 - Accepted scope: packet field families, whole-packet validation, distinct Scene/Work/Device generations, logical-resource cache, lease/fence retirement, and non-public boundary recorded in ADR 0004.
 - Constraints: immutable, validated, process-local, internal, non-serialized; no wgpu/window/Python concrete types; export does not reverse-engineer GPU buffers.
-- Evidence: property tests, schema review, resource-lifetime tests, stale-generation tests, and a no-wire-format check.
+- Evidence: schema review, packet completeness/stale-generation tests, logical cache keying, lease/fence retirement, multiple-owner, device-generation invalidation, and no-wire-format checks are recorded in PR #91; full property coverage and concrete renderer-owner/device-loss rebuild evidence remain pending.
 
 ### O-05 — Scene ownership, mutation, revision, and history
 

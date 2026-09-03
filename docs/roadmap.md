@@ -33,14 +33,19 @@ Implemented with bounded local evidence:
 - bounded private RenderPacket validation with distinct scene/work/device
   generations, origin-relative line geometry, static WGSL provenance checks,
   and headless offscreen wgpu line rendering/readback tests;
+- a bounded backend-neutral logical resource cache with generation-qualified
+  keys, packet leases, completion-fence retirement, multiple-owner accounting,
+  and explicit device-generation invalidation tests;
 - a backend-neutral runtime/viewer lifecycle and semantic-input state model,
   a private line-only vector PDF sink, and strict/hybrid benchmark validation
   that refuses unavailable accelerated/native environments explicitly.
 
 Still absent or incomplete:
 
-- a full shared semantic/layout frame and the complete internal RenderPacket
-  lifecycle from [ADR 0004](adr/0004-renderpacket-resource-lifecycle.md);
+- a full shared semantic/layout frame and the complete renderer-owned
+  RenderPacket lifecycle from [ADR 0004](adr/0004-renderpacket-resource-lifecycle.md);
+  PR #91 supplies only the bounded cache/lease/fence model and deterministic
+  device-generation invalidation tests;
 - a complete portable GPU renderer and declared real-device evidence; the
   current wgpu implementation is a bounded headless line-rendering slice;
 - a real window/surface present loop and standalone viewer integration; the
@@ -147,6 +152,12 @@ Exit criteria:
 - Priority: P0
 - Effort: L
 - Depends on: M0; M1 supplies the mature adapter consumer
+
+Current status: PR #91 records a bounded private logical-resource cache,
+packet lease transfer, completion-fence retirement, multiple-owner accounting,
+and device-generation invalidation model. The shared semantic/layout frame,
+concrete renderer-owner integration, device-loss rebuild, and full environment
+evidence remain open.
 
 Implement:
 
