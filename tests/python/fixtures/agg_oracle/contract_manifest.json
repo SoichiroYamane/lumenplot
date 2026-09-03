@@ -1,0 +1,45 @@
+{
+  "schema_version": "agg-oracle-manifest-v1",
+  "oracle": {
+    "backend": "FigureCanvasAgg",
+    "matplotlib_version": "3.11.1",
+    "api_version": "1.1"
+  },
+  "python_version": ">=3.11,<3.15",
+  "figure": {
+    "construction": "test-only 4x2 RGBA8 contract fixture",
+    "options": {
+      "figsize_inches": [0.04, 0.02],
+      "savefig_format": "png"
+    }
+  },
+  "effective_dpi": 100.0,
+  "dimensions": {
+    "width": 4,
+    "height": 2
+  },
+  "orientation": "top-to-bottom",
+  "channels": "RGBA8",
+  "rcparams": {},
+  "font_bytes_sha256": "not-applicable-contract-fixture",
+  "artist_class": "comparator-contract-fixture",
+  "reference_png_file": "contract_reference.png",
+  "reference_png_sha256": "01db756fee95380944345ebd3bbe06cd313f56268399e91dd165e2a15a74accf",
+  "mask_file": "contract_mask.json",
+  "mask_sha256": "5a4db5ce2d99dd30c81f4c468767a6d8211bd547f4823fbbf1fc91e2dddf170d",
+  "pixel_classes": [
+    "background",
+    "fully-covered",
+    "antialias-fringe",
+    "text-or-outline"
+  ],
+  "contract": {
+    "orientation": "top-to-bottom",
+    "channels": "RGBA8",
+    "background": "byte-equal",
+    "fully-covered": "byte-equal",
+    "fringe_max_channel_delta": 1,
+    "fringe_mismatch_rate_denominator": "total-pixels",
+    "fringe_mismatch_rate_max": 0.001
+  }
+}

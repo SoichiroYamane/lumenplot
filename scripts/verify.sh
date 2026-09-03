@@ -99,9 +99,22 @@ run_gate cargo clippy --locked --workspace --all-targets --all-features -- -D wa
 
 run_gate "$PYTHON" scripts/check_workspace_architecture.py
 run_gate "$PYTHON" scripts/check_phase2b_dependencies.py
-run_gate "$PYTHON" scripts/verify_traceability_coverage.py
+run_gate "$PYTHON" scripts/check_requirements_traceability.py
+run_gate "$PYTHON" -m unittest scripts.test_check_requirements_traceability
 run_gate "$PYTHON" scripts/check_docs.py
-run_gate "$PYTHON" -m unittest discover -s scripts
+# Keep the scripts suite explicit: the obsolete adoption-note verifier checks
+# removed historical notes and is intentionally not a verification gate.
+run_gate "$PYTHON" -m unittest \
+    scripts.test_bench_analysis \
+    scripts.test_bench_ci \
+    scripts.test_check_docs \
+    scripts.test_check_phase2b_dependencies \
+    scripts.test_check_workspace_architecture \
+    scripts.test_phase3a2_manifest \
+    scripts.test_phase3a2_sbom \
+    scripts.test_phase3b_runtime \
+    scripts.test_phase3b_wheel_evidence \
+    scripts.test_verify
 run_gate "$PYTHON" -m unittest discover -s tests/python
 
 if [ "$skip_nix" -eq 0 ]; then

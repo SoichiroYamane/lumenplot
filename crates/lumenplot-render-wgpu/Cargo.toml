@@ -10,3 +10,7 @@ readme.workspace = true
 [dependencies]
 lumenplot-render-api = { path = "../lumenplot-render-api", version = "0.1.0" }
 wgpu = { version = "=29.0.4", default-features = false, features = ["std", "wgsl", "vulkan"] }
+
+[build-dependencies]
+naga = { version = "=29.0.4", default-features = false, features = ["wgsl-in"] }
+sha2 = { version = "=0.10.9", default-features = false }

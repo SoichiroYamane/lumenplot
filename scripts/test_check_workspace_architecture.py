@@ -2701,6 +2701,58 @@ fn body_macro_is_below_root_scope() {
             "external dependency 'wgpu' has an unexpected specification",
         )
 
+    def test_wgpu_build_dependency_specification_is_exact(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
+            source = path.read_text(encoding="utf-8")
+            marker = 'naga = { version = "=29.0.4", default-features = false, features = ["wgsl-in"] }'
+            self.assertIn(marker, source)
+            path.write_text(source.replace(marker, marker.replace('=29.0.4', '=29.0.3'), 1), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external build dependency 'naga' has an unexpected specification",
+        )
+
+    def test_wgpu_build_dependency_without_naga_fails_closed(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
+            source = path.read_text(encoding="utf-8")
+            marker = 'naga = { version = "=29.0.4", default-features = false, features = ["wgsl-in"] }\n'
+            self.assertIn(marker, source)
+            path.write_text(source.replace(marker, "", 1), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-wgpu: exact build dependency inventory mismatch (missing naga)",
+        )
+
+    def test_wgpu_unexpected_build_dependency_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
+            source = path.read_text(encoding="utf-8")
+            marker = 'sha2 = { version = "=0.10.9", default-features = false }\n'
+            self.assertIn(marker, source)
+            path.write_text(source.replace(marker, marker + 'serde = "1"\n', 1), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "external build dependency 'serde' is not allowed",
+        )
+
+    def test_wgpu_dev_dependency_table_remains_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
+            path.write_text(
+                path.read_text(encoding="utf-8") + '\n[dev-dependencies]\ntrybuild = "1"\n',
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "only runtime path dependencies are allowed",
+        )
+
     def test_wgpu_source_without_dependency_fails_closed(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-render-wgpu/Cargo.toml"

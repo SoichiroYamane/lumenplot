@@ -2688,13 +2688,16 @@ class _EligibilityPreflight:
                         name,
                     )
                     return None
+        # LP-FUNC-040: keep every non-finite row in the default path as a
+        # pen-lift sentinel. The frame seam consumes those sentinels without
+        # drawing them, and starts a new subpath at the next finite sample;
+        # filtering them here would reconnect the runs and bridge the gap.
         # LP-FUNC-034: the step family expands the SAMPLED data exactly.
         # A non-finite sample has no step semantics (Agg's own path
         # cleaning re-pairs the risers around the gap, so neither dropping
-        # the row nor bridging it reproduces the oracle), therefore
-        # stepped lines refuse explicitly instead of approximating --
-        # LP-MPL-020 forbids silent approximation. The default drawstyle
-        # keeps its historical row-filtering behavior untouched.
+        # the row nor bridging it reproduces the oracle), therefore stepped
+        # lines refuse explicitly instead of approximating -- LP-MPL-020
+        # forbids silent approximation.
         finite_rows = [
             (x, y)
             for x, y in zip(xdata, ydata)
@@ -2711,8 +2714,10 @@ class _EligibilityPreflight:
                 return None
             base_x, base_y = xdata, ydata
         else:
-            base_x = [x for x, _ in finite_rows]
-            base_y = [y for _, y in finite_rows]
+            if len(finite_rows) < 2:
+                self.unsupported("fewer than two finite points", name)
+                return None
+            base_x, base_y = xdata, ydata
         if drawstyle in _STEP_DRASTYLES and len(base_x) >= 1:
             expanded_x, expanded_y = _expand_step_vertices(
                 base_x, base_y,
@@ -2721,7 +2726,10 @@ class _EligibilityPreflight:
         else:
             expanded_x, expanded_y = base_x, base_y
         vertices = [
-            [to_px_x(x), to_px_y(y)]
+            [
+                float(x) if not _finite(x) else to_px_x(x),
+                float(y) if not _finite(y) else to_px_y(y),
+            ]
             for x, y in zip(expanded_x, expanded_y)
         ]
         if len(vertices) < 2:

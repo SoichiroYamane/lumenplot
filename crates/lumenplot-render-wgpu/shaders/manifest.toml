@@ -1,0 +1,6 @@
+schema = 1
+artifact = "line.wgsl"
+sha256 = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3"
+validator = "naga 29.0.4"
+validation = "WGSL parse and validation with all flags/capabilities"
+coordinate_space = "DisplayLogical top-left"
