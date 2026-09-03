@@ -5,7 +5,26 @@ from __future__ import annotations
 from typing import Any
 
 
+_INVALID_INPUT_TOKEN = "invalid-input"
 _UNSUPPORTED_TOKEN = "unsupported-capability"
+_BACKEND_UNAVAILABLE_TOKEN = "backend-unavailable"
+_OUT_OF_MEMORY_TOKEN = "out-of-memory"
+_INTERNAL_TOKEN = "internal"
+
+_ERROR_CATEGORIES = {
+    _INVALID_INPUT_TOKEN: "input",
+    _UNSUPPORTED_TOKEN: "capability",
+    "closed": "lifecycle",
+    "invalid-state": "lifecycle",
+    "host-loop-misuse": "host",
+    "reentrancy": "host",
+    _BACKEND_UNAVAILABLE_TOKEN: "backend",
+    "device-lost": "backend",
+    "recovery-failed": "backend",
+    _OUT_OF_MEMORY_TOKEN: "resource",
+    "resource-invalid": "resource",
+    _INTERNAL_TOKEN: "internal",
+}
 
 
 class LumenPlotFallbackDiagnostic:
@@ -169,3 +188,8 @@ class LumenPlotUnsupportedError(RuntimeError):
         self.code = code
         self.type_context = type_context
         self.generation = generation
+
+    @property
+    def category(self) -> str:
+        """Stable API-0002 category derived from ``code``."""
+        return _ERROR_CATEGORIES.get(self.code, "internal")
