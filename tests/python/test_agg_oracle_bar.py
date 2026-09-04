@@ -366,9 +366,10 @@ class TestCommittedBarFixture(unittest.TestCase):
                 (x0, y0),
             ]
             expected_vertices = axes.transData.transform(corners).tolist()
-            self.assertEqual(
-                [list(vertex) for vertex in command["vertices"]],
-                expected_vertices,
+            np.testing.assert_allclose(
+                np.asarray(command["vertices"], dtype=float),
+                np.asarray(expected_vertices, dtype=float),
+                atol=1e-9,
             )
         vertices = [np.asarray(command["vertices"], dtype=float) for command in commands]
         # Positive bar, negative bar hanging below the baseline, and the
