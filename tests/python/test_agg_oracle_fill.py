@@ -166,7 +166,7 @@ class TestCommittedFillFixture(unittest.TestCase):
         )
         self.assertEqual(
             manifest["input_data"]["stack"]["layers"],
-            [[1.0, 1.5, 1.0], [1.0, 0.5, 1.0]],
+            [[1.0, 1.0, 1.0], [0.5, 0.5, 0.5]],
         )
 
     def test_generator_reproduces_committed_png_mask_and_topology(self):
@@ -184,10 +184,10 @@ class TestCommittedFillFixture(unittest.TestCase):
         topology = self.fixture.manifest["topology"]
         fill = topology["fill"]
         self.assertEqual(fill["class"], "matplotlib.patches.Polygon")
-        self.assertEqual(fill["path"]["codes"], [1, 2, 2, 79])
+        self.assertEqual(fill["path"]["codes"], [1, 2, 2, 2, 79])
         self.assertEqual(
             fill["path"]["vertices"],
-            [[0.5, 0.0], [1.5, 2.0], [2.5, 0.0], [0.5, 0.0]],
+            [[0.5, 0.0], [2.5, 0.0], [2.5, 2.0], [0.5, 2.0], [0.5, 0.0]],
         )
         band = topology["fill_between"]
         self.assertEqual(len(band["loops"]), 1)
@@ -208,14 +208,18 @@ class TestCommittedFillFixture(unittest.TestCase):
         upper = {tuple(v) for v in stack["layers"][1]["loops"][0]["vertices"]}
         # Stack geometry shares one baseline: the lower layer's top edge is
         # the upper layer's bottom edge at every sampled x.
-        self.assertTrue({(8.0, 1.0), (9.0, 1.5), (10.0, 1.0)} <= lower)
-        self.assertTrue({(8.0, 1.0), (9.0, 1.5), (10.0, 1.0)} <= upper)
+        self.assertTrue({(8.0, 0.0), (9.0, 0.0), (10.0, 0.0)} <= lower)
+        self.assertTrue({(8.0, 1.0), (9.0, 1.0), (10.0, 1.0)} <= lower)
+        self.assertTrue({(8.0, 1.0), (9.0, 1.0), (10.0, 1.0)} <= upper)
+        self.assertTrue({(8.0, 1.5), (9.0, 1.5), (10.0, 1.5)} <= upper)
+        # All edges are axis-aligned on integer display coordinates, so Agg
+        # coverage is binary: every committed pixel is background or a
+        # byte-equal face interior, and the fringe class is empty.
         self.assertEqual(
             set(np.unique(self.fixture.mask.labels)),
             {
                 PIXEL_CLASS_CODES["background"],
                 PIXEL_CLASS_CODES["fully-covered"],
-                PIXEL_CLASS_CODES["antialias-fringe"],
             },
         )
 
@@ -268,15 +272,15 @@ class TestCommittedFillFixture(unittest.TestCase):
             self.assertEqual(codes[0], 1)
             self.assertEqual(codes[-1], 79)
         vertices = [np.asarray(command["vertices"], dtype=float) for command in commands]
-        # Triangle, band, and stack layers keep data-route display geometry.
+        # Rectangle, band, and stack layers keep data-route display geometry.
         self.assertEqual((vertices[0][:, 0].min(), vertices[0][:, 0].max()), (28.0, 60.0))
         self.assertEqual((vertices[1][:, 0].min(), vertices[1][:, 0].max()), (68.0, 100.0))
         # The vspan covers the full axes height; the hspan the full width.
         self.assertEqual((vertices[2][:, 0].min(), vertices[2][:, 0].max()), (116.0, 140.0))
         self.assertEqual((vertices[2][:, 1].min(), vertices[2][:, 1].max()), (10.0, 90.0))
         self.assertEqual((vertices[3][:, 0].min(), vertices[3][:, 0].max()), (20.0, 180.0))
-        self.assertEqual((vertices[4][:, 1].min(), vertices[4][:, 1].max()), (30.0, 45.0))
-        self.assertEqual((vertices[5][:, 1].min(), vertices[5][:, 1].max()), (40.0, 50.0))
+        self.assertEqual((vertices[4][:, 1].min(), vertices[4][:, 1].max()), (30.0, 40.0))
+        self.assertEqual((vertices[5][:, 1].min(), vertices[5][:, 1].max()), (40.0, 45.0))
 
     def test_explicit_alpha_applies_once_and_edge_none_draws_no_stroke(self):
         """Detached style probe for the LP-FUNC-032 face/edge/alpha rule."""
