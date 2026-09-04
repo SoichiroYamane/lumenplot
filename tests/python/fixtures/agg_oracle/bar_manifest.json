@@ -1,0 +1,554 @@
+{
+  "schema_version": "agg-oracle-manifest-v1",
+  "fixture_id": "bar-barh-stack-histogram-stroked",
+  "oracle": {
+    "backend": "FigureCanvasAgg",
+    "matplotlib_version": "3.11.1",
+    "api_version": "1.1",
+    "canvas_construction": "matplotlib.backends.backend_agg.FigureCanvasAgg(figure)",
+    "render_call": "canvas.print_png(buffer, metadata={})"
+  },
+  "python_version": ">=3.11,<3.15",
+  "figure": {
+    "construction": "matplotlib.figure.Figure(figsize=(2.0, 1.0), dpi=100.0, facecolor='white', edgecolor='white')",
+    "options": {
+      "figsize_inches": [
+        2.0,
+        1.0
+      ],
+      "dpi": 100.0,
+      "facecolor": "white",
+      "edgecolor": "white",
+      "axes_construction": "figure.add_axes((0.1, 0.1, 0.8, 0.8))",
+      "axes_rect": [
+        0.1,
+        0.1,
+        0.8,
+        0.8
+      ],
+      "axes_facecolor": "none",
+      "axis_on": false,
+      "xlim": [
+        0.0,
+        8.0
+      ],
+      "ylim": [
+        -3.0,
+        5.0
+      ],
+      "savefig_format": "png",
+      "print_png_metadata": {}
+    }
+  },
+  "effective_dpi": 100.0,
+  "dimensions": {
+    "width": 200,
+    "height": 100
+  },
+  "orientation": "top-to-bottom",
+  "channels": "RGBA8",
+  "rcparams": {
+    "agg.path.chunksize": 0,
+    "axes.facecolor": "none",
+    "figure.dpi": 100.0,
+    "figure.edgecolor": "white",
+    "figure.facecolor": "white",
+    "font.family": [
+      "DejaVu Sans"
+    ],
+    "font.size": 10.0,
+    "patch.antialiased": true,
+    "patch.edgecolor": "black",
+    "patch.facecolor": "white",
+    "patch.force_edgecolor": false,
+    "patch.linewidth": 1.0,
+    "path.simplify": false,
+    "path.simplify_threshold": 0.0,
+    "savefig.dpi": 100.0,
+    "savefig.edgecolor": "white",
+    "savefig.facecolor": "white",
+    "savefig.format": "png",
+    "savefig.transparent": false,
+    "text.antialiased": true
+  },
+  "font": {
+    "family": "DejaVu Sans",
+    "properties": {
+      "style": "normal",
+      "variant": "normal",
+      "weight": "normal",
+      "stretch": "normal",
+      "size": 10.0
+    },
+    "file": "DejaVuSans.ttf",
+    "bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22"
+  },
+  "font_bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22",
+  "artist_class": "matplotlib.patches.Rectangle",
+  "primitive": {
+    "family": [
+      "matplotlib.patches.Rectangle"
+    ],
+    "constructions": [
+      "axes.bar(x, height, width, bottom)",
+      "axes.barh(y, width, height, left)",
+      "axes.hist(data, bins)"
+    ],
+    "style": {
+      "facecolor": "explicit per artist",
+      "edgecolor": "black",
+      "linewidth": 1.0,
+      "alpha": 1.0,
+      "antialiased": true
+    },
+    "input_data": {
+      "bar": {
+        "x": [
+          1.0,
+          2.5
+        ],
+        "height": [
+          2.0,
+          -1.0
+        ],
+        "width": 0.8,
+        "bottom": 0.0,
+        "face": "steelblue"
+      },
+      "stack": {
+        "x": 4.5,
+        "width": 0.8,
+        "layers": [
+          {
+            "height": 1.5,
+            "bottom": 0.0,
+            "face": "orange"
+          },
+          {
+            "height": 1.0,
+            "bottom": 1.5,
+            "face": "purple"
+          }
+        ]
+      },
+      "barh": {
+        "y": [
+          -2.0
+        ],
+        "width": [
+          2.5
+        ],
+        "height": 0.8,
+        "left": 0.0,
+        "face": "red"
+      },
+      "histogram": {
+        "data": [
+          5.2,
+          5.4,
+          5.6,
+          6.1,
+          6.3,
+          6.8
+        ],
+        "bins": [
+          5.0,
+          5.5,
+          6.0,
+          6.5,
+          7.0
+        ],
+        "counts": [
+          2.0,
+          1.0,
+          2.0,
+          1.0
+        ],
+        "face": "green"
+      },
+      "zero_area": {
+        "x": 3.5,
+        "height": 0.0,
+        "width": 0.8,
+        "bottom": 0.0,
+        "face": "steelblue",
+        "paints": false
+      },
+      "edge": {
+        "color": "black",
+        "linewidth": 1.0
+      },
+      "cases": {
+        "bar": {
+          "artist": "matplotlib.patches.Rectangle",
+          "face": "steelblue"
+        },
+        "stack": {
+          "artist": "matplotlib.patches.Rectangle",
+          "faces": [
+            "orange",
+            "purple"
+          ],
+          "layers": 2
+        },
+        "barh": {
+          "artist": "matplotlib.patches.Rectangle",
+          "face": "red"
+        },
+        "histogram": {
+          "artist": "matplotlib.patches.Rectangle",
+          "face": "green",
+          "bins": [
+            5.0,
+            5.5,
+            6.0,
+            6.5,
+            7.0
+          ]
+        },
+        "zero_area": {
+          "artist": "matplotlib.patches.Rectangle",
+          "face": "steelblue",
+          "paints": false
+        }
+      }
+    }
+  },
+  "input_data": {
+    "bar": {
+      "x": [
+        1.0,
+        2.5
+      ],
+      "height": [
+        2.0,
+        -1.0
+      ],
+      "width": 0.8,
+      "bottom": 0.0,
+      "face": "steelblue"
+    },
+    "stack": {
+      "x": 4.5,
+      "width": 0.8,
+      "layers": [
+        {
+          "height": 1.5,
+          "bottom": 0.0,
+          "face": "orange"
+        },
+        {
+          "height": 1.0,
+          "bottom": 1.5,
+          "face": "purple"
+        }
+      ]
+    },
+    "barh": {
+      "y": [
+        -2.0
+      ],
+      "width": [
+        2.5
+      ],
+      "height": 0.8,
+      "left": 0.0,
+      "face": "red"
+    },
+    "histogram": {
+      "data": [
+        5.2,
+        5.4,
+        5.6,
+        6.1,
+        6.3,
+        6.8
+      ],
+      "bins": [
+        5.0,
+        5.5,
+        6.0,
+        6.5,
+        7.0
+      ],
+      "counts": [
+        2.0,
+        1.0,
+        2.0,
+        1.0
+      ],
+      "face": "green"
+    },
+    "zero_area": {
+      "x": 3.5,
+      "height": 0.0,
+      "width": 0.8,
+      "bottom": 0.0,
+      "face": "steelblue",
+      "paints": false
+    },
+    "cases": {
+      "bar": {
+        "artist": "matplotlib.patches.Rectangle",
+        "face": "steelblue"
+      },
+      "stack": {
+        "artist": "matplotlib.patches.Rectangle",
+        "faces": [
+          "orange",
+          "purple"
+        ],
+        "layers": 2
+      },
+      "barh": {
+        "artist": "matplotlib.patches.Rectangle",
+        "face": "red"
+      },
+      "histogram": {
+        "artist": "matplotlib.patches.Rectangle",
+        "face": "green",
+        "bins": [
+          5.0,
+          5.5,
+          6.0,
+          6.5,
+          7.0
+        ]
+      },
+      "zero_area": {
+        "artist": "matplotlib.patches.Rectangle",
+        "face": "steelblue",
+        "paints": false
+      }
+    }
+  },
+  "topology": {
+    "bar": {
+      "construction": "axes.bar(x, height, width, bottom)",
+      "x": [
+        1.0,
+        2.5
+      ],
+      "height": [
+        2.0,
+        -1.0
+      ],
+      "width": 0.8,
+      "bottom": 0.0,
+      "rectangles": [
+        {
+          "class": "matplotlib.patches.Rectangle",
+          "api": "patch.get_xy()/get_width()/get_height()",
+          "xy": [
+            0.6,
+            0.0
+          ],
+          "width": 0.8,
+          "height": 2.0,
+          "baseline": 0.0,
+          "angle": 0.0,
+          "zorder": 1.0
+        },
+        {
+          "class": "matplotlib.patches.Rectangle",
+          "api": "patch.get_xy()/get_width()/get_height()",
+          "xy": [
+            2.1,
+            0.0
+          ],
+          "width": 0.8,
+          "height": -1.0,
+          "baseline": 0.0,
+          "angle": 0.0,
+          "zorder": 1.0
+        }
+      ]
+    },
+    "stack": {
+      "construction": "axes.bar(x, height, width, bottom) per layer",
+      "x": 4.5,
+      "width": 0.8,
+      "layers": [
+        {
+          "height": 1.5,
+          "bottom": 0.0,
+          "face": "orange",
+          "rectangles": [
+            {
+              "class": "matplotlib.patches.Rectangle",
+              "api": "patch.get_xy()/get_width()/get_height()",
+              "xy": [
+                4.1,
+                0.0
+              ],
+              "width": 0.7999999999999998,
+              "height": 1.5,
+              "baseline": 0.0,
+              "angle": 0.0,
+              "zorder": 1.0
+            }
+          ]
+        },
+        {
+          "height": 1.0,
+          "bottom": 1.5,
+          "face": "purple",
+          "rectangles": [
+            {
+              "class": "matplotlib.patches.Rectangle",
+              "api": "patch.get_xy()/get_width()/get_height()",
+              "xy": [
+                4.1,
+                1.5
+              ],
+              "width": 0.7999999999999998,
+              "height": 1.0,
+              "baseline": 1.5,
+              "angle": 0.0,
+              "zorder": 1.0
+            }
+          ]
+        }
+      ]
+    },
+    "barh": {
+      "construction": "axes.barh(y, width, height, left)",
+      "y": [
+        -2.0
+      ],
+      "width": [
+        2.5
+      ],
+      "height": 0.8,
+      "left": 0.0,
+      "rectangles": [
+        {
+          "class": "matplotlib.patches.Rectangle",
+          "api": "patch.get_xy()/get_width()/get_height()",
+          "xy": [
+            0.0,
+            -2.4
+          ],
+          "width": 2.5,
+          "height": 0.8,
+          "baseline": 0.0,
+          "angle": 0.0,
+          "zorder": 1.0
+        }
+      ]
+    },
+    "histogram": {
+      "construction": "axes.hist(data, bins)",
+      "data": [
+        5.2,
+        5.4,
+        5.6,
+        6.1,
+        6.3,
+        6.8
+      ],
+      "bins": [
+        5.0,
+        5.5,
+        6.0,
+        6.5,
+        7.0
+      ],
+      "rectangles": [
+        {
+          "class": "matplotlib.patches.Rectangle",
+          "api": "patch.get_xy()/get_width()/get_height()",
+          "xy": [
+            5.0,
+            0.0
+          ],
+          "width": 0.5,
+          "height": 2.0,
+          "baseline": 0.0,
+          "angle": 0.0,
+          "zorder": 1.0
+        },
+        {
+          "class": "matplotlib.patches.Rectangle",
+          "api": "patch.get_xy()/get_width()/get_height()",
+          "xy": [
+            5.5,
+            0.0
+          ],
+          "width": 0.5,
+          "height": 1.0,
+          "baseline": 0.0,
+          "angle": 0.0,
+          "zorder": 1.0
+        },
+        {
+          "class": "matplotlib.patches.Rectangle",
+          "api": "patch.get_xy()/get_width()/get_height()",
+          "xy": [
+            6.0,
+            0.0
+          ],
+          "width": 0.5,
+          "height": 2.0,
+          "baseline": 0.0,
+          "angle": 0.0,
+          "zorder": 1.0
+        },
+        {
+          "class": "matplotlib.patches.Rectangle",
+          "api": "patch.get_xy()/get_width()/get_height()",
+          "xy": [
+            6.5,
+            0.0
+          ],
+          "width": 0.5,
+          "height": 1.0,
+          "baseline": 0.0,
+          "angle": 0.0,
+          "zorder": 1.0
+        }
+      ]
+    },
+    "zero_area": {
+      "construction": "axes.bar(x, 0.0, width, bottom)",
+      "x": 3.5,
+      "width": 0.8,
+      "bottom": 0.0,
+      "rectangles": [
+        {
+          "class": "matplotlib.patches.Rectangle",
+          "api": "patch.get_xy()/get_width()/get_height()",
+          "xy": [
+            3.1,
+            0.0
+          ],
+          "width": 0.7999999999999998,
+          "height": 0.0,
+          "baseline": 0.0,
+          "angle": 0.0,
+          "zorder": 1.0
+        }
+      ]
+    }
+  },
+  "mask_generation": "reference-only: figure facecolor and resolved bar face/edge colors; candidate/native pixels are not observed",
+  "reference_png_file": "bar_reference.png",
+  "reference_png_sha256": "9233570a0296a85136dd6dd432bd09d8555f1bcae9158d27dbc41a389d971e82",
+  "mask_file": "bar_mask.json",
+  "mask_sha256": "59aad7f3a93557c39cc6e3f5ae58d8ba74c98d138e5b777ce15e323cc8a31052",
+  "pixel_classes": [
+    "background",
+    "fully-covered",
+    "antialias-fringe",
+    "text-or-outline"
+  ],
+  "contract": {
+    "orientation": "top-to-bottom",
+    "channels": "RGBA8",
+    "background": "byte-equal",
+    "fully-covered": "byte-equal",
+    "fringe_max_channel_delta": 1,
+    "fringe_mismatch_rate_denominator": "total-pixels",
+    "fringe_mismatch_rate_max": 0.001
+  }
+}
