@@ -355,6 +355,7 @@ class TestCommittedBarFixture(unittest.TestCase):
             # Every bar is filled-and-stroked: the explicit black edge at
             # positive width strokes the outline.
             self.assertEqual(command["stroke_rgba"], [0, 0, 0, 255])
+            self.assertTrue(command["rectilinear_snap"])
             codes = list(command["codes"])
             self.assertEqual(codes, [1, 2, 2, 2, 79])
             x0, y0 = anchor

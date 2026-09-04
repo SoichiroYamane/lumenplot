@@ -2715,6 +2715,12 @@ class _EligibilityPreflight:
             "clip_rect": clip_rect,
             "fill_rgba": list(fill_rgba),
         }
+        if rectangle_geometry is not None:
+            # Matplotlib Agg automatically snaps rectilinear patch paths.
+            # Keep this marker internal to the frame seam: the native
+            # rasterizer applies it to the stroke geometry only, preserving
+            # the unsnapped fill path.
+            command["rectilinear_snap"] = True
         return command
 
     def _line_command(self, line, to_px_x, to_px_y):

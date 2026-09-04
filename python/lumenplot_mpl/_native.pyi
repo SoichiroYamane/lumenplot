@@ -28,5 +28,9 @@ def render_frame_png(spec: Mapping[str, Any]) -> bytes:
     premultiplied linear-sRGB per ADR 0012; ``"agg_srgb"`` composites in
     encoded sRGB to match the Agg quality oracle (architecture ruling
     2026-08-25).
+
+    Adapter-generated Rectangle path commands may additionally carry the
+    private boolean ``rectilinear_snap`` marker.  It selects Agg-compatible
+    stroke snapping only; it is not a public geometry or persistence field.
     """
     ...
