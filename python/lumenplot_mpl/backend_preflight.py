@@ -2017,6 +2017,12 @@ class _EligibilityPreflight:
                 )
                 continue
             if not (xlim[0] < xlim[1] and ylim[0] < ylim[1]):
+                self.unsupported(
+                    f"only increasing x/y limits are supported; "
+                    f"xlim={xlim!r}, ylim={ylim!r} is unsupported "
+                    "in strict mode",
+                    type(ax).__name__,
+                )
                 continue
             bbox = ax.get_window_extent()
             x0, y0 = bbox.x0, bbox.y0
