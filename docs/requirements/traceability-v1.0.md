@@ -3,6 +3,7 @@
 - Status: pre-alpha publication; Phase-1A/B, bounded Phase-2A/2B implementation/local contract evidence, and the Phase-3A2 private-helper one-wheel build with same-wheel CPython 3.11–3.14 runtime evidence exist, while the Phase-3B first strict-slice implementation (public strict-mode Matplotlib backend over the private whole-frame render seam, with local contract-test evidence) exists and the merged hybrid-explicit fallback slice plus its strict-style fixture reconciliation add bounded local contract-test evidence (PRs #26/#28/#29/#32), extended by bounded profile-selection and canvas-authority contract tests (`test_phase3b_profiles.py`, `test_phase3b_authority.py`), the merged native-authority seam suite (PR #41), the merged PRAC-A-D decorated-axes lane (PR #63), which adds bounded native rendering of `axison=True` axes decorations per ADR 0015 §4a (`TestDecoratedAxesSpec`, `TestDecoratedAxesEligibility`), and the merged W1 "static geometry" wave (PRs #68/#69/#70, integrated by #71), which flips `LP-FUNC-032`/`033`/`034` to implemented-with-bounded-evidence below — PR #89 additionally records bounded installed-wheel/public-backend runtime, RenderPacket validation, offscreen wgpu line/shader/readback, runtime/viewer/input, private line-only PDF, and fail-closed benchmark-validation evidence; PR #91 adds bounded logical resource cache/lease/fence/device-generation evidence without closing the broader packet/resource requirements. Accelerated-native delivery, adapter authority/revision closure, the full strict error-fixture set, mixed vector/raster output, real-GPU support, performance, or release completion remain pending and are claimed for nothing. On 2026-08-25 the architecture authority (maintainer) adopted nine additional requirement rows (`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`) from [`matplotlib-parity-requirements-draft.md`](matplotlib-parity-requirements-draft.md); they are recorded below with honestly pending results (`Not implemented`), and their adoption is not an implementation result. On the same date the maintainer fixed their acceptance quality bar — native rendering must match the current Matplotlib backend (Agg) output; canonized on 2026-08-26 as the Section 5.4 quality oracle of [`matplotlib-parity-requirements-draft.md`](matplotlib-parity-requirements-draft.md) and reflected in the Target cells and evidence plans below. On 2026-08-26 the W1 workstream landed LP-FUNC-032/033/034 (fill, bar, step drawstyles) with §5.4 Agg-oracle parity fixtures green (PRs #68/#69/#70; mixed-workload integration #71), flipping exactly those three result cells from `Not implemented` to bounded implemented evidence; every other adopted row remains honestly pending. On 2026-08-26 the Phase-1B view-history state substrate gained bounded local contract evidence in `crates/lumenplot/tests/history.rs`, flipping exactly `LP-FUNC-008`, `LP-UX-012`, and `LP-UX-013` below to implemented-with-bounded-evidence over the accepted [API 0001](../architecture/api-0001-native-scene-state.md) canonical-view surface; gesture routing, Previous/Next traversal, keyboard, and animated transitions remain pending. On 2026-08-26 the architecture authority (maintainer) adopted the five verified GAP-R1 candidate rows (`LP-FUNC-040`, `LP-FUNC-041`, `LP-MPL-021`–`LP-MPL-023`) from [`codex-gap-verification-candidate-rows.md`](../research/codex-gap-verification-candidate-rows.md); they are recorded below with honestly pending results (`Not implemented`), and their adoption is not an implementation result.
 - Source of truth: `docs/requirements/lumenplot-v1.0.md` and its Appendix A coverage matrix.
 - This document maps every stable requirement entry to an evidence type and records the current result separately from its target. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md), its narrow [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) amendment, and the updated [API 0001](../architecture/api-0001-native-scene-state.md)/[API 0002](../architecture/api-0002-errors-capabilities-fallback.md) record the accepted Phase-1 native core/facade contract; [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and PNG contract; [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) records the staged Phase-3A hidden facade/private helper contract. They do not change any product result below.
+- The 2026-09-05 envelope amendment promotes `LP-FUNC-025` to a Phase 3 v1 `MUST` under [ADR 0016](../adr/0016-v1-3d-envelope-and-agg-parity.md). It is honestly `Not implemented`; existing whole-frame Agg fallback is not native 3D evidence.
 
 ## Status rules
 
@@ -54,6 +55,12 @@ Adopted 2026-08-26 with the GAP-R1 candidate rows ([`codex-gap-verification-cand
 | `AT-MPL-COLLECTIONS` | Matplotlib adapter collection-class translation test (Line/Patch/Path collections): native fidelity or explicit refusal, never silent approximation. |
 | `AT-FUNC-MAPPABLE` | Deterministic functional test of scalar-mappable normalization/colormap mapping semantics against the Agg oracle. |
 
+Adopted 2026-09-05 with the v1 3D envelope ([ADR 0016](../adr/0016-v1-3d-envelope-and-agg-parity.md)):
+
+| Gate family | Evidence expected |
+| --- | --- |
+| `AT-FUNC-3D` | Four-part parity against the pinned `FigureCanvasAgg` mplot3d oracle for explicit projection/view attributes, canonical f64 x/y/z bounds, projected line/triangle geometry, decoded pixels, style/text, and reference triangle/depth-order artifacts; whole-frame fallback alone is insufficient. |
+
 ## Accepted bounded contract records
 
 The following records are accepted architecture/API contracts. Phase-1A/B and
@@ -72,14 +79,15 @@ or `environment required` results.
 | Phase-2A/2B private line frame and deterministic PNG | [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) | Accepted amendment; bounded implementation and local evidence recorded; full-v1 export pending |
 | Phase-3A hidden facade and private Python helper | [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) + [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) | Accepted staged contract; Phase-3A2 private-helper one-wheel build and same-wheel CPython 3.11–3.14 runtime evidence recorded in CI-local evidence; public adapter/package surface and Phase-3B public Matplotlib contract open |
 | Phase-3B public Matplotlib backend first slice | [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) + [API 0005](../architecture/api-0005-phase3b-public-matplotlib-backend-surface.md) | Accepted contract; first strict-slice implementation merged (private `render_frame_png` whole-frame seam, public strict-mode `lumenplot_mpl.backend`, local contract and entry-point-discovery test evidence); PR #32 adds the hybrid-explicit whole-frame fallback slice, terminal-failure guards, entry-point manifest, wheel/entry-point evidence job, and reconciled strict-style fixtures as local contract-test evidence; PR #89 adds the hybrid default, packaged public-backend runtime smoke, and the merged profile/authority/error fixture evidence; full compatibility, mixed-output, and release closure remain pending |
+| v1 3D envelope and Agg-parity gate | [ADR 0016](../adr/0016-v1-3d-envelope-and-agg-parity.md) | Accepted product envelope; `LP-FUNC-025` is `Not implemented`, and four architecture stop conditions remain open before implementation fan-out |
 
 ## Coverage summary
 
 - Requirement entries: **237**.
-- Normative `MUST`/`MUST NOT` entries requiring closure: **156**.
-- Classification counts: MAY=9, MUST=119, MUST NOT=37, NON-GOAL=6, PHASE=6, REFERENCE=13, SHOULD=47.
+- Normative `MUST`/`MUST NOT` entries requiring closure: **157**.
+- Classification counts: MAY=9, MUST=120, MUST NOT=37, NON-GOAL=5, PHASE=6, REFERENCE=13, SHOULD=47.
 - Stable families: `DATA` (10), `EXPORT` (10), `FUNC` (41), `LOD` (7), `MPL` (23), `PERF` (16), `PLAT` (12), `PROD` (18), `QUAL` (28), `REL` (14), `RENDER` (10), `SEC` (8), `TEXT` (7), `UX` (33).
-- Evidence gates referenced: **106**.
+- Evidence gates referenced: **107**.
 
 The 2026-08-25 adoption of the Matplotlib major-feature rows added nine entries
 (`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`; three normative, six advisory) and nine gate names;
@@ -88,6 +96,12 @@ the pre-adoption baseline was 223 entries / 150 normative / 92 gates.
 The 2026-08-26 adoption of the verified GAP-R1 candidate rows added five entries
 (`LP-FUNC-040`, `LP-FUNC-041`, `LP-MPL-021`–`LP-MPL-023`; three normative, two advisory)
 and five gate names; the pre-adoption baseline was 232 entries / 153 normative / 101 gates.
+
+The 2026-09-05 v1 3D envelope amendment reclassified the existing
+`LP-FUNC-025` row from `NON-GOAL` to `MUST`, replaced `AT-REVIEW-SCOPE` with
+`AT-FUNC-3D`, and moved its result from `Not applicable` to `Not implemented`.
+It adds no requirement row: the controlled totals change from 156 to 157
+normative entries and from 106 to 107 distinct gates.
 
 Every `MUST` and `MUST NOT` entry appears in the registry below with at least one acceptance gate. The `Result` column is not a pass/fail claim; it is the honest status of the full requirement. A bounded Phase-1 implementation does not automatically promote a row to closure.
 
@@ -124,7 +138,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-FUNC-022` | `MAY` | future candidate | future | future | `AT-REVIEW-SCOPE` | Not implemented |
 | `LP-FUNC-023` | `MAY` | future candidate | future | future | `AT-REVIEW-SCOPE` | Not implemented |
 | `LP-FUNC-024` | `MAY` | future candidate | future | future | `AT-REVIEW-SCOPE` | Not implemented |
-| `LP-FUNC-025` | `NON-GOAL` | scope review | future | excluded | `AT-REVIEW-SCOPE` | Not applicable — scope exclusion |
+| `LP-FUNC-025` | `MUST` | pinned `FigureCanvasAgg` mplot3d four-part parity, including explicit projection/view attributes, canonical f64 x/y/z bounds, projected line/triangle geometry, and reference depth-order artifacts | 3 | v1 | `AT-FUNC-3D` | Not implemented |
 | `LP-FUNC-026` | `MAY` | future candidate | 5+ | future | `AT-REVIEW-SCOPE` | Not implemented |
 | `LP-FUNC-027` | `MAY` | future candidate | future | future | `AT-REVIEW-SCOPE` | Not implemented |
 | `LP-FUNC-028` | `SHOULD` | measurement tooling | 5 | v1 non-blocking | `AT-FUNC-MEASUREMENT` | Not implemented |
@@ -302,7 +316,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-REL-003` | `PHASE` | foundation artifacts | 0 | no release claim | `AT-REVIEW-PHASE-MAP` | Planning only |
 | `LP-REL-004` | `PHASE` | native foundation | 1 | no release claim | `AT-REVIEW-PHASE-MAP` | Planning only |
 | `LP-REL-005` | `PHASE` | v1 interaction and export | 2 | no release claim | `AT-REVIEW-PHASE-MAP` | Planning only |
-| `LP-REL-006` | `PHASE` | cross-platform evidence | 3 | no release claim | `AT-REVIEW-PHASE-MAP` | Planning only |
+| `LP-REL-006` | `PHASE` | 3D functional evidence and cross-platform evidence | 3 | no release claim | `AT-REVIEW-PHASE-MAP` | Planning only |
 | `LP-REL-007` | `PHASE` | optional native fast paths | 4 | future | `AT-REVIEW-PHASE-MAP` | Planning only |
 | `LP-REL-008` | `PHASE` | post-v1 expansion | 5 | v1.1 or later | `AT-REVIEW-PHASE-MAP` | Planning only |
 | `LP-REL-009` | `MUST` | requirement registry validation | 0 | v1 governance | `AT-REVIEW-TRACEABILITY` | Not implemented |
@@ -355,6 +369,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-FUNC-014` | `MUST` | `AT-EXPORT-PDF-VECTOR` | Not implemented |
 | `LP-FUNC-015` | `MUST` | `AT-LIFE-FFI`, `AT-MPL-LOADER` | Not implemented |
 | `LP-FUNC-016` | `MUST` | `AT-FUNC-VIEWER`, `AT-LIFE-VIEWER` | Not implemented |
+| `LP-FUNC-025` | `MUST` | `AT-FUNC-3D` | Not implemented |
 | `LP-FUNC-030` | `MUST NOT` | `AT-REVIEW-UX` | Not implemented |
 | `LP-UX-001` | `MUST NOT` | `AT-REVIEW-UX` | Not implemented |
 | `LP-PROD-010` | `MUST` | `AT-REVIEW-CORE-DAG` | Not implemented |
@@ -513,6 +528,11 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-TEXT` | one shaping/layout result, font identity, PDF text, and vector semantics | Pending implementation and evidence; no completion is claimed. |
 | `LP-UX` | direct manipulation, Legend state, keyboard, focus, contrast, and reduced motion | `LP-UX-012`/`LP-UX-013` carry bounded Phase-1B implemented evidence for the canonical-view fixture and the state-and-history fixture in `crates/lumenplot/tests/history.rs`; direct manipulation, Legend state, keyboard, focus, contrast, reduced motion, and all release claims remain pending with no completion claimed. |
 
+The `LP-FUNC` plan additionally includes the Phase 3 `LP-FUNC-025` 3D slice
+accepted on 2026-09-05. `AT-FUNC-3D` remains pending and requires the canonical
+§15.1 four-part mplot3d parity fixtures; the existing whole-frame Agg fallback
+is not implementation evidence for the native capability.
+
 ## Release evidence checklist
 
 | Release area | Required evidence | Current result |
@@ -529,7 +549,8 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 - ArbitraryXY topology/correctness/culling is a v1 model/correctness lane; advanced simplification and picking performance are Phase 5.
 - SVG is a v1 `SHOULD` and non-blocking; PNG and PDF are v1 `MUST` outputs.
 - Reference dependency versions are non-normative and are not counted as support evidence.
-- The Matplotlib major-feature rows (`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`) were adopted on 2026-08-25 from [`matplotlib-parity-requirements-draft.md`](matplotlib-parity-requirements-draft.md); their wave placement (3B-cont. / 3B-cont.+1 / Phase 5 / future / continuous) is recorded per row, and 3D stays excluded per `LP-FUNC-025`. On the same date the maintainer fixed their shared acceptance quality bar — "implemented to the same quality as the current Matplotlib backend (Agg)" — canonized on 2026-08-26 in Section 5.4 of that document and reflected in this registry's Target cells and evidence plans: each gate is met only by Agg parity fixtures (geometry parity to sub-pixel rounding, decoded-pixel difference within recorded thresholds, style semantics equal to Agg's resolution; text via `TextPath` outline comparison). This fixed gate conditions only; no row's class or phase placement changed. On 2026-08-26 the W1 workstream satisfied those conditions for exactly three rows — `LP-FUNC-032`/`033`/`034` (PRs #68/#69/#70; mixed-workload integration #71) — whose result cells now carry bounded implemented evidence naming their merged fixture classes; all other results are unchanged. On 2026-08-26 the architecture authority adopted the five verified GAP-R1 candidate rows (`LP-FUNC-040`, `LP-FUNC-041`, `LP-MPL-021`–`LP-MPL-023`; three normative, two advisory) from [`codex-gap-verification-candidate-rows.md`](../research/codex-gap-verification-candidate-rows.md) with their wave placement (3B-cont. / 3B-cont.+1 / W-lane post-W1 / Phase 5) recorded per row; each new gate producing a rendered frame is bound to the same §5.4 quality oracle, every result stays honestly `Not implemented`, and no existing row's class, phase placement, or result changed.
+- The Matplotlib major-feature rows (`LP-FUNC-032`–`LP-FUNC-039`, `LP-MPL-020`) were adopted on 2026-08-25 from [`matplotlib-parity-requirements-draft.md`](matplotlib-parity-requirements-draft.md); their wave placement (3B-cont. / 3B-cont.+1 / Phase 5 / future / continuous) is recorded per row, and that 2026-08-25 adoption did not cover 3D. On the same date the maintainer fixed their shared acceptance quality bar — "implemented to the same quality as the current Matplotlib backend (Agg)" — canonized on 2026-08-26 in Section 5.4 of that document and reflected in this registry's Target cells and evidence plans: each gate is met only by Agg parity fixtures (geometry parity to sub-pixel rounding, decoded-pixel difference within recorded thresholds, style semantics equal to Agg's resolution; text via `TextPath` outline comparison). This fixed gate conditions only; no row's class or phase placement changed. On 2026-08-26 the W1 workstream satisfied those conditions for exactly three rows — `LP-FUNC-032`/`033`/`034` (PRs #68/#69/#70; mixed-workload integration #71) — whose result cells now carry bounded implemented evidence naming their merged fixture classes; all other results are unchanged. On 2026-08-26 the architecture authority adopted the five verified GAP-R1 candidate rows (`LP-FUNC-040`, `LP-FUNC-041`, `LP-MPL-021`–`LP-MPL-023`; three normative, two advisory) from [`codex-gap-verification-candidate-rows.md`](../research/codex-gap-verification-candidate-rows.md) with their wave placement (3B-cont. / 3B-cont.+1 / W-lane post-W1 / Phase 5) recorded per row; each new gate producing a rendered frame is bound to the same §5.4 quality oracle, every result stays honestly `Not implemented`, and no existing row's class, phase placement, or result changed.
+- On 2026-09-05 the maintainer separately promoted `LP-FUNC-025` to a Phase 3 v1 `MUST`. Its `AT-FUNC-3D` acceptance is the canonical §15.1 four-part parity contract applied to pinned `FigureCanvasAgg` mplot3d output, including reference rendering artifacts rather than a superiority claim; its current result remains `Not implemented`.
 
 ## Honest evidence boundary
 

@@ -23,8 +23,10 @@
 - Requirement levels (`MUST` / `SHOULD` / `MAY`), the registry table format, the evidence-gate
   vocabulary, and the phase model follow [`lumenplot-v1.0.md`](lumenplot-v1.0.md) §2, §32,
   and Appendix A exactly.
-- Scope boundary: **3D (mplot3d) remains out of scope** consistent with
-  `LP-FUNC-025` (NON-GOAL) and the existing post-v1 3D research notes. Nothing here reopens it.
+- Historical scope boundary: this 2026-08-25 draft excluded 3D under the then-current
+  `LP-FUNC-025` non-goal. The 2026-09-05 canonical requirements amendment and
+  [ADR 0016](../adr/0016-v1-3d-envelope-and-agg-parity.md) supersede that exclusion;
+  this draft does not define the accepted 3D surface or its `AT-FUNC-3D` gate.
 - Public-safety: this document contains no private task identifiers, local paths, host details,
   or internal artifact references (`LP-SEC-008` boundary respected).
 
@@ -102,8 +104,9 @@ Phase-3B slice behavior.
 | F-18 | Polar projection | polar Axes transform | no — rectangular-clip contract violated |
 | F-19 | Contours | `contour`/`contourf` path collections | no — outside whitelist |
 
-Out of scope by standing decisions: 3D (`mplot3d`), full backend-API parity, custom-Artist
-parity, Artist-hierarchy reimplementation (`LP-FUNC-025`, `LP-PROD-006`, `LP-PROD-007`).
+Out of scope by standing decisions: full backend-API parity, custom-Artist parity,
+and Artist-hierarchy reimplementation (`LP-PROD-006`, `LP-PROD-007`). This draft's
+former 3D exclusion is superseded by `LP-FUNC-025` and ADR 0016.
 
 ## 4. Reconciliation matrix (feature × registry)
 
