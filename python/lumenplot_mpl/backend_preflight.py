@@ -2446,6 +2446,7 @@ class _EligibilityPreflight:
         """
         name = type(artist).__name__
         rectangle_geometry: list[tuple[float, float]] | None = None
+        rectangle_geometry_in_px = False
         if isinstance(artist, matplotlib.patches.Rectangle):
             # A Rectangle's stored path is the unit square scaled at draw
             # time, so the corners are re-derived from the public getters
@@ -2465,6 +2466,48 @@ class _EligibilityPreflight:
                 (x0, y0 + height),
                 (x0, y0),
             ]
+            span_axes = getattr(artist, "axes", None)
+            span_data = getattr(span_axes, "transData", None)
+            if (
+                span_axes is not None
+                and span_data is not None
+                and artist.get_transform() is not span_data
+            ):
+                # Span-style rectangle (axvspan/axhspan, LP-FUNC-032): the
+                # stored xy/width/height mix data units with axes-fraction
+                # units under a blended transform, so the data-route
+                # projection below would paint a sliver.  A Rectangle's
+                # full transform maps its unit-square path (not the
+                # stored data corners) to display, so resolve the unit
+                # corners through the artist's own public transform into
+                # display pixels (origin bottom-left, exactly the space
+                # the data-route to_px_* helpers below produce; the seam
+                # folds the display-to-device y-flip in itself).
+                # Plain transData rectangles (bars) keep the historical
+                # getter route untouched.
+                try:
+                    display = artist.get_transform().transform(
+                        numpy.asarray(
+                            [
+                                [0.0, 0.0],
+                                [1.0, 0.0],
+                                [1.0, 1.0],
+                                [0.0, 1.0],
+                                [0.0, 0.0],
+                            ],
+                            dtype=float,
+                        )
+                    )
+                except (TypeError, ValueError) as error:
+                    self.unsupported(
+                        f"span rectangle transform failed: {error}", name
+                    )
+                    return None
+                rectangle_geometry = [
+                    (float(x), float(y))
+                    for x, y in (tuple(row) for row in display.tolist())
+                ]
+                rectangle_geometry_in_px = True
         if isinstance(artist, matplotlib.collections.Collection):
             paths = list(artist.get_paths())
             transform = artist.get_transform()
@@ -2538,10 +2581,19 @@ class _EligibilityPreflight:
         edge_color_raw = artist.get_edgecolor()
         edge_rgba = None
         try:
-            edge_tuple = tuple(float(c) for c in edge_color_raw)
+            edge_rows = list(edge_color_raw)
         except TypeError:
-            edge_tuple = tuple(float(c) for c in edge_color_raw[0])
-        explicit_edge = edge_tuple[3] != 0.0
+            edge_rows = []
+        if not edge_rows:
+            # ``edgecolor="none"`` on a collection resolves to an empty
+            # edge array: no stroke, exactly like a fully transparent
+            # patch edge (LP-FUNC-032 edge-none suppression).
+            edge_tuple: tuple[float, ...] = ()
+        elif isinstance(edge_rows[0], (float, int, numpy.floating)):
+            edge_tuple = tuple(float(c) for c in edge_rows)
+        else:
+            edge_tuple = tuple(float(c) for c in edge_rows[0])
+        explicit_edge = len(edge_tuple) == 4 and edge_tuple[3] != 0.0
         line_widths = artist.get_linewidth()
         if isinstance(line_widths, (list, tuple, numpy.ndarray)):
             width_array = numpy.atleast_1d(
@@ -2586,10 +2638,17 @@ class _EligibilityPreflight:
         codes: list[int] = []
         emitted_loops = 0
         if rectangle_geometry is not None:
-            vertices = [
-                [float(to_px_x(x)), float(to_px_y(y))]
-                for x, y in rectangle_geometry
-            ]
+            if rectangle_geometry_in_px:
+                # Span corners already sit in display pixels: no data
+                # projection is applied.
+                vertices = [
+                    [float(x), float(y)] for x, y in rectangle_geometry
+                ]
+            else:
+                vertices = [
+                    [float(to_px_x(x)), float(to_px_y(y))]
+                    for x, y in rectangle_geometry
+                ]
             # One explicit closed loop: MOVETO, LINETO x3, CLOSEPOLY --
             # the same code shape Agg's draw_path shows for bars.
             codes = (
