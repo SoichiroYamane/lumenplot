@@ -478,10 +478,7 @@ struct RectRing {
 /// zero-area bars) returns `Ok(None)` so the caller falls through to the
 /// existing line or tiny-skia paths. Zero-area bars stay skipped at
 /// emission (phase-3 scope) and never reach the ring integrator.
-fn extract_rect_ring(
-    command: &PathCommand,
-    height: u32,
-) -> Result<Option<RectRing>, FrameError> {
+fn extract_rect_ring(command: &PathCommand, height: u32) -> Result<Option<RectRing>, FrameError> {
     let Some(codes) = command.codes.as_ref() else {
         return Ok(None);
     };

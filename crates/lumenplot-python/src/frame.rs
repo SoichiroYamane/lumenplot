@@ -1080,11 +1080,9 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
                             // center offset is based on the rounded device-space
                             // linewidth; keep the fill on the original geometry
                             // so snapping cannot move its coverage.
-                            let snap_value =
-                                agg_rectilinear_snap_value(path.line_width_pt * scale);
-                            build_device_path(path, height, Some(snap_value)).ok_or(
-                                FrameError::Internal("snapped path geometry unavailable"),
-                            )?
+                            let snap_value = agg_rectilinear_snap_value(path.line_width_pt * scale);
+                            build_device_path(path, height, Some(snap_value))
+                                .ok_or(FrameError::Internal("snapped path geometry unavailable"))?
                         } else {
                             path_geometry.clone()
                         };
