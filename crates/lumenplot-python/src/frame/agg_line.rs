@@ -405,10 +405,99 @@ pub(super) fn try_rasterize(
     Ok(Some(mask))
 }
 
+fn extract_degenerate_rect_segment(
+    command: &PathCommand,
+    height: u32,
+) -> Result<Option<Segment>, FrameError> {
+    let Some(codes) = command.codes.as_ref() else {
+        return Ok(None);
+    };
+    if command.vertices.len() != 5
+        || codes.len() != 5
+        || codes[0] != CODE_MOVETO
+        || codes[1] != CODE_LINETO
+        || codes[2] != CODE_LINETO
+        || codes[3] != CODE_LINETO
+        || codes[4] != CODE_CLOSEPOLY
+    {
+        return Ok(None);
+    }
+    let mut corners = [Point { x: 0.0, y: 0.0 }; 4];
+    for (index, corner) in corners.iter_mut().enumerate() {
+        let Some(point) = map_device_point(command.transform, command.vertices[index], height)
+        else {
+            return Ok(None);
+        };
+        *corner = point;
+    }
+    for index in 0..4 {
+        let start = corners[index];
+        let end = corners[(index + 1) % 4];
+        let dx = (start.x - end.x).abs();
+        let dy = (start.y - end.y).abs();
+        if dx >= AXIS_ALIGNMENT_EPSILON && dy >= AXIS_ALIGNMENT_EPSILON {
+            return Ok(None);
+        }
+    }
+    let min_x = corners
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = corners
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = corners
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = corners
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
+        return Ok(None);
+    }
+    let zero_width = max_x - min_x <= AXIS_ALIGNMENT_EPSILON;
+    let zero_height = max_y - min_y <= AXIS_ALIGNMENT_EPSILON;
+    if zero_width == zero_height {
+        return Ok(None);
+    }
+    for point in corners {
+        let on_x = (point.x - min_x).abs() < AXIS_ALIGNMENT_EPSILON
+            || (point.x - max_x).abs() < AXIS_ALIGNMENT_EPSILON;
+        let on_y = (point.y - min_y).abs() < AXIS_ALIGNMENT_EPSILON
+            || (point.y - max_y).abs() < AXIS_ALIGNMENT_EPSILON;
+        if !on_x || !on_y {
+            return Ok(None);
+        }
+    }
+    let segment = if zero_height {
+        Segment {
+            start: Point { x: min_x, y: min_y },
+            end: Point { x: max_x, y: min_y },
+        }
+    } else {
+        Segment {
+            start: Point { x: min_x, y: min_y },
+            end: Point { x: min_x, y: max_y },
+        }
+    };
+    Ok(Some(segment))
+}
+
 fn extract_segments(
     command: &PathCommand,
     height: u32,
 ) -> Result<Option<Vec<Segment>>, FrameError> {
+    if let Some(segment) = extract_degenerate_rect_segment(command, height)? {
+        let mut segments = Vec::new();
+        segments
+            .try_reserve_exact(1)
+            .map_err(|_| FrameError::OutOfMemory)?;
+        segments.push(segment);
+        return Ok(Some(segments));
+    }
     let capacity = command.vertices.len().saturating_add(1) / 2;
     let mut segments = Vec::new();
     segments
@@ -574,10 +663,12 @@ fn rect_snap_value(stroke_width: f64) -> f64 {
 
 /// Rasterizes a closed rect-stroke ring with the Agg-compatible 24.8
 /// fixed-point cell integrator: the stroked outline of an axis-aligned
-/// miter rectangle is the outer expanded rect minus the inner shrunk
-/// rect. Both contours are fed to the same cell accumulator with opposite
-/// winding so the hole cancels; a degenerate inner (stroke wider than the
-/// rect) rasterizes as the filled outer only.
+/// rectangle is the outer expanded rect minus the inner shrunk rect. Agg's
+/// `miter_join_revert` uses a bevel at a 90-degree corner when the rounded
+/// device linewidth is below `sqrt(2)`; those four outer corner triangles are
+/// subtracted in that case. Both contours are fed to the same cell accumulator
+/// with opposite winding so the hole cancels; a degenerate inner (stroke wider
+/// than the rect) rasterizes as the filled outer only.
 fn rasterize_rect_ring(
     ring: RectRing,
     command: &PathCommand,
@@ -625,7 +716,6 @@ fn rasterize_rect_ring(
     {
         return Ok(None);
     }
-    let bounds = raster_bounds(command, width, height);
     let outer_points = [
         Point {
             x: outer[0],
@@ -644,26 +734,99 @@ fn rasterize_rect_ring(
             y: outer[3],
         },
     ];
-    if outer_points.iter().any(|point| {
-        !point.x.is_finite()
-            || !point.y.is_finite()
-            || point.x < bounds.left
-            || point.x > bounds.right
-            || point.y < bounds.top
-            || point.y > bounds.bottom
-    }) {
-        // Outside the clip/canvas: let the tiny-skia fallback (which
-        // applies the same snap) handle clipping.
+    if outer_points
+        .iter()
+        .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
         return Ok(None);
     }
     let has_hole = inner[0] < inner[2] && inner[1] < inner[3];
+    let bevel_join = stroke_width < 2.0_f64.sqrt();
     let mut polygons = Vec::new();
     polygons
-        .try_reserve_exact(if has_hole { 2 } else { 1 })
+        .try_reserve_exact(if bevel_join {
+            if has_hole { 6 } else { 5 }
+        } else if has_hole {
+            2
+        } else {
+            1
+        })
         .map_err(|_| FrameError::OutOfMemory)?;
     polygons.push(Polygon {
         points: outer_points.map(to_subpixel),
     });
+    let bevel_cutouts = [
+        [
+            Point {
+                x: outer[0],
+                y: outer[1],
+            },
+            Point {
+                x: min_x,
+                y: min_y - half,
+            },
+            Point {
+                x: min_x - half,
+                y: min_y,
+            },
+        ],
+        [
+            Point {
+                x: outer[2],
+                y: outer[1],
+            },
+            Point {
+                x: max_x + half,
+                y: min_y,
+            },
+            Point {
+                x: max_x,
+                y: min_y - half,
+            },
+        ],
+        [
+            Point {
+                x: outer[2],
+                y: outer[3],
+            },
+            Point {
+                x: max_x,
+                y: max_y + half,
+            },
+            Point {
+                x: max_x + half,
+                y: max_y,
+            },
+        ],
+        [
+            Point {
+                x: outer[0],
+                y: outer[3],
+            },
+            Point {
+                x: min_x - half,
+                y: max_y,
+            },
+            Point {
+                x: min_x,
+                y: max_y + half,
+            },
+        ],
+    ];
+    if bevel_join {
+        for [corner, first, second] in bevel_cutouts {
+            polygons.push(Polygon {
+                // Reverse the outer winding to subtract the square corner and
+                // leave Agg's bevel-style rectilinear join.
+                points: [
+                    to_subpixel(corner),
+                    to_subpixel(second),
+                    to_subpixel(first),
+                    to_subpixel(corner),
+                ],
+            });
+        }
+    }
     if has_hole {
         // Opposite winding so the nonzero accumulator cancels the hole.
         let inner_points = [
