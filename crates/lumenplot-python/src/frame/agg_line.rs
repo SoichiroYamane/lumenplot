@@ -12,8 +12,8 @@
 use tiny_skia::Mask;
 
 use super::{
-    CODE_LINETO, CODE_MOVETO, CODE_STOP, CapSelector, FrameError, JoinSelector, PathCommand,
-    coverage_mask,
+    CODE_CLOSEPOLY, CODE_LINETO, CODE_MOVETO, CODE_STOP, CapSelector, FrameError, JoinSelector,
+    PathCommand, coverage_mask,
 };
 
 const SUBPIXEL_SHIFT: u32 = 8;
@@ -332,7 +332,6 @@ pub(super) fn try_rasterize(
     scale: f64,
 ) -> Result<Option<Mask>, FrameError> {
     if !command.antialias
-        || command.fill_rgba.is_some()
         || !matches!(command.cap, CapSelector::Butt)
         || !matches!(command.join, JoinSelector::Miter)
         || command
@@ -346,6 +345,16 @@ pub(super) fn try_rasterize(
 
     let stroke_width = command.line_width_pt * scale;
     if !stroke_width.is_finite() || stroke_width <= 0.0 {
+        return Ok(None);
+    }
+    // Closed axis-aligned rect-stroke rings (bars) carry both fill and
+    // stroke: the fill branch composites separately, so the stroke mask is
+    // the ring only. Try the ring first; the line path below preserves the
+    // F1 fill-absent contract.
+    if let Some(ring) = extract_rect_ring(command, height)? {
+        return rasterize_rect_ring(ring, command, width, height, pixel_count, scale);
+    }
+    if command.fill_rgba.is_some() {
         return Ok(None);
     }
     let mut segments = match extract_segments(command, height)? {
@@ -453,6 +462,242 @@ fn finish_subpath(
     }
     *first = None;
     *second = None;
+}
+
+/// Closed axis-aligned rect-stroke ring (bar outline) in device space.
+#[derive(Clone, Copy, Debug)]
+struct RectRing {
+    corners: [Point; 4],
+}
+
+/// Detects the bar-rectangle loop: exactly five vertices with explicit
+/// codes `[MOVETO, LINETO, LINETO, LINETO, CLOSEPOLY]` whose four corners
+/// form an axis-aligned non-degenerate rectangle in device space.
+///
+/// Anything else (open lines, curves, non-rectangular polygons, degenerate
+/// zero-area bars) returns `Ok(None)` so the caller falls through to the
+/// existing line or tiny-skia paths. Zero-area bars stay skipped at
+/// emission (phase-3 scope) and never reach the ring integrator.
+fn extract_rect_ring(command: &PathCommand, height: u32) -> Result<Option<RectRing>, FrameError> {
+    let Some(codes) = command.codes.as_ref() else {
+        return Ok(None);
+    };
+    if command.vertices.len() != 5
+        || codes.len() != 5
+        || codes[0] != CODE_MOVETO
+        || codes[1] != CODE_LINETO
+        || codes[2] != CODE_LINETO
+        || codes[3] != CODE_LINETO
+        || codes[4] != CODE_CLOSEPOLY
+    {
+        return Ok(None);
+    }
+    let mut corners = [Point { x: 0.0, y: 0.0 }; 4];
+    for (index, corner) in corners.iter_mut().enumerate() {
+        let Some(point) = map_device_point(command.transform, command.vertices[index], height)
+        else {
+            return Ok(None);
+        };
+        *corner = point;
+    }
+    // Every edge (including the implicit close p3->p0) must be
+    // axis-aligned. This also rejects bow-tie orderings whose diagonals
+    // would be oblique.
+    for index in 0..4 {
+        let start = corners[index];
+        let end = corners[(index + 1) % 4];
+        let dx = (start.x - end.x).abs();
+        let dy = (start.y - end.y).abs();
+        if dx >= AXIS_ALIGNMENT_EPSILON && dy >= AXIS_ALIGNMENT_EPSILON {
+            return Ok(None);
+        }
+    }
+    let min_x = corners
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = corners
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = corners
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = corners
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !min_x.is_finite() || !max_x.is_finite() || !min_y.is_finite() || !max_y.is_finite() {
+        return Ok(None);
+    }
+    if max_x - min_x <= AXIS_ALIGNMENT_EPSILON || max_y - min_y <= AXIS_ALIGNMENT_EPSILON {
+        // Degenerate (zero-area) bar: no ring area. The adapter skips
+        // these at emission; stay ineligible so the fallback (paint
+        // nothing) is preserved.
+        return Ok(None);
+    }
+    // All four corners must sit on the bounding-box corners: this proves a
+    // true rectangle rather than a degenerate axis-aligned quadrilateral
+    // (e.g. a doubled-back line).
+    let mut seen = [false; 4];
+    for point in corners {
+        let x_min = (point.x - min_x).abs() < AXIS_ALIGNMENT_EPSILON;
+        let x_max = (point.x - max_x).abs() < AXIS_ALIGNMENT_EPSILON;
+        let y_min = (point.y - min_y).abs() < AXIS_ALIGNMENT_EPSILON;
+        let y_max = (point.y - max_y).abs() < AXIS_ALIGNMENT_EPSILON;
+        let slot = match (x_min, x_max, y_min, y_max) {
+            (true, false, true, false) => 0,
+            (false, true, true, false) => 1,
+            (false, true, false, true) => 2,
+            (true, false, false, true) => 3,
+            _ => return Ok(None),
+        };
+        if seen[slot] {
+            return Ok(None);
+        }
+        seen[slot] = true;
+    }
+    Ok(Some(RectRing { corners }))
+}
+
+fn rect_snap_value(stroke_width: f64) -> f64 {
+    // Mirrors the frame-seam PathSnapper offset: odd rounded device widths
+    // center on half pixels, even widths on integer pixels. `rem_euclid`
+    // keeps the 1.5/2.5 ties on the Agg side (1.5 -> even -> 0.0).
+    if stroke_width.round().rem_euclid(2.0) == 1.0 {
+        0.5
+    } else {
+        0.0
+    }
+}
+
+/// Rasterizes a closed rect-stroke ring with the Agg-compatible 24.8
+/// fixed-point cell integrator: the stroked outline of an axis-aligned
+/// miter rectangle is the outer expanded rect minus the inner shrunk
+/// rect. Both contours are fed to the same cell accumulator with opposite
+/// winding so the hole cancels; a degenerate inner (stroke wider than the
+/// rect) rasterizes as the filled outer only.
+fn rasterize_rect_ring(
+    ring: RectRing,
+    command: &PathCommand,
+    width: u32,
+    height: u32,
+    pixel_count: usize,
+    scale: f64,
+) -> Result<Option<Mask>, FrameError> {
+    let stroke_width = command.line_width_pt * scale;
+    if !stroke_width.is_finite() || stroke_width <= 0.0 {
+        return Ok(None);
+    }
+    if command.vertices.len() > AUTO_SNAP_VERTEX_LIMIT {
+        return Ok(None);
+    }
+    let mut corners = ring.corners;
+    // Agg auto-snaps rectilinear paths in device space before stroking;
+    // the ring is axis-aligned by construction, so always snap (matches
+    // the frame-seam fallback when `rectilinear_snap` is set).
+    let snap_offset = rect_snap_value(stroke_width);
+    for corner in &mut corners {
+        corner.x = (corner.x + 0.5).floor() + snap_offset;
+        corner.y = (corner.y + 0.5).floor() + snap_offset;
+    }
+    let min_x = corners
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = corners
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = corners
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = corners
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let half = stroke_width * 0.5;
+    let outer = [min_x - half, min_y - half, max_x + half, max_y + half];
+    let inner = [min_x + half, min_y + half, max_x - half, max_y - half];
+    if outer.iter().any(|value| !value.is_finite()) || inner.iter().any(|value| !value.is_finite())
+    {
+        return Ok(None);
+    }
+    let bounds = raster_bounds(command, width, height);
+    let outer_points = [
+        Point {
+            x: outer[0],
+            y: outer[1],
+        },
+        Point {
+            x: outer[2],
+            y: outer[1],
+        },
+        Point {
+            x: outer[2],
+            y: outer[3],
+        },
+        Point {
+            x: outer[0],
+            y: outer[3],
+        },
+    ];
+    if outer_points.iter().any(|point| {
+        !point.x.is_finite()
+            || !point.y.is_finite()
+            || point.x < bounds.left
+            || point.x > bounds.right
+            || point.y < bounds.top
+            || point.y > bounds.bottom
+    }) {
+        // Outside the clip/canvas: let the tiny-skia fallback (which
+        // applies the same snap) handle clipping.
+        return Ok(None);
+    }
+    let has_hole = inner[0] < inner[2] && inner[1] < inner[3];
+    let mut polygons = Vec::new();
+    polygons
+        .try_reserve_exact(if has_hole { 2 } else { 1 })
+        .map_err(|_| FrameError::OutOfMemory)?;
+    polygons.push(Polygon {
+        points: outer_points.map(to_subpixel),
+    });
+    if has_hole {
+        // Opposite winding so the nonzero accumulator cancels the hole.
+        let inner_points = [
+            Point {
+                x: inner[0],
+                y: inner[1],
+            },
+            Point {
+                x: inner[0],
+                y: inner[3],
+            },
+            Point {
+                x: inner[2],
+                y: inner[3],
+            },
+            Point {
+                x: inner[2],
+                y: inner[1],
+            },
+        ];
+        polygons.push(Polygon {
+            points: inner_points.map(to_subpixel),
+        });
+    }
+    let Some(cell_capacity) = cell_capacity_bound(&polygons) else {
+        return Ok(None);
+    };
+    let mut rasterizer = CellRasterizer::new(cell_capacity)?;
+    for polygon in polygons {
+        rasterizer.add_polygon(polygon)?;
+    }
+    let mut mask = coverage_mask(width, height, pixel_count)?;
+    rasterizer.write_mask(&mut mask, width, height)?;
+    Ok(Some(mask))
 }
 
 fn map_device_point(transform: [f64; 6], vertex: [f64; 2], height: u32) -> Option<Point> {

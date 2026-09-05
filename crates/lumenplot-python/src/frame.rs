@@ -120,6 +120,10 @@ pub(crate) struct PathCommand {
     fill_rule: FillRuleSelector,
     antialias: bool,
     clip_rect: Option<[f64; 4]>,
+    /// Apply Matplotlib Agg's automatic rectilinear snap to this command's
+    /// stroke geometry only. The adapter sets this only for axis-aligned
+    /// Rectangle bars so fill coverage remains on the unsnapped path.
+    rectilinear_snap: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -216,7 +220,13 @@ impl PathCommand {
             fill_rule,
             antialias,
             clip_rect,
+            rectilinear_snap: false,
         })
+    }
+
+    /// Enables Agg-compatible snapping for this command's stroke path.
+    pub(crate) fn set_rectilinear_snap(&mut self, enabled: bool) {
+        self.rectilinear_snap = enabled;
     }
 }
 
@@ -714,10 +724,15 @@ fn apply_clip_to_mask(mask: &mut Mask, clip: &DeviceClip, width: u32, height: u3
     }
 }
 
-/// Builds the device-space tiny-skia path for one path command, applying the
-/// affine transform and the display-to-device y-flip in f64, dropping
-/// non-finite or unrepresentable points as pen lifts.
-fn build_device_path(command: &PathCommand, height_px: u32) -> Option<Path> {
+/// Builds a device-space tiny-skia path for one command. `snap_value`
+/// mirrors Agg's PathSnapper offset after the display-to-device transform:
+/// coordinates round with floor(value + 0.5), then odd pixel widths receive
+/// the additional 0.5-pixel center offset.
+fn build_device_path(
+    command: &PathCommand,
+    height_px: u32,
+    snap_value: Option<f64>,
+) -> Option<Path> {
     // Fold the flip into the affine once: y_device = H - y_display.
     let [a, b, c, d, e, f] = command.transform;
     let sa = a;
@@ -741,8 +756,12 @@ fn build_device_path(command: &PathCommand, height_px: u32) -> Option<Path> {
     let mut subpath_start: Option<[f32; 2]> = None;
 
     let map_point = |point: &[f64; 2]| -> Option<[f32; 2]> {
-        let x = sa * point[0] + sc * point[1] + se;
-        let y = sb * point[0] + sd * point[1] + sf;
+        let mut x = sa * point[0] + sc * point[1] + se;
+        let mut y = sb * point[0] + sd * point[1] + sf;
+        if let Some(snap_value) = snap_value {
+            x = (x + 0.5).floor() + snap_value;
+            y = (y + 0.5).floor() + snap_value;
+        }
         if !x.is_finite() || !y.is_finite() {
             return None;
         }
@@ -919,6 +938,17 @@ fn stroke_selection(command: &PathCommand, scale: f64) -> Result<Option<Stroke>,
     Ok(Some(stroke))
 }
 
+fn agg_rectilinear_snap_value(stroke_width: f64) -> f64 {
+    // Matplotlib's mpl_round_to_int rounds positive values half away from
+    // zero before selecting the odd/even pixel-center offset.
+    let rounded_width = stroke_width.round();
+    if rounded_width.rem_euclid(2.0) == 1.0 {
+        0.5
+    } else {
+        0.0
+    }
+}
+
 fn coverage_mask(width: u32, height: u32, pixel_count: usize) -> Result<Mask, FrameError> {
     let size = IntSize::from_wh(width, height).ok_or(FrameError::Internal("mask size rejected"))?;
     let mut data = Vec::new();
@@ -1013,7 +1043,7 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
     for command in &spec.commands {
         match command {
             Command::Path(path) => {
-                let Some(path_geometry) = build_device_path(path, height) else {
+                let Some(path_geometry) = build_device_path(path, height, None) else {
                     continue;
                 };
                 let clip = path
@@ -1044,7 +1074,19 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
                         None
                     };
                     if mask.is_none() {
-                        let stroked = path_geometry
+                        let stroke_geometry = if path.rectilinear_snap {
+                            // Matplotlib's Agg PathSnapper runs after the display
+                            // transform and before stroking. Its odd/even
+                            // center offset is based on the rounded device-space
+                            // linewidth; keep the fill on the original geometry
+                            // so snapping cannot move its coverage.
+                            let snap_value = agg_rectilinear_snap_value(path.line_width_pt * scale);
+                            build_device_path(path, height, Some(snap_value))
+                                .ok_or(FrameError::Internal("snapped path geometry unavailable"))?
+                        } else {
+                            path_geometry.clone()
+                        };
+                        let stroked = stroke_geometry
                             .stroke(&stroke, 1.0)
                             .ok_or(FrameError::Internal("stroking failed"))?;
                         let bounds = stroked.bounds();
@@ -1234,6 +1276,16 @@ mod tests {
             None,
         )
         .expect("path command")
+    }
+
+    #[test]
+    fn agg_rectilinear_snap_uses_rounded_linewidth_parity() {
+        // The pinned Agg rule adds a half-pixel center offset for odd rounded
+        // device widths, including the 1.5 tie, and no offset for even widths.
+        assert_eq!(agg_rectilinear_snap_value(1.0), 0.5);
+        assert_eq!(agg_rectilinear_snap_value(1.5), 0.0);
+        assert_eq!(agg_rectilinear_snap_value(2.0), 0.0);
+        assert_eq!(agg_rectilinear_snap_value(2.5), 0.5);
     }
 
     #[test]
