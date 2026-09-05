@@ -295,7 +295,7 @@ class TestCommittedBarFixture(unittest.TestCase):
         )
 
     def test_adapter_commands_carry_exact_bar_geometry_and_style(self):
-        """The native spec holds nine stroked bars in Agg draw order."""
+        """The native spec holds nine stroked bars plus the zero-area edge."""
 
         backend = importlib.import_module("lumenplot_mpl.backend")
         captured: dict[str, object] = {}
@@ -306,8 +306,9 @@ class TestCommittedBarFixture(unittest.TestCase):
 
         with fixture_rc_context():
             figure, axes, _artists = build_fixture_figure()
-            # Ten Rectangle patches reach the adapter; the zero-area bar
-            # paints nothing in Agg and is skipped at emission.
+            # Ten Rectangle patches reach the adapter.  The zero-area bar
+            # fills nothing, but Agg strokes its degenerate outline, so it
+            # emits a stroke-only tenth command instead of being skipped.
             self.assertEqual(len(axes.patches), 10)
             canvas = backend.FigureCanvasLumenPlot(figure, mode="strict")
             with unittest.mock.patch.object(
@@ -318,7 +319,7 @@ class TestCommittedBarFixture(unittest.TestCase):
         self.assertEqual(result.diagnostics, ())
         commands = captured["commands"]
         self.assertIsInstance(commands, list)
-        self.assertEqual(len(commands), 9)
+        self.assertEqual(len(commands), 10)
         expected_faces = [
             _rgba8("steelblue"),
             _rgba8("steelblue"),
@@ -385,6 +386,34 @@ class TestCommittedBarFixture(unittest.TestCase):
         self.assertEqual((vertices[4][:, 1].min(), vertices[4][:, 1].max()), (16.0, 24.0))
         self.assertEqual((vertices[5][:, 0].min(), vertices[5][:, 0].max()), (120.0, 130.0))
         self.assertEqual((vertices[8][:, 0].min(), vertices[8][:, 0].max()), (150.0, 160.0))
+
+        # The tenth command is the zero-area bar (ZERO_X=3.5, width 0.8,
+        # height 0.0 at the baseline): no fill, but the explicit black
+        # edge strokes the degenerate outline exactly like Agg.
+        zero_command = commands[9]
+        self.assertEqual(zero_command["kind"], "path")
+        self.assertIsNone(zero_command["fill_rgba"])
+        self.assertEqual(zero_command["stroke_rgba"], [0, 0, 0, 255])
+        self.assertTrue(zero_command["rectilinear_snap"])
+        self.assertEqual(list(zero_command["codes"]), [1, 2, 2, 2, 79])
+        zero_corners = [
+            (3.1, 0.0),
+            (3.9, 0.0),
+            (3.9, 0.0),
+            (3.1, 0.0),
+            (3.1, 0.0),
+        ]
+        np.testing.assert_allclose(
+            np.asarray(zero_command["vertices"], dtype=float),
+            np.asarray(axes.transData.transform(zero_corners).tolist()),
+            atol=1e-9,
+        )
+        self.assertEqual(
+            (vertices[9][:, 0].min(), vertices[9][:, 0].max()), (82.0, 98.0)
+        )
+        self.assertEqual(
+            (vertices[9][:, 1].min(), vertices[9][:, 1].max()), (40.0, 40.0)
+        )
 
     def test_per_bar_color_list_resolves_per_command_fill(self):
         """Detached style probe: one bar call, per-bar face resolution."""

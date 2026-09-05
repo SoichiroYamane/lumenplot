@@ -2453,6 +2453,7 @@ class _EligibilityPreflight:
         name = type(artist).__name__
         rectangle_geometry: list[tuple[float, float]] | None = None
         rectangle_geometry_in_px = False
+        zero_area_rectangle = False
         if isinstance(artist, matplotlib.patches.Rectangle):
             # A Rectangle's stored path is the unit square scaled at draw
             # time, so the corners are re-derived from the public getters
@@ -2463,8 +2464,13 @@ class _EligibilityPreflight:
             width = float(artist.get_width())
             height = float(artist.get_height())
             if width == 0.0 or height == 0.0:
-                # Zero-area bars paint nothing in Agg (no coverage).
-                return None
+                # A zero-area Rectangle fills nothing, but Agg still
+                # strokes its degenerate outline when an explicit edge
+                # with positive width is set (pinned zero-area bar: a
+                # 15px edge line with fringe caps).  Fall through so the
+                # command below can carry that stroke; artists with no
+                # stroke either are still skipped at assembly.
+                zero_area_rectangle = True
             rectangle_geometry = [
                 (x0, y0),
                 (x0 + width, y0),
@@ -2705,6 +2711,10 @@ class _EligibilityPreflight:
             self.unsupported("degenerate fill path", name)
             return None
 
+        if zero_area_rectangle and edge_rgba is None:
+            # No fill coverage and no stroke: Agg paints nothing.
+            return None
+
         command = {
             "kind": "path",
             "vertices": vertices,
@@ -2719,7 +2729,9 @@ class _EligibilityPreflight:
             "fill_rule": "nonzero",
             "antialias": True,
             "clip_rect": clip_rect,
-            "fill_rgba": list(fill_rgba),
+            # A zero-area Rectangle covers no fill pixels; emit the Agg
+            # edge line as a stroke-only command.
+            "fill_rgba": None if zero_area_rectangle else list(fill_rgba),
         }
         if rectangle_geometry is not None:
             # Matplotlib Agg automatically snaps rectilinear patch paths.
