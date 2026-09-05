@@ -25,6 +25,8 @@
 //! - output is deterministic: fixed iteration order, no global state, IEEE
 //!   arithmetic only.
 
+mod agg_line;
+
 use std::io::Write;
 
 use png::{BitDepth, ColorType, Compression, Encoder, Filter, SrgbRenderingIntent};
@@ -1036,28 +1038,37 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
                 }
                 let stroke = stroke_selection(path, scale)?;
                 if let Some(stroke) = stroke {
-                    let stroked = path_geometry
-                        .stroke(&stroke, 1.0)
-                        .ok_or(FrameError::Internal("stroking failed"))?;
-                    let bounds = stroked.bounds();
-                    let representable =
-                        [bounds.left(), bounds.top(), bounds.right(), bounds.bottom()]
-                            .iter()
-                            .all(|side| {
-                                side.is_finite()
-                                    && *side >= -TINY_SKIA_SAFE_PATH_BOUND
-                                    && *side <= TINY_SKIA_SAFE_PATH_BOUND
-                            });
-                    if !representable {
-                        return Err(FrameError::Internal("stroked path is unrepresentable"));
+                    let mut mask = if spec.blend_mode() == BlendMode::AggSrgb {
+                        agg_line::try_rasterize(path, width, height, pixel_count, scale)?
+                    } else {
+                        None
+                    };
+                    if mask.is_none() {
+                        let stroked = path_geometry
+                            .stroke(&stroke, 1.0)
+                            .ok_or(FrameError::Internal("stroking failed"))?;
+                        let bounds = stroked.bounds();
+                        let representable =
+                            [bounds.left(), bounds.top(), bounds.right(), bounds.bottom()]
+                                .iter()
+                                .all(|side| {
+                                    side.is_finite()
+                                        && *side >= -TINY_SKIA_SAFE_PATH_BOUND
+                                        && *side <= TINY_SKIA_SAFE_PATH_BOUND
+                                });
+                        if !representable {
+                            return Err(FrameError::Internal("stroked path is unrepresentable"));
+                        }
+                        let mut fallback_mask = coverage_mask(width, height, pixel_count)?;
+                        fallback_mask.fill_path(
+                            &stroked,
+                            FillRule::Winding,
+                            path.antialias,
+                            Transform::identity(),
+                        );
+                        mask = Some(fallback_mask);
                     }
-                    let mut mask = coverage_mask(width, height, pixel_count)?;
-                    mask.fill_path(
-                        &stroked,
-                        FillRule::Winding,
-                        path.antialias,
-                        Transform::identity(),
-                    );
+                    let mut mask = mask.expect("coverage route selected");
                     if let Some(clip) = &clip {
                         apply_clip_to_mask(&mut mask, clip, width, height);
                     }
