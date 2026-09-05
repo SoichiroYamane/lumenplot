@@ -2734,10 +2734,9 @@ class _EligibilityPreflight:
             "fill_rgba": None if zero_area_rectangle else list(fill_rgba),
         }
         if rectangle_geometry is not None:
-            # Matplotlib Agg automatically snaps rectilinear patch paths.
-            # Keep this marker internal to the frame seam: the native
-            # rasterizer applies it to the stroke geometry only, preserving
-            # the unsnapped fill path.
+            # A Rectangle follows Agg's shared rectilinear snap path.  When
+            # an edge is present, the native seam uses the snapped geometry
+            # for both face and edge; fill-only commands remain unsnapped.
             command["rectilinear_snap"] = True
         return command
 
