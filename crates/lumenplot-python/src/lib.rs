@@ -743,8 +743,16 @@ fn extract_path_command(command: &Bound<'_, PyDict>) -> PyResult<PathCommand> {
     let clip_rect = optional_key(command, "clip_rect")?
         .map(|value| extract_clip_rect(&value))
         .transpose()?;
+    let rectilinear_snap = optional_key(command, "rectilinear_snap")?
+        .map(|value| {
+            value
+                .extract::<bool>()
+                .map_err(|_| type_error("rectilinear_snap", "must be a bool"))
+        })
+        .transpose()?
+        .unwrap_or(false);
 
-    PathCommand::new(
+    let mut path_command = PathCommand::new(
         vertices,
         codes,
         transform,
@@ -759,7 +767,9 @@ fn extract_path_command(command: &Bound<'_, PyDict>) -> PyResult<PathCommand> {
         antialias,
         clip_rect,
     )
-    .map_err(frame_error_to_pyerr)
+    .map_err(frame_error_to_pyerr)?;
+    path_command.set_rectilinear_snap(rectilinear_snap);
+    Ok(path_command)
 }
 
 fn extract_image_command(command: &Bound<'_, PyDict>) -> PyResult<ImageCommand> {
