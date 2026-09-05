@@ -25,6 +25,8 @@
 //! - output is deterministic: fixed iteration order, no global state, IEEE
 //!   arithmetic only.
 
+mod agg_line;
+
 use std::io::Write;
 
 use png::{BitDepth, ColorType, Compression, Encoder, Filter, SrgbRenderingIntent};
@@ -119,7 +121,7 @@ pub(crate) struct PathCommand {
     antialias: bool,
     clip_rect: Option<[f64; 4]>,
     /// Apply Matplotlib Agg's automatic rectilinear snap to this command's
-    /// stroke geometry only.  The adapter sets this only for axis-aligned
+    /// stroke geometry only. The adapter sets this only for axis-aligned
     /// Rectangle bars so fill coverage remains on the unsnapped path.
     rectilinear_snap: bool,
 }
@@ -722,7 +724,7 @@ fn apply_clip_to_mask(mask: &mut Mask, clip: &DeviceClip, width: u32, height: u3
     }
 }
 
-/// Builds a device-space tiny-skia path for one command.  `snap_value`
+/// Builds a device-space tiny-skia path for one command. `snap_value`
 /// mirrors Agg's PathSnapper offset after the display-to-device transform:
 /// coordinates round with floor(value + 0.5), then odd pixel widths receive
 /// the additional 0.5-pixel center offset.
@@ -1066,40 +1068,49 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
                 }
                 let stroke = stroke_selection(path, scale)?;
                 if let Some(stroke) = stroke {
-                    let stroke_geometry = if path.rectilinear_snap {
-                        // Matplotlib's Agg PathSnapper runs after the display
-                        // transform and before stroking.  Its odd/even
-                        // center offset is based on the rounded device-space
-                        // linewidth; keep the fill on the original geometry
-                        // so snapping cannot move its coverage.
-                        let snap_value = agg_rectilinear_snap_value(path.line_width_pt * scale);
-                        build_device_path(path, height, Some(snap_value))
-                            .ok_or(FrameError::Internal("snapped path geometry unavailable"))?
+                    let mut mask = if spec.blend_mode() == BlendMode::AggSrgb {
+                        agg_line::try_rasterize(path, width, height, pixel_count, scale)?
                     } else {
-                        path_geometry.clone()
+                        None
                     };
-                    let stroked = stroke_geometry
-                        .stroke(&stroke, 1.0)
-                        .ok_or(FrameError::Internal("stroking failed"))?;
-                    let bounds = stroked.bounds();
-                    let representable =
-                        [bounds.left(), bounds.top(), bounds.right(), bounds.bottom()]
-                            .iter()
-                            .all(|side| {
-                                side.is_finite()
-                                    && *side >= -TINY_SKIA_SAFE_PATH_BOUND
-                                    && *side <= TINY_SKIA_SAFE_PATH_BOUND
-                            });
-                    if !representable {
-                        return Err(FrameError::Internal("stroked path is unrepresentable"));
+                    if mask.is_none() {
+                        let stroke_geometry = if path.rectilinear_snap {
+                            // Matplotlib's Agg PathSnapper runs after the display
+                            // transform and before stroking. Its odd/even
+                            // center offset is based on the rounded device-space
+                            // linewidth; keep the fill on the original geometry
+                            // so snapping cannot move its coverage.
+                            let snap_value = agg_rectilinear_snap_value(path.line_width_pt * scale);
+                            build_device_path(path, height, Some(snap_value))
+                                .ok_or(FrameError::Internal("snapped path geometry unavailable"))?
+                        } else {
+                            path_geometry.clone()
+                        };
+                        let stroked = stroke_geometry
+                            .stroke(&stroke, 1.0)
+                            .ok_or(FrameError::Internal("stroking failed"))?;
+                        let bounds = stroked.bounds();
+                        let representable =
+                            [bounds.left(), bounds.top(), bounds.right(), bounds.bottom()]
+                                .iter()
+                                .all(|side| {
+                                    side.is_finite()
+                                        && *side >= -TINY_SKIA_SAFE_PATH_BOUND
+                                        && *side <= TINY_SKIA_SAFE_PATH_BOUND
+                                });
+                        if !representable {
+                            return Err(FrameError::Internal("stroked path is unrepresentable"));
+                        }
+                        let mut fallback_mask = coverage_mask(width, height, pixel_count)?;
+                        fallback_mask.fill_path(
+                            &stroked,
+                            FillRule::Winding,
+                            path.antialias,
+                            Transform::identity(),
+                        );
+                        mask = Some(fallback_mask);
                     }
-                    let mut mask = coverage_mask(width, height, pixel_count)?;
-                    mask.fill_path(
-                        &stroked,
-                        FillRule::Winding,
-                        path.antialias,
-                        Transform::identity(),
-                    );
+                    let mut mask = mask.expect("coverage route selected");
                     if let Some(clip) = &clip {
                         apply_clip_to_mask(&mut mask, clip, width, height);
                     }

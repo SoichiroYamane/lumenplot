@@ -30,7 +30,7 @@ def render_frame_png(spec: Mapping[str, Any]) -> bytes:
     2026-08-25).
 
     Adapter-generated Rectangle path commands may additionally carry the
-    private boolean ``rectilinear_snap`` marker.  It selects Agg-compatible
+    private boolean ``rectilinear_snap`` marker. It selects Agg-compatible
     stroke snapping only; it is not a public geometry or persistence field.
     """
     ...

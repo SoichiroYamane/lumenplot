@@ -6,6 +6,7 @@
 - Recorded by: implementation-worker
 - Scope: LumenPlot v1 pre-alpha architecture
 - Supersedes: [ADR 0001 — Rust Matplotlib raster backend architecture](0001-rust-matplotlib-raster-backend.md)
+- Amended by: [ADR 0016 — v1 3D envelope and Agg-parity acceptance](0016-v1-3d-envelope-and-agg-parity.md)
 
 This record captures the accepted architecture envelope. It is a design decision, not an implementation report. The requirements and traceability documents intentionally retain `Not implemented`, `Not measured`, and `environment required` results until product work produces evidence.
 
@@ -190,9 +191,14 @@ The v1 product does not promise:
 - a second retained authoritative Figure model in native mode;
 - a public RenderPacket or persistent Scene/project serialization format;
 - web-browser-first transport or general GUI toolkit development;
-- 3D rendering, fitting, regression, or data-analysis responsibilities;
+- fitting, regression, or data-analysis responsibilities;
 - automatic NumPy-to-GPU zero-copy;
 - universal pixel identity across fonts, drivers, compositors, and media.
+
+[ADR 0016](0016-v1-3d-envelope-and-agg-parity.md) removes 3D rendering from
+this non-goal list and promotes the bounded `LP-FUNC-025` line and
+triangulated-surface capability to a Phase 3 v1 `MUST`. It changes neither the
+remaining exclusions nor the public/non-persistent RenderPacket boundary.
 
 PNG, PDF, and SVG are output formats, not a v1 persistence schema. Future serialization requires a separate schema and security decision.
 
@@ -274,6 +280,7 @@ The implementation plan must add evidence for the following gates. None is satis
 8. **Performance:** run fixed workloads with warm-up and at least 1000 measured frames, record the full machine manifest and timing segments, and report native and adapter profiles separately.
 9. **Security:** run unsafe scans, size/overflow tests, artifact hash checks, runtime shader negative tests, dependency/license/SBOM review, and public-documentation prohibited-string scans.
 10. **Release:** do not mark v1 accepted until every `MUST`/`MUST NOT` in the requirements traceability registry has a passing linked artifact and every declared platform cell is identified.
+11. **3D:** exercise `AT-FUNC-3D` against the pinned `FigureCanvasAgg` mplot3d oracle across explicit projection/view attributes, canonical f64 x/y/z bounds, projected line/triangle geometry, decoded pixels, style/text, and the reference triangle/depth ordering, including visible reference artifacts.
 
 ## Follow-up ADRs required before implementation fan-out
 
@@ -289,6 +296,7 @@ The following are deliberately open decisions, not reopened accepted decisions:
 8. Font fallback strictness, bundled-font license manifest, text/TeX capability matrix, embedding, ToUnicode, and outline reproducibility.
 9. Annotation schema, hit-testing, history snapshot details, accessibility implementation, and standalone-viewer packaging.
 10. Future Scene/project serialization schema and its security/migration policy; serialization remains a v1 non-goal until then.
+11. The four 3D stop decisions recorded by ADR 0016 and O-19 through O-22: projection default, z participation in f64-to-local-f32 origin selection, scatter3D alignment with `LP-FUNC-017`, and internal packet-schema versioning.
 
 ## Residual risks
 

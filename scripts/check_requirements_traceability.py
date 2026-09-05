@@ -18,23 +18,24 @@ from typing import Sequence
 
 
 EXPECTED_TOTAL = 237
-EXPECTED_NORMATIVE = 156
-EXPECTED_EVIDENCE_GATES = 106
+EXPECTED_NORMATIVE = 157
+EXPECTED_EVIDENCE_GATES = 107
 EXPECTED_STATUS_COUNTS = {
     "Implemented (bounded)": 17,
-    "Not implemented": 146,
+    "Not implemented": 147,
     "Not measured": 43,
     "environment required": 6,
     "Reference only": 13,
-    "Not applicable": 6,
+    "Not applicable": 5,
     "Planning only": 6,
 }
 STATUS_ORDER = tuple(EXPECTED_STATUS_COUNTS)
 NORMATIVE_CLASSES = frozenset(("MUST", "MUST NOT"))
 
-# These are the fourteen gates introduced by the canonical Agg-gap extension.
+# These gates use the canonical Agg-oracle acceptance contract.
 REQUIRED_AGG_GATES = frozenset(
     {
+        "AT-FUNC-3D",
         "AT-FUNC-FILL",
         "AT-FUNC-BAR",
         "AT-FUNC-DRAWSTYLE",

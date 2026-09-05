@@ -6,6 +6,10 @@ This list contains decisions that must be settled before implementation fan-out 
 
 Each item should become an ADR, an API decision record, or a reviewed implementation contract. The exact choice must include rationale, affected interfaces, compatibility impact, and verification evidence.
 
+[ADR 0016](../adr/0016-v1-3d-envelope-and-agg-parity.md) records the accepted
+v1 3D envelope. O-19 through O-22 below are its unresolved stop conditions;
+they are not permission to infer implementation defaults.
+
 ## Accepted decisions that are not open
 
 The following are fixed by the accepted architecture and must not be returned to this list as competing options:
@@ -24,6 +28,7 @@ The following are fixed by the accepted architecture and must not be returned to
 - Runtime/window/surface/GPU lifecycle is main-thread confined; Scene is single-writer; snapshots are immutable; workers are bounded and generation-cancellable; no non-reentrant lock crosses a Python callback; device loss rebuilds from retained CPU data; OOM is explicit.
 - Backend Auto uses capability probing plus static override and no default startup microbenchmark.
 - PNG and PDF are v1 MUST outputs; SVG is a v1 SHOULD and non-blocking; supported vector semantics are retained and raster-only PDF is forbidden.
+- `LP-FUNC-025` is a Phase 3 v1 `MUST` for 3D line and triangulated-surface plots, accepted only by the pinned §15.1 four-part mplot3d parity gate including reference ordering artifacts; fallback alone is not implementation evidence.
 - Project/Scene serialization is a v1 non-goal.
 - v1 is pre-alpha; publication, public API stability, MSRV, performance, and platform support are not claimed without evidence.
 
@@ -224,6 +229,46 @@ The following are fixed by the accepted architecture and must not be returned to
 - Constraints: no v1 Scene/project serialization or RenderPacket wire format; PNG/PDF/SVG are outputs, not persistence.
 - Evidence: separate schema/security ADR and migration/property tests.
 
+### O-19 — 3D projection default
+
+- State: **Open — stop condition**
+- Decision owner: architecture-authority
+- Needed before: a public 3D view default, default-case oracle fixture, or 3D implementation fan-out
+- Record: [ADR 0016 — v1 3D envelope and Agg-parity acceptance](../adr/0016-v1-3d-envelope-and-agg-parity.md)
+- Decision required: choose orthographic or perspective as the initial default, decide whether both are exposed in the first surface, and specify the public default-case semantics without copying a renderer-internal matrix.
+- Fixed constraints: projection/view attributes are backend-neutral semantic-frame facts; explicit-projection fixtures record their values, and no fixture or implementation may infer a default before this decision.
+- Evidence: API/semantic review plus pinned Agg fixtures for each accepted projection and the selected default.
+
+### O-20 — 3D z origin and local-f32 precision
+
+- State: **Open — stop condition**
+- Decision owner: architecture-authority
+- Needed before: any 3D local-f32 conversion, packet geometry, or renderer implementation
+- Record: [ADR 0016 — v1 3D envelope and Agg-parity acceptance](../adr/0016-v1-3d-envelope-and-agg-parity.md)
+- Decision required: define how z participates in origin selection (scene, view, chunk, or axis triple) and fix the permitted error budget for canonical-f64 to origin-relative-local-f32 conversion.
+- Fixed constraints: source x/y/z and all bounds remain canonical f64 semantic facts; direct absolute narrowing is prohibited, and renderer-local conversion cannot change clipping, projection, or pick identity.
+- Evidence: large-offset/short-span property fixtures across all three axes, bound and projection invariants, and explicit worst-error reporting.
+
+### O-21 — scatter3D requirement alignment
+
+- State: **Open — stop condition**
+- Decision owner: architecture-authority
+- Needed before: scatter3D API, adapter eligibility, implementation, or evidence attribution
+- Record: [ADR 0016 — v1 3D envelope and Agg-parity acceptance](../adr/0016-v1-3d-envelope-and-agg-parity.md)
+- Decision required: classify scatter3D under the Phase 3 v1 `LP-FUNC-025` `MUST`, the Phase 5 non-blocking `LP-FUNC-017` `SHOULD`, or a separately accepted row without double-counting evidence.
+- Fixed constraints: the accepted LP-FUNC-025 minimum covers 3D lines and triangulated surfaces; scatter3D does not count toward `AT-FUNC-3D` or `AT-FUNC-SCATTER` until this classification is accepted.
+- Evidence: requirement/traceability amendment, public-class eligibility contract, style/collection semantics review, and pinned Agg fixtures for the selected owner.
+
+### O-22 — Internal packet-schema versioning for 3D
+
+- State: **Open — stop condition**
+- Decision owner: architecture-authority
+- Needed before: changing internal RenderPacket field shapes or adding 3D packet consumers
+- Record: [ADR 0016 — v1 3D envelope and Agg-parity acceptance](../adr/0016-v1-3d-envelope-and-agg-parity.md) and [ADR 0004 — RenderPacket resource lifecycle](../adr/0004-renderpacket-resource-lifecycle.md)
+- Decision required: choose whether the existing generation identities are sufficient for a 3D shape change or whether packet identity needs an explicit internal schema version, including mismatch rejection and lifecycle behavior.
+- Fixed constraints: RenderPacket stays validated whole-packet, immutable, process-local, renderer-instance scoped, internal, non-public, non-wire, and non-persistent; export continues to consume the semantic frame.
+- Evidence: producer/consumer mismatch tests, stale-generation and device-generation tests, visibility/static guards, and negative serialization/persistence checks.
+
 ## Decision discipline
 
-O-01 through O-17 are recorded accepted contracts with implementation or environment evidence staged by phase. ADR 0010 and its narrow ADR 0011 amendment are the accepted Phase-1 native core/facade contract; Phase-1A/B implementation and local contract evidence now exist without altering the requirements status. ADR 0012 records the accepted private Phase-2A/2B line-frame and PNG boundary, whose bounded implementation and local evidence do not close full-v1 export. ADR 0013 records the staged Phase-3A hidden facade/private helper boundary, and ADR 0014 records the Phase-3A2 pinned builder, same-wheel matrix, and CI-local evidence schema; Phase-3A2 helper/package/builder same-wheel evidence is recorded (CI-local manifest; GIL 3.11–3.14 four-cell). The public Phase-3B Matplotlib contract is recorded in [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) + [API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md); its first strict-mode and hybrid-explicit implementation slices are merged with local contract-test evidence while packaged public-backend runtime evidence is recorded in PR #89 CI. O-18 is Deferred/Closed by non-goal. Do not silently promote a reference dependency, candidate API, environment observation, parent research result, or benchmark target into an implementation or support result. If a future decision changes the accepted envelope, supersede or amend ADR 0002 explicitly and update the requirements and traceability registry together.
+O-01 through O-17 are recorded accepted contracts with implementation or environment evidence staged by phase. ADR 0010 and its narrow ADR 0011 amendment are the accepted Phase-1 native core/facade contract; Phase-1A/B implementation and local contract evidence now exist without altering the requirements status. ADR 0012 records the accepted private Phase-2A/2B line-frame and PNG boundary, whose bounded implementation and local evidence do not close full-v1 export. ADR 0013 records the staged Phase-3A hidden facade/private helper boundary, and ADR 0014 records the Phase-3A2 pinned builder, same-wheel matrix, and CI-local evidence schema; Phase-3A2 helper/package/builder same-wheel evidence is recorded (CI-local manifest; GIL 3.11–3.14 four-cell). The public Phase-3B Matplotlib contract is recorded in [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) + [API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md); its first strict-mode and hybrid-explicit implementation slices are merged with local contract-test evidence while packaged public-backend runtime evidence is recorded in PR #89 CI. O-18 is Deferred/Closed by non-goal. ADR 0016 accepts the v1 3D envelope, while O-19 through O-22 remain open stop conditions and carry no implementation permission. Do not silently promote a reference dependency, candidate API, environment observation, parent research result, or benchmark target into an implementation or support result. If a future decision changes the accepted envelope, supersede or amend ADR 0002 explicitly and update the requirements and traceability registry together.
