@@ -1,6 +1,6 @@
 # ADR 0016: v1 3D envelope and Agg-parity acceptance
 
-- Status: **Accepted product envelope — implementation decisions and evidence pending**
+- Status: **Accepted product envelope — O-19 through O-22 decided by the 2026-09-07 amendment below; implementation and evidence pending**
 - Accepted by the architecture authority (maintainer), 2026-09-05
 - Date: 2026-09-05
 - Decision owner: architecture-authority
@@ -153,7 +153,8 @@ This amendment changes only the former 3D exclusion. It does not change:
 
 The following are architecture decisions, not implementation details. Work that
 depends on any answer must stop until the corresponding open-decision entry is
-accepted:
+accepted. (O-19 through O-22 were decided by the 2026-09-07 amendment below;
+their open-decision entries now record those acceptances.)
 
 1. **O-19 — projection default:** orthographic versus perspective, whether both
    are public in the first surface, and the exact default-case semantics.
@@ -249,6 +250,127 @@ requirement itself requires a new maintainer-approved requirements/ADR amendment
   resolved before field-shape changes.
 - The pinned Matplotlib oracle needs explicit review when its version changes;
   “current Agg” is never a moving unrecorded target.
+
+## Amendment 2026-09-07 — O-19 through O-22 decided
+
+Decided by the architecture-authority from the accepted sources in References;
+no new product scope was introduced, so no maintainer product decision beyond
+the accepted envelope was required. Each item records the chosen option,
+rejected alternatives, rationale, and resulting contract text. The O-19
+through O-22 entries in the open-decision list now record these acceptances,
+and the 3D fixture lane may proceed under the contracts below.
+
+### O-19 — projection default: perspective default, both modes public
+
+Decision: the public 3D view default is perspective projection, and both
+perspective and orthographic projections are public in the first surface.
+Default-case view facts mirror the pinned oracle reference defaults:
+perspective projection under the reference focal-length rule with elevation 30
+degrees, azimuth minus 60 degrees, and roll 0 degrees. Every fixture records
+its explicit projection and view attributes; no fixture or implementation may
+infer a default beyond this record.
+
+Rationale: the pinned oracle reference (`Axes3D`, Matplotlib 3.11.1) defaults
+to perspective (`proj_type='persp'`) with exactly these view defaults. Under
+the artifacts-included parity gate, the default-case fixture must reproduce
+the reference default output, so any other default would force the default
+case to diverge from the reference default. Both modes are public because
+mplot3d exposes exactly this pair, the oracle can pin both, and the second
+mode costs one projection matrix in the backend-neutral semantic frame while
+serving measurement-correct views.
+
+Rejected: orthographic default (the default-case fixture would mismatch
+reference default construction); perspective-only first surface (withholds an
+oracle-pinnable mode with no implementation saving); placing the default in
+per-render options (§2 above fixes projection/view attributes as
+semantic-frame facts, not renderer-owned mutable state).
+
+Contract text: the public 3D view carries a projection attribute with values
+perspective and orthographic; the default is perspective with the
+reference-mirroring view facts above; explicit-projection fixtures record
+their values; the exact internal matrix remains renderer-local and is never
+copied into the public contract.
+
+### O-20 — z origin and precision: per-frame scene origin triple
+
+Decision: z participates identically to x and y. One per-frame scene origin
+triple (ox, oy, oz) is derived deterministically from the frame's canonical
+f64 x/y/z bound pairs under the accepted 2D origin rule extended per-axis.
+Subtraction happens in f64 before narrowing to local f32, and the single
+origin is shared by all batches in the frame. The permitted error budget is
+the §15.1 part-1 bound applied to projected 3D geometry (finite geometry
+agrees to at most 0.25 device pixel before final sink quantization), with
+explicit worst-error reporting on large-offset/short-span fixtures across all
+three axes.
+
+Rationale: excluding z, or giving it a separate regime, wastes most of the
+f32 mantissa when |z − origin| is large — the exact failure the research note
+flags. A per-frame scene origin keeps clipping, projection, and pick identity
+independent of renderer-local conversion, as the fixed constraints require.
+
+Rejected: z-excluded origin (mantissa waste); per-chunk/per-batch origins
+(they break cross-batch draw-order comparison and pick identity);
+camera- or view-relative origin (it conflates semantic view facts with numeric
+conversion, so a view rotation would silently re-quantize all geometry);
+projecting absolute f64 first and narrowing only projected 2D (leaves 3D
+local-f32 packet geometry without an origin rule and splits conversion into
+two regimes).
+
+Contract text: canonical x/y/z and all three bound pairs stay f64 semantic
+facts; the renderer boundary narrows (v − o) per axis from f64 to f32 after
+subtracting the recorded per-frame origin triple; fixtures record the origin
+triple, bound and projection invariants, and the worst observed error.
+
+### O-21 — scatter3D alignment: with LP-FUNC-017, outside the v1 MUST
+
+Decision: scatter3D is classified with LP-FUNC-017 (`SHOULD`, Phase 5,
+`AT-FUNC-SCATTER`). It is not part of the LP-FUNC-025 v1 `MUST` minimum, and
+its evidence must not double-count toward `AT-FUNC-3D`. Until the scatter lane
+accepts 3D-marker semantics, scatter3D counts toward neither gate.
+
+Rationale: LP-FUNC-025 enumerates "three-dimensional line and
+triangulated-surface plots" — marker collections are neither, and §1 above
+requires explicit classification before scatter3D can count anywhere. Marker
+and collection semantics belong to the scatter lane (LP-FUNC-017) and the
+collections lane (LP-MPL-023). Including scatter3D in the `MUST` by
+interpretation would expand release-blocking scope without a maintainer
+product decision; this classification keeps `MUST` scope exactly as accepted.
+
+Rejected: include-in-`MUST` (scope expansion beyond the accepted requirement
+text); a brand-new separate v1 row (inventing requirement rows is beyond
+architecture authority — a maintainer may accept one later with its own
+evidence gate).
+
+Contract text: `AT-FUNC-3D` fixtures must not use scatter artists as closure
+evidence; scatter3D evidence attributes to LP-FUNC-017/`AT-FUNC-SCATTER` only
+after that lane's 3D-marker semantics are accepted; adapter treatment of 3D
+scatter artists is unchanged (explicit unsupported / whole-frame fallback per
+the accepted adapter contract) until then.
+
+### O-22 — packet-schema versioning: generation-triple-only, no explicit version
+
+Decision: the existing generation triple (`SceneRevision`, `WorkGeneration`,
+`DeviceGeneration`) is sufficient for the internal 3D shape change. No
+explicit packet-schema version is added to the packet identity family.
+
+Rationale: the packet is compile-time-typed, process-local,
+renderer-instance-scoped, and never serialized or persisted (ADR 0004 and §3/§5
+above) — a shape change is a source change enforced by the type system and
+whole-packet validation at build time, and there is no cross-version reader
+for a version field to protect. Stale-packet rejection already exists with
+distinct per-generation semantics. A version field would be a wire-lookalike
+identity on a type whose non-wire status is a lifecycle/security boundary,
+inviting exactly the misreading this record rejects and implying a
+cross-version compatibility promise the project refuses (O-18).
+
+Rejected: explicit internal schema version (dead check in-process;
+wire-identity confusion risk; implied compatibility promise).
+
+Contract text: 3D packet-shape evolution rides the existing triple;
+producer/consumer mismatch is rejected by whole-packet validation plus
+generation checks plus the existing static direction/type guards; the negative
+serialization/persistence guards are extended to cover new 3D fields, and no
+version field or compatibility matrix is introduced.
 
 ## References
 
