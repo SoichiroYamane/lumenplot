@@ -21,8 +21,8 @@ EXPECTED_TOTAL = 237
 EXPECTED_NORMATIVE = 157
 EXPECTED_EVIDENCE_GATES = 107
 EXPECTED_STATUS_COUNTS = {
-    "Implemented (bounded)": 17,
-    "Not implemented": 147,
+    "Implemented (bounded)": 19,
+    "Not implemented": 145,
     "Not measured": 43,
     "environment required": 6,
     "Reference only": 13,

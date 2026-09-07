@@ -31,6 +31,8 @@ def render_frame_png(spec: Mapping[str, Any]) -> bytes:
 
     Adapter-generated Rectangle path commands may additionally carry the
     private boolean ``rectilinear_snap`` marker. It selects Agg-compatible
-    stroke snapping only; it is not a public geometry or persistence field.
+    path snapping; edge-bearing commands use the snapped path for both face
+    and edge, while fill-only commands retain their unsnapped path. It is not
+    a public geometry or persistence field.
     """
     ...
