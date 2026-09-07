@@ -12,7 +12,7 @@ use lumenplot_engine::bridge::{LogicalRect, SrgbRgba8};
 
 use crate::frame::{
     FramePacket, FrameSeamError, FrameSeamErrorKind, MAX_FRAME_DIMENSION, MAX_FRAME_PIXELS,
-    MAX_FRAME_SERIES, PacketRevision,
+    MAX_FRAME_SERIES, PacketRevision, SemanticFrame,
 };
 
 const MAX_PACKET_POINTS: usize = 1_000_000;
@@ -24,16 +24,33 @@ const RESOURCE_GENERATION: u32 = 1;
 const CLIP_RESOURCE_SLOT: u32 = 1;
 const STYLE_RESOURCE_SLOT: u32 = 2;
 
-/// Scheduler generation associated with derived packet work.
+/// Scene revision associated with the owner publication point.
+///
+/// This remains distinct from the engine-backed [`PacketRevision`].  It is an
+/// owner token used to reject a packet after a newer scene publication.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct WorkGeneration(u64);
+pub struct SceneRevision(u64);
 
-impl WorkGeneration {
-    pub(crate) const fn initial() -> Self {
+impl SceneRevision {
+    pub const fn initial() -> Self {
         Self::new(0)
     }
 
-    pub(crate) const fn new(value: u64) -> Self {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+/// Scheduler generation associated with derived packet work.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WorkGeneration(u64);
+
+impl WorkGeneration {
+    pub const fn initial() -> Self {
+        Self::new(0)
+    }
+
+    pub const fn new(value: u64) -> Self {
         Self(value)
     }
 
@@ -45,14 +62,14 @@ impl WorkGeneration {
 
 /// Renderer-instance generation associated with retained logical resources.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct DeviceGeneration(u64);
+pub struct DeviceGeneration(u64);
 
 impl DeviceGeneration {
-    pub(crate) const fn initial() -> Self {
+    pub const fn initial() -> Self {
         Self::new(0)
     }
 
-    pub(crate) const fn new(value: u64) -> Self {
+    pub const fn new(value: u64) -> Self {
         Self(value)
     }
 
@@ -64,7 +81,7 @@ impl DeviceGeneration {
 
 /// Internal validation categories; these never become a public error schema.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum PacketValidationErrorKind {
+pub enum PacketValidationErrorKind {
     FrameInvalid,
     CapacityExceeded,
     InvalidResourceId,
@@ -73,13 +90,14 @@ pub(crate) enum PacketValidationErrorKind {
     InvalidDrawOrder,
     IncompletePacket,
     AllocationFailed,
+    StaleSceneRevision,
     StaleWorkGeneration,
     StaleDeviceGeneration,
 }
 
 /// Sanitized failure from packet construction or validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PacketValidationError {
+pub struct PacketValidationError {
     kind: PacketValidationErrorKind,
     message: &'static str,
 }
@@ -89,8 +107,7 @@ impl PacketValidationError {
         Self { kind, message }
     }
 
-    #[cfg(test)]
-    pub(crate) fn kind(self) -> PacketValidationErrorKind {
+    pub fn kind(self) -> PacketValidationErrorKind {
         self.kind
     }
 
@@ -121,6 +138,7 @@ impl PacketValidationError {
             | PacketValidationErrorKind::InvalidDrawOrder
             | PacketValidationErrorKind::IncompletePacket
             | PacketValidationErrorKind::AllocationFailed
+            | PacketValidationErrorKind::StaleSceneRevision
             | PacketValidationErrorKind::StaleWorkGeneration
             | PacketValidationErrorKind::StaleDeviceGeneration => {
                 FrameSeamErrorKind::EngineRejected
@@ -140,24 +158,40 @@ impl std::error::Error for PacketValidationError {}
 
 /// Expected publication generations for one renderer submission owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct RenderPacketBuilder {
+pub struct RenderPacketBuilder {
+    expected_scene_revision: SceneRevision,
     expected_work_generation: WorkGeneration,
     expected_device_generation: DeviceGeneration,
 }
 
 impl RenderPacketBuilder {
-    pub(crate) const fn new(
+    /// Legacy M1-compatible builder with an initial owner scene token.
+    pub const fn new(
+        expected_work_generation: WorkGeneration,
+        expected_device_generation: DeviceGeneration,
+    ) -> Self {
+        Self::for_scene(
+            SceneRevision::initial(),
+            expected_work_generation,
+            expected_device_generation,
+        )
+    }
+
+    /// Builder bound to one owner scene/work/device publication point.
+    pub const fn for_scene(
+        expected_scene_revision: SceneRevision,
         expected_work_generation: WorkGeneration,
         expected_device_generation: DeviceGeneration,
     ) -> Self {
         Self {
+            expected_scene_revision,
             expected_work_generation,
             expected_device_generation,
         }
     }
 
     /// Builds one complete packet, publishing nothing until every check passes.
-    pub(crate) fn build(
+    pub fn build(
         &self,
         frame: FramePacket,
         work_generation: WorkGeneration,
@@ -180,14 +214,16 @@ impl RenderPacketBuilder {
         let resources = ResourceTable::for_frame(&frame);
         let draws = build_draws(&frame, stats.segment_count)?;
         let packet = RenderPacket {
-            frame,
-            scene_revision: stats.scene_revision,
+            semantic: SemanticFrame::from_frame(frame),
+            frame_revision: stats.scene_revision,
+            scene_revision: self.expected_scene_revision,
             work_generation,
             device_generation,
             resources,
             draws,
         };
-        packet.validate(
+        packet.validate_for_owner(
+            self.expected_scene_revision,
             self.expected_work_generation,
             self.expected_device_generation,
         )?;
@@ -196,9 +232,10 @@ impl RenderPacketBuilder {
 }
 
 /// Immutable, complete, process-local renderer input.
-pub(crate) struct RenderPacket {
-    frame: FramePacket,
-    scene_revision: PacketRevision,
+pub struct RenderPacket {
+    semantic: SemanticFrame,
+    frame_revision: PacketRevision,
+    scene_revision: SceneRevision,
     work_generation: WorkGeneration,
     device_generation: DeviceGeneration,
     resources: ResourceTable,
@@ -206,12 +243,41 @@ pub(crate) struct RenderPacket {
 }
 
 impl RenderPacket {
-    /// Revalidates an already-built packet against the current owner state.
-    pub(crate) fn validate(
+    /// Revalidates an already-built packet against work and device state.
+    pub fn validate(
         &self,
         expected_work_generation: WorkGeneration,
         expected_device_generation: DeviceGeneration,
     ) -> Result<(), PacketValidationError> {
+        self.validate_with_scene(None, expected_work_generation, expected_device_generation)
+    }
+
+    /// Revalidates an already-built packet against the full owner state.
+    pub fn validate_for_owner(
+        &self,
+        expected_scene_revision: SceneRevision,
+        expected_work_generation: WorkGeneration,
+        expected_device_generation: DeviceGeneration,
+    ) -> Result<(), PacketValidationError> {
+        self.validate_with_scene(
+            Some(expected_scene_revision),
+            expected_work_generation,
+            expected_device_generation,
+        )
+    }
+
+    fn validate_with_scene(
+        &self,
+        expected_scene_revision: Option<SceneRevision>,
+        expected_work_generation: WorkGeneration,
+        expected_device_generation: DeviceGeneration,
+    ) -> Result<(), PacketValidationError> {
+        if expected_scene_revision.is_some_and(|expected| self.scene_revision != expected) {
+            return Err(PacketValidationError::new(
+                PacketValidationErrorKind::StaleSceneRevision,
+                "packet scene revision is stale",
+            ));
+        }
         if self.work_generation != expected_work_generation {
             return Err(PacketValidationError::new(
                 PacketValidationErrorKind::StaleWorkGeneration,
@@ -225,51 +291,53 @@ impl RenderPacket {
             ));
         }
 
-        let stats = validate_frame(&self.frame)?;
-        if self.scene_revision != stats.scene_revision {
+        let frame = self.semantic.frame();
+        let stats = validate_frame(frame)?;
+        if self.frame_revision != stats.scene_revision {
             return Err(PacketValidationError::new(
                 PacketValidationErrorKind::IncompletePacket,
                 "packet scene revision does not match its frame",
             ));
         }
-        self.resources.validate(&self.frame)?;
-        validate_draws(
-            &self.frame,
-            &self.resources,
-            &self.draws,
-            stats.segment_count,
-        )
+        self.resources.validate(frame)?;
+        validate_draws(frame, &self.resources, &self.draws, stats.segment_count)
     }
 
-    pub(crate) fn frame(&self) -> &FramePacket {
-        &self.frame
+    /// Shared semantic/layout source projected by this packet.
+    pub fn semantic_frame(&self) -> &SemanticFrame {
+        &self.semantic
     }
 
-    #[cfg(test)]
-    fn scene_revision(&self) -> PacketRevision {
+    /// M1 frame view retained for existing consumers.
+    pub fn frame(&self) -> &FramePacket {
+        self.semantic.frame()
+    }
+
+    pub fn scene_revision(&self) -> SceneRevision {
         self.scene_revision
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn work_generation(&self) -> WorkGeneration {
+    pub fn work_generation(&self) -> WorkGeneration {
         self.work_generation
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn device_generation(&self) -> DeviceGeneration {
+    pub fn device_generation(&self) -> DeviceGeneration {
         self.device_generation
     }
 
     /// Logical resource identities validated as part of this packet.
-    #[allow(dead_code)]
-    pub(crate) fn resource_ids(&self) -> impl Iterator<Item = LogicalResourceId> + '_ {
+    pub fn resource_ids(&self) -> impl Iterator<Item = LogicalResourceId> + '_ {
         self.resources.ids()
     }
 
     /// Number of logical resources validated as part of this packet.
-    #[allow(dead_code)]
-    pub(crate) fn resource_count(&self) -> usize {
+    pub fn resource_count(&self) -> usize {
         self.resources.len()
+    }
+
+    #[cfg(test)]
+    fn frame_revision(&self) -> PacketRevision {
+        self.frame_revision
     }
 
     #[cfg(test)]
@@ -279,7 +347,7 @@ impl RenderPacket {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct LogicalResourceId {
+pub struct LogicalResourceId {
     slot: u32,
     generation: u32,
 }
@@ -739,7 +807,8 @@ mod tests {
     #[test]
     fn generations_and_scene_revision_remain_distinct_metadata() {
         let packet = packet(8);
-        assert_eq!(packet.scene_revision(), packet.frame().revision());
+        assert_eq!(packet.scene_revision(), SceneRevision::initial());
+        assert_eq!(packet.frame_revision(), packet.frame().revision());
         assert_eq!(packet.work_generation().value(), WORK.value());
         assert_eq!(
             packet.device_generation().value(),
@@ -763,7 +832,7 @@ mod tests {
         for seed in 1..=32u64 {
             let mut generated = packet(32);
             let mut state = seed;
-            for point in &mut generated.frame.series[0].segments[0].points {
+            for point in &mut generated.semantic.frame_mut().series[0].segments[0].points {
                 state = state
                     .wrapping_mul(6_364_136_223_846_793_005)
                     .wrapping_add(1);
@@ -870,6 +939,41 @@ mod tests {
     }
 
     #[test]
+    fn owner_scene_revision_is_revalidated_without_partial_publication() {
+        let scene = SceneRevision::new(41);
+        let builder = RenderPacketBuilder::for_scene(scene, WORK, DEVICE_GENERATION);
+        let packet = builder
+            .build(fixture_frame(4), WORK, DEVICE_GENERATION)
+            .expect("owner-bound packet");
+        packet
+            .validate_for_owner(scene, WORK, DEVICE_GENERATION)
+            .expect("current owner point");
+        let error = packet
+            .validate_for_owner(SceneRevision::new(42), WORK, DEVICE_GENERATION)
+            .expect_err("newer scene must reject the old packet");
+        assert_eq!(error.kind(), PacketValidationErrorKind::StaleSceneRevision);
+    }
+
+    #[test]
+    fn independent_consumers_read_one_validated_semantic_frame() {
+        let builder =
+            RenderPacketBuilder::for_scene(SceneRevision::initial(), WORK, DEVICE_GENERATION);
+        let packet = builder
+            .build(fixture_frame(8), WORK, DEVICE_GENERATION)
+            .expect("packet");
+        let mut recording = RecordingRenderer::new(WORK, DEVICE_GENERATION);
+        recording
+            .submit(fixture_frame(8), WORK, DEVICE_GENERATION)
+            .expect("recording consumer");
+        let mut digest = SemanticDigestRenderer::new();
+        digest
+            .consume(&packet, SceneRevision::initial(), WORK, DEVICE_GENERATION)
+            .expect("independent semantic consumer");
+        assert_eq!(digest.frame_count, 1);
+        assert_ne!(digest.digest, 0);
+        assert_eq!(recording.published()[0].frame().series().len(), 1);
+    }
+    #[test]
     fn frame_validation_rejects_mismatched_canvas_and_capacity() {
         let mut mismatched = fixture_frame(3);
         mismatched.canvas_px = [801, 600];
@@ -950,6 +1054,46 @@ mod tests {
 
         fn published(&self) -> &[RenderPacket] {
             &self.published
+        }
+    }
+
+    /// Independent consumer that reads the same validated semantic meaning
+    /// without sharing the recording renderer's storage or implementation.
+    struct SemanticDigestRenderer {
+        frame_count: usize,
+        digest: u64,
+    }
+
+    impl SemanticDigestRenderer {
+        fn new() -> Self {
+            Self {
+                frame_count: 0,
+                digest: 0,
+            }
+        }
+
+        fn consume(
+            &mut self,
+            packet: &RenderPacket,
+            scene_revision: SceneRevision,
+            work_generation: WorkGeneration,
+            device_generation: DeviceGeneration,
+        ) -> Result<(), PacketValidationError> {
+            packet.validate_for_owner(scene_revision, work_generation, device_generation)?;
+            let mut digest = 0xcbf29ce484222325;
+            for series in packet.semantic_frame().frame().series() {
+                for segment in series.segments() {
+                    for point in segment.points() {
+                        digest ^= point.x().to_bits();
+                        digest = digest.wrapping_mul(0x100000001b3);
+                        digest ^= point.y().to_bits();
+                        digest = digest.wrapping_mul(0x100000001b3);
+                    }
+                }
+            }
+            self.frame_count += 1;
+            self.digest = digest;
+            Ok(())
         }
     }
 }

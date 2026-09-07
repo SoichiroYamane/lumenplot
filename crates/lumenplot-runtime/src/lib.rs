@@ -21,6 +21,13 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::thread::{self, ThreadId};
 
+use lumenplot_render_api::__internal::{
+    CompletionFence, DeviceGeneration as PacketDeviceGeneration, PacketValidationError,
+    PacketValidationErrorKind, RenderPacket, RenderPacketBuilder, ResourceCache, ResourceLease,
+    ResourceLifecycleError, ResourceLifecycleErrorKind, SceneRevision as PacketSceneRevision,
+    WorkGeneration as PacketWorkGeneration,
+};
+use lumenplot_render_api::FramePacket;
 use lumenplot_render_wgpu::{RenderError, RenderErrorKind, Renderer};
 
 mod input;
@@ -430,6 +437,116 @@ impl WorkQueue {
     }
 }
 
+struct PreparedPacket {
+    packet: RenderPacket,
+    lease: Option<ResourceLease>,
+    fence: CompletionFence,
+}
+
+/// Backend-neutral owner-side packet lifecycle.
+///
+/// The owner retains an immutable CPU semantic frame and keeps resource lease
+/// and completion handling beside the renderer owner.  No backend object enters
+/// this structure; the portable renderer receives only the validated packet.
+struct PacketOwner {
+    cache: ResourceCache,
+    retained_frame: Option<FramePacket>,
+    retained_scene_revision: Option<SceneRevision>,
+    next_fence_sequence: u64,
+}
+
+impl PacketOwner {
+    fn new() -> Self {
+        Self {
+            cache: ResourceCache::new(PacketDeviceGeneration::initial()),
+            retained_frame: None,
+            retained_scene_revision: None,
+            next_fence_sequence: 1,
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        frame: FramePacket,
+        scene_revision: SceneRevision,
+        work_generation: WorkGeneration,
+        device_generation: DeviceGeneration,
+    ) -> Result<PreparedPacket, RuntimeError> {
+        if self.next_fence_sequence == u64::MAX {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::Internal,
+                "resource completion sequence exhausted",
+            ));
+        }
+        let internal_scene = PacketSceneRevision::new(scene_revision.0);
+        let internal_work = PacketWorkGeneration::new(work_generation.0);
+        let internal_device = PacketDeviceGeneration::new(device_generation.0);
+        let builder =
+            RenderPacketBuilder::for_scene(internal_scene, internal_work, internal_device);
+        let packet = builder
+            .build(frame.clone(), internal_work, internal_device)
+            .map_err(map_packet_error)?;
+        let lease = self
+            .cache
+            .acquire_for_owner(&packet, internal_scene, internal_work)
+            .map_err(map_resource_error)?;
+        self.retained_frame = Some(frame);
+        self.retained_scene_revision = Some(scene_revision);
+        Ok(PreparedPacket {
+            packet,
+            lease: Some(lease),
+            fence: CompletionFence::new(internal_device, self.next_fence_sequence),
+        })
+    }
+
+    fn prepare_retained(
+        &mut self,
+        work_generation: WorkGeneration,
+        device_generation: DeviceGeneration,
+    ) -> Result<Option<PreparedPacket>, RuntimeError> {
+        let (Some(frame), Some(scene_revision)) =
+            (self.retained_frame.clone(), self.retained_scene_revision)
+        else {
+            return Ok(None);
+        };
+        self.prepare(frame, scene_revision, work_generation, device_generation)
+            .map(Some)
+    }
+
+    fn commit(&mut self, mut prepared: PreparedPacket) -> Result<(), RuntimeError> {
+        let lease = prepared.lease.take().ok_or_else(|| {
+            RuntimeError::new(
+                RuntimeErrorKind::Internal,
+                "packet resource lease was already consumed",
+            )
+        })?;
+        self.cache
+            .submit(lease, prepared.fence)
+            .map_err(map_resource_error)?;
+        self.cache
+            .complete(prepared.fence)
+            .map_err(map_resource_error)?;
+        self.next_fence_sequence = self.next_fence_sequence.checked_add(1).ok_or_else(|| {
+            RuntimeError::new(
+                RuntimeErrorKind::Internal,
+                "resource completion sequence exhausted",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn invalidate_device_generation(&self, generation: DeviceGeneration) {
+        let _ = self
+            .cache
+            .invalidate_device_generation(PacketDeviceGeneration::new(generation.0));
+    }
+
+    #[cfg(test)]
+    fn has_retained_state(&self) -> bool {
+        self.retained_frame.is_some() && self.retained_scene_revision.is_some()
+    }
+}
+
 /// RAII guard that cannot leave the host-pump reentrancy flag set after an
 /// early return or a future panic boundary.
 struct PumpGuard<'a> {
@@ -469,6 +586,7 @@ pub struct EngineSession {
     owner_thread: ThreadId,
     renderer: Option<Renderer>,
     backend_attached: bool,
+    packet_owner: PacketOwner,
     surfaces: Vec<SurfaceSlot>,
     next_surface_id: u64,
     work_generation: WorkGeneration,
@@ -516,6 +634,7 @@ impl EngineSession {
             owner_thread: thread::current().id(),
             renderer,
             backend_attached,
+            packet_owner: PacketOwner::new(),
             surfaces: Vec::new(),
             next_surface_id: 1,
             work_generation: WorkGeneration::initial(),
@@ -781,6 +900,8 @@ impl EngineSession {
         let next_work = self.next_work_generation()?;
         self.commit_work_generation(next_work)?;
         self.device_generation = next_device;
+        self.packet_owner
+            .invalidate_device_generation(self.device_generation);
         self.state = SessionState::DeviceLost;
         self.renderer = None;
         for surface in &mut self.surfaces {
@@ -825,7 +946,7 @@ impl EngineSession {
             ));
         }
 
-        let replacement = match Renderer::new() {
+        let mut replacement = match Renderer::new() {
             Ok(renderer) => renderer,
             Err(error) if matches!(error.kind(), RenderErrorKind::OutOfMemory) => {
                 self.state = SessionState::OutOfMemory;
@@ -843,6 +964,33 @@ impl EngineSession {
         };
         let next_work = self.next_work_generation()?;
         self.commit_work_generation(next_work)?;
+        if let Some(prepared) = self
+            .packet_owner
+            .prepare_retained(self.work_generation, self.device_generation)?
+        {
+            let expected_scene = prepared.packet.scene_revision();
+            let expected_work = prepared.packet.work_generation();
+            let expected_device = prepared.packet.device_generation();
+            let render_result = replacement.render_validated(
+                &prepared.packet,
+                expected_scene,
+                expected_work,
+                expected_device,
+            );
+            if let Err(error) = render_result {
+                let kind = error.kind();
+                drop(prepared);
+                if matches!(kind, RenderErrorKind::OutOfMemory) {
+                    self.state = SessionState::OutOfMemory;
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::OutOfMemory,
+                        "portable backend recovery ran out of memory",
+                    ));
+                }
+                return Err(map_renderer_error(error, true));
+            }
+            self.packet_owner.commit(prepared)?;
+        }
         self.renderer = Some(replacement);
         self.state = SessionState::Running;
         for surface in &mut self.surfaces {
@@ -866,6 +1014,8 @@ impl EngineSession {
         self.borrow_work_queue_mut()?.cancel_all();
         self.state = SessionState::OutOfMemory;
         self.renderer = None;
+        self.packet_owner
+            .invalidate_device_generation(self.device_generation);
         for surface in &mut self.surfaces {
             surface.state = SurfaceState::Lost;
         }
@@ -964,6 +1114,65 @@ impl EngineSession {
                 } else {
                     Ok(SubmissionOutcome::Ready)
                 }
+            }
+        }
+    }
+
+    /// Builds, validates, leases, and renders one M2 packet at the owner edge.
+    ///
+    /// This hidden method keeps the public M1 frame submission surface intact
+    /// while giving the runtime an all-or-nothing packet publication path.
+    #[doc(hidden)]
+    pub fn submit_frame(
+        &mut self,
+        id: SurfaceId,
+        frame: FramePacket,
+        token: SubmissionToken,
+        condition: SurfaceCondition,
+    ) -> Result<SubmissionOutcome, RuntimeError> {
+        let outcome = self.submit(id, token, condition)?;
+        if !matches!(
+            outcome,
+            SubmissionOutcome::Ready | SubmissionOutcome::Reconfigured
+        ) {
+            return Ok(outcome);
+        }
+        let prepared = self.packet_owner.prepare(
+            frame,
+            token.scene_revision,
+            self.work_generation,
+            self.device_generation,
+        )?;
+        let Some(renderer) = self.renderer.as_mut() else {
+            drop(prepared);
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::BackendUnavailable,
+                "portable backend is unavailable",
+            ));
+        };
+        let expected_scene = prepared.packet.scene_revision();
+        let expected_work = prepared.packet.work_generation();
+        let expected_device = prepared.packet.device_generation();
+        let render_result = renderer.render_validated(
+            &prepared.packet,
+            expected_scene,
+            expected_work,
+            expected_device,
+        );
+        match render_result {
+            Ok(_) => {
+                self.packet_owner.commit(prepared)?;
+                Ok(outcome)
+            }
+            Err(error) => {
+                let kind = error.kind();
+                drop(prepared);
+                if matches!(kind, RenderErrorKind::DeviceLost) {
+                    let _ = self.handle_device_loss();
+                } else if matches!(kind, RenderErrorKind::OutOfMemory) {
+                    let _ = self.handle_out_of_memory();
+                }
+                Err(map_renderer_error(error, false))
             }
         }
     }
@@ -1096,6 +1305,58 @@ fn validate_surface_size(size: [u32; 2]) -> Result<(), RuntimeError> {
     Ok(())
 }
 
+fn map_packet_error(error: PacketValidationError) -> RuntimeError {
+    match error.kind() {
+        PacketValidationErrorKind::StaleSceneRevision
+        | PacketValidationErrorKind::StaleWorkGeneration => {
+            RuntimeError::new(RuntimeErrorKind::InvalidState, "render packet is stale")
+        }
+        PacketValidationErrorKind::StaleDeviceGeneration => RuntimeError::new(
+            RuntimeErrorKind::DeviceLost,
+            "render packet device is stale",
+        ),
+        PacketValidationErrorKind::CapacityExceeded
+        | PacketValidationErrorKind::AllocationFailed => RuntimeError::new(
+            RuntimeErrorKind::OutOfMemory,
+            "render packet capacity is unavailable",
+        ),
+        PacketValidationErrorKind::FrameInvalid => RuntimeError::new(
+            RuntimeErrorKind::InvalidInput,
+            "render packet frame is invalid",
+        ),
+        PacketValidationErrorKind::InvalidResourceId
+        | PacketValidationErrorKind::InvalidResourceReference
+        | PacketValidationErrorKind::InvalidDrawRange
+        | PacketValidationErrorKind::InvalidDrawOrder
+        | PacketValidationErrorKind::IncompletePacket => RuntimeError::new(
+            RuntimeErrorKind::ResourceInvalid,
+            "render packet validation failed",
+        ),
+    }
+}
+
+fn map_resource_error(error: ResourceLifecycleError) -> RuntimeError {
+    match error.kind() {
+        ResourceLifecycleErrorKind::DeviceGenerationMismatch => {
+            RuntimeError::new(RuntimeErrorKind::DeviceLost, "resource generation is stale")
+        }
+        ResourceLifecycleErrorKind::AllocationFailed => RuntimeError::new(
+            RuntimeErrorKind::OutOfMemory,
+            "resource lifecycle allocation failed",
+        ),
+        ResourceLifecycleErrorKind::CapacityExceeded => RuntimeError::new(
+            RuntimeErrorKind::ResourceInvalid,
+            "resource lifecycle capacity is exhausted",
+        ),
+        ResourceLifecycleErrorKind::InvalidPacket
+        | ResourceLifecycleErrorKind::InvalidLease
+        | ResourceLifecycleErrorKind::InvalidFence => RuntimeError::new(
+            RuntimeErrorKind::ResourceInvalid,
+            "resource lifecycle validation failed",
+        ),
+    }
+}
+
 fn map_renderer_error(error: RenderError, during_recovery: bool) -> RuntimeError {
     let kind = error.kind();
     match kind {
@@ -1149,6 +1410,62 @@ fn map_renderer_error(error: RenderError, during_recovery: bool) -> RuntimeError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn retained_frame() -> FramePacket {
+        use lumenplot_render_api::__internal::{SrgbRgba8, Viewport};
+        use lumenplot_render_api::{FrameSpec, SceneHandle};
+
+        let mut scene = SceneHandle::new(Viewport::from_bounds(0.0, 1.0, 0.0, 1.0).expect("view"))
+            .expect("scene");
+        scene
+            .add_series(vec![0.0, 0.5, 1.0], vec![0.0, 1.0, 0.0])
+            .expect("series");
+        let spec = FrameSpec::new(
+            [64, 48],
+            [4, 4, 60, 44],
+            96.0,
+            SrgbRgba8::new(31, 119, 180, 255),
+            2.0,
+            SrgbRgba8::new(255, 255, 255, 255),
+        )
+        .expect("spec");
+        scene.resolve_frame(&spec).expect("frame")
+    }
+
+    #[test]
+    fn packet_owner_retains_cpu_frame_and_rebuilds_after_device_invalidation() {
+        let mut owner = PacketOwner::new();
+        let prepared = owner
+            .prepare(
+                retained_frame(),
+                SceneRevision::new(1),
+                WorkGeneration::initial(),
+                DeviceGeneration::initial(),
+            )
+            .expect("initial packet");
+        assert_eq!(
+            prepared.packet.scene_revision(),
+            PacketSceneRevision::new(1)
+        );
+        owner.commit(prepared).expect("initial completion");
+        assert!(owner.has_retained_state());
+
+        owner.invalidate_device_generation(DeviceGeneration(1));
+        let rebuilt = owner
+            .prepare_retained(WorkGeneration(2), DeviceGeneration(1))
+            .expect("retained rebuild")
+            .expect("retained frame");
+        assert_eq!(rebuilt.packet.scene_revision(), PacketSceneRevision::new(1));
+        assert_eq!(
+            rebuilt.packet.work_generation(),
+            PacketWorkGeneration::new(2)
+        );
+        assert_eq!(
+            rebuilt.packet.device_generation(),
+            PacketDeviceGeneration::new(1)
+        );
+        owner.commit(rebuilt).expect("rebuilt completion");
+    }
 
     fn running(mode: LoopMode) -> EngineSession {
         let mut session = EngineSession::new(mode);

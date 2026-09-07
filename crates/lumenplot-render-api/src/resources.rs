@@ -9,24 +9,27 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::{Rc, Weak};
 
-use crate::packet::{DeviceGeneration, LogicalResourceId, MAX_PACKET_RESOURCES, RenderPacket};
+use crate::packet::{
+    DeviceGeneration, LogicalResourceId, MAX_PACKET_RESOURCES, RenderPacket, SceneRevision,
+    WorkGeneration,
+};
 
 /// Maximum number of in-flight submissions retained by one cache.
-pub(crate) const MAX_PENDING_SUBMISSIONS: usize = 65_536;
+pub const MAX_PENDING_SUBMISSIONS: usize = 65_536;
 
 /// A completion observation scoped to one device generation.
 ///
 /// The generation is part of the token so a completion from a device that was
 /// lost cannot accidentally retire a resource on its replacement device.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct CompletionFence {
+pub struct CompletionFence {
     device_generation: DeviceGeneration,
     sequence: u64,
 }
 
 impl CompletionFence {
     /// Creates a completion observation for one device generation.
-    pub(crate) const fn new(device_generation: DeviceGeneration, sequence: u64) -> Self {
+    pub const fn new(device_generation: DeviceGeneration, sequence: u64) -> Self {
         Self {
             device_generation,
             sequence,
@@ -34,19 +37,19 @@ impl CompletionFence {
     }
 
     /// Device generation that produced this completion observation.
-    pub(crate) const fn device_generation(self) -> DeviceGeneration {
+    pub const fn device_generation(self) -> DeviceGeneration {
         self.device_generation
     }
 
     /// Monotonic sequence within the device generation.
-    pub(crate) const fn sequence(self) -> u64 {
+    pub const fn sequence(self) -> u64 {
         self.sequence
     }
 }
 
 /// Classification for private resource-lifecycle failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ResourceLifecycleErrorKind {
+pub enum ResourceLifecycleErrorKind {
     /// A packet, lease, or completion belongs to another device generation.
     DeviceGenerationMismatch,
     /// Packet validation failed at the cache boundary.
@@ -63,7 +66,7 @@ pub(crate) enum ResourceLifecycleErrorKind {
 
 /// Sanitized private resource-lifecycle failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ResourceLifecycleError {
+pub struct ResourceLifecycleError {
     kind: ResourceLifecycleErrorKind,
     message: &'static str,
 }
@@ -74,12 +77,12 @@ impl ResourceLifecycleError {
     }
 
     /// Returns the machine-readable private classification.
-    pub(crate) const fn kind(self) -> ResourceLifecycleErrorKind {
+    pub const fn kind(self) -> ResourceLifecycleErrorKind {
         self.kind
     }
 
     /// Returns sanitized detail for private diagnostics and tests.
-    pub(crate) const fn message(self) -> &'static str {
+    pub const fn message(self) -> &'static str {
         self.message
     }
 }
@@ -132,13 +135,13 @@ struct CacheState {
 /// Cloning this value clones an owner handle to the same main-thread state; it
 /// does not make the cache thread-safe and does not introduce backend objects.
 #[derive(Clone)]
-pub(crate) struct ResourceCache {
+pub struct ResourceCache {
     state: Rc<RefCell<CacheState>>,
 }
 
 impl ResourceCache {
     /// Creates an empty cache for one device generation.
-    pub(crate) fn new(device_generation: DeviceGeneration) -> Self {
+    pub fn new(device_generation: DeviceGeneration) -> Self {
         Self {
             state: Rc::new(RefCell::new(CacheState {
                 device_generation,
@@ -152,7 +155,7 @@ impl ResourceCache {
     }
 
     /// Returns the device generation currently owned by the cache.
-    pub(crate) fn device_generation(&self) -> DeviceGeneration {
+    pub fn device_generation(&self) -> DeviceGeneration {
         self.state.borrow().device_generation
     }
 
@@ -161,9 +164,24 @@ impl ResourceCache {
     /// The returned lease owns one reference to every packet resource. A
     /// submission transfers those references to a pending completion record;
     /// dropping an unsubmitted lease releases them immediately.
-    pub(crate) fn acquire(
+    pub fn acquire(&self, packet: &RenderPacket) -> Result<ResourceLease, ResourceLifecycleError> {
+        self.acquire_checked(packet, None)
+    }
+
+    /// Acquires resources after checking the owner scene/work/device point.
+    pub fn acquire_for_owner(
         &self,
         packet: &RenderPacket,
+        scene_revision: SceneRevision,
+        work_generation: WorkGeneration,
+    ) -> Result<ResourceLease, ResourceLifecycleError> {
+        self.acquire_checked(packet, Some((scene_revision, work_generation)))
+    }
+
+    fn acquire_checked(
+        &self,
+        packet: &RenderPacket,
+        owner: Option<(SceneRevision, WorkGeneration)>,
     ) -> Result<ResourceLease, ResourceLifecycleError> {
         let mut state = self.state.borrow_mut();
         let device_generation = state.device_generation;
@@ -177,10 +195,15 @@ impl ResourceCache {
         // Re-run the private packet boundary immediately before taking owners.
         // This keeps resource acquisition all-or-nothing if internal packet
         // construction or validation changes in a later renderer slice.
-        if packet
-            .validate(packet.work_generation(), device_generation)
-            .is_err()
-        {
+        let valid = match owner {
+            Some((scene_revision, work_generation)) => packet
+                .validate_for_owner(scene_revision, work_generation, device_generation)
+                .is_ok(),
+            None => packet
+                .validate(packet.work_generation(), device_generation)
+                .is_ok(),
+        };
+        if !valid {
             return Err(ResourceLifecycleError::new(
                 ResourceLifecycleErrorKind::InvalidPacket,
                 "packet failed private resource validation",
@@ -239,7 +262,7 @@ impl ResourceCache {
     }
 
     /// Transfers a lease to a completion fence without retiring its resources.
-    pub(crate) fn submit(
+    pub fn submit(
         &self,
         lease: ResourceLease,
         fence: CompletionFence,
@@ -300,7 +323,7 @@ impl ResourceCache {
     /// The returned count is the number of submissions removed. A logical
     /// resource entry is removed only when no active lease or pending
     /// submission still owns its generation-qualified key.
-    pub(crate) fn complete(&self, fence: CompletionFence) -> Result<usize, ResourceLifecycleError> {
+    pub fn complete(&self, fence: CompletionFence) -> Result<usize, ResourceLifecycleError> {
         let mut state = self.state.borrow_mut();
         if fence.device_generation() != state.device_generation {
             return Err(ResourceLifecycleError::new(
@@ -345,7 +368,7 @@ impl ResourceCache {
     }
 
     /// Alias for the completion-observation terminology used by renderer code.
-    pub(crate) fn signal_completed(
+    pub fn signal_completed(
         &self,
         fence: CompletionFence,
     ) -> Result<usize, ResourceLifecycleError> {
@@ -358,10 +381,7 @@ impl ResourceCache {
     /// Old packets, leases, pending submissions, and completion observations
     /// cannot affect the replacement generation. CPU Scene/data authority is
     /// outside this cache and is intentionally untouched.
-    pub(crate) fn invalidate_device_generation(
-        &self,
-        device_generation: DeviceGeneration,
-    ) -> usize {
+    pub fn invalidate_device_generation(&self, device_generation: DeviceGeneration) -> usize {
         let mut state = self.state.borrow_mut();
         let invalidated = state.entries.len();
         state.device_generation = device_generation;
@@ -375,24 +395,24 @@ impl ResourceCache {
 
     /// Replaces the cache's device generation, retaining the explicit loss
     /// invalidation behavior under a renderer-oriented name.
-    pub(crate) fn replace_device_generation(&self, device_generation: DeviceGeneration) -> usize {
+    pub fn replace_device_generation(&self, device_generation: DeviceGeneration) -> usize {
         self.invalidate_device_generation(device_generation)
     }
 
     /// Number of logical resource keys currently retained.
-    pub(crate) fn resource_count(&self) -> usize {
+    pub fn resource_count(&self) -> usize {
         self.state.borrow().entries.len()
     }
 
     /// Number of submissions waiting for completion.
-    pub(crate) fn pending_submission_count(&self) -> usize {
+    pub fn pending_submission_count(&self) -> usize {
         self.state.borrow().pending.len()
     }
 }
 
 /// Lease for the logical resources acquired by one packet.
 #[must_use = "a resource lease must be submitted or kept alive until work ends"]
-pub(crate) struct ResourceLease {
+pub struct ResourceLease {
     state: Weak<RefCell<CacheState>>,
     generation_token: Rc<()>,
     device_generation: DeviceGeneration,
@@ -402,12 +422,12 @@ pub(crate) struct ResourceLease {
 
 impl ResourceLease {
     /// Device generation associated with this lease.
-    pub(crate) fn device_generation(&self) -> DeviceGeneration {
+    pub fn device_generation(&self) -> DeviceGeneration {
         self.device_generation
     }
 
     /// Number of logical resources owned by this lease.
-    pub(crate) fn resource_count(&self) -> usize {
+    pub fn resource_count(&self) -> usize {
         self.resources.len()
     }
 
@@ -461,7 +481,7 @@ mod tests {
     use super::*;
     use crate::SceneHandle;
     use crate::frame::FrameSpec;
-    use crate::packet::{RenderPacketBuilder, WorkGeneration};
+    use crate::packet::{RenderPacketBuilder, SceneRevision, WorkGeneration};
     use lumenplot_engine::bridge::{SrgbRgba8, Viewport};
 
     const WORK_GENERATION: WorkGeneration = WorkGeneration::new(7);
@@ -481,12 +501,20 @@ mod tests {
     }
 
     fn packet(device_generation: DeviceGeneration) -> RenderPacket {
+        packet_for_scene(device_generation, SceneRevision::initial())
+    }
+
+    fn packet_for_scene(
+        device_generation: DeviceGeneration,
+        scene_revision: SceneRevision,
+    ) -> RenderPacket {
         let view = Viewport::from_bounds(0.0, 1.0, 0.0, 1.0).expect("valid view");
         let mut scene = SceneHandle::new(view).expect("valid scene");
         scene
             .add_series(vec![0.0, 0.5, 1.0], vec![0.0, 1.0, 0.0])
             .expect("valid series");
-        let builder = RenderPacketBuilder::new(WORK_GENERATION, device_generation);
+        let builder =
+            RenderPacketBuilder::for_scene(scene_revision, WORK_GENERATION, device_generation);
         scene
             .resolve_render_packet(&frame_spec(), &builder, WORK_GENERATION, device_generation)
             .expect("valid render packet")
@@ -528,6 +556,23 @@ mod tests {
         assert_eq!(lease.device_generation(), FIRST_DEVICE);
         assert_eq!(lease.resource_count(), 2);
         assert_eq!(cache.resource_count(), 2);
+        drop(lease);
+        assert_eq!(cache.resource_count(), 0);
+    }
+
+    #[test]
+    fn owner_scene_mismatch_is_rejected_before_lease_mutation() {
+        let cache = ResourceCache::new(FIRST_DEVICE);
+        let packet = packet_for_scene(FIRST_DEVICE, SceneRevision::new(9));
+        let error = match cache.acquire_for_owner(&packet, SceneRevision::new(8), WORK_GENERATION) {
+            Ok(_) => panic!("stale owner scene must not acquire resources"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), ResourceLifecycleErrorKind::InvalidPacket);
+        assert_eq!(cache.resource_count(), 0);
+        let lease = cache
+            .acquire_for_owner(&packet, SceneRevision::new(9), WORK_GENERATION)
+            .expect("current owner scene");
         drop(lease);
         assert_eq!(cache.resource_count(), 0);
     }

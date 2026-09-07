@@ -613,7 +613,7 @@ EXPECTED_EDGES = {
     "lumenplot-render-api": {"lumenplot-engine"},
     "lumenplot-render-metal": {"lumenplot-render-api"},
     "lumenplot-render-wgpu": {"lumenplot-render-api"},
-    "lumenplot-runtime": {"lumenplot-render-wgpu"},
+    "lumenplot-runtime": {"lumenplot-render-api", "lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
     "lumenplot-python": {"lumenplot"},
     "lumenplot-bench": {
@@ -3463,6 +3463,12 @@ def _check_render_api_source(package_dir: Path, root: Path, errors: list[str]) -
         errors.append(f"package lumenplot-render-api: cannot read {_logical_path(lib_path, root)}")
         return
     code = _strip_rust_comments_and_literals(lib_source)
+    if not re.search(r"(?m)^#\[doc\(hidden\)\]\s*\npub\s+mod\s+__internal\s*\{", lib_source):
+        errors.append("package lumenplot-render-api: hidden internal module is missing")
+    if re.search(r"(?m)^pub\s+(?:use|struct|enum|type)\b[^\n]*\bRenderPacket\b", code):
+        errors.append("package lumenplot-render-api: RenderPacket root export is not allowed")
+    if re.search(r"(?m)^\s*pub\s+fn\s+new\s*\([^\n]*\)\s*->\s*RenderPacket\b", code):
+        errors.append("package lumenplot-render-api: RenderPacket public constructor is not allowed")
     if NO_MANGLE_RE.search(code):
         errors.append("package lumenplot-render-api: exported ABI is not allowed")
     for module_path in sorted((package_dir / "src").rglob("*.rs")):

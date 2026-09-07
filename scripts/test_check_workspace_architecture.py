@@ -2545,6 +2545,46 @@ fn body_macro_is_below_root_scope() {
             returncode, output = self.run_checker(fixture_root)
             self.assertEqual(returncode, 0, output)
 
+    def test_render_api_hidden_internal_module_is_required(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-api/src/lib.rs"
+            source = path.read_text(encoding="utf-8")
+            marker = "#[doc(hidden)]\npub mod __internal {"
+            self.assertIn(marker, source)
+            path.write_text(source.replace(marker, "pub mod __internal {", 1), encoding="utf-8")
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-api: hidden internal module is missing",
+        )
+
+    def test_render_api_packet_root_export_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-api/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8") + "\npub use crate::packet::RenderPacket;\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-api: RenderPacket root export is not allowed",
+        )
+
+    def test_render_api_packet_public_constructor_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-render-api/src/lib.rs"
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\npub fn new() -> RenderPacket { unreachable!() }\n",
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(
+            mutate,
+            "package lumenplot-render-api: RenderPacket public constructor is not allowed",
+        )
+
     def test_render_api_backend_naming_in_seam_source_is_rejected(self) -> None:
         # Whole-word backend vocabulary in real code is rejected. Substring
         # look-alikes inside larger identifiers (`mtl_vertex_descriptor`,
