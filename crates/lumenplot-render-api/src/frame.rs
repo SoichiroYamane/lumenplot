@@ -329,7 +329,35 @@ impl FrameSpec {
     }
 }
 
-/// Whole-packet immutable description of what to draw.
+/// Shared backend-neutral semantic/layout result for one resolved scene.
+///
+/// The current M2 implementation carries the bounded line-family meaning from
+/// the retained M1 seam.  Keeping it as a distinct process-local value makes
+/// the semantic source explicit: a [`RenderPacket`] is a validated projection
+/// of this value, while the M1 [`FramePacket`] remains available to existing
+/// consumers during the staged migration.
+#[derive(Clone)]
+pub struct SemanticFrame {
+    frame: FramePacket,
+}
+
+impl SemanticFrame {
+    pub(crate) fn from_frame(frame: FramePacket) -> Self {
+        Self { frame }
+    }
+
+    /// The resolved M1 view of the shared semantic/layout meaning.
+    pub fn frame(&self) -> &FramePacket {
+        &self.frame
+    }
+
+    #[cfg(test)]
+    pub(crate) fn frame_mut(&mut self) -> &mut FramePacket {
+        &mut self.frame
+    }
+}
+
+/// Whole-packet immutable description of the frame to draw.
 ///
 /// Produced only by [`SceneHandle::resolve_frame`]; renderers treat it as
 /// read-only input for their prepare / draw / present steps.

@@ -481,6 +481,7 @@ dependencies = [
 name = "lumenplot-runtime"
 version = "0.1.0"
 dependencies = [
+ "lumenplot-render-api",
  "lumenplot-render-wgpu",
 ]
 

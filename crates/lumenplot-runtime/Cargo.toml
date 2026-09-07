@@ -8,4 +8,5 @@ repository.workspace = true
 readme.workspace = true
 
 [dependencies]
+lumenplot-render-api = { path = "../lumenplot-render-api", version = "0.1.0" }
 lumenplot-render-wgpu = { path = "../lumenplot-render-wgpu", version = "0.1.0" }

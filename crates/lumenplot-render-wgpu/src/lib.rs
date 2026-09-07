@@ -1,9 +1,11 @@
 //! Portable offscreen renderer for the internal frame seam.
 //!
-//! This crate is the first concrete renderer edge. It consumes the backend-
-//! neutral [`lumenplot_render_api::FramePacket`] and keeps all wgpu ownership
-//! here, below the engine and render-api layers. The output is an owned RGBA8
-//! image for headless consumers; no window or surface is needed for this slice.
+//! This crate is the first concrete renderer edge. It retains the public M1
+//! [`lumenplot_render_api::FramePacket`] consumer while the runtime owner uses
+//! the hidden validated packet handoff from the same render-api meaning. All
+//! wgpu ownership stays here, below the engine and render-api layers. The
+//! output is an owned RGBA8 image for headless consumers; no window or surface
+//! is needed for this slice.
 
 mod shader;
 
@@ -17,6 +19,9 @@ use std::sync::{Arc, mpsc};
 use std::thread::ThreadId;
 use std::time::Duration;
 
+use lumenplot_render_api::__internal::{
+    DeviceGeneration, RenderPacket, SceneRevision, WorkGeneration,
+};
 use lumenplot_render_api::FramePacket;
 
 pub use shader::ShaderProvenance;
@@ -269,6 +274,35 @@ impl Renderer {
             ));
         }
         result
+    }
+
+    /// Renders one packet after revalidating the owner publication point.
+    ///
+    /// This is the hidden M2 handoff.  The public M1 [`Self::render`] method
+    /// remains available during the staged migration, but the runtime owner
+    /// uses this path so stale scene/work/device generations cannot bypass the
+    /// immutable packet boundary.
+    #[doc(hidden)]
+    pub fn render_validated(
+        &mut self,
+        packet: &RenderPacket,
+        expected_scene_revision: SceneRevision,
+        expected_work_generation: WorkGeneration,
+        expected_device_generation: DeviceGeneration,
+    ) -> Result<OffscreenFrame, RenderError> {
+        packet
+            .validate_for_owner(
+                expected_scene_revision,
+                expected_work_generation,
+                expected_device_generation,
+            )
+            .map_err(|_| {
+                RenderError::new(
+                    RenderErrorKind::InvalidInput,
+                    "validated render packet is stale or invalid",
+                )
+            })?;
+        self.render(packet.frame())
     }
 
     fn ensure_owner(&self) -> Result<(), RenderError> {
