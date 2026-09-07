@@ -280,6 +280,17 @@ impl CellRasterizer {
         Ok(())
     }
 
+    fn add_contour(&mut self, points: &[SubpixelPoint]) -> Result<(), FrameError> {
+        if points.len() < 3 {
+            return Ok(());
+        }
+        for index in 0..points.len() {
+            let next = (index + 1) % points.len();
+            self.add_edge(points[index], points[next])?;
+        }
+        Ok(())
+    }
+
     fn write_mask(mut self, mask: &mut Mask, width: u32, height: u32) -> Result<(), FrameError> {
         self.flush_current()?;
         self.cells.sort_unstable_by_key(|cell| (cell.y, cell.x));
@@ -353,6 +364,9 @@ pub(super) fn try_rasterize(
     // F1 fill-absent contract.
     if let Some(ring) = extract_rect_ring(command, height)? {
         return rasterize_rect_ring(ring, command, width, height, pixel_count, scale);
+    }
+    if let Some(chain) = extract_rectilinear_chain(command, height)? {
+        return rasterize_rectilinear_chain(chain, command, width, height, pixel_count, scale);
     }
     if command.fill_rgba.is_some() {
         return Ok(None);
@@ -648,6 +662,241 @@ fn extract_rect_ring(command: &PathCommand, height: u32) -> Result<Option<RectRi
         seen[slot] = true;
     }
     Ok(Some(RectRing { corners }))
+}
+
+/// Open rectilinear stroke chain (step polyline) in device space.
+///
+/// Detects stroke-only open polylines with three or more finite vertices,
+/// a single `MOVETO`-then-`LINETO` subpath (implicit `codes=None` or explicit
+/// codes), every segment axis-aligned and non-degenerate, and no
+/// 180-degree reversal. Anything else (single segments, oblique geometry,
+/// curves, close codes, gaps, fills) returns `Ok(None)` so the caller falls
+/// through to the existing F1 single-segment or tiny-skia paths.
+fn extract_rectilinear_chain(
+    command: &PathCommand,
+    height: u32,
+) -> Result<Option<Vec<Point>>, FrameError> {
+    if command.fill_rgba.is_some() {
+        return Ok(None);
+    }
+    if command.vertices.len() < 3 || command.vertices.len() > AUTO_SNAP_VERTEX_LIMIT {
+        return Ok(None);
+    }
+    if let Some(codes) = command.codes.as_ref() {
+        if codes.len() != command.vertices.len() || codes[0] != CODE_MOVETO {
+            return Ok(None);
+        }
+        for code in codes.iter().skip(1) {
+            if *code != CODE_LINETO {
+                return Ok(None);
+            }
+        }
+    }
+    let mut points = Vec::new();
+    points
+        .try_reserve_exact(command.vertices.len())
+        .map_err(|_| FrameError::OutOfMemory)?;
+    for vertex in &command.vertices {
+        let Some(point) = map_device_point(command.transform, *vertex, height) else {
+            return Ok(None);
+        };
+        points.push(point);
+    }
+    let mut previous_direction: Option<(f64, f64)> = None;
+    for window in points.windows(2) {
+        let dx = window[1].x - window[0].x;
+        let dy = window[1].y - window[0].y;
+        if !dx.is_finite() || !dy.is_finite() {
+            return Ok(None);
+        }
+        if dx.abs() < AXIS_ALIGNMENT_EPSILON && dy.abs() < AXIS_ALIGNMENT_EPSILON {
+            return Ok(None);
+        }
+        if dx.abs() >= AXIS_ALIGNMENT_EPSILON && dy.abs() >= AXIS_ALIGNMENT_EPSILON {
+            return Ok(None);
+        }
+        let length = dx.hypot(dy);
+        if !length.is_finite() || length <= AXIS_ALIGNMENT_EPSILON {
+            return Ok(None);
+        }
+        let direction = (dx / length, dy / length);
+        if let Some(previous) = previous_direction {
+            let dot = previous.0 * direction.0 + previous.1 * direction.1;
+            let cross = previous.0 * direction.1 - previous.1 * direction.0;
+            if cross.abs() < 1.0e-9 {
+                if dot < -0.5 {
+                    return Ok(None);
+                }
+            } else if (cross.abs() - 1.0).abs() > 1.0e-6 {
+                return Ok(None);
+            }
+        }
+        previous_direction = Some(direction);
+    }
+    Ok(Some(points))
+}
+
+fn contour_capacity_bound(points: &[SubpixelPoint]) -> Option<usize> {
+    if points.len() < 3 {
+        return None;
+    }
+    let mut capacity = 0usize;
+    for index in 0..points.len() {
+        let start = points[index];
+        let end = points[(index + 1) % points.len()];
+        let x_cells = usize::try_from(
+            (end.x - start.x)
+                .unsigned_abs()
+                .div_ceil(SUBPIXEL_SCALE as u64),
+        )
+        .ok()?;
+        let y_cells = usize::try_from(
+            (end.y - start.y)
+                .unsigned_abs()
+                .div_ceil(SUBPIXEL_SCALE as u64),
+        )
+        .ok()?;
+        capacity = capacity
+            .checked_add(x_cells)?
+            .checked_add(y_cells)?
+            .checked_add(8)?;
+        if capacity > MAX_CELLS {
+            return None;
+        }
+    }
+    Some(capacity.max(1))
+}
+
+/// Rasterizes an open rectilinear chain as one JOINED miter outline.
+///
+/// Vertices are snapped with the existing rectilinear rule before stroking
+/// (Agg `PathSnapper` behavior for rectilinear paths). The outline traces
+/// the left side forward and the right side backward with butt caps as the
+/// closing edges, so 90-degree joins form exact miter tips and inner
+/// concave corners. The single contour is fed to the shared cell
+/// accumulator; per-segment quads are never used (overlaps would
+/// double-darken the joins under nonzero winding).
+fn rasterize_rectilinear_chain(
+    chain: Vec<Point>,
+    command: &PathCommand,
+    width: u32,
+    height: u32,
+    pixel_count: usize,
+    scale: f64,
+) -> Result<Option<Mask>, FrameError> {
+    let stroke_width = command.line_width_pt * scale;
+    if !stroke_width.is_finite() || stroke_width <= 0.0 {
+        return Ok(None);
+    }
+    if chain.len() < 3 || chain.len() > AUTO_SNAP_VERTEX_LIMIT {
+        return Ok(None);
+    }
+    let snap_offset = rect_snap_value(stroke_width);
+    let mut snapped = Vec::new();
+    snapped
+        .try_reserve_exact(chain.len())
+        .map_err(|_| FrameError::OutOfMemory)?;
+    for point in chain {
+        let x = (point.x + 0.5).floor() + snap_offset;
+        let y = (point.y + 0.5).floor() + snap_offset;
+        if !x.is_finite() || !y.is_finite() {
+            return Ok(None);
+        }
+        snapped.push(Point { x, y });
+    }
+    let half = stroke_width * 0.5;
+    if !half.is_finite() || half <= 0.0 {
+        return Ok(None);
+    }
+    let segments = snapped.len() - 1;
+    let mut normals: Vec<(f64, f64)> = Vec::new();
+    normals
+        .try_reserve_exact(segments)
+        .map_err(|_| FrameError::OutOfMemory)?;
+    for window in snapped.windows(2) {
+        let dx = window[1].x - window[0].x;
+        let dy = window[1].y - window[0].y;
+        let length = dx.hypot(dy);
+        if !length.is_finite() || length <= AXIS_ALIGNMENT_EPSILON {
+            return Ok(None);
+        }
+        let ux = dx / length;
+        let uy = dy / length;
+        normals.push((-uy * half, ux * half));
+    }
+    let mut left: Vec<Point> = Vec::new();
+    let mut right: Vec<Point> = Vec::new();
+    left.try_reserve_exact(snapped.len())
+        .map_err(|_| FrameError::OutOfMemory)?;
+    right
+        .try_reserve_exact(snapped.len())
+        .map_err(|_| FrameError::OutOfMemory)?;
+    left.push(Point {
+        x: snapped[0].x + normals[0].0,
+        y: snapped[0].y + normals[0].1,
+    });
+    right.push(Point {
+        x: snapped[0].x - normals[0].0,
+        y: snapped[0].y - normals[0].1,
+    });
+    for index in 1..snapped.len() - 1 {
+        let (in_x, in_y) = normals[index - 1];
+        let (out_x, out_y) = normals[index];
+        let straight = (in_x - out_x).abs() < 1.0e-9 && (in_y - out_y).abs() < 1.0e-9;
+        if straight {
+            left.push(Point {
+                x: snapped[index].x + in_x,
+                y: snapped[index].y + in_y,
+            });
+            right.push(Point {
+                x: snapped[index].x - in_x,
+                y: snapped[index].y - in_y,
+            });
+        } else {
+            left.push(Point {
+                x: snapped[index].x + in_x + out_x,
+                y: snapped[index].y + in_y + out_y,
+            });
+            right.push(Point {
+                x: snapped[index].x - in_x - out_x,
+                y: snapped[index].y - in_y - out_y,
+            });
+        }
+    }
+    let last = snapped.len() - 1;
+    left.push(Point {
+        x: snapped[last].x + normals[segments - 1].0,
+        y: snapped[last].y + normals[segments - 1].1,
+    });
+    right.push(Point {
+        x: snapped[last].x - normals[segments - 1].0,
+        y: snapped[last].y - normals[segments - 1].1,
+    });
+    if left
+        .iter()
+        .chain(right.iter())
+        .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
+        return Ok(None);
+    }
+    let mut contour: Vec<SubpixelPoint> = Vec::new();
+    contour
+        .try_reserve_exact(left.len() + right.len())
+        .map_err(|_| FrameError::OutOfMemory)?;
+    for point in &left {
+        contour.push(to_subpixel(*point));
+    }
+    for point in right.iter().rev() {
+        contour.push(to_subpixel(*point));
+    }
+    let Some(cell_capacity) = contour_capacity_bound(&contour) else {
+        return Ok(None);
+    };
+    let mut rasterizer = CellRasterizer::new(cell_capacity)?;
+    rasterizer.add_contour(&contour)?;
+    let mut mask = coverage_mask(width, height, pixel_count)?;
+    rasterizer.write_mask(&mut mask, width, height)?;
+    Ok(Some(mask))
 }
 
 fn rect_snap_value(stroke_width: f64) -> f64 {
@@ -1060,6 +1309,8 @@ mod tests {
 
     #[test]
     fn multi_segment_runs_use_existing_rasterizer() {
+        // Oblique multi-segment chains stay ineligible and fall through to
+        // the existing tiny-skia rasterizer (no behavior change).
         let mut command = gap_command();
         command.vertices = vec![[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]];
         assert!(
@@ -1067,5 +1318,20 @@ mod tests {
                 .expect("route")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn rectilinear_open_chain_uses_cell_coverage() {
+        // Named behavior update for the steps convergence: rectilinear open
+        // chains (step polylines) are now eligible for the 24.8 cell
+        // integrator with a JOINED miter outline, not the grid fallback.
+        // This is a correct-new-behavior pin, not a tolerance change.
+        let mut command = gap_command();
+        command.vertices = vec![[1.0, 6.0], [1.0, 4.0], [5.0, 4.0], [5.0, 2.0]];
+        command.codes = None;
+        let mask = try_rasterize(&command, 8, 8, 64, 1.0)
+            .expect("route")
+            .expect("rectilinear chain eligible");
+        assert!(mask.data().iter().any(|alpha| *alpha != 0));
     }
 }
