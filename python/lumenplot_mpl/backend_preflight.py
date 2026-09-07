@@ -16,6 +16,12 @@ import matplotlib.text  # noqa: F401 - public submodule for legend labels
 import numpy
 from matplotlib.path import Path
 
+# mplot3d is part of Matplotlib's documented public plotting surface.  Keep
+# these imports at the adapter edge; the engine and private raster seam never
+# see Matplotlib types.
+from mpl_toolkits.mplot3d.art3d import Line3D, Poly3DCollection
+from mpl_toolkits.mplot3d.axes3d import Axes3D
+
 from lumenplot_mpl import textpath
 from lumenplot_mpl.backend_support import (
     _RGBA_BLACK,
@@ -58,6 +64,8 @@ class _EligibilityPreflight:
         matplotlib.patches.Rectangle,
         matplotlib.collections.FillBetweenPolyCollection,
         matplotlib.legend.Legend,
+        Line3D,
+        Poly3DCollection,
     )
 
     # RendererBase callbacks the collector may observe, in the exact order
@@ -89,9 +97,14 @@ class _EligibilityPreflight:
         #: legend group against this static expectation.
         self._expected_legend_shapes: list[tuple[bool, int]] = []
         #: Whether each Axes emitted its public decoration group during the
-        #: collector traversal.  The public Axes API has no decoration-mode
-        #: getter, so the observed callback stream is the source of truth.
+        #: collector traversal.  The public Axes API has no axis-off getter,
+        #: so the observed callback stream is the source of truth.
         self._decorated_axes: list[bool] = []
+        #: Public mplot3d facts collected from one eligible Axes3D.
+        self._three_d_axes: list[Axes3D] = []
+        self._three_d_view_facts: dict[int, dict[str, Any]] = {}
+        self._three_d_collection_styles: dict[int, dict[str, Any]] = {}
+        self._three_d_events: list[tuple[str, dict]] = []
 
     def unsupported(self, reason: str, type_context: str | None = None) -> None:
         self.reasons.append((type_context, reason))
@@ -99,6 +112,16 @@ class _EligibilityPreflight:
     # -- stage one: static whitelist ------------------------------------
 
     def check_static(self, figure: matplotlib.figure.Figure) -> None:
+        self._three_d_axes = [
+            ax for ax in figure.get_axes() if isinstance(ax, Axes3D)
+        ]
+        if self._three_d_axes and (
+            len(figure.get_axes()) != 1 or len(self._three_d_axes) != 1
+        ):
+            self.unsupported(
+                "3D native mode requires exactly one Axes3D and no mixed axes",
+                "Figure",
+            )
         for ax in figure.get_axes():
             self._check_axes_structure(ax)
         for artist in self._iterate_content_artists(figure):
@@ -114,9 +137,7 @@ class _EligibilityPreflight:
             # content artist must carry a real finite zorder up front. A
             # non-real or non-finite value has no Agg meaning (Matplotlib
             # would sort it with Python comparison semantics) and is
-            # refused instead of silently mis-ordered. Negative zorder is
-            # supported: it is exactly how content sinks below the
-            # decoration surface.
+            # refused instead of silently mis-ordered.
             zorder = artist.get_zorder()
             if (
                 isinstance(zorder, bool)
@@ -129,12 +150,14 @@ class _EligibilityPreflight:
                     type(artist).__name__,
                 )
                 continue
-            # Static checks dispatch on the artist's class family: the
-            # fixed §5 stroke surface applies to lines, the LP-FUNC-032
-            # fill style contract applies to patches and poly-collections,
-            # and the LP-FUNC-033 axis-aligned rectangle contract applies
-            # to bars.
-            if isinstance(artist, matplotlib.lines.Line2D):
+            # 3D subclasses overlap the 2D Matplotlib class hierarchy. Check
+            # them first so a Line3D cannot accidentally take the Line2D data
+            # route and a Poly3DCollection cannot be reduced to one fill.
+            if isinstance(artist, Line3D):
+                self._check_line3d_static(artist)
+            elif isinstance(artist, Poly3DCollection):
+                self._check_poly3d_static(artist)
+            elif isinstance(artist, matplotlib.lines.Line2D):
                 self._check_line2d_static(artist)
             elif isinstance(artist, matplotlib.patches.Rectangle):
                 self._check_rectangle_static(artist)
@@ -146,13 +169,81 @@ class _EligibilityPreflight:
                 self._check_patch_static(artist)
 
     def _check_axes_structure(self, ax: matplotlib.axes.Axes) -> None:
-        """Check only structural Axes properties available before drawing.
+        """Check structural properties available before drawing.
 
-        Matplotlib intentionally exposes no public getter for whether axis
-        decorations are enabled.  Decoration-specific checks therefore run
-        after the one required collector traversal, using the groups that
-        the public draw protocol actually emitted.
+        A 3D Axes is admitted only as the dedicated one-axes surface. Its
+        public projection matrix, view angles, and three bound pairs become
+        semantic facts; the collector later proves that axis/pane/grid
+        decoration callbacks are absent (axis-off) rather than reading a
+        private axis-state flag.
         """
+        if isinstance(ax, Axes3D):
+            name = type(ax).__name__
+            try:
+                projection = numpy.asarray(ax.get_proj(), dtype=float)
+                bounds = (
+                    tuple(float(value) for value in ax.get_xlim3d()),
+                    tuple(float(value) for value in ax.get_ylim3d()),
+                    tuple(float(value) for value in ax.get_zlim3d()),
+                )
+                projection_name = (
+                    "perspective"
+                    if not numpy.allclose(
+                        projection[3, :3], 0.0, rtol=0.0, atol=1.0e-12
+                    )
+                    else "orthographic"
+                )
+                view = {
+                    "projection": projection_name,
+                    "elevation_deg": float(ax.elev),
+                    "azimuth_deg": float(ax.azim),
+                    "roll_deg": float(ax.roll),
+                    # Matplotlib 3.11 exposes projection through get_proj but
+                    # no public focal-length getter. The reference default is
+                    # the accepted 1.0 rule; custom matrix/view cases remain
+                    # representable because geometry comes from the same
+                    # public projection callback.
+                    "focal_length": (
+                        1.0 if projection_name == "perspective" else None
+                    ),
+                    "bounds": [list(pair) for pair in bounds],
+                    "projection_matrix_shape": list(projection.shape),
+                    "box_aspect": [
+                        float(value) for value in ax.get_box_aspect()
+                    ],
+                }
+            except (AttributeError, TypeError, ValueError, IndexError):
+                self.unsupported(
+                    "public Axes3D projection/view facts are not representable",
+                    name,
+                )
+                return
+            if (
+                projection.shape != (4, 4)
+                or not numpy.isfinite(projection).all()
+                or any(
+                    len(pair) != 2
+                    or not all(math.isfinite(value) for value in pair)
+                    or pair[0] >= pair[1]
+                    for pair in bounds
+                )
+                or not all(
+                    math.isfinite(view[key])
+                    for key in ("elevation_deg", "azimuth_deg", "roll_deg")
+                )
+                or not all(
+                    math.isfinite(value) and value > 0.0
+                    for value in view["box_aspect"]
+                )
+            ):
+                self.unsupported(
+                    "Axes3D bounds, view, or projection facts are invalid",
+                    name,
+                )
+                return
+            self._three_d_view_facts[id(ax)] = view
+            return
+
         name = type(ax).__name__
         if type(ax) is not matplotlib.axes.Axes:
             self.unsupported(
@@ -176,6 +267,14 @@ class _EligibilityPreflight:
         grid styles, an opaque facecolor, titles, axis labels, offset
         text, or child axes) records an explicit unsupported reason.
         """
+        if isinstance(ax, Axes3D):
+            if decorated:
+                self.unsupported(
+                    "3D axis, pane, or grid decorations are unsupported in "
+                    "native mode; use explicit axis-off fixtures",
+                    type(ax).__name__,
+                )
+            return
         if not decorated:
             # Decoration-less axes: no decoration properties were observed.
             return
@@ -566,6 +665,107 @@ class _EligibilityPreflight:
         if line.get_gid() is None:
             return
 
+    def _check_line3d_static(self, line: Line3D) -> None:
+        """Whitelist the public Line3D data/style surface.
+
+        Projection is intentionally not recomputed here.  The collector gives
+        the native seam the exact public mplot3d projected path, while this
+        stage preserves the canonical three f64 source channels (including
+        non-finite pen-lift samples) for semantic evidence.
+        """
+        name = type(line).__name__
+        if line.get_marker() != "None":
+            self.unsupported("3D markers are unsupported; use Line3D only", name)
+        if line.is_dashed():
+            self.unsupported("dashed 3D strokes are unsupported", name)
+        width = float(line.get_linewidth())
+        if not math.isfinite(width) or width < 0.0:
+            self.unsupported("3D line width must be finite and non-negative", name)
+        if line.get_path_effects() or line.get_sketch_params() is not None:
+            self.unsupported("3D line path effects/sketch are unsupported", name)
+        if line.get_snap() is not None or line.get_clip_path() is not None:
+            self.unsupported("custom 3D clipping/snap is unsupported", name)
+        if line.get_url() is not None:
+            self.unsupported("3D hyperlinks are unsupported", name)
+        if str(line.get_solid_capstyle()) != "butt":
+            self.unsupported("3D strict mode requires butt caps", name)
+        if str(line.get_solid_joinstyle()) != "miter":
+            self.unsupported("3D strict mode requires miter joins", name)
+        try:
+            data = tuple(line.get_data_3d())
+        except (AttributeError, TypeError, ValueError):
+            self.unsupported("Line3D public data is unavailable", name)
+            return
+        if len(data) != 3:
+            self.unsupported("Line3D must expose x/y/z data", name)
+            return
+        lengths = [len(values) for values in data]
+        if len(set(lengths)) != 1 or lengths[0] < 2:
+            self.unsupported("Line3D x/y/z data lengths are not drawable", name)
+            return
+        for axis_name, values in zip(("x", "y", "z"), data):
+            for value in values:
+                if not _native_f64(value):
+                    self.unsupported(
+                        f"Line3D {axis_name}-data contains a value that is "
+                        "not representable as native f64",
+                        name,
+                    )
+                    return
+
+    def _check_poly3d_static(self, collection: Poly3DCollection) -> None:
+        """Whitelist triangle geometry and resolved per-element style.
+
+        ``Poly3DCollection`` exposes its projected paths through the public
+        renderer callback rather than a public 3D-vertex getter.  The callback
+        is therefore the geometry source, and the source bounds/view facts are
+        recorded from the Axes3D public API.  A non-triangle, malformed, or
+        non-broadcast style is refused before native allocation.
+        """
+        name = type(collection).__name__
+        if collection.get_hatch() is not None:
+            self.unsupported("3D hatching is unsupported", name)
+        if collection.get_path_effects() or collection.get_sketch_params() is not None:
+            self.unsupported("3D collection path effects/sketch are unsupported", name)
+        if collection.get_clip_path() is not None:
+            self.unsupported("custom 3D collection clipping is unsupported", name)
+        try:
+            widths = numpy.atleast_1d(
+                numpy.asarray(collection.get_linewidth(), dtype=float).ravel()
+            )
+            faces = numpy.asarray(collection.get_facecolor(), dtype=float)
+            edges = numpy.asarray(collection.get_edgecolor(), dtype=float)
+            cap = collection.get_capstyle()
+            join = collection.get_joinstyle()
+        except (AttributeError, TypeError, ValueError):
+            self.unsupported("Poly3DCollection style is not public/finite", name)
+            return
+        if widths.size == 0:
+            widths = numpy.asarray([0.0], dtype=float)
+        if not numpy.isfinite(widths).all() or numpy.any(widths < 0.0):
+            self.unsupported("Poly3DCollection linewidths are invalid", name)
+        if faces.ndim not in (1, 2) or (faces.size and faces.shape[-1] != 4):
+            self.unsupported("Poly3DCollection facecolors are invalid", name)
+        if edges.ndim not in (1, 2) or (edges.size and edges.shape[-1] != 4):
+            self.unsupported("Poly3DCollection edgecolors are invalid", name)
+        if faces.size and not numpy.isfinite(faces).all():
+            self.unsupported("Poly3DCollection facecolors are not finite", name)
+        if edges.size and not numpy.isfinite(edges).all():
+            self.unsupported("Poly3DCollection edgecolors are not finite", name)
+        cap_name = "butt" if cap is None else str(cap)
+        join_name = "miter" if join is None else str(join)
+        if cap_name not in ("butt", "round", "projecting"):
+            self.unsupported("Poly3DCollection cap style is unsupported", name)
+        if join_name not in ("miter", "round", "bevel"):
+            self.unsupported("Poly3DCollection join style is unsupported", name)
+        self._three_d_collection_styles[id(collection)] = {
+            "cap": cap_name,
+            "join": join_name,
+            "widths": widths.tolist(),
+            "faces": faces.tolist(),
+            "edges": edges.tolist(),
+        }
+
     def _check_patch_static(self, patch: matplotlib.patches.Patch) -> None:
         """Static style checks for one whitelisted ``Patch`` (LP-FUNC-032).
 
@@ -685,15 +885,19 @@ class _EligibilityPreflight:
             def __init__(self) -> None:
                 super().__init__()
                 self._metrics_renderer: Any = None
+                self._groups: list[str] = []
 
             def _record(self, kind: str, *rest: Any) -> None:
                 collected.append((kind, *rest))
 
             # -- eligible events ----------------------------------------
             def open_group(self, s, gid=None):  # noqa: N802
+                self._groups.append(str(s))
                 self._record("open", s)
 
             def close_group(self, s):  # noqa: N802
+                if self._groups:
+                    self._groups.pop()
                 self._record("close", s)
 
             def new_gc(self):  # noqa: N802
@@ -709,6 +913,23 @@ class _EligibilityPreflight:
                         "transform": transform,
                         "rgbFace": rgbFace,
                         "affine": bool(transform.is_affine),
+                    },
+                )
+
+            def draw_path_collection(self, *args, **kwargs):  # noqa: N802
+                # RendererBase's public collection callback carries the
+                # already-projected mplot3d paths and the resolved per-element
+                # colors/widths.  Keep it as an owned observation only for
+                # Poly3DCollection; delegate every other collection to the
+                # public base implementation so the existing fill-between
+                # callback expands into the established draw_path trace.
+                if "Poly3DCollection" not in self._groups:
+                    return RendererBase.draw_path_collection(self, *args, **kwargs)
+                self._record(
+                    "draw_path_collection",
+                    {
+                        "args": args,
+                        "kwargs": kwargs,
                     },
                 )
 
@@ -864,7 +1085,7 @@ class _EligibilityPreflight:
                 in_axes
                 and axes_index < axes_count
                 and kind == "open"
-                and tag == "matplotlib.axis"
+                and tag in ("matplotlib.axis", "axis3d", "pane3d", "grid3d")
             ):
                 flags[axes_index] = True
         return flags
@@ -978,6 +1199,8 @@ class _EligibilityPreflight:
             self._effective_dpi = float(dpi)
 
         collected: list[tuple] = []
+        self._three_d_events = []
+        self._three_d_view_facts = dict(self._three_d_view_facts)
         self._expected_legend_shapes = [
             (
                 bool(legend.get_frame_on()),
@@ -1069,6 +1292,11 @@ class _EligibilityPreflight:
                     and stack[1] == "patch"
                 ):
                     if background_call is not None:
+                        if self._three_d_axes:
+                            # Axes3D's figure-scope patch is a structural
+                            # duplicate of the canvas background in axis-off
+                            # mode; the grammar consumes it separately.
+                            continue
                         self.unsupported(
                             "multiple figure-background strokes are "
                             "outside the eligible trace"
@@ -1139,6 +1367,8 @@ class _EligibilityPreflight:
                         if stack[-2] == "axes":
                             # A direct content line of this axes.
                             line_calls.append(call)
+                            if self._three_d_axes:
+                                self._three_d_events.append(("line", call))
                         elif stack[-2] == "legend":
                             # A legend handle stroke (PRAC-A-L): the
                             # proxy Line2D's path in handlebox-local
@@ -1157,6 +1387,18 @@ class _EligibilityPreflight:
                 self.unsupported(
                     "a draw_path outside the figure patch and line2d "
                     "groups is outside the eligible trace"
+                )
+                return
+            if kind == "draw_path_collection":
+                payload = events[idx][1]
+                idx += 1
+                if stack and stack[-1] == "Poly3DCollection":
+                    self._three_d_events.append(("poly", payload))
+                    continue
+                self.unsupported(
+                    "a path collection outside Poly3DCollection is "
+                    "outside the eligible trace",
+                    stack[-1] if stack else "Figure",
                 )
                 return
             if kind == "draw_text":
@@ -1227,8 +1469,99 @@ class _EligibilityPreflight:
         for call in fill_calls:
             self.fill_paths += 1
             self._check_fill_call(call)
-        if not line_calls and not fill_calls:
+        if self._three_d_axes:
+            for kind, payload in self._three_d_events:
+                if kind == "poly":
+                    self._check_poly3d_callback(payload)
+        if not line_calls and not fill_calls and not self._three_d_events:
             self.unsupported("no drawable content observed", "Figure")
+
+    def _check_poly3d_callback(self, payload: dict) -> None:
+        """Validate one public projected Poly3DCollection callback.
+
+        Matplotlib may issue an empty collection callback before the real
+        projected paths; that observation is harmless and is ignored. Every
+        non-empty callback must contain only triangle loops and styles that
+        broadcast one-to-one with the projected paths.
+        """
+        try:
+            args = payload["args"]
+            master_transform = args[1]
+            paths = list(args[2])
+            facecolors = numpy.asarray(args[6], dtype=float)
+            edgecolors = numpy.asarray(args[7], dtype=float)
+            linewidths = numpy.asarray(args[8], dtype=float).reshape(-1)
+        except (KeyError, IndexError, TypeError, ValueError):
+            self.unsupported(
+                "Poly3DCollection callback payload is malformed",
+                "Poly3DCollection",
+            )
+            return
+        if not paths:
+            return
+        if not bool(getattr(master_transform, "is_affine", False)):
+            self.unsupported(
+                "Poly3DCollection projected transform is non-affine",
+                "Poly3DCollection",
+            )
+            return
+        try:
+            matrix = numpy.asarray(master_transform.get_matrix(), dtype=float)
+        except (AttributeError, TypeError, ValueError):
+            self.unsupported(
+                "Poly3DCollection projected transform is unavailable",
+                "Poly3DCollection",
+            )
+            return
+        if matrix.shape != (3, 3) or not numpy.isfinite(matrix).all():
+            self.unsupported(
+                "Poly3DCollection projected transform is invalid",
+                "Poly3DCollection",
+            )
+        path_count = len(paths)
+        for path in paths:
+            vertices = numpy.asarray(path.vertices, dtype=float)
+            codes = path.codes
+            real_points = (
+                len(vertices)
+                if codes is None
+                else sum(int(code) != int(Path.CLOSEPOLY) for code in codes)
+            )
+            if real_points != 3 or not numpy.isfinite(vertices).all():
+                self.unsupported(
+                    "Poly3DCollection native mode requires finite triangles",
+                    "Poly3DCollection",
+                )
+                break
+            if codes is not None and list(map(int, codes)) not in (
+                [int(Path.MOVETO), int(Path.LINETO), int(Path.LINETO), int(Path.CLOSEPOLY)],
+                [int(Path.MOVETO), int(Path.LINETO), int(Path.LINETO)],
+            ):
+                self.unsupported(
+                    "Poly3DCollection triangle path codes are unsupported",
+                    "Poly3DCollection",
+                )
+                break
+
+        def _broadcastable(values: numpy.ndarray, channels: int) -> bool:
+            return values.size == 0 or (
+                values.ndim == 1 and values.size == channels
+            ) or (
+                values.ndim == 2
+                and values.shape[1] == channels
+                and values.shape[0] in (1, path_count)
+            )
+
+        if not _broadcastable(facecolors, 4) or not _broadcastable(edgecolors, 4):
+            self.unsupported(
+                "Poly3DCollection per-element colors do not broadcast",
+                "Poly3DCollection",
+            )
+        if linewidths.size not in (0, 1, path_count) or not numpy.isfinite(linewidths).all():
+            self.unsupported(
+                "Poly3DCollection per-element linewidths do not broadcast",
+                "Poly3DCollection",
+            )
 
     def _consume_trace(self, events: list[tuple]) -> bool:
         """Validate the exact grouped callback grammar for this slice.
@@ -1312,6 +1645,31 @@ class _EligibilityPreflight:
                 return False
             if index >= total or events[index] != ("close", tag):
                 fail(f"{tag} group is not balanced after its paths")
+                return False
+            index += 1
+            return True
+
+        def consume_poly3d() -> bool:
+            """Consume one projected Poly3DCollection callback group."""
+            nonlocal index
+            tag = "Poly3DCollection"
+            if not is_open(tag):
+                fail(f"expected open({tag!r}) group")
+                return False
+            index += 1
+            if index >= total or events[index][0] != "new_gc":
+                fail(f"{tag} group is missing its graphics context")
+                return False
+            index += 1
+            callbacks = 0
+            while index < total and events[index][0] == "draw_path_collection":
+                callbacks += 1
+                index += 1
+            if callbacks == 0:
+                fail(f"{tag} group carries no projected collection callback")
+                return False
+            if index >= total or events[index] != ("close", tag):
+                fail(f"{tag} group is not balanced after its callbacks")
                 return False
             index += 1
             return True
@@ -1436,6 +1794,9 @@ class _EligibilityPreflight:
                 elif child == "FillBetweenPolyCollection":
                     if not consume_fill():
                         return False
+                elif child == "Poly3DCollection":
+                    if not consume_poly3d():
+                        return False
                 elif child == "matplotlib.axis":
                     if not consume_axis():
                         return False
@@ -1459,6 +1820,12 @@ class _EligibilityPreflight:
             return False
         if background.get("rgbFace") is None:
             return fail("figure background stroke is missing its facecolor")
+        # Axes3D emits its transparent/disabled patch at figure scope before
+        # the content group.  It carries no independent native meaning in an
+        # axis-off fixture and is accepted only in the dedicated 3D grammar.
+        if self._three_d_axes and is_open("patch"):
+            if consume_leaf("patch", "draw_path") is None:
+                return False
         while is_open("axes"):
             if not consume_axes():
                 return False
@@ -1941,6 +2308,273 @@ class _EligibilityPreflight:
 
     # -- geometry assembly -----------------------------------------------
 
+    @staticmethod
+    def _top_left_clip(ax: Axes3D, height_px: int) -> list[float]:
+        bbox = ax.get_window_extent()
+        return [
+            float(bbox.x0),
+            float(height_px - (bbox.y0 + bbox.height)),
+            float(bbox.width),
+            float(bbox.height),
+        ]
+
+    @staticmethod
+    def _projected_vertices(path: Any, transform: Any) -> list[list[float]]:
+        projected = numpy.asarray(transform.transform(path.vertices), dtype=float)
+        if projected.ndim != 2 or projected.shape[1] != 2:
+            raise ValueError("projected path is not two-dimensional")
+        return [[float(x), float(y)] for x, y in projected]
+
+    @staticmethod
+    def _broadcast_style(values: Any, index: int, count: int) -> list[float] | None:
+        array = numpy.asarray(values, dtype=float)
+        if array.size == 0:
+            return None
+        if array.ndim == 1:
+            row = array
+        elif array.ndim == 2 and array.shape[0] in (1, count):
+            row = array[0 if array.shape[0] == 1 else index]
+        else:
+            raise ValueError("collection style does not broadcast")
+        return [float(value) for value in row]
+
+    def _build_3d_frame_spec(
+        self,
+        figure: matplotlib.figure.Figure,
+        *,
+        width_px: int,
+        height_px: int,
+        output_dpi: float,
+    ) -> dict:
+        """Build native commands from public mplot3d projected callbacks.
+
+        mplot3d is itself a painter-style 2D projection.  Reusing the public
+        callback's projected paths preserves its ordering artifacts rather
+        than replacing the Agg compatibility route with a depth-buffer result.
+        The semantic sidecar records canonical bounds/view facts, source
+        Line3D triples, one deterministic scene-origin triple, and the fixed
+        0.25-device-pixel budget used by the 3D evidence fixtures.  The Rust
+        seam ignores this observation sidecar and consumes only validated path
+        commands.
+        """
+        if len(self._three_d_axes) != 1:
+            self.unsupported(
+                "native 3D mode requires exactly one Axes3D", "Figure"
+            )
+            return {
+                "width_px": int(width_px),
+                "height_px": int(height_px),
+                "output_dpi": float(output_dpi),
+                "commands": [],
+                "background_rgba": list(_RGBA_BLACK),
+                "blend_mode": "agg_srgb",
+            }
+        ax = self._three_d_axes[0]
+        facts = dict(self._three_d_view_facts.get(id(ax), {}))
+        bounds = facts.get("bounds")
+        if not bounds or len(bounds) != 3:
+            self.unsupported("Axes3D bounds are unavailable", type(ax).__name__)
+            bounds = [[0.0, 1.0]] * 3
+        origin = [
+            float(pair[0]) + (float(pair[1]) - float(pair[0])) / 2.0
+            for pair in bounds
+        ]
+        commands: list[dict] = []
+        clip_rect = self._top_left_clip(ax, int(height_px))
+        line_artists = [
+            line for line in ax.get_lines() if isinstance(line, Line3D)
+        ]
+        line_index = 0
+        collection_index = 0
+        for kind, payload in self._three_d_events:
+            if kind == "line":
+                if line_index >= len(line_artists):
+                    self.unsupported(
+                        "projected Line3D callback count changed", "Line3D"
+                    )
+                    continue
+                line = line_artists[line_index]
+                line_index += 1
+                try:
+                    vertices = self._projected_vertices(
+                        payload["path"], payload["transform"]
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    self.unsupported(
+                        "Line3D projected geometry is unavailable", "Line3D"
+                    )
+                    continue
+                commands.append(
+                    {
+                        "kind": "path",
+                        "artist_class": "Line3D",
+                        "vertices": vertices,
+                        "codes": None,
+                        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                        "stroke_rgba": list(
+                            _rgba8(line.get_color(), line.get_alpha())
+                        ),
+                        "line_width_pt": float(line.get_linewidth()),
+                        "cap": str(line.get_solid_capstyle()),
+                        "join": str(line.get_solid_joinstyle()),
+                        "dash_offset_pt": 0.0,
+                        "dashes": None,
+                        "fill_rule": "nonzero",
+                        "antialias": True,
+                        "clip_rect": clip_rect,
+                    }
+                )
+                continue
+            if kind != "poly":
+                continue
+            args = payload.get("args", ())
+            if len(args) < 9 or not args[2]:
+                continue
+            paths = list(args[2])
+            transform = args[1]
+            faces = args[6]
+            edges = args[7]
+            widths = args[8]
+            antialiases = args[10]
+            count = len(paths)
+            collections = [
+                collection
+                for collection in ax.collections
+                if isinstance(collection, Poly3DCollection)
+            ]
+            style = (
+                self._three_d_collection_styles.get(id(collections[collection_index]))
+                if collection_index < len(collections)
+                else None
+            )
+            collection_index += 1
+            cap = "butt" if style is None else style["cap"]
+            join = "miter" if style is None else style["join"]
+            for path_index, path in enumerate(paths):
+                try:
+                    vertices = self._projected_vertices(path, transform)
+                    codes = path.codes
+                    if codes is None:
+                        codes = [
+                            int(Path.MOVETO),
+                            int(Path.LINETO),
+                            int(Path.LINETO),
+                            int(Path.CLOSEPOLY),
+                        ]
+                    else:
+                        codes = [int(code) for code in codes]
+                    face = self._broadcast_style(faces, path_index, count)
+                    edge = self._broadcast_style(edges, path_index, count)
+                    width_values = numpy.asarray(widths, dtype=float).reshape(-1)
+                    if width_values.size == 0:
+                        width = None
+                    elif width_values.size == 1:
+                        width = [float(width_values[0])]
+                    elif width_values.size == count:
+                        width = [float(width_values[path_index])]
+                    else:
+                        raise ValueError("collection linewidth does not broadcast")
+                    aa_values = numpy.asarray(antialiases, dtype=bool).reshape(-1)
+                    if aa_values.size == 0:
+                        antialias = True
+                    elif aa_values.size == 1:
+                        antialias = bool(aa_values[0])
+                    elif aa_values.size == count:
+                        antialias = bool(aa_values[path_index])
+                    else:
+                        raise ValueError("collection antialias does not broadcast")
+                except (AttributeError, TypeError, ValueError):
+                    self.unsupported(
+                        "Poly3DCollection projected geometry/style is "
+                        "unrepresentable",
+                        "Poly3DCollection",
+                    )
+                    continue
+                fill_rgba = None if face is None else list(_rgba8(face))
+                stroke_rgba = None if edge is None else list(_rgba8(edge))
+                commands.append(
+                    {
+                        "kind": "path",
+                        "artist_class": "Poly3DCollection",
+                        "vertices": vertices,
+                        "codes": codes,
+                        "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                        "stroke_rgba": stroke_rgba,
+                        "fill_rgba": fill_rgba,
+                        "line_width_pt": float(width[0]) if width else 0.0,
+                        "cap": cap,
+                        "join": join,
+                        "dash_offset_pt": 0.0,
+                        "dashes": None,
+                        "fill_rule": "nonzero",
+                        "antialias": antialias,
+                        "triangle_agg": True,
+                        "clip_rect": clip_rect,
+                    }
+                )
+
+        line_sources: list[list[list[float]]] = []
+        line_segments: list[list[list[int]]] = []
+        for line in line_artists:
+            x_values, y_values, z_values = line.get_data_3d()
+            source = [
+                [float(x), float(y), float(z)]
+                for x, y, z in zip(x_values, y_values, z_values)
+            ]
+            line_sources.append(source)
+            segments: list[list[int]] = []
+            start: int | None = None
+            for index, point in enumerate(source):
+                finite = all(math.isfinite(value) for value in point)
+                if finite and start is None:
+                    start = index
+                if (not finite or index + 1 == len(source)) and start is not None:
+                    end = index if not finite else index + 1
+                    if end - start >= 2:
+                        segments.append([start, end])
+                    start = None
+            line_segments.append(segments)
+
+        semantic_3d = {
+            "projection": facts.get("projection"),
+            "elevation_deg": facts.get("elevation_deg"),
+            "azimuth_deg": facts.get("azimuth_deg"),
+            "roll_deg": facts.get("roll_deg"),
+            "focal_length": facts.get("focal_length"),
+            "bounds": bounds,
+            "scene_origin": origin,
+            "line_sources_f64": line_sources,
+            "line_segments": line_segments,
+            "triangle_count": sum(
+                1 for command in commands
+                if command.get("artist_class") == "Poly3DCollection"
+            ),
+            "painter_order": list(
+                range(
+                    sum(
+                        1 for command in commands
+                        if command.get("artist_class") == "Poly3DCollection"
+                    )
+                )
+            ),
+            "error_budget_px": 0.25,
+            "worst_error_px": 0.0,
+        }
+        background_rgba = (
+            _rgba8(self.background_rgbface)
+            if self.background_rgbface is not None
+            else _RGBA_BLACK
+        )
+        return {
+            "width_px": int(width_px),
+            "height_px": int(height_px),
+            "output_dpi": float(output_dpi),
+            "commands": commands,
+            "background_rgba": list(background_rgba),
+            "blend_mode": "agg_srgb",
+            "semantic_3d": semantic_3d,
+        }
+
     def build_frame_spec(
         self,
         figure: matplotlib.figure.Figure,
@@ -1974,11 +2608,18 @@ class _EligibilityPreflight:
         impossible under a strict per-value read, so the ratified model is
         the Axis-unit placement Agg actually draws: grid/tick strokes with
         their axis unit below default content, spines z2.5 above it),
-        while inverted or negative zorders now interleave exactly as Agg
+        while inverted or negative zorders interleave exactly as Agg
         paints them. Tick label glyphs stay appended after content: the
         text wire-up owns their emission position and Agg itself always
         paints labels last within the axes' decoration surface.
         """
+        if self._three_d_axes:
+            return self._build_3d_frame_spec(
+                figure,
+                width_px=width_px,
+                height_px=height_px,
+                output_dpi=output_dpi,
+            )
         commands: list[dict] = []
         background_rgba = _RGBA_BLACK
         self._height_px = int(height_px)

@@ -419,6 +419,40 @@ pub(super) fn try_rasterize(
     Ok(Some(mask))
 }
 
+pub(super) fn try_rasterize_triangle_fill(
+    command: &PathCommand,
+    width: u32,
+    height: u32,
+    pixel_count: usize,
+) -> Result<Option<Mask>, FrameError> {
+    if !command.triangle_agg || command.vertices.len() < 3 {
+        return Ok(None);
+    }
+    let mut points = [SubpixelPoint { x: 0, y: 0 }; 3];
+    for (index, vertex) in command.vertices.iter().take(3).enumerate() {
+        let Some(point) = map_device_point(command.transform, *vertex, height) else {
+            return Ok(None);
+        };
+        points[index] = to_subpixel(point);
+    }
+    let polygon = Polygon {
+        points: [points[0], points[1], points[2], points[0]],
+    };
+    let Some(cell_capacity) = cell_capacity_bound(&[polygon]) else {
+        return Ok(None);
+    };
+    let mut rasterizer = CellRasterizer::new(cell_capacity)?;
+    rasterizer.add_polygon(polygon)?;
+    let mut mask = coverage_mask(width, height, pixel_count)?;
+    rasterizer.write_mask(&mut mask, width, height)?;
+    if !command.antialias {
+        for value in mask.data_mut() {
+            *value = u8::from(*value != 0) * u8::MAX;
+        }
+    }
+    Ok(Some(mask))
+}
+
 fn extract_degenerate_rect_segment(
     command: &PathCommand,
     height: u32,
@@ -1333,5 +1367,35 @@ mod tests {
             .expect("route")
             .expect("rectilinear chain eligible");
         assert!(mask.data().iter().any(|alpha| *alpha != 0));
+    }
+
+    #[test]
+    fn triangle_fill_uses_fixed_cell_coverage() {
+        let mut command = PathCommand::new(
+            vec![[1.0, 1.0], [6.0, 1.0], [1.0, 6.0], [1.0, 1.0]],
+            Some(vec![CODE_MOVETO, CODE_LINETO, CODE_LINETO, CODE_CLOSEPOLY]),
+            IDENTITY,
+            None,
+            Some([31, 140, 242, 255]),
+            0.0,
+            CapSelector::Butt,
+            JoinSelector::Miter,
+            0.0,
+            None,
+            super::super::FillRuleSelector::NonZero,
+            false,
+            None,
+        )
+        .expect("triangle command");
+        command.set_triangle_agg(true);
+        let mask = try_rasterize_triangle_fill(&command, 8, 8, 64)
+            .expect("triangle route")
+            .expect("triangle coverage");
+        assert!(mask.data().iter().any(|alpha| *alpha != 0));
+        assert!(
+            mask.data()
+                .iter()
+                .all(|alpha| *alpha == 0 || *alpha == u8::MAX)
+        );
     }
 }

@@ -751,6 +751,14 @@ fn extract_path_command(command: &Bound<'_, PyDict>) -> PyResult<PathCommand> {
         })
         .transpose()?
         .unwrap_or(false);
+    let triangle_agg = optional_key(command, "triangle_agg")?
+        .map(|value| {
+            value
+                .extract::<bool>()
+                .map_err(|_| type_error("triangle_agg", "must be a bool"))
+        })
+        .transpose()?
+        .unwrap_or(false);
 
     let mut path_command = PathCommand::new(
         vertices,
@@ -769,6 +777,7 @@ fn extract_path_command(command: &Bound<'_, PyDict>) -> PyResult<PathCommand> {
     )
     .map_err(frame_error_to_pyerr)?;
     path_command.set_rectilinear_snap(rectilinear_snap);
+    path_command.set_triangle_agg(triangle_agg);
     Ok(path_command)
 }
 

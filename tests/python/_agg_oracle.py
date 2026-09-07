@@ -440,7 +440,73 @@ def validate_manifest(
     if not isinstance(manifest["rcparams"], Mapping):
         raise _contract_error("manifest rcparams must be an object")
     _require_nonempty_string(manifest["font_bytes_sha256"], "font_bytes_sha256")
-    _require_nonempty_string(manifest["artist_class"], "artist_class")
+    artist_class = _require_nonempty_string(manifest["artist_class"], "artist_class")
+    if "3D" in artist_class:
+        three_d = manifest.get("three_d")
+        if not isinstance(three_d, Mapping):
+            raise _contract_error("3D manifest must contain a three_d object")
+        if three_d.get("projection") not in ("perspective", "orthographic"):
+            raise _contract_error("three_d.projection is invalid")
+        view = three_d.get("view")
+        if not isinstance(view, Mapping):
+            raise _contract_error("three_d.view must be an object")
+        for field in ("elevation_deg", "azimuth_deg", "roll_deg"):
+            value = view.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                raise _contract_error(f"three_d.view.{field} must be finite")
+        focal = view.get("focal_length")
+        if three_d["projection"] == "perspective":
+            if isinstance(focal, bool) or not isinstance(focal, (int, float)) or not math.isfinite(float(focal)) or float(focal) <= 0.0:
+                raise _contract_error("perspective three_d.view.focal_length must be positive")
+        elif focal is not None:
+            raise _contract_error("orthographic three_d.view.focal_length must be null")
+        bounds_3d = three_d.get("bounds_f64")
+        if not isinstance(bounds_3d, Mapping):
+            raise _contract_error("three_d.bounds_f64 must be an object")
+        for axis in ("x", "y", "z"):
+            pair = bounds_3d.get(axis)
+            if (
+                not isinstance(pair, Sequence)
+                or isinstance(pair, (str, bytes))
+                or len(pair) != 2
+                or any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) for value in pair)
+                or float(pair[0]) >= float(pair[1])
+            ):
+                raise _contract_error(f"three_d.bounds_f64.{axis} is invalid")
+        origin = three_d.get("scene_origin_f64")
+        if (
+            not isinstance(origin, Sequence)
+            or isinstance(origin, (str, bytes))
+            or len(origin) != 3
+            or any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) for value in origin)
+        ):
+            raise _contract_error("three_d.scene_origin_f64 must contain three finite values")
+        for index, axis in enumerate(("x", "y", "z")):
+            pair = bounds_3d[axis]
+            expected_origin = float(pair[0]) + (float(pair[1]) - float(pair[0])) * 0.5
+            if float(origin[index]) != expected_origin:
+                raise _contract_error(
+                    f"three_d.scene_origin_f64.{axis} must be the fixed bound midpoint"
+                )
+        if three_d.get("error_budget_px") != 0.25:
+            raise _contract_error("three_d.error_budget_px must be exactly 0.25")
+        for field in ("error_budget_px", "worst_error_px"):
+            value = three_d.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or not 0.0 <= float(value) <= 0.25:
+                raise _contract_error(f"three_d.{field} must be within the fixed 0.25px budget")
+        order = three_d.get("painter_order")
+        if not isinstance(order, Sequence) or isinstance(order, (str, bytes)) or any(isinstance(value, bool) or not isinstance(value, int) for value in order):
+            raise _contract_error("three_d.painter_order must be integer sequence")
+        topology = manifest.get("topology")
+        triangle_count = topology.get("triangle_count") if isinstance(topology, Mapping) else None
+        if (
+            isinstance(triangle_count, bool)
+            or not isinstance(triangle_count, int)
+            or triangle_count < 0
+            or len(order) != triangle_count
+            or sorted(order) != list(range(triangle_count))
+        ):
+            raise _contract_error("three_d.painter_order must be a triangle permutation")
     _require_nonempty_string(manifest["reference_png_file"], "reference_png_file")
     _require_nonempty_string(manifest["mask_file"], "mask_file")
     _require_digest(manifest["reference_png_sha256"], "reference_png_sha256")

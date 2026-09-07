@@ -124,6 +124,8 @@ pub(crate) struct PathCommand {
     /// Agg feeds the snapped path to both face and edge when an edge is
     /// present; fill-only commands retain their unsnapped path.
     rectilinear_snap: bool,
+    /// Use the deterministic triangle coverage route for mplot3d fills.
+    triangle_agg: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -221,12 +223,18 @@ impl PathCommand {
             antialias,
             clip_rect,
             rectilinear_snap: false,
+            triangle_agg: false,
         })
     }
 
     /// Enables Agg-compatible snapping for this command's path geometry.
     pub(crate) fn set_rectilinear_snap(&mut self, enabled: bool) {
         self.rectilinear_snap = enabled;
+    }
+
+    /// Enables the deterministic mplot3d triangle coverage route.
+    pub(crate) fn set_triangle_agg(&mut self, enabled: bool) {
+        self.triangle_agg = enabled;
     }
 }
 
@@ -555,6 +563,9 @@ fn agg_blend_channel(
     source_alpha: u8,
     accumulated_alpha: u32,
 ) -> u8 {
+    if source_alpha == u8::MAX && destination_alpha == u32::from(u8::MAX) {
+        return source;
+    }
     let destination_premultiplied = u32::from(destination) * destination_alpha;
     let source_scaled = u32::from(source) << 8;
     // The upstream workaround uses unsigned 32-bit arithmetic for this
@@ -1132,24 +1143,33 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
                     .clip_rect
                     .map(|rect| DeviceClip::from_display(rect, width, height));
                 if let Some(fill_rgba) = path.fill_rgba {
-                    let fill_geometry = if path.rectilinear_snap && path.stroke_rgba.is_some() {
-                        let snap_value = agg_rectilinear_snap_value(path.line_width_pt * scale);
-                        build_device_path(path, height, Some(snap_value))
-                            .ok_or(FrameError::Internal("snapped fill geometry unavailable"))?
+                    let mut mask = if path.triangle_agg {
+                        agg_line::try_rasterize_triangle_fill(path, width, height, pixel_count)?
                     } else {
-                        path_geometry.clone()
+                        None
                     };
-                    let fill_rule = match path.fill_rule {
-                        FillRuleSelector::NonZero => FillRule::Winding,
-                        FillRuleSelector::EvenOdd => FillRule::EvenOdd,
-                    };
-                    let mut mask = coverage_mask(width, height, pixel_count)?;
-                    mask.fill_path(
-                        &fill_geometry,
-                        fill_rule,
-                        path.antialias,
-                        Transform::identity(),
-                    );
+                    if mask.is_none() {
+                        let fill_geometry = if path.rectilinear_snap && path.stroke_rgba.is_some() {
+                            let snap_value = agg_rectilinear_snap_value(path.line_width_pt * scale);
+                            build_device_path(path, height, Some(snap_value))
+                                .ok_or(FrameError::Internal("snapped fill geometry unavailable"))?
+                        } else {
+                            path_geometry.clone()
+                        };
+                        let fill_rule = match path.fill_rule {
+                            FillRuleSelector::NonZero => FillRule::Winding,
+                            FillRuleSelector::EvenOdd => FillRule::EvenOdd,
+                        };
+                        let mut fallback_mask = coverage_mask(width, height, pixel_count)?;
+                        fallback_mask.fill_path(
+                            &fill_geometry,
+                            fill_rule,
+                            path.antialias,
+                            Transform::identity(),
+                        );
+                        mask = Some(fallback_mask);
+                    }
+                    let mut mask = mask.expect("fill coverage route selected");
                     if let Some(clip) = &clip {
                         apply_clip_to_mask(&mut mask, clip, width, height);
                     }
@@ -1162,8 +1182,12 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
                 }
                 let stroke = stroke_selection(path, scale)?;
                 if let Some(stroke) = stroke {
+                    let mut fixed_agg_stroke = false;
                     let mut mask = if spec.blend_mode() == BlendMode::AggSrgb {
-                        agg_line::try_rasterize(path, width, height, pixel_count, scale)?
+                        let mask =
+                            agg_line::try_rasterize(path, width, height, pixel_count, scale)?;
+                        fixed_agg_stroke = mask.is_some();
+                        mask
                     } else {
                         None
                     };
@@ -1209,7 +1233,12 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
                         apply_clip_to_mask(&mut mask, clip, width, height);
                     }
                     let stroke_rgba = path.stroke_rgba.unwrap_or([0, 0, 0, 255]);
-                    composite_coverage(&mut pixels, &mask, stroke_rgba, path.rectilinear_snap);
+                    composite_coverage(
+                        &mut pixels,
+                        &mask,
+                        stroke_rgba,
+                        path.rectilinear_snap || fixed_agg_stroke,
+                    );
                 }
             }
             Command::Image(image) => {
