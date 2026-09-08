@@ -8,6 +8,17 @@ const LINE_SHADER_RESOURCE_LAYOUT: &str =
     "group0/binding0 uniform(viewport_px, half_width_px, color_linear)";
 const LINE_SHADER_SHA256: &str = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3";
 
+// Build-time manifest linkage (emitted by `build.rs` from
+// `shaders/manifest.toml`). The manifest is authoritative: any hash or
+// metadata mutation fails the build there, and any drift between this
+// compiled provenance and the manifest fails `verify_artifact` below
+// instead of reaching a GPU. A missing emission is a compile error, never
+// a silent fallback to the hard-coded strings above.
+const MANIFEST_SHA256: &str = env!("LUMENPLOT_LINE_SHADER_SHA256");
+const MANIFEST_SOURCE_REVISION: &str = env!("LUMENPLOT_LINE_SHADER_SOURCE_REVISION");
+const MANIFEST_RESOURCE_LAYOUT: &str = env!("LUMENPLOT_LINE_SHADER_RESOURCE_LAYOUT");
+const MANIFEST_VALIDATION: &str = env!("LUMENPLOT_LINE_SHADER_VALIDATION");
+
 /// Provenance attached to the trusted static line shader artifact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ShaderProvenance {
@@ -49,6 +60,15 @@ pub(crate) const fn provenance() -> ShaderProvenance {
 }
 
 pub(crate) fn verify_artifact() -> bool {
+    // Fail closed on any manifest/provenance drift before checking bytes:
+    // a mutated manifest (or a stale compiled provenance) never verifies.
+    if LINE_SHADER_SHA256 != MANIFEST_SHA256
+        || LINE_SHADER_SOURCE_REVISION != MANIFEST_SOURCE_REVISION
+        || LINE_SHADER_RESOURCE_LAYOUT != MANIFEST_RESOURCE_LAYOUT
+        || LINE_SHADER_VALIDATION != MANIFEST_VALIDATION
+    {
+        return false;
+    }
     digest_matches(LINE_SHADER_SOURCE.as_bytes(), LINE_SHADER_SHA256)
 }
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-This is the public high-level architecture companion to the accepted pre-alpha requirements and ADR 0002. Phase-1A/B native implementation and local contract evidence now exist, and the bounded Phase-2A/2B line-frame and PNG implementation has local evidence. PR #89 also records bounded RenderPacket validation, offscreen wgpu line/shader/readback tests, runtime/viewer/input state-model tests, a private line-only PDF sink, and fail-closed benchmark/wheel evidence; PR #91 adds a bounded logical resource cache/lease/fence/device-generation model. Publication, full-v1 product completion, platform, benchmark, support, and compatibility evidence remain open.
+This is the public high-level architecture companion to the accepted pre-alpha requirements and ADR 0002. Phase-1A/B native implementation and local contract evidence now exist, and the bounded Phase-2A/2B line-frame and PNG implementation has local evidence. PR #89 also records bounded RenderPacket validation, offscreen wgpu line/shader/readback static/source-path checks (no GPU execution claimed; real-device readback remains environment-required), runtime/viewer/input state-model tests, a private line-only PDF sink, and fail-closed benchmark/wheel evidence; PR #91 adds a bounded logical resource cache/lease/fence/device-generation model. Publication, full-v1 product completion, platform, benchmark, support, and compatibility evidence remain open.
 
 ## Product modes
 
@@ -199,7 +199,7 @@ O-01 through O-17 are now accepted contracts recorded in the linked ADR/API docu
 | O-11/O-12 | [ADR 0007 — coordinate, color, text, and export](../adr/0007-coordinate-color-text-export.md) | Transform, color, font, and output evidence pending |
 | Phase-2A/2B line frame and PNG | [ADR 0012 — private line frame and deterministic PNG](../adr/0012-private-line-frame-and-png-contract.md) | Bounded private implementation and local evidence recorded; PR #89 adds a private line-only vector PDF sink; full-v1 export and retained text/layout remain pending |
 | O-13/O-14 | [API 0004 — annotations and accessibility](api-0004-annotations-accessibility.md) | Interaction, accessibility, and viewer evidence pending |
-| O-15 | [ADR 0008 — portable GPU and shaders](../adr/0008-portable-gpu-and-shaders.md) | Static WGSL provenance, line geometry preparation, and headless offscreen wgpu tests are recorded; real portable-GPU runtime, surface/loss/OOM, and platform evidence remain pending |
+| O-15 | [ADR 0008 — portable GPU and shaders](../adr/0008-portable-gpu-and-shaders.md) | Static WGSL provenance, line geometry preparation, and headless offscreen wgpu static/source-path checks are recorded; real portable-GPU runtime (including readback execution), surface/loss/OOM, and platform evidence remain pending |
 | O-17/O-18 | [ADR 0009 — version, publication, and supply chain](../adr/0009-version-publication-supply-chain.md) | Policy is accepted; O-18 remains Deferred/Closed and only negative guards are allowed |
 
 ## Publication-before-implementation boundary

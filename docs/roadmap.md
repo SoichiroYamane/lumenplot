@@ -32,7 +32,9 @@ Implemented with bounded local evidence:
   harness;
 - bounded private RenderPacket validation with distinct scene/work/device
   generations, origin-relative line geometry, static WGSL provenance checks,
-  and headless offscreen wgpu line rendering/readback tests;
+  and headless offscreen wgpu line rendering/readback static/source-path
+  checks (no GPU execution claimed; real-device readback remains
+  environment-required);
 - a bounded backend-neutral logical resource cache with generation-qualified
   keys, packet leases, completion-fence retirement, multiple-owner accounting,
   and explicit device-generation invalidation tests;
