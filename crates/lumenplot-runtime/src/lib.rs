@@ -625,9 +625,12 @@ impl EngineSession {
 
     fn from_renderer(
         loop_mode: LoopMode,
-        renderer: Option<Renderer>,
+        mut renderer: Option<Renderer>,
         backend_attached: bool,
     ) -> Self {
+        if let Some(renderer) = renderer.as_mut() {
+            renderer.bind_device_generation(PacketDeviceGeneration::initial());
+        }
         Self {
             loop_mode,
             state: SessionState::Created,
@@ -949,7 +952,7 @@ impl EngineSession {
         let mut replacement = match Renderer::new() {
             Ok(renderer) => renderer,
             Err(error) if matches!(error.kind(), RenderErrorKind::OutOfMemory) => {
-                self.state = SessionState::OutOfMemory;
+                let _ = self.handle_out_of_memory();
                 return Err(RuntimeError::new(
                     RuntimeErrorKind::OutOfMemory,
                     "portable backend recovery ran out of memory",
@@ -962,12 +965,21 @@ impl EngineSession {
                 ));
             }
         };
+        replacement.bind_device_generation(PacketDeviceGeneration::new(self.device_generation.0));
         let next_work = self.next_work_generation()?;
         self.commit_work_generation(next_work)?;
-        if let Some(prepared) = self
+        let retained = match self
             .packet_owner
-            .prepare_retained(self.work_generation, self.device_generation)?
+            .prepare_retained(self.work_generation, self.device_generation)
         {
+            Ok(retained) => retained,
+            Err(error) if matches!(error.kind(), RuntimeErrorKind::OutOfMemory) => {
+                let _ = self.handle_out_of_memory();
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(prepared) = retained {
             let expected_scene = prepared.packet.scene_revision();
             let expected_work = prepared.packet.work_generation();
             let expected_device = prepared.packet.device_generation();
@@ -981,7 +993,7 @@ impl EngineSession {
                 let kind = error.kind();
                 drop(prepared);
                 if matches!(kind, RenderErrorKind::OutOfMemory) {
-                    self.state = SessionState::OutOfMemory;
+                    let _ = self.handle_out_of_memory();
                     return Err(RuntimeError::new(
                         RuntimeErrorKind::OutOfMemory,
                         "portable backend recovery ran out of memory",
@@ -989,7 +1001,14 @@ impl EngineSession {
                 }
                 return Err(map_renderer_error(error, true));
             }
-            self.packet_owner.commit(prepared)?;
+            match self.packet_owner.commit(prepared) {
+                Ok(()) => {}
+                Err(error) if matches!(error.kind(), RuntimeErrorKind::OutOfMemory) => {
+                    let _ = self.handle_out_of_memory();
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
         }
         self.renderer = Some(replacement);
         self.state = SessionState::Running;
@@ -1137,12 +1156,19 @@ impl EngineSession {
         ) {
             return Ok(outcome);
         }
-        let prepared = self.packet_owner.prepare(
+        let prepared = match self.packet_owner.prepare(
             frame,
             token.scene_revision,
             self.work_generation,
             self.device_generation,
-        )?;
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) if matches!(error.kind(), RuntimeErrorKind::OutOfMemory) => {
+                let _ = self.handle_out_of_memory();
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         let Some(renderer) = self.renderer.as_mut() else {
             drop(prepared);
             return Err(RuntimeError::new(
@@ -1160,10 +1186,14 @@ impl EngineSession {
             expected_device,
         );
         match render_result {
-            Ok(_) => {
-                self.packet_owner.commit(prepared)?;
-                Ok(outcome)
-            }
+            Ok(_) => match self.packet_owner.commit(prepared) {
+                Ok(()) => Ok(outcome),
+                Err(error) if matches!(error.kind(), RuntimeErrorKind::OutOfMemory) => {
+                    let _ = self.handle_out_of_memory();
+                    Err(error)
+                }
+                Err(error) => Err(error),
+            },
             Err(error) => {
                 let kind = error.kind();
                 drop(prepared);

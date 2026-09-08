@@ -21,10 +21,10 @@
 //! Pixel tolerance: the numeric GPU-vs-CPU/Agg bound stays OPEN until the
 //! Lavapipe control cell produces real numbers. This harness therefore
 //! asserts validated-submission geometry (dimensions, byte length,
-//! stale-generation rejection, repeated submission) at 1x/1.25x/2x/3x, and
-//! performs no decoded-pixel comparison. Any pixel threshold appearing here
-//! in the future must cite measured Lavapipe numbers; fabricated bounds are
-//! not accepted.
+//! stale-generation rejection, repeated submission) and retained-resource
+//! observations at 1x/1.25x/2x/3x, and performs no decoded-pixel comparison.
+//! Any pixel threshold appearing here in the future must cite measured Lavapipe
+//! numbers; fabricated bounds are not accepted.
 
 use lumenplot_render_api::__internal::{
     DeviceGeneration, RenderPacketBuilder, SceneRevision, SrgbRgba8, Viewport, WorkGeneration,
@@ -167,22 +167,42 @@ fn validated_owner_harness_covers_oracle_scales() {
         "environment required: portable GPU adapter/device unavailable on this host \
          (Lavapipe control or real GPU cell); this is not a renderer failure",
     );
+    renderer.bind_device_generation(DeviceGeneration::initial());
 
     for scale in ORACLE_SCALES {
         let (scene, spec) = oracle_fixture(scale);
         let expected_canvas = oracle_canvas(scale);
         let work = WorkGeneration::initial();
         let device = DeviceGeneration::initial();
-        let builder = RenderPacketBuilder::new(work, device);
         let frame = scene
             .resolve_frame(&spec)
             .expect("oracle seam resolution must succeed");
+
+        // The renderer instance rejects a packet whose expected device
+        // generation differs from its owner binding before target/buffer
+        // allocation or visible publication.
+        let stale_device = DeviceGeneration::new(1);
+        let stale_packet = RenderPacketBuilder::new(work, stale_device)
+            .build(frame.clone(), work, stale_device)
+            .expect("stale packet construction must succeed before owner rejection");
+        let observations_before_rejection = renderer.resource_observations();
+        let stale_error = renderer
+            .render_validated(&stale_packet, SceneRevision::initial(), work, stale_device)
+            .expect_err("renderer instance must reject stale device generation");
+        assert_eq!(stale_error.kind(), RenderErrorKind::InvalidInput);
+        assert_eq!(
+            renderer.resource_observations(),
+            observations_before_rejection,
+            "instance-generation rejection must happen before retained allocation"
+        );
+
+        let builder = RenderPacketBuilder::new(work, device);
         let packet = builder
             .build(frame, work, device)
             .expect("oracle validated packet build must succeed");
 
-        // Stale generations are rejected before any visible publication, and
-        // the mapping is unchanged (InvalidInput, no new public kind).
+        // Caller-supplied stale scene/work values remain rejected by the
+        // packet boundary without touching retained backend resources.
         for (label, scene_rev, work_gen, device_gen) in [
             ("stale scene", SceneRevision::new(u64::MAX), work, device),
             (
@@ -191,13 +211,8 @@ fn validated_owner_harness_covers_oracle_scales() {
                 WorkGeneration::new(u64::MAX),
                 device,
             ),
-            (
-                "stale device",
-                SceneRevision::initial(),
-                work,
-                DeviceGeneration::new(u64::MAX),
-            ),
         ] {
+            let observations_before_rejection = renderer.resource_observations();
             let rejected = renderer.render_validated(&packet, scene_rev, work_gen, device_gen);
             let error = rejected.expect_err(&format!("{label} generation must be rejected"));
             assert_eq!(
@@ -205,11 +220,20 @@ fn validated_owner_harness_covers_oracle_scales() {
                 RenderErrorKind::InvalidInput,
                 "{label} generation must map to InvalidInput"
             );
+            assert_eq!(
+                renderer.resource_observations(),
+                observations_before_rejection,
+                "{label} rejection must not allocate or publish"
+            );
         }
 
         let frame = renderer
             .render_validated(&packet, SceneRevision::initial(), work, device)
             .expect("validated oracle render must succeed where a device exists");
+        let warmed_allocations = renderer.resource_observations();
+        assert!(warmed_allocations.target_allocations() > 0);
+        assert!(warmed_allocations.vertex_buffer_allocations() > 0);
+        assert!(warmed_allocations.readback_buffer_allocations() > 0);
         assert_eq!(
             frame.width(),
             expected_canvas[0],
@@ -226,14 +250,20 @@ fn validated_owner_harness_covers_oracle_scales() {
             "oracle frame must be tightly packed RGBA8 at {scale}x"
         );
 
-        // Repeated submission through the same validated entry succeeds.
-        // This exercises resubmission only; retained GPU allocation reuse
-        // remains an open implementation gap and is claimed nowhere.
+        // Same-size repeated submission must reuse the retained target,
+        // vertex storage, and readback buffer. This is an app-level create
+        // observation, not a driver allocation or performance claim.
         let repeated = renderer
             .render_validated(&packet, SceneRevision::initial(), work, device)
             .expect("repeated validated render must succeed");
         assert_eq!(repeated.width(), frame.width());
         assert_eq!(repeated.height(), frame.height());
+        assert_eq!(repeated.rgba8().len(), frame.rgba8().len());
+        assert_eq!(
+            renderer.resource_observations(),
+            warmed_allocations,
+            "same-size warm render must not recreate retained resources"
+        );
     }
 }
 
