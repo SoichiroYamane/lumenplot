@@ -58,6 +58,7 @@ EXPECTED_ENGINE_SOURCE_FILES = {
     "src/scene/state.rs",
     "src/scene/transaction.rs",
     "src/scene/snapshot.rs",
+    "src/text.rs",
 }
 EXPECTED_EXPORT_SOURCE_FILES = {
     "src/lib.rs",
@@ -471,6 +472,7 @@ BRIDGE_METHODS = {
     "logical_units_per_inch",
     "background",
     "series",
+    "plot_layout",
     "id",
     "style",
     "segments",
@@ -524,6 +526,7 @@ BRIDGE_METHODS_BY_TYPE = {
         "logical_units_per_inch",
         "background",
         "series",
+        "plot_layout",
     },
     "LineSeries": {"id", "style", "segments"},
     "LineSegment": {"points"},
@@ -564,6 +567,7 @@ BRIDGE_PHASE2_SIGNATURES = {
         "logical_units_per_inch": "pub fn logical_units_per_inch(&self) -> f64",
         "background": "pub fn background(&self) -> SrgbRgba8",
         "series": "pub fn series(&self) -> &[LineSeries]",
+        "plot_layout": "pub fn plot_layout(&self) -> &PlotLayout",
     },
     "LineSeries": {
         "id": "pub fn id(&self) -> SeriesId",
@@ -783,6 +787,12 @@ PUBLIC_ITEM_RE = re.compile(
     re.MULTILINE,
 )
 PUBLIC_REEXPORT_RE = re.compile(r"^\s*pub\s+use\b", re.MULTILINE)
+ENGINE_TEXT_REEXPORT_RE = re.compile(
+    r"^\s*pub\s+use\s+crate::text::\{\s*"
+    r"FallbackRoute,\s*FontFeature,\s*FontIdentity,\s*FontVariation,\s*GlyphPosition,\s*"
+    r"PlotLayout,\s*ShapedRun,\s*TextDirection,\s*TextRole,\s*\};\s*",
+    re.MULTILINE,
+)
 PUBLIC_BARE_ITEM_RE = re.compile(
     r"^\s*pub\s+(?:use|struct|enum|trait|fn|type|const|static|mod|macro|union|extern|impl)\b",
     re.MULTILINE,
@@ -2520,7 +2530,8 @@ def _normalize_bridge_signature(signature: str) -> str:
 
 
 def _check_engine_bridge(code: str, errors: list[str]) -> None:
-    if PUBLIC_REEXPORT_RE.search(code):
+    code_without_text_reexport = ENGINE_TEXT_REEXPORT_RE.sub("", code, count=1)
+    if PUBLIC_REEXPORT_RE.search(code_without_text_reexport):
         errors.append("package lumenplot-engine: bridge re-export is not allowed")
     if re.search(r"\bRenderPacket\b", code):
         errors.append("package lumenplot-engine: bridge public signature uses forbidden RenderPacket")
@@ -2586,7 +2597,7 @@ def _check_engine_bridge(code: str, errors: list[str]) -> None:
                 f"package lumenplot-engine: bridge public method inventory mismatch for {type_name!r}"
             )
 
-    for line in code.splitlines():
+    for line in code_without_text_reexport.splitlines():
         if not re.match(r"^\s*pub\s+", line):
             continue
         if re.match(r"^\s*pub\s+(?:struct|enum|fn)\b", line):
@@ -2708,7 +2719,7 @@ def _check_engine_source(package_dir: Path, root: Path, errors: list[str]) -> No
         return
 
     root_code = sources["src/lib.rs"]
-    for module in ("error", "frame", "data", "lod", "scene"):
+    for module in ("error", "frame", "data", "lod", "scene", "text"):
         if not re.search(rf"^\s*mod\s+{module}\s*;", root_code, re.MULTILINE):
             errors.append(f"package lumenplot-engine: private root module {module!r} is missing")
     hidden_bridge = re.compile(
@@ -2727,7 +2738,7 @@ def _check_engine_source(package_dir: Path, root: Path, errors: list[str]) -> No
 
     for relative, code in sources.items():
         _check_forbidden_code("lumenplot-engine", code, errors)
-        if relative in {"src/lib.rs", "src/bridge.rs"}:
+        if relative in {"src/lib.rs", "src/bridge.rs", "src/text.rs"}:
             continue
         if PUBLIC_REEXPORT_RE.search(code) or PUBLIC_BARE_ITEM_RE.search(code):
             errors.append(f"package lumenplot-engine: public item outside bridge in {relative}")

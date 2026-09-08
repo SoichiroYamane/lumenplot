@@ -334,6 +334,40 @@ mod tests {
     }
 
     #[test]
+    fn retained_layout_generation_is_shared_until_a_scene_change() {
+        let mut plot = scene();
+        let before = plot.snapshot();
+        let before_layout = before.plot_layout();
+        assert_eq!(before.font_revision(), 0);
+        assert_eq!(before.layout_revision(), 0);
+        assert!(before_layout.validate_for_generation(0, 0));
+
+        let same = plot.snapshot();
+        let same_layout = same.plot_layout();
+        assert!(Arc::ptr_eq(&before_layout, &same_layout));
+
+        {
+            let mut transaction = plot.transaction();
+            transaction
+                .set_viewport(Viewport::from_bounds(1.0, 9.0, 1.0, 9.0).expect("view"))
+                .expect("view");
+            transaction.commit().expect("commit");
+        }
+
+        let after = plot.snapshot();
+        let after_layout = after.plot_layout();
+        assert_eq!(after.font_revision(), 0);
+        assert_eq!(after.layout_revision(), 1);
+        assert!(!Arc::ptr_eq(&before_layout, &after_layout));
+        assert!(
+            !before_layout.validate_for_generation(after.font_revision(), after.layout_revision())
+        );
+        assert!(
+            after_layout.validate_for_generation(after.font_revision(), after.layout_revision())
+        );
+    }
+
+    #[test]
     fn range_rejects_nonfinite_and_reversed_values() {
         assert!(AxisRange::new(f64::NAN, 1.0).is_err());
         assert!(AxisRange::new(2.0, 1.0).is_err());

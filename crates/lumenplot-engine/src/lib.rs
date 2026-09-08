@@ -10,6 +10,7 @@ mod error;
 mod frame;
 mod lod;
 mod scene;
+mod text;
 
 #[doc(hidden)]
 pub mod bridge;

@@ -9,14 +9,15 @@
 //! present steps; nothing here names any concrete frontend or backend API.
 
 use std::fmt;
+use std::sync::Arc;
 
 use crate::packet::{
     DeviceGeneration, PacketValidationError, RenderPacket, RenderPacketBuilder, WorkGeneration,
 };
 use lumenplot_engine::bridge::{
-    AxisScale, AxisScales, LineFrameSpec, LineStyle, LogicalRect, LogicalSize, PlotScene,
-    SceneError as EngineSceneError, SceneErrorKind as EngineSceneErrorKind, SceneRevision,
-    SeriesData, SeriesTopology, SrgbRgba8, Viewport,
+    AxisScale, AxisScales, LineFrameSpec, LineStyle, LogicalRect, LogicalSize, PlotLayout,
+    PlotScene, SceneError as EngineSceneError, SceneErrorKind as EngineSceneErrorKind,
+    SceneRevision, SeriesData, SeriesTopology, SrgbRgba8, Viewport,
 };
 
 /// Maximum series per scene, mirroring the engine's frame-resolution cap.
@@ -194,6 +195,7 @@ impl SceneHandle {
         let frame = snapshot
             .resolve_line_frame(&spec.inner)
             .map_err(|error| engine_error(&error))?;
+        let plot_layout = Arc::new(frame.plot_layout().clone());
         let mut series = Vec::with_capacity(frame.series().len());
         for resolved in frame.series() {
             let mut segments = Vec::with_capacity(resolved.segments().len());
@@ -217,6 +219,9 @@ impl SceneHandle {
                 logical_units_per_inch: frame.logical_units_per_inch(),
                 background: frame.background(),
             },
+            plot_layout,
+            font_revision: frame.plot_layout().font_revision(),
+            layout_revision: frame.plot_layout().layout_revision(),
             line_color: spec.line_color,
             line_width_px: spec.line_width_px,
             series,
@@ -753,6 +758,11 @@ impl SemanticFrame {
         &self.frame
     }
 
+    /// Retained text/layout result shared by the renderer-owner consumers.
+    pub fn plot_layout(&self) -> &PlotLayout {
+        &self.frame.plot_layout
+    }
+
     /// Optional additive 3D meaning carried by this semantic frame.
     pub fn three_d(&self) -> Option<&Semantic3D> {
         self.frame.three_d()
@@ -774,6 +784,9 @@ pub struct FramePacket {
     pub(crate) canvas_px: [u32; 2],
     pub(crate) dots_per_inch: f64,
     pub(crate) layout: ResolvedLayout,
+    pub(crate) plot_layout: Arc<PlotLayout>,
+    pub(crate) font_revision: u64,
+    pub(crate) layout_revision: u64,
     pub(crate) line_color: SrgbRgba8,
     pub(crate) line_width_px: f64,
     pub(crate) series: Vec<PacketSeries>,
