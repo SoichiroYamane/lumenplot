@@ -67,7 +67,7 @@ wgpu 29.0.4 is the accepted initial comparison point because it supplies a concr
 
 ## Verification and evidence boundary
 
-PR #89 records bounded line geometry preparation, headless offscreen wgpu readback tests, WGSL validator/hash/provenance checks, and static runtime-download negative checks. Required remaining evidence includes the portable build/runtime matrix, ownership/thread tests, surface/device-loss recovery, OOM terminal behavior, and wgpu 29 versus later same-workload A/B results. No supported cell or dependency adoption result is claimed here.
+PR #89 records bounded line geometry preparation, headless offscreen wgpu readback-path static/source-path checks (no GPU execution claimed; real-device readback remains environment-required), WGSL validator/hash/provenance checks, and static runtime-download negative checks. Required remaining evidence includes the portable build/runtime matrix, ownership/thread tests, surface/device-loss recovery, OOM terminal behavior, and wgpu 29 versus later same-workload A/B results. No supported cell or dependency adoption result is claimed here.
 
 ## Residual risks
 

@@ -215,7 +215,9 @@ hidden facade, private Python helper, and pinned manylinux wheel evidence; and
 the first Phase-3B slice ships the strict-mode public Matplotlib backend with a
 hybrid-explicit default, as documented in [Getting started](#getting-started-pre-alpha).
 PR #89 additionally records bounded private RenderPacket validation,
-offscreen wgpu line geometry/shader/readback tests, backend-neutral runtime and
+offscreen wgpu line geometry/shader/readback static/source-path checks (no
+GPU execution claimed; real-device readback remains environment-required),
+backend-neutral runtime and
 viewer state-model tests, semantic input routing, a private line-only vector
 PDF sink, and fail-closed benchmark validation. PR #91 adds a bounded logical
 resource cache/lease/fence/device-generation model. These are pre-alpha

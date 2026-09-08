@@ -19,12 +19,15 @@
 //!   (`lumenplot::__private::render_line_png`) — a CPU render-return path with
 //!   no window surface or physical present observation. Both names drive that
 //!   single implemented path until the policy split they name exists.
-//! - `accelerated`: the accepted M1 frame seam
-//!   (`lumenplot_render_api::SceneHandle::resolve_frame`) followed by the
-//!   portable offscreen renderer's GPU submission and blocking readback. The
-//!   scheduler interval ends at readback return, not a display present; GPU
-//!   timestamps, queue-domain timestamps, and scanout remain unavailable and
-//!   are emitted as null.
+//! - `accelerated`: the validated owner entry over the M1 frame seam
+//!   (`lumenplot_render_api::SceneHandle::resolve_frame` rebuilt into a
+//!   validated owner `RenderPacket`) followed by the portable offscreen
+//!   renderer's validated submission (`render_validated`) and blocking
+//!   readback. The direct M1 `render` entry is never used on this path, so
+//!   stale scene/work/device generations cannot bypass the immutable packet
+//!   boundary. The scheduler interval ends at readback return, not a display
+//!   present; GPU timestamps, queue-domain timestamps, and scanout remain
+//!   unavailable and are emitted as null.
 //! - `native`: no implementation exists on this host family, so the runner
 //!   refuses before producing any artifact (exit code 2). A run that
 //!   executed zero frames can never satisfy the manifest schema (every block
@@ -45,6 +48,9 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lumenplot_engine::bridge::{SrgbRgba8, Viewport};
+use lumenplot_render_api::__internal::{
+    DeviceGeneration, RenderPacketBuilder, SceneRevision, WorkGeneration,
+};
 use lumenplot_render_api::SceneHandle;
 use lumenplot_render_wgpu::Renderer;
 
@@ -443,12 +449,8 @@ fn run_block_in_process(
             let spec = accelerated_spec.as_ref().expect("accelerated spec");
             let renderer = accelerated_renderer.as_mut().expect("accelerated renderer");
             for _ in 0..WARMUP_FRAMES {
-                let packet = scene
-                    .resolve_frame(spec)
-                    .map_err(|error| format!("accelerated warm-up resolution failed: {error}"))?;
-                renderer
-                    .render(&packet)
-                    .map_err(|error| format!("accelerated warm-up render failed: {error}"))?;
+                render_validated_frame(scene, spec, renderer)
+                    .map_err(|error| format!("accelerated warm-up {error}"))?;
             }
         }
         _ => {
@@ -464,10 +466,10 @@ fn run_block_in_process(
     match profile {
         Profile::Accelerated => {
             // The scene and renderer are retained for the block: each measured
-            // frame resolves a packet and submits it to the portable offscreen
-            // renderer, whose blocking readback is the measured boundary. No
-            // window surface or physical display-present operation exists in
-            // this path.
+            // frame resolves a validated owner packet and submits it through
+            // the portable offscreen renderer's validated entry, whose
+            // blocking readback is the measured boundary. No window surface
+            // or physical display-present operation exists in this path.
             let scene = accelerated_scene.as_ref().expect("accelerated scene");
             let spec = accelerated_spec.as_ref().expect("accelerated spec");
             let renderer = accelerated_renderer.as_mut().expect("accelerated renderer");
@@ -476,12 +478,7 @@ fn run_block_in_process(
                 // for the whole block; setup and pipeline warm-up are outside
                 // the measured interval.
                 let (clocks, resolved) = board.observe_frame(|| {
-                    let packet = scene
-                        .resolve_frame(spec)
-                        .map_err(|error| format!("frame resolution failed: {error}"))?;
-                    renderer
-                        .render(&packet)
-                        .map_err(|error| format!("offscreen render failed: {error}"))?;
+                    render_validated_frame(scene, spec, renderer)?;
                     Ok::<(), String>(())
                 });
                 if let Err(error) = resolved {
@@ -623,6 +620,37 @@ fn build_frame_spec() -> Result<lumenplot_render_api::FrameSpec, String> {
         SrgbRgba8::new(255, 255, 255, 255),
     )
     .map_err(|error| format!("fixture seam spec rejected: {}", error.message()))
+}
+
+/// Resolve one validated owner packet and submit it through the hidden M2
+/// handoff (`render_validated`), never the public M1 `render` entry.
+///
+/// The M1 `FramePacket` from `SceneHandle::resolve_frame` is rebuilt into a
+/// `RenderPacket` with the same initial owner generations that
+/// `resolve_frame` uses internally, then revalidated at the renderer
+/// boundary. Caller-supplied generations per the M2 contract stand; the
+/// renderer owns no `DeviceGeneration` in this slice. The produced
+/// offscreen frame is discarded: this harness measures scheduler acceptance
+/// through readback return, not decoded pixels (pixel oracle coverage lives
+/// in the render-wgpu offscreen harness, not here).
+fn render_validated_frame(
+    scene: &SceneHandle,
+    spec: &lumenplot_render_api::FrameSpec,
+    renderer: &mut Renderer,
+) -> Result<(), String> {
+    let frame = scene
+        .resolve_frame(spec)
+        .map_err(|error| format!("frame resolution failed: {error}"))?;
+    let work = WorkGeneration::initial();
+    let device = DeviceGeneration::initial();
+    let builder = RenderPacketBuilder::new(work, device);
+    let packet = builder
+        .build(frame, work, device)
+        .map_err(|error| format!("validated packet build failed: {error}"))?;
+    renderer
+        .render_validated(&packet, SceneRevision::initial(), work, device)
+        .map(|_| ())
+        .map_err(|error| format!("validated offscreen render failed: {error}"))
 }
 
 /// Derive the per-block A/B ordering seed from the pinned bootstrap seed and
