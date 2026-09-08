@@ -147,8 +147,8 @@ class RequirementsTraceabilityCheckerTests(unittest.TestCase):
         diagnostics = result.stdout + result.stderr
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("status partition mismatch", diagnostics)
-        self.assertIn("Implemented (bounded)=20", diagnostics)
-        self.assertIn("Not implemented=144", diagnostics)
+        self.assertIn("Implemented (bounded)=23", diagnostics)
+        self.assertIn("Not implemented=142", diagnostics)
 
     def test_evidence_gate_count_mismatch_is_reported(self) -> None:
         with self._controlled_documents() as (requirements, traceability):
