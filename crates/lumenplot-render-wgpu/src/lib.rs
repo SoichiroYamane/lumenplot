@@ -170,6 +170,73 @@ impl RendererResourceObservations {
     }
 }
 
+// M4-B1 private surface-compatible owner handoff.
+//
+// Headless record of the dimensions and device generation a future
+// license-reviewed surface baseline would present. It preserves the existing
+// validated packet and offscreen seam: construction validates sizes without
+// claiming a surface, and the present entry reports an explicit
+// `SurfaceUnavailable` outcome instead of silently falling back to offscreen
+// output. Physical present remains environment-required.
+#[cfg_attr(not(test), allow(dead_code))]
+const SURFACE_HANDOFF_MAX_DIMENSION: u32 = 16_384;
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SurfaceOwnerHandoff {
+    width: u32,
+    height: u32,
+    device_generation: DeviceGeneration,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl SurfaceOwnerHandoff {
+    fn new(
+        width: u32,
+        height: u32,
+        device_generation: DeviceGeneration,
+    ) -> Result<Self, RenderError> {
+        if width == 0 || height == 0 {
+            return Err(RenderError::new(
+                RenderErrorKind::InvalidInput,
+                "surface handoff size is invalid",
+            ));
+        }
+        if width > SURFACE_HANDOFF_MAX_DIMENSION || height > SURFACE_HANDOFF_MAX_DIMENSION {
+            return Err(RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "surface handoff size exceeds the headless bound",
+            ));
+        }
+        Ok(Self {
+            width,
+            height,
+            device_generation,
+        })
+    }
+
+    const fn dimensions(self) -> [u32; 2] {
+        [self.width, self.height]
+    }
+
+    const fn device_generation(self) -> DeviceGeneration {
+        self.device_generation
+    }
+
+    fn present_unsupported(self) -> RenderError {
+        let _ = self;
+        surface_present_unsupported()
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn surface_present_unsupported() -> RenderError {
+    RenderError::new(
+        RenderErrorKind::SurfaceUnavailable,
+        "surface present transport is unsupported in this headless slice",
+    )
+}
+
 struct RetainedRenderTarget {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -1404,5 +1471,40 @@ mod tests {
             line_shader_provenance().artifact_sha256(),
             "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3"
         );
+    }
+
+    #[test]
+    fn surface_handoff_validates_sizes_and_reports_explicit_unsupported() {
+        assert_eq!(
+            SurfaceOwnerHandoff::new(0, 64, DeviceGeneration::initial())
+                .expect_err("zero width")
+                .kind(),
+            RenderErrorKind::InvalidInput
+        );
+        assert_eq!(
+            SurfaceOwnerHandoff::new(
+                SURFACE_HANDOFF_MAX_DIMENSION + 1,
+                64,
+                DeviceGeneration::initial()
+            )
+            .expect_err("oversized handoff")
+            .kind(),
+            RenderErrorKind::CapacityExceeded
+        );
+
+        let handoff =
+            SurfaceOwnerHandoff::new(320, 240, DeviceGeneration::initial()).expect("handoff");
+        assert_eq!(handoff.dimensions(), [320, 240]);
+        assert_eq!(handoff.device_generation(), DeviceGeneration::initial());
+        let unsupported = handoff.present_unsupported();
+        assert_eq!(unsupported.kind(), RenderErrorKind::SurfaceUnavailable);
+        assert!(!unsupported.message().is_empty());
+        assert_eq!(
+            surface_present_unsupported().kind(),
+            RenderErrorKind::SurfaceUnavailable
+        );
+        // The offscreen seam is preserved: static provenance still verifies
+        // and no surface is claimed by construction.
+        verify_line_shader_artifact().expect("offscreen seam preserved");
     }
 }

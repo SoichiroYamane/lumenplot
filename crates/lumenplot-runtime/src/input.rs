@@ -1023,6 +1023,419 @@ pub(crate) fn route_with_motion(
     route(event, state)
 }
 
+// M4-B1 private host-event normalization plus headless view application.
+//
+// Hosts supply raw numeric reports; this layer maps them to the normalized
+// gesture/key events above without inferring drags, clicks, double clicks, or
+// trackpad gestures from a time-ordered stream and without consulting a
+// clock. Pointer-coordinate conversion, drag state, and double-click timing
+// policy remain future work and are never claimed here. View math below is a
+// deterministic headless step (fixed fractions around the center) so
+// pan/zoom/box/Home/history/cancel/focus can be exercised with exactly-once
+// history semantics; real pointer-anchored geometry remains a later layer.
+// Cursor/measurement, Legend/annotation state, text, and accessibility work
+// are M5 and are never added here. `PlotScene` stays outside this crate: the
+// caller applies a returned viewport through its own transaction and records
+// exactly one revision per committed semantic transition.
+
+/// Raw pointer report from a host event source.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct HostPointerReport {
+    phase_code: u8,
+    button_code: Option<u16>,
+    modifier_bits: u8,
+    target_code: u8,
+    target_key: u64,
+}
+
+impl HostPointerReport {
+    /// Constructs a raw host pointer report.
+    pub(crate) const fn new(
+        phase_code: u8,
+        button_code: Option<u16>,
+        modifier_bits: u8,
+        target_code: u8,
+        target_key: u64,
+    ) -> Self {
+        Self {
+            phase_code,
+            button_code,
+            modifier_bits,
+            target_code,
+            target_key,
+        }
+    }
+
+    /// Normalizes this report to a gesture-level event without timing inference.
+    pub(crate) const fn normalize(self) -> Result<PointerEvent, InputRouteError> {
+        let Some(phase) = decode_pointer_phase(self.phase_code) else {
+            return Err(InputRouteError::new(
+                InputRouteErrorKind::UnsupportedPointerPhase,
+                "host pointer phase code is outside the accepted matrix",
+            ));
+        };
+        let button = match self.button_code {
+            None => None,
+            Some(0) => Some(PointerButton::Left),
+            Some(1) => Some(PointerButton::Right),
+            Some(2) => Some(PointerButton::Middle),
+            Some(other) => Some(PointerButton::Other(other)),
+        };
+        let Some(modifiers) = ModifierKeys::from_bits(self.modifier_bits) else {
+            return Err(InputRouteError::new(
+                InputRouteErrorKind::UnsupportedModifierCombination,
+                "host modifier bits are outside the accepted matrix",
+            ));
+        };
+        let target = match self.target_code {
+            0 => PointerTarget::PlotBackground,
+            1 => PointerTarget::Series(self.target_key),
+            2 => PointerTarget::XAxis,
+            3 => PointerTarget::YAxis,
+            4 => PointerTarget::Legend,
+            5 => PointerTarget::LegendEntry(self.target_key),
+            6 => PointerTarget::Annotation(self.target_key),
+            7 => PointerTarget::Other,
+            _ => {
+                return Err(InputRouteError::new(
+                    InputRouteErrorKind::UnsupportedPointerTarget,
+                    "host pointer target code is outside the accepted matrix",
+                ));
+            }
+        };
+        Ok(PointerEvent::new(phase, button, modifiers, target))
+    }
+}
+
+const fn decode_pointer_phase(code: u8) -> Option<PointerPhase> {
+    match code {
+        0 => Some(PointerPhase::Hover),
+        1 => Some(PointerPhase::Drag),
+        2 => Some(PointerPhase::Click),
+        3 => Some(PointerPhase::DoubleClick),
+        4 => Some(PointerPhase::Wheel),
+        5 => Some(PointerPhase::Trackpad),
+        6 => Some(PointerPhase::Cancel),
+        7 => Some(PointerPhase::Press),
+        8 => Some(PointerPhase::Move),
+        9 => Some(PointerPhase::Release),
+        _ => None,
+    }
+}
+
+/// Raw keyboard report from a host event source.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct HostKeyboardReport {
+    key_code: u32,
+    modifier_bits: u8,
+}
+
+impl HostKeyboardReport {
+    /// Constructs a raw host keyboard report.
+    pub(crate) const fn new(key_code: u32, modifier_bits: u8) -> Self {
+        Self {
+            key_code,
+            modifier_bits,
+        }
+    }
+
+    /// Normalizes this report to a key-press event.
+    pub(crate) const fn normalize(self) -> Result<KeyboardEvent, InputRouteError> {
+        let key = match self.key_code {
+            0 => KeyboardKey::ArrowLeft,
+            1 => KeyboardKey::ArrowRight,
+            2 => KeyboardKey::ArrowUp,
+            3 => KeyboardKey::ArrowDown,
+            4 => KeyboardKey::PageUp,
+            5 => KeyboardKey::PageDown,
+            6 => KeyboardKey::Home,
+            7 => KeyboardKey::Tab,
+            8 => KeyboardKey::Enter,
+            9 => KeyboardKey::Space,
+            10 => KeyboardKey::Escape,
+            11 => KeyboardKey::Delete,
+            12 => KeyboardKey::A,
+            13 => KeyboardKey::C,
+            14 => KeyboardKey::E,
+            15 => KeyboardKey::G,
+            16 => KeyboardKey::L,
+            17 => KeyboardKey::R,
+            18 => KeyboardKey::V,
+            other => KeyboardKey::Other(other),
+        };
+        let Some(modifiers) = ModifierKeys::from_bits(self.modifier_bits) else {
+            return Err(InputRouteError::new(
+                InputRouteErrorKind::UnsupportedKeyboardModifiers,
+                "host modifier bits are outside the accepted matrix",
+            ));
+        };
+        Ok(KeyboardEvent::new(key, modifiers))
+    }
+}
+
+/// Maximum retained view-history entries for the headless B1 slice.
+pub(crate) const VIEW_HISTORY_LIMIT: usize = 64;
+
+/// Headless view history with forward-tail truncation on new commits.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ViewHistory {
+    entries: Vec<[f64; 4]>,
+    index: usize,
+}
+
+impl ViewHistory {
+    /// Starts a history at the stored canonical view.
+    pub(crate) fn new(canonical: [f64; 4]) -> Self {
+        Self {
+            entries: vec![canonical],
+            index: 0,
+        }
+    }
+
+    /// Returns the current history entry.
+    pub(crate) fn current(&self) -> [f64; 4] {
+        self.entries[self.index]
+    }
+
+    /// Returns the number of retained entries.
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Pushes a committed view, truncating any forward tail. No-op views
+    /// return `false` and must not advance a scene revision.
+    pub(crate) fn push(&mut self, view: [f64; 4]) -> bool {
+        if self.entries[self.index] == view {
+            return false;
+        }
+        self.entries.truncate(self.index + 1);
+        self.entries.push(view);
+        self.index += 1;
+        if self.entries.len() > VIEW_HISTORY_LIMIT {
+            self.entries.remove(0);
+            self.index -= 1;
+        }
+        true
+    }
+
+    /// Steps to the previous entry, if any.
+    pub(crate) fn previous(&mut self) -> Option<[f64; 4]> {
+        if self.index == 0 {
+            None
+        } else {
+            self.index -= 1;
+            Some(self.entries[self.index])
+        }
+    }
+
+    /// Steps to the next entry, if any.
+    pub(crate) fn next(&mut self) -> Option<[f64; 4]> {
+        if self.index + 1 >= self.entries.len() {
+            None
+        } else {
+            self.index += 1;
+            Some(self.entries[self.index])
+        }
+    }
+}
+
+/// Applies a deterministic headless pan step (one tenth of the span).
+pub(crate) const fn pan_viewport(current: [f64; 4], axis: AxisRestriction) -> [f64; 4] {
+    let x_shift = (current[1] - current[0]) * 0.1;
+    let y_shift = (current[3] - current[2]) * 0.1;
+    match axis {
+        AxisRestriction::Both => [
+            current[0] + x_shift,
+            current[1] + x_shift,
+            current[2] + y_shift,
+            current[3] + y_shift,
+        ],
+        AxisRestriction::X => [
+            current[0] + x_shift,
+            current[1] + x_shift,
+            current[2],
+            current[3],
+        ],
+        AxisRestriction::Y => [
+            current[0],
+            current[1],
+            current[2] + y_shift,
+            current[3] + y_shift,
+        ],
+    }
+}
+
+/// Applies a deterministic headless zoom step (0.8 around the center).
+pub(crate) const fn zoom_viewport(current: [f64; 4], axis: AxisRestriction) -> [f64; 4] {
+    const FACTOR: f64 = 0.8;
+    let center_x = (current[0] + current[1]) * 0.5;
+    let center_y = (current[2] + current[3]) * 0.5;
+    let half_x = (current[1] - current[0]) * 0.5 * FACTOR;
+    let half_y = (current[3] - current[2]) * 0.5 * FACTOR;
+    match axis {
+        AxisRestriction::Both => [
+            center_x - half_x,
+            center_x + half_x,
+            center_y - half_y,
+            center_y + half_y,
+        ],
+        AxisRestriction::X => [center_x - half_x, center_x + half_x, current[2], current[3]],
+        AxisRestriction::Y => [current[0], current[1], center_y - half_y, center_y + half_y],
+    }
+}
+
+/// Applies a deterministic headless box step (centered half extent).
+pub(crate) const fn box_viewport(current: [f64; 4], axis: AxisRestriction) -> [f64; 4] {
+    let center_x = (current[0] + current[1]) * 0.5;
+    let center_y = (current[2] + current[3]) * 0.5;
+    let quarter_x = (current[1] - current[0]) * 0.25;
+    let quarter_y = (current[3] - current[2]) * 0.25;
+    match axis {
+        AxisRestriction::Both => [
+            center_x - quarter_x,
+            center_x + quarter_x,
+            center_y - quarter_y,
+            center_y + quarter_y,
+        ],
+        AxisRestriction::X => [
+            center_x - quarter_x,
+            center_x + quarter_x,
+            current[2],
+            current[3],
+        ],
+        AxisRestriction::Y => [
+            current[0],
+            current[1],
+            center_y - quarter_y,
+            center_y + quarter_y,
+        ],
+    }
+}
+
+/// Applies a deterministic headless keyboard-navigation step.
+pub(crate) const fn navigate_viewport(
+    current: [f64; 4],
+    direction: NavigationDirection,
+) -> [f64; 4] {
+    let x_shift = (current[1] - current[0]) * 0.1;
+    let y_shift = (current[3] - current[2]) * 0.1;
+    match direction {
+        NavigationDirection::Left => [
+            current[0] - x_shift,
+            current[1] - x_shift,
+            current[2],
+            current[3],
+        ],
+        NavigationDirection::Right => [
+            current[0] + x_shift,
+            current[1] + x_shift,
+            current[2],
+            current[3],
+        ],
+        NavigationDirection::Up => [
+            current[0],
+            current[1],
+            current[2] + y_shift,
+            current[3] + y_shift,
+        ],
+        NavigationDirection::Down => [
+            current[0],
+            current[1],
+            current[2] - y_shift,
+            current[3] - y_shift,
+        ],
+    }
+}
+
+/// Returns the stored canonical view for a Home transition.
+pub(crate) const fn home_viewport(canonical: [f64; 4]) -> [f64; 4] {
+    canonical
+}
+
+/// Advances focus through the B1 headless order (plot then Legend).
+pub(crate) const fn next_focus(current: Option<FocusTarget>) -> Option<FocusTarget> {
+    match current {
+        None => Some(FocusTarget::Plot),
+        Some(FocusTarget::Plot) => Some(FocusTarget::Legend),
+        Some(FocusTarget::Legend) => Some(FocusTarget::Plot),
+        Some(_) => Some(FocusTarget::Plot),
+    }
+}
+
+/// Moves focus backward through the B1 headless order.
+pub(crate) const fn previous_focus(current: Option<FocusTarget>) -> Option<FocusTarget> {
+    match current {
+        None => Some(FocusTarget::Legend),
+        Some(FocusTarget::Plot) => Some(FocusTarget::Legend),
+        Some(FocusTarget::Legend) => Some(FocusTarget::Plot),
+        Some(_) => Some(FocusTarget::Plot),
+    }
+}
+
+/// Buffers consecutive gesture steps so one commit covers one semantic gesture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PendingGesture {
+    base: [f64; 4],
+    pending: Option<[f64; 4]>,
+}
+
+impl PendingGesture {
+    /// Starts a gesture buffer at the current committed view.
+    pub(crate) const fn new(current: [f64; 4]) -> Self {
+        Self {
+            base: current,
+            pending: None,
+        }
+    }
+
+    /// Returns the view under construction, if any.
+    pub(crate) const fn pending(self) -> Option<[f64; 4]> {
+        self.pending
+    }
+
+    /// Buffers one pan step without committing history.
+    pub(crate) const fn buffer_pan(mut self, axis: AxisRestriction) -> Self {
+        let current = match self.pending {
+            Some(view) => view,
+            None => self.base,
+        };
+        self.pending = Some(pan_viewport(current, axis));
+        self
+    }
+
+    /// Buffers one navigation step without committing history.
+    pub(crate) const fn buffer_navigate(mut self, direction: NavigationDirection) -> Self {
+        let current = match self.pending {
+            Some(view) => view,
+            None => self.base,
+        };
+        self.pending = Some(navigate_viewport(current, direction));
+        self
+    }
+
+    /// Discards buffered steps without touching history.
+    pub(crate) const fn cancel(mut self) -> Self {
+        self.pending = None;
+        self
+    }
+
+    /// Commits buffered steps as at most one history entry. Returns `true`
+    /// only when history advanced and the caller must advance its scene
+    /// revision exactly once.
+    pub(crate) fn commit(&mut self, history: &mut ViewHistory) -> bool {
+        let Some(view) = self.pending else {
+            return false;
+        };
+        self.pending = None;
+        if history.push(view) {
+            self.base = view;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1842,5 +2255,239 @@ mod tests {
         assert_eq!(pointer_event.button(), None);
         assert_eq!(pointer_event.modifiers(), ModifierKeys::NONE);
         assert_eq!(pointer_event.target(), PointerTarget::YAxis);
+    }
+
+    #[test]
+    fn host_pointer_reports_normalize_without_timing_inference() {
+        let drag = HostPointerReport::new(1, Some(0), 0, 0, 0)
+            .normalize()
+            .expect("drag report");
+        assert_eq!(drag.phase(), PointerPhase::Drag);
+        assert_eq!(drag.button(), Some(PointerButton::Left));
+        assert_eq!(drag.target(), PointerTarget::PlotBackground);
+        assert_eq!(
+            route_pointer(drag).expect("drag route"),
+            SemanticAction::Pan {
+                axis: AxisRestriction::Both,
+            }
+        );
+
+        let box_drag = HostPointerReport::new(1, Some(0), 1, 0, 0)
+            .normalize()
+            .expect("box report");
+        assert_eq!(
+            route_pointer(box_drag).expect("box route"),
+            SemanticAction::BoxZoom {
+                axis: AxisRestriction::Both,
+            }
+        );
+
+        let wheel = HostPointerReport::new(4, None, 0, 1, 7)
+            .normalize()
+            .expect("wheel report");
+        assert_eq!(
+            route_pointer(wheel).expect("wheel route"),
+            SemanticAction::Zoom {
+                axis: AxisRestriction::Both,
+                anchor: ZoomAnchor::Pointer,
+            }
+        );
+
+        // Raw press/move/release normalize but never route: hosts must supply
+        // an explicit gesture phase.
+        for code in [7, 8, 9] {
+            let raw = HostPointerReport::new(code, Some(0), 0, 0, 0)
+                .normalize()
+                .expect("raw phase normalizes");
+            assert_eq!(
+                route_pointer(raw)
+                    .expect_err("raw phase must not route")
+                    .kind(),
+                InputRouteErrorKind::UnsupportedPointerPhase
+            );
+        }
+
+        assert_eq!(
+            HostPointerReport::new(99, None, 0, 0, 0)
+                .normalize()
+                .expect_err("unknown phase")
+                .kind(),
+            InputRouteErrorKind::UnsupportedPointerPhase
+        );
+        assert_eq!(
+            HostPointerReport::new(1, Some(0), 0, 99, 0)
+                .normalize()
+                .expect_err("unknown target")
+                .kind(),
+            InputRouteErrorKind::UnsupportedPointerTarget
+        );
+        assert_eq!(
+            HostPointerReport::new(1, Some(0), 0b1_0000, 0, 0)
+                .normalize()
+                .expect_err("unknown modifiers")
+                .kind(),
+            InputRouteErrorKind::UnsupportedModifierCombination
+        );
+    }
+
+    #[test]
+    fn host_keyboard_reports_normalize_with_checked_modifiers() {
+        let home = HostKeyboardReport::new(6, 0)
+            .normalize()
+            .expect("home report");
+        assert_eq!(home.key(), KeyboardKey::Home);
+        assert_eq!(
+            route_keyboard(home, TransientUiState::new()).expect("home route"),
+            SemanticAction::Home
+        );
+
+        let focus_next = HostKeyboardReport::new(7, 0)
+            .normalize()
+            .expect("tab report");
+        assert_eq!(
+            route_keyboard(focus_next, TransientUiState::new()).expect("focus route"),
+            SemanticAction::MoveFocus {
+                direction: FocusDirection::Next,
+            }
+        );
+
+        let other = HostKeyboardReport::new(0xdead, 0)
+            .normalize()
+            .expect("unknown key normalizes");
+        assert_eq!(
+            route_keyboard(other, TransientUiState::new())
+                .expect_err("unknown key")
+                .kind(),
+            InputRouteErrorKind::UnsupportedKeyboardKey
+        );
+        assert_eq!(
+            HostKeyboardReport::new(6, 0b1_0000)
+                .normalize()
+                .expect_err("unknown modifiers")
+                .kind(),
+            InputRouteErrorKind::UnsupportedKeyboardModifiers
+        );
+    }
+
+    #[test]
+    fn view_history_truncates_forward_tail_and_rejects_noops() {
+        let canonical = [0.0, 10.0, 0.0, 10.0];
+        let first = [1.0, 9.0, 1.0, 9.0];
+        let second = [2.0, 8.0, 2.0, 8.0];
+        let third = [3.0, 7.0, 3.0, 7.0];
+        let mut history = ViewHistory::new(canonical);
+        assert_eq!(history.current(), canonical);
+        assert_eq!(history.len(), 1);
+
+        assert!(history.push(first));
+        assert!(history.push(second));
+        assert_eq!(history.len(), 3);
+        assert!(
+            !history.push(second),
+            "no-op commits must not advance history"
+        );
+
+        assert_eq!(history.previous(), Some(first));
+        assert_eq!(history.current(), first);
+        // A new commit truncates the forward tail.
+        assert!(history.push(third));
+        assert_eq!(history.len(), 3);
+        assert_eq!(history.current(), third);
+        assert_eq!(history.next(), None);
+        assert_eq!(history.previous(), Some(first));
+        assert_eq!(history.previous(), Some(canonical));
+        assert_eq!(history.previous(), None);
+    }
+
+    #[test]
+    fn headless_view_steps_are_deterministic_and_axis_scoped() {
+        let current = [0.0, 10.0, 0.0, 10.0];
+        assert_eq!(
+            pan_viewport(current, AxisRestriction::Both),
+            [1.0, 11.0, 1.0, 11.0]
+        );
+        assert_eq!(
+            pan_viewport(current, AxisRestriction::X),
+            [1.0, 11.0, 0.0, 10.0]
+        );
+        assert_eq!(
+            pan_viewport(current, AxisRestriction::Y),
+            [0.0, 10.0, 1.0, 11.0]
+        );
+        assert_eq!(
+            zoom_viewport(current, AxisRestriction::Both),
+            [1.0, 9.0, 1.0, 9.0]
+        );
+        assert_eq!(
+            box_viewport(current, AxisRestriction::Both),
+            [2.5, 7.5, 2.5, 7.5]
+        );
+        assert_eq!(
+            navigate_viewport(current, NavigationDirection::Left),
+            [-1.0, 9.0, 0.0, 10.0]
+        );
+        assert_eq!(
+            navigate_viewport(current, NavigationDirection::Up),
+            [0.0, 10.0, 1.0, 11.0]
+        );
+        assert_eq!(home_viewport(current), current);
+        assert_eq!(VIEW_HISTORY_LIMIT, 64);
+    }
+
+    #[test]
+    fn pending_gesture_coalesces_to_exactly_one_history_entry_and_cancel_is_free() {
+        let canonical = [0.0, 10.0, 0.0, 10.0];
+        let mut history = ViewHistory::new(canonical);
+        let mut gesture = PendingGesture::new(canonical);
+        assert_eq!(gesture.pending(), None);
+
+        gesture = gesture.buffer_pan(AxisRestriction::Both);
+        let once = gesture.pending().expect("buffered pan");
+        gesture = gesture.buffer_navigate(NavigationDirection::Right);
+        let twice = gesture.pending().expect("buffered navigation");
+        assert_ne!(once, twice);
+
+        assert!(gesture.commit(&mut history), "one commit for two buffers");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.current(), twice);
+        assert_eq!(gesture.pending(), None);
+        assert!(
+            !gesture.commit(&mut history),
+            "empty commit advances nothing"
+        );
+
+        let mut cancelled = PendingGesture::new(twice).buffer_pan(AxisRestriction::X);
+        assert!(cancelled.pending().is_some());
+        cancelled = cancelled.cancel();
+        assert_eq!(cancelled.pending(), None);
+        assert!(
+            !cancelled.commit(&mut history),
+            "cancel leaves history alone"
+        );
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn focus_cycle_is_explicit_and_bounded() {
+        assert_eq!(next_focus(None), Some(FocusTarget::Plot));
+        assert_eq!(
+            next_focus(Some(FocusTarget::Plot)),
+            Some(FocusTarget::Legend)
+        );
+        assert_eq!(
+            next_focus(Some(FocusTarget::Legend)),
+            Some(FocusTarget::Plot)
+        );
+        assert_eq!(previous_focus(None), Some(FocusTarget::Legend));
+        assert_eq!(
+            previous_focus(Some(FocusTarget::Plot)),
+            Some(FocusTarget::Legend)
+        );
+        // Keyed targets collapse to the headless order; full Legend focus
+        // state remains M5.
+        assert_eq!(
+            next_focus(Some(FocusTarget::LegendEntry(4))),
+            Some(FocusTarget::Plot)
+        );
     }
 }

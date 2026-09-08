@@ -1321,6 +1321,137 @@ impl EngineSession {
     }
 }
 
+// M4-B1 private headless native transport seam.
+//
+// Headless, dependency-free model of the one-surface native-owned path that a
+// future license-reviewed baseline will drive. It composes the existing public
+// lifecycle primitives (create/resize/suspend/resume/loss/recreate plus
+// session-wide device-loss/OOM/close) and the existing submit path
+// (occlusion/timeout/reconfigure/stale gating) without adding a public API, a
+// dependency, or a physical present claim. Initial configure is the existing
+// `create_surface`; later configure is `resize`. Physical present, OS event
+// source, and platform matrix remain environment-required and are never
+// claimed from this seam.
+#[cfg_attr(not(test), allow(dead_code))]
+const NATIVE_TRANSPORT_SINGLE_SURFACE_LIMIT: usize = 1;
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeEvent {
+    Configure([u32; 2]),
+    Resize([u32; 2]),
+    Suspend,
+    Resume,
+    SurfaceLost,
+    Recreate,
+    DeviceLost,
+    OutOfMemory,
+    CloseRequest,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativePresent {
+    Presented,
+    Reconfigured,
+    Skipped(SkipReason),
+    StaleDropped,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl NativePresent {
+    const fn from_submission(outcome: SubmissionOutcome) -> Self {
+        match outcome {
+            SubmissionOutcome::Ready => Self::Presented,
+            SubmissionOutcome::Reconfigured => Self::Reconfigured,
+            SubmissionOutcome::Skipped(reason) => Self::Skipped(reason),
+            SubmissionOutcome::StaleDropped => Self::StaleDropped,
+        }
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct NativeTransport {
+    close_requested: bool,
+    presents: u64,
+    reconfigures: u64,
+    skips: u64,
+    stale_drops: u64,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl NativeTransport {
+    const fn new() -> Self {
+        Self {
+            close_requested: false,
+            presents: 0,
+            reconfigures: 0,
+            skips: 0,
+            stale_drops: 0,
+        }
+    }
+
+    const fn is_close_requested(self) -> bool {
+        self.close_requested
+    }
+
+    fn drive(
+        &mut self,
+        session: &mut EngineSession,
+        id: SurfaceId,
+        event: NativeEvent,
+    ) -> Result<LifecycleOutcome, RuntimeError> {
+        ensure_single_native_surface(session)?;
+        // Session-wide transitions still name one owned surface so the
+        // one-surface scope stays explicit; the id is otherwise unused for
+        // device, memory, and close transitions.
+        match event {
+            NativeEvent::Configure(size) | NativeEvent::Resize(size) => session.resize(id, size),
+            NativeEvent::Suspend => session.suspend(id),
+            NativeEvent::Resume => session.resume(id),
+            NativeEvent::SurfaceLost => session.handle_surface_loss(id),
+            NativeEvent::Recreate => session.recreate_surface(id),
+            NativeEvent::DeviceLost => session.handle_device_loss(),
+            NativeEvent::OutOfMemory => session.handle_out_of_memory(),
+            NativeEvent::CloseRequest => {
+                self.close_requested = true;
+                session.close()
+            }
+        }
+    }
+
+    fn present(
+        &mut self,
+        session: &mut EngineSession,
+        id: SurfaceId,
+        token: SubmissionToken,
+        condition: SurfaceCondition,
+    ) -> Result<NativePresent, RuntimeError> {
+        ensure_single_native_surface(session)?;
+        let outcome = session.submit(id, token, condition)?;
+        let present = NativePresent::from_submission(outcome);
+        match present {
+            NativePresent::Presented => self.presents += 1,
+            NativePresent::Reconfigured => self.reconfigures += 1,
+            NativePresent::Skipped(_) => self.skips += 1,
+            NativePresent::StaleDropped => self.stale_drops += 1,
+        }
+        Ok(present)
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn ensure_single_native_surface(session: &EngineSession) -> Result<(), RuntimeError> {
+    if session.surface_count() > NATIVE_TRANSPORT_SINGLE_SURFACE_LIMIT {
+        return Err(RuntimeError::new(
+            RuntimeErrorKind::UnsupportedCapability,
+            "native transport slice owns at most one surface",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_surface_size(size: [u32; 2]) -> Result<(), RuntimeError> {
     if size[0] == 0
         || size[1] == 0
@@ -2009,5 +2140,295 @@ mod tests {
             RuntimeErrorKind::ResourceInvalid
         );
         assert_eq!(queue.pending_len(), 1);
+    }
+
+    #[test]
+    fn native_transport_single_surface_lifecycle_matrix_is_headless_and_observable() {
+        let mut session = EngineSession::new(LoopMode::NativeOwned);
+        assert_eq!(
+            session.run_native_loop().expect("native entry"),
+            LoopOutcome::NativeLoopEntered
+        );
+        let id = session.create_surface([64, 64]).expect("initial configure");
+        let mut transport = NativeTransport::new();
+        assert!(!transport.is_close_requested());
+
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::Configure([128, 128]))
+                .expect("configure"),
+            LifecycleOutcome::Resized
+        );
+        assert_eq!(
+            session.surface_state(id).expect("pending"),
+            SurfaceState::ReconfigurePending
+        );
+        let token = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, token, SurfaceCondition::Ready)
+                .expect("present"),
+            NativePresent::Reconfigured
+        );
+        assert_eq!(transport.reconfigures, 1);
+
+        let token = session
+            .begin_submission(SceneRevision::new(2))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, token, SurfaceCondition::Ready)
+                .expect("present"),
+            NativePresent::Presented
+        );
+        assert_eq!(transport.presents, 1);
+
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::Suspend)
+                .expect("suspend"),
+            LifecycleOutcome::Suspended
+        );
+        let token = session
+            .begin_submission(SceneRevision::new(3))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, token, SurfaceCondition::Ready)
+                .expect("suspended present"),
+            NativePresent::Skipped(SkipReason::Suspended)
+        );
+        assert_eq!(transport.skips, 1);
+
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::Resume)
+                .expect("resume"),
+            LifecycleOutcome::Resumed
+        );
+        let token = session
+            .begin_submission(SceneRevision::new(4))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, token, SurfaceCondition::Ready)
+                .expect("present"),
+            NativePresent::Reconfigured
+        );
+
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::SurfaceLost)
+                .expect("loss"),
+            LifecycleOutcome::SurfaceLost
+        );
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::Recreate)
+                .expect("recreate"),
+            LifecycleOutcome::SurfaceRecreated
+        );
+        let token = session
+            .begin_submission(SceneRevision::new(5))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, token, SurfaceCondition::Ready)
+                .expect("present"),
+            NativePresent::Reconfigured
+        );
+
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::CloseRequest)
+                .expect("close"),
+            LifecycleOutcome::CloseRequested
+        );
+        assert!(transport.is_close_requested());
+        assert!(session.is_closed());
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::CloseRequest)
+                .expect("repeat close"),
+            LifecycleOutcome::AlreadyClosed
+        );
+        assert_eq!(
+            session
+                .create_surface([64, 64])
+                .expect_err("no resurrection")
+                .kind(),
+            RuntimeErrorKind::Closed
+        );
+        assert_eq!(
+            session.run_native_loop().expect_err("closed loop").kind(),
+            RuntimeErrorKind::Closed
+        );
+    }
+
+    #[test]
+    fn native_transport_present_mapping_and_stale_gating_are_explicit() {
+        let mut session = EngineSession::new(LoopMode::NativeOwned);
+        session.run_native_loop().expect("native entry");
+        let id = session.create_surface([64, 64]).expect("surface");
+        let mut transport = NativeTransport::new();
+
+        transport
+            .drive(&mut session, id, NativeEvent::Resize([96, 96]))
+            .expect("resize");
+        let first = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("first token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, first, SurfaceCondition::Occluded)
+                .expect("occlusion"),
+            NativePresent::Skipped(SkipReason::Occluded)
+        );
+        assert_eq!(
+            transport
+                .present(&mut session, id, first, SurfaceCondition::Timeout)
+                .expect("timeout"),
+            NativePresent::Skipped(SkipReason::Timeout)
+        );
+        // Occlusion and timeout skip without a busy retry and never report a
+        // present.
+        assert_eq!(transport.skips, 2);
+        assert_eq!(transport.presents, 0);
+
+        let second = session
+            .begin_submission(SceneRevision::new(2))
+            .expect("second token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, first, SurfaceCondition::Ready)
+                .expect("stale scene"),
+            NativePresent::StaleDropped
+        );
+        assert_eq!(transport.stale_drops, 1);
+        assert_eq!(
+            transport
+                .present(&mut session, id, second, SurfaceCondition::Ready)
+                .expect("fresh present"),
+            NativePresent::Reconfigured
+        );
+
+        transport
+            .drive(&mut session, id, NativeEvent::Resize([128, 128]))
+            .expect("resize");
+        assert_eq!(
+            transport
+                .present(&mut session, id, second, SurfaceCondition::Ready)
+                .expect("stale work"),
+            NativePresent::StaleDropped
+        );
+        assert_eq!(transport.stale_drops, 2);
+    }
+
+    #[test]
+    fn native_transport_single_surface_gate_and_terminal_oom_have_no_resurrection() {
+        let mut session = EngineSession::new(LoopMode::NativeOwned);
+        session.run_native_loop().expect("native entry");
+        let first = session.create_surface([64, 64]).expect("first");
+        let second = session.create_surface([32, 32]).expect("second");
+        let mut transport = NativeTransport::new();
+        assert_eq!(
+            transport
+                .drive(&mut session, first, NativeEvent::Suspend)
+                .expect_err("multi-surface gate")
+                .kind(),
+            RuntimeErrorKind::UnsupportedCapability
+        );
+        let token = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, first, token, SurfaceCondition::Ready)
+                .expect_err("multi-surface present gate")
+                .kind(),
+            RuntimeErrorKind::UnsupportedCapability
+        );
+        // The public multi-surface records remain, but the B1 native slice
+        // refuses to drive them.
+        assert_eq!(session.surface_count(), 2);
+        let _ = second;
+
+        let mut single = EngineSession::new(LoopMode::NativeOwned);
+        single.run_native_loop().expect("native entry");
+        let id = single.create_surface([64, 64]).expect("surface");
+        let mut transport = NativeTransport::new();
+        assert_eq!(
+            transport
+                .drive(&mut single, id, NativeEvent::OutOfMemory)
+                .expect("oom"),
+            LifecycleOutcome::TerminalOutOfMemory
+        );
+        let token = SubmissionToken {
+            scene_revision: SceneRevision::new(9),
+            work_generation: single.work_generation(),
+            device_generation: single.device_generation(),
+        };
+        assert_eq!(
+            transport
+                .present(&mut single, id, token, SurfaceCondition::Ready)
+                .expect_err("oom rejects present")
+                .kind(),
+            RuntimeErrorKind::OutOfMemory
+        );
+        assert_eq!(
+            transport
+                .drive(&mut single, id, NativeEvent::DeviceLost)
+                .expect_err("oom blocks device transitions")
+                .kind(),
+            RuntimeErrorKind::OutOfMemory
+        );
+        assert_eq!(
+            transport
+                .drive(&mut single, id, NativeEvent::CloseRequest)
+                .expect("close after oom"),
+            LifecycleOutcome::CloseRequested
+        );
+        assert!(single.is_closed());
+        assert_eq!(
+            single
+                .create_surface([64, 64])
+                .expect_err("no resurrection")
+                .kind(),
+            RuntimeErrorKind::Closed
+        );
+    }
+
+    #[test]
+    #[ignore = "environment required: real native loop, surface, and present cell needed; headless logic is covered above and physical present is never claimed here"]
+    fn declared_environment_launch_smoke_is_harness_ready() {
+        let mut session = EngineSession::new(LoopMode::NativeOwned);
+        assert_eq!(
+            session.run_native_loop().expect("native entry"),
+            LoopOutcome::NativeLoopEntered
+        );
+        let id = session.create_surface([320, 240]).expect("surface");
+        let mut transport = NativeTransport::new();
+        transport
+            .drive(&mut session, id, NativeEvent::Configure([640, 480]))
+            .expect("configure");
+        let token = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("token");
+        let present = transport
+            .present(&mut session, id, token, SurfaceCondition::Ready)
+            .expect("headless present");
+        assert!(matches!(
+            present,
+            NativePresent::Reconfigured | NativePresent::Presented
+        ));
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::CloseRequest)
+                .expect("close"),
+            LifecycleOutcome::CloseRequested
+        );
+        assert!(session.is_closed());
     }
 }
