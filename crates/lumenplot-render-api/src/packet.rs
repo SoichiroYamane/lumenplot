@@ -619,6 +619,15 @@ fn validate_frame(frame: &FramePacket) -> Result<FrameStats, PacketValidationErr
         ));
     }
 
+    if let Some(three_d) = frame.three_d()
+        && !three_d.validate_for_canvas(canvas_width, canvas_height)
+    {
+        return Err(PacketValidationError::new(
+            PacketValidationErrorKind::FrameInvalid,
+            "packet 3D semantic geometry is invalid",
+        ));
+    }
+
     if frame.series.len() > MAX_FRAME_SERIES {
         return Err(PacketValidationError::new(
             PacketValidationErrorKind::CapacityExceeded,
@@ -802,6 +811,70 @@ mod tests {
         builder
             .build(fixture_frame(point_count), WORK, DEVICE_GENERATION)
             .expect("packet")
+    }
+
+    #[test]
+    fn semantic_3d_facts_cross_the_owner_packet_boundary_without_new_identity() {
+        use crate::frame::{
+            Bounds3D, Line3DGeometry, Point3D, Projection3D, Semantic3D, Triangle3DGeometry,
+            ViewFacts3D,
+        };
+
+        let source_line = vec![Point3D::new(0.0, 0.0, 0.0), Point3D::new(1.0, 1.0, 1.0)];
+        let projected_line = vec![
+            PacketPoint::new(100.0, 100.0),
+            PacketPoint::new(200.0, 200.0),
+        ];
+        let line = Line3DGeometry::new(
+            source_line,
+            projected_line,
+            std::iter::once(0..2).collect(),
+            SrgbRgba8::new(220, 30, 40, 255),
+            1.5,
+        )
+        .expect("line");
+        let triangle = Triangle3DGeometry::new(
+            [
+                Point3D::new(0.0, 0.0, 0.0),
+                Point3D::new(1.0, 0.0, 0.0),
+                Point3D::new(0.0, 1.0, 1.0),
+            ],
+            [
+                PacketPoint::new(120.0, 120.0),
+                PacketPoint::new(220.0, 120.0),
+                PacketPoint::new(120.0, 220.0),
+            ],
+            SrgbRgba8::new(30, 120, 220, 255),
+            Some(SrgbRgba8::new(0, 0, 0, 0)),
+            1.0,
+            0,
+            0.25,
+        )
+        .expect("triangle");
+        let semantic = Semantic3D::new(
+            ViewFacts3D::new(Projection3D::Perspective, 30.0, -60.0, 0.0, Some(1.0)).expect("view"),
+            Bounds3D::new([0.0, 1.0], [0.0, 1.0], [0.0, 1.0]).expect("bounds"),
+            Point3D::new(0.5, 0.5, 0.5),
+            vec![line],
+            vec![triangle],
+            vec![0],
+            0.0,
+        )
+        .expect("semantic 3D");
+        let frame = fixture_frame(8).with_three_d(semantic);
+        let packet = RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(frame, WORK, DEVICE_GENERATION)
+            .expect("packet");
+        let three_d = packet.semantic_frame().three_d().expect("3D facts");
+        assert_eq!(three_d.view().projection(), Projection3D::Perspective);
+        assert_eq!(three_d.bounds().z(), [0.0, 1.0]);
+        assert_eq!(three_d.origin().z(), 0.5);
+        assert_eq!(packet.scene_revision(), SceneRevision::initial());
+        assert_eq!(packet.work_generation().value(), WORK.value());
+        assert_eq!(
+            packet.device_generation().value(),
+            DEVICE_GENERATION.value()
+        );
     }
 
     #[test]

@@ -220,6 +220,7 @@ impl SceneHandle {
             line_color: spec.line_color,
             line_width_px: spec.line_width_px,
             series,
+            three_d: None,
         })
     }
 
@@ -329,6 +330,407 @@ impl FrameSpec {
     }
 }
 
+/// Backend-neutral projection mode for the internal 3D semantic frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Projection3D {
+    Perspective,
+    Orthographic,
+}
+
+/// Public semantic view facts; the projection matrix remains renderer-local.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewFacts3D {
+    projection: Projection3D,
+    elevation_deg: f64,
+    azimuth_deg: f64,
+    roll_deg: f64,
+    focal_length: Option<f64>,
+}
+
+impl ViewFacts3D {
+    pub fn new(
+        projection: Projection3D,
+        elevation_deg: f64,
+        azimuth_deg: f64,
+        roll_deg: f64,
+        focal_length: Option<f64>,
+    ) -> Result<Self, FrameSeamError> {
+        if ![elevation_deg, azimuth_deg, roll_deg]
+            .iter()
+            .all(|value| value.is_finite())
+            || focal_length.is_some_and(|value| !value.is_finite() || value <= 0.0)
+            || (matches!(projection, Projection3D::Perspective) && focal_length.is_none())
+            || (matches!(projection, Projection3D::Orthographic) && focal_length.is_some())
+        {
+            return Err(invalid_input("3D view facts are invalid"));
+        }
+        Ok(Self {
+            projection,
+            elevation_deg,
+            azimuth_deg,
+            roll_deg,
+            focal_length,
+        })
+    }
+
+    pub fn projection(self) -> Projection3D {
+        self.projection
+    }
+
+    pub fn elevation_deg(self) -> f64 {
+        self.elevation_deg
+    }
+
+    pub fn azimuth_deg(self) -> f64 {
+        self.azimuth_deg
+    }
+
+    pub fn roll_deg(self) -> f64 {
+        self.roll_deg
+    }
+
+    pub fn focal_length(self) -> Option<f64> {
+        self.focal_length
+    }
+}
+
+/// Canonical f64 x/y/z bound pairs carried by one 3D semantic frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bounds3D {
+    x: [f64; 2],
+    y: [f64; 2],
+    z: [f64; 2],
+}
+
+impl Bounds3D {
+    pub fn new(x: [f64; 2], y: [f64; 2], z: [f64; 2]) -> Result<Self, FrameSeamError> {
+        if [x, y, z].iter().any(|pair| {
+            !pair[0].is_finite()
+                || !pair[1].is_finite()
+                || pair[0] >= pair[1]
+                || !(pair[1] - pair[0]).is_finite()
+        }) {
+            return Err(invalid_input("3D bounds are invalid"));
+        }
+        Ok(Self { x, y, z })
+    }
+
+    pub fn x(self) -> [f64; 2] {
+        self.x
+    }
+
+    pub fn y(self) -> [f64; 2] {
+        self.y
+    }
+
+    pub fn z(self) -> [f64; 2] {
+        self.z
+    }
+}
+
+/// Canonical f64 source coordinate, retained alongside projected geometry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point3D {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+impl Point3D {
+    pub fn new(x: f64, y: f64, z: f64) -> Self {
+        Self { x, y, z }
+    }
+
+    pub fn x(self) -> f64 {
+        self.x
+    }
+
+    pub fn y(self) -> f64 {
+        self.y
+    }
+
+    pub fn z(self) -> f64 {
+        self.z
+    }
+}
+
+#[derive(Clone)]
+pub struct Line3DGeometry {
+    source: Vec<Point3D>,
+    projected: Vec<PacketPoint>,
+    segments: Vec<std::ops::Range<usize>>,
+    color: SrgbRgba8,
+    width_px: f64,
+}
+
+impl Line3DGeometry {
+    pub fn new(
+        source: Vec<Point3D>,
+        projected: Vec<PacketPoint>,
+        segments: Vec<std::ops::Range<usize>>,
+        color: SrgbRgba8,
+        width_px: f64,
+    ) -> Result<Self, FrameSeamError> {
+        let mut previous_end = 0usize;
+        let mut segments_valid = true;
+        for range in &segments {
+            if range.start >= range.end
+                || range.end > source.len()
+                || range.start < previous_end
+                || source[range.start..range.end].iter().any(|point| {
+                    !point.x.is_finite() || !point.y.is_finite() || !point.z.is_finite()
+                })
+            {
+                segments_valid = false;
+                break;
+            }
+            previous_end = range.end;
+        }
+        let source_runs_cover_finite = if segments_valid {
+            let mut cursor = 0usize;
+            let mut valid = true;
+            for range in &segments {
+                if source[cursor..range.start]
+                    .iter()
+                    .any(|point| point.x.is_finite() && point.y.is_finite() && point.z.is_finite())
+                {
+                    valid = false;
+                    break;
+                }
+                cursor = range.end;
+            }
+            valid
+                && !source[cursor..]
+                    .iter()
+                    .any(|point| point.x.is_finite() && point.y.is_finite() && point.z.is_finite())
+        } else {
+            false
+        };
+        let projected_semantics_match = source.iter().zip(&projected).all(|(source, point)| {
+            let source_finite =
+                source.x.is_finite() && source.y.is_finite() && source.z.is_finite();
+            let projected_finite = point.x.is_finite() && point.y.is_finite();
+            let projected_nonfinite = !point.x.is_finite() && !point.y.is_finite();
+            (source_finite == projected_finite) && (projected_finite || projected_nonfinite)
+        });
+        if source.len() != projected.len()
+            || !width_px.is_finite()
+            || width_px < 0.0
+            || !segments_valid
+            || !source_runs_cover_finite
+            || !projected_semantics_match
+        {
+            return Err(invalid_input("3D line geometry is invalid"));
+        }
+        Ok(Self {
+            source,
+            projected,
+            segments,
+            color,
+            width_px,
+        })
+    }
+
+    pub fn source(&self) -> &[Point3D] {
+        &self.source
+    }
+
+    pub fn projected(&self) -> &[PacketPoint] {
+        &self.projected
+    }
+
+    pub fn segments(&self) -> &[std::ops::Range<usize>] {
+        &self.segments
+    }
+
+    pub fn color(&self) -> SrgbRgba8 {
+        self.color
+    }
+
+    pub fn width_px(&self) -> f64 {
+        self.width_px
+    }
+}
+
+#[derive(Clone)]
+pub struct Triangle3DGeometry {
+    source: [Point3D; 3],
+    projected: [PacketPoint; 3],
+    fill: SrgbRgba8,
+    edge: Option<SrgbRgba8>,
+    width_px: f64,
+    source_index: usize,
+    depth: f64,
+}
+
+impl Triangle3DGeometry {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        source: [Point3D; 3],
+        projected: [PacketPoint; 3],
+        fill: SrgbRgba8,
+        edge: Option<SrgbRgba8>,
+        width_px: f64,
+        source_index: usize,
+        depth: f64,
+    ) -> Result<Self, FrameSeamError> {
+        if source
+            .iter()
+            .any(|point| !point.x.is_finite() || !point.y.is_finite() || !point.z.is_finite())
+            || projected
+                .iter()
+                .any(|point| !point.x.is_finite() || !point.y.is_finite())
+            || !width_px.is_finite()
+            || width_px < 0.0
+            || !depth.is_finite()
+        {
+            return Err(invalid_input("3D triangle geometry is invalid"));
+        }
+        Ok(Self {
+            source,
+            projected,
+            fill,
+            edge,
+            width_px,
+            source_index,
+            depth,
+        })
+    }
+
+    pub fn source(&self) -> &[Point3D; 3] {
+        &self.source
+    }
+
+    pub fn projected(&self) -> &[PacketPoint; 3] {
+        &self.projected
+    }
+
+    pub fn fill(&self) -> SrgbRgba8 {
+        self.fill
+    }
+
+    pub fn edge(&self) -> Option<SrgbRgba8> {
+        self.edge
+    }
+
+    pub fn width_px(&self) -> f64 {
+        self.width_px
+    }
+
+    pub fn source_index(&self) -> usize {
+        self.source_index
+    }
+
+    pub fn depth(&self) -> f64 {
+        self.depth
+    }
+}
+
+fn bound_midpoint(pair: [f64; 2]) -> f64 {
+    pair[0] + (pair[1] - pair[0]) * 0.5
+}
+
+/// Additive 3D meaning carried by the shared semantic frame.
+#[derive(Clone)]
+pub struct Semantic3D {
+    view: ViewFacts3D,
+    bounds: Bounds3D,
+    origin: Point3D,
+    lines: Vec<Line3DGeometry>,
+    triangles: Vec<Triangle3DGeometry>,
+    painter_order: Vec<usize>,
+    worst_error_px: f64,
+}
+
+impl Semantic3D {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        view: ViewFacts3D,
+        bounds: Bounds3D,
+        origin: Point3D,
+        lines: Vec<Line3DGeometry>,
+        triangles: Vec<Triangle3DGeometry>,
+        painter_order: Vec<usize>,
+        worst_error_px: f64,
+    ) -> Result<Self, FrameSeamError> {
+        let expected_origin = Point3D::new(
+            bound_midpoint(bounds.x()),
+            bound_midpoint(bounds.y()),
+            bound_midpoint(bounds.z()),
+        );
+        if !origin.x.is_finite()
+            || !origin.y.is_finite()
+            || !origin.z.is_finite()
+            || origin != expected_origin
+            || !worst_error_px.is_finite()
+            || !(0.0..=0.25).contains(&worst_error_px)
+            || painter_order.len() != triangles.len()
+            || painter_order.iter().any(|index| *index >= triangles.len())
+            || {
+                let mut sorted = painter_order.clone();
+                sorted.sort_unstable();
+                sorted.windows(2).any(|pair| pair[0] == pair[1])
+                    || sorted
+                        .iter()
+                        .enumerate()
+                        .any(|(index, value)| *value != index)
+            }
+        {
+            return Err(invalid_input("3D semantic facts are invalid"));
+        }
+        Ok(Self {
+            view,
+            bounds,
+            origin,
+            lines,
+            triangles,
+            painter_order,
+            worst_error_px,
+        })
+    }
+
+    pub fn view(&self) -> ViewFacts3D {
+        self.view
+    }
+
+    pub fn bounds(&self) -> Bounds3D {
+        self.bounds
+    }
+
+    pub fn origin(&self) -> Point3D {
+        self.origin
+    }
+
+    pub fn lines(&self) -> &[Line3DGeometry] {
+        &self.lines
+    }
+
+    pub fn triangles(&self) -> &[Triangle3DGeometry] {
+        &self.triangles
+    }
+
+    pub fn painter_order(&self) -> &[usize] {
+        &self.painter_order
+    }
+
+    pub fn worst_error_px(&self) -> f64 {
+        self.worst_error_px
+    }
+
+    pub(crate) fn validate_for_canvas(&self, width: f64, height: f64) -> bool {
+        self.lines.iter().all(|line| {
+            line.projected.iter().all(|point| {
+                (!point.x.is_finite() && !point.y.is_finite())
+                    || (point.x >= 0.0 && point.y >= 0.0 && point.x <= width && point.y <= height)
+            })
+        }) && self.triangles.iter().all(|triangle| {
+            triangle.projected.iter().all(|point| {
+                point.x >= 0.0 && point.y >= 0.0 && point.x <= width && point.y <= height
+            })
+        })
+    }
+}
+
 /// Shared backend-neutral semantic/layout result for one resolved scene.
 ///
 /// The current M2 implementation carries the bounded line-family meaning from
@@ -351,6 +753,11 @@ impl SemanticFrame {
         &self.frame
     }
 
+    /// Optional additive 3D meaning carried by this semantic frame.
+    pub fn three_d(&self) -> Option<&Semantic3D> {
+        self.frame.three_d()
+    }
+
     #[cfg(test)]
     pub(crate) fn frame_mut(&mut self) -> &mut FramePacket {
         &mut self.frame
@@ -370,9 +777,21 @@ pub struct FramePacket {
     pub(crate) line_color: SrgbRgba8,
     pub(crate) line_width_px: f64,
     pub(crate) series: Vec<PacketSeries>,
+    pub(crate) three_d: Option<Semantic3D>,
 }
 
 impl FramePacket {
+    /// Attach additive 3D semantic facts without changing the M1 frame seam.
+    #[allow(dead_code)]
+    pub(crate) fn with_three_d(mut self, three_d: Semantic3D) -> Self {
+        self.three_d = Some(three_d);
+        self
+    }
+
+    pub(crate) fn three_d(&self) -> Option<&Semantic3D> {
+        self.three_d.as_ref()
+    }
+
     /// Scene revision the packet was resolved at.
     pub fn revision(&self) -> PacketRevision {
         self.revision
@@ -695,6 +1114,66 @@ mod tests {
         let error =
             ensure_series_capacity(usize::MAX).expect_err("maximum count must not overflow");
         assert_eq!(error.kind(), FrameSeamErrorKind::CapacityExceeded);
+    }
+
+    #[test]
+    fn three_d_origin_uses_an_overflow_safe_midpoint() {
+        let bounds = Bounds3D::new([9.0e307, 1.0e308], [-1.0e308, -9.0e307], [0.0, 2.0])
+            .expect("finite bounds");
+        let semantic = Semantic3D::new(
+            ViewFacts3D::new(Projection3D::Perspective, 30.0, -60.0, 0.0, Some(1.0)).expect("view"),
+            bounds,
+            Point3D::new(9.5e307, -9.5e307, 1.0),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            0.0,
+        )
+        .expect("semantic facts");
+        assert_eq!(semantic.origin(), Point3D::new(9.5e307, -9.5e307, 1.0));
+    }
+
+    #[test]
+    fn three_d_line_segments_cover_only_finite_runs_in_order() {
+        let source = vec![
+            Point3D::new(0.0, 0.0, 0.0),
+            Point3D::new(f64::NAN, f64::NAN, f64::NAN),
+            Point3D::new(1.0, 1.0, 1.0),
+        ];
+        let projected = vec![
+            PacketPoint::new(10.0, 10.0),
+            PacketPoint::new(f64::NAN, f64::NAN),
+            PacketPoint::new(20.0, 20.0),
+        ];
+        let valid = Line3DGeometry::new(
+            source.clone(),
+            projected.clone(),
+            vec![0..1, 2..3],
+            SrgbRgba8::new(1, 2, 3, 255),
+            1.0,
+        )
+        .expect("finite runs");
+        assert_eq!(valid.segments(), &[0..1, 2..3]);
+        assert!(
+            Line3DGeometry::new(
+                source.clone(),
+                projected.clone(),
+                vec![2..3, 0..1],
+                SrgbRgba8::new(1, 2, 3, 255),
+                1.0,
+            )
+            .is_err()
+        );
+        assert!(
+            Line3DGeometry::new(
+                vec![Point3D::new(0.0, 0.0, 0.0), Point3D::new(1.0, 1.0, 1.0)],
+                vec![PacketPoint::new(10.0, 10.0), PacketPoint::new(20.0, 20.0)],
+                std::iter::once(0..1).collect(),
+                SrgbRgba8::new(1, 2, 3, 255),
+                1.0,
+            )
+            .is_err()
+        );
     }
 
     #[test]
