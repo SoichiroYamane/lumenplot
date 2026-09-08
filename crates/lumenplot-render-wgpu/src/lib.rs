@@ -136,6 +136,52 @@ impl OffscreenFrame {
     }
 }
 
+/// Test-only observations for the retained renderer-owned allocations.
+///
+/// This is a doc-hidden diagnostic seam, not a performance counter or a
+/// driver-allocation claim. It records the number of backend resource creates
+/// performed by one renderer instance so integration tests can prove that a
+/// same-size warmed render does not recreate its target or staging buffers.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RendererResourceObservations {
+    target_allocations: u64,
+    vertex_buffer_allocations: u64,
+    readback_buffer_allocations: u64,
+}
+
+impl RendererResourceObservations {
+    /// Number of retained color-target creates, including growth creates.
+    #[doc(hidden)]
+    pub const fn target_allocations(self) -> u64 {
+        self.target_allocations
+    }
+
+    /// Number of retained vertex-buffer creates, including growth creates.
+    #[doc(hidden)]
+    pub const fn vertex_buffer_allocations(self) -> u64 {
+        self.vertex_buffer_allocations
+    }
+
+    /// Number of retained readback-buffer creates, including growth creates.
+    #[doc(hidden)]
+    pub const fn readback_buffer_allocations(self) -> u64 {
+        self.readback_buffer_allocations
+    }
+}
+
+struct RetainedRenderTarget {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+}
+
+struct RetainedBuffer {
+    buffer: wgpu::Buffer,
+    capacity: u64,
+}
+
 /// Main-thread-owned portable offscreen renderer.
 ///
 /// The renderer owns the wgpu device, queue, pipeline, uniform resource, and
@@ -149,6 +195,11 @@ pub struct Renderer {
     uniform_bind_group: wgpu::BindGroup,
     owner_thread: ThreadId,
     device_lost: Arc<AtomicBool>,
+    owner_device_generation: Option<DeviceGeneration>,
+    render_target: Option<RetainedRenderTarget>,
+    vertex_buffer: Option<RetainedBuffer>,
+    readback_buffer: Option<RetainedBuffer>,
+    resource_observations: RendererResourceObservations,
     max_texture_dimension_2d: u32,
     max_buffer_size: u64,
     _main_thread_only: PhantomData<Rc<()>>,
@@ -222,6 +273,15 @@ impl Renderer {
             uniform_bind_group: resources.uniform_bind_group,
             owner_thread: std::thread::current().id(),
             device_lost,
+            owner_device_generation: None,
+            render_target: None,
+            vertex_buffer: None,
+            readback_buffer: None,
+            resource_observations: RendererResourceObservations {
+                target_allocations: 0,
+                vertex_buffer_allocations: 0,
+                readback_buffer_allocations: 0,
+            },
             max_texture_dimension_2d: limits.max_texture_dimension_2d,
             max_buffer_size: limits.max_buffer_size,
             _main_thread_only: PhantomData,
@@ -276,6 +336,26 @@ impl Renderer {
         result
     }
 
+    /// Binds this renderer instance to its runtime owner's device generation.
+    ///
+    /// The binding is one-way for the lifetime of a renderer. A device loss
+    /// drops the old instance and creates a replacement, so an existing
+    /// renderer is never rebound to a different device generation. A direct
+    /// legacy validated caller may still use the initial generation; that
+    /// compatibility path binds it lazily on its first validated submission.
+    #[doc(hidden)]
+    pub fn bind_device_generation(&mut self, generation: DeviceGeneration) {
+        if self.owner_device_generation.is_none() {
+            self.owner_device_generation = Some(generation);
+        }
+    }
+
+    /// Returns test-only counts of retained backend resource creates.
+    #[doc(hidden)]
+    pub const fn resource_observations(&self) -> RendererResourceObservations {
+        self.resource_observations
+    }
+
     /// Renders one packet after revalidating the owner publication point.
     ///
     /// This is the hidden M2 handoff.  The public M1 [`Self::render`] method
@@ -290,6 +370,21 @@ impl Renderer {
         expected_work_generation: WorkGeneration,
         expected_device_generation: DeviceGeneration,
     ) -> Result<OffscreenFrame, RenderError> {
+        self.ensure_owner()?;
+        let generation_matches = match self.owner_device_generation {
+            Some(bound) => bound == expected_device_generation,
+            None if expected_device_generation == DeviceGeneration::initial() => {
+                self.owner_device_generation = Some(expected_device_generation);
+                true
+            }
+            None => false,
+        };
+        if !generation_matches {
+            return Err(RenderError::new(
+                RenderErrorKind::InvalidInput,
+                "validated render packet device generation does not match its renderer instance",
+            ));
+        }
         packet
             .validate_for_owner(
                 expected_scene_revision,
@@ -320,51 +415,44 @@ impl Renderer {
         self.queue
             .write_buffer(&self.uniform_buffer, 0, &prepared.uniform_bytes);
 
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("lumenplot-offscreen-color"),
-            size: wgpu::Extent3d {
-                width: prepared.width,
-                height: prepared.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: TARGET_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let vertex_buffer = if prepared.vertices.is_empty() {
-            None
-        } else {
-            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("lumenplot-offscreen-line-vertices"),
-                size: u64::try_from(prepared.vertices.len()).map_err(|_| {
-                    RenderError::new(
-                        RenderErrorKind::CapacityExceeded,
-                        "line vertex buffer size is not representable",
-                    )
-                })?,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
-                mapped_at_creation: false,
-            });
-            self.queue.write_buffer(&buffer, 0, &prepared.vertices);
-            Some(buffer)
-        };
-
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("lumenplot-offscreen-readback"),
-            size: u64::try_from(prepared.readback_bytes).map_err(|_| {
+        self.ensure_render_target(prepared.width, prepared.height)?;
+        if !prepared.vertices.is_empty() {
+            let vertex_bytes = u64::try_from(prepared.vertices.len()).map_err(|_| {
                 RenderError::new(
                     RenderErrorKind::CapacityExceeded,
-                    "readback buffer size is not representable",
+                    "line vertex buffer size is not representable",
                 )
-            })?,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+            })?;
+            self.ensure_vertex_buffer(vertex_bytes)?;
+            let vertex_buffer = self.vertex_buffer.as_ref().ok_or_else(|| {
+                RenderError::new(
+                    RenderErrorKind::Internal,
+                    "retained line vertex buffer is unavailable",
+                )
+            })?;
+            self.queue
+                .write_buffer(&vertex_buffer.buffer, 0, &prepared.vertices);
+        }
+        self.ensure_readback_buffer(u64::try_from(prepared.readback_bytes).map_err(|_| {
+            RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "readback buffer size is not representable",
+            )
+        })?)?;
+
+        let target = self.render_target.as_ref().ok_or_else(|| {
+            RenderError::new(
+                RenderErrorKind::Internal,
+                "retained color target is unavailable",
+            )
+        })?;
+        let readback = self.readback_buffer.as_ref().ok_or_else(|| {
+            RenderError::new(
+                RenderErrorKind::Internal,
+                "retained readback buffer is unavailable",
+            )
+        })?;
+        let vertex_buffer = self.vertex_buffer.as_ref().map(|retained| &retained.buffer);
 
         let mut encoder = self
             .device
@@ -373,7 +461,7 @@ impl Renderer {
             });
         {
             let color_attachment = Some(wgpu::RenderPassColorAttachment {
-                view: &texture_view,
+                view: &target.view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -395,7 +483,7 @@ impl Renderer {
                 prepared.scissor.width,
                 prepared.scissor.height,
             );
-            if let Some(vertex_buffer) = &vertex_buffer {
+            if let Some(vertex_buffer) = vertex_buffer {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 pass.set_vertex_buffer(0, vertex_buffer.slice(..));
@@ -404,13 +492,13 @@ impl Renderer {
         }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: &target.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
+                buffer: &readback.buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(prepared.row_pitch),
@@ -425,12 +513,17 @@ impl Renderer {
         );
         self.queue.submit(std::iter::once(encoder.finish()));
 
+        let map_end = u64::try_from(prepared.readback_bytes).map_err(|_| {
+            RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "readback map size is not representable",
+            )
+        })?;
         let (sender, receiver) = mpsc::channel();
-        readback
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                let _ = sender.send(result.is_ok());
-            });
+        let readback_slice = readback.buffer.slice(0..map_end);
+        readback_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result.is_ok());
+        });
         if self
             .device
             .poll(wgpu::PollType::Wait {
@@ -471,7 +564,7 @@ impl Renderer {
         })?;
         rgba8.resize(prepared.tight_bytes, 0);
         {
-            let mapped = readback.slice(..).get_mapped_range();
+            let mapped = readback_slice.get_mapped_range();
             for row in 0..prepared.height as usize {
                 let source_start = row * prepared.row_pitch as usize;
                 let source_end = source_start + prepared.tight_row_bytes;
@@ -480,12 +573,100 @@ impl Renderer {
                     .copy_from_slice(&mapped[source_start..source_end]);
             }
         }
-        readback.unmap();
+        readback.buffer.unmap();
         Ok(OffscreenFrame {
             width: prepared.width,
             height: prepared.height,
             rgba8,
         })
+    }
+
+    fn ensure_render_target(&mut self, width: u32, height: u32) -> Result<(), RenderError> {
+        let reusable = self
+            .render_target
+            .as_ref()
+            .is_some_and(|target| target.width >= width && target.height >= height);
+        if reusable {
+            return Ok(());
+        }
+        let current_width = self.render_target.as_ref().map(|target| target.width);
+        let current_height = self.render_target.as_ref().map(|target| target.height);
+        let target_width = grow_dimension(width, current_width, self.max_texture_dimension_2d)?;
+        let target_height = grow_dimension(height, current_height, self.max_texture_dimension_2d)?;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("lumenplot-offscreen-color"),
+            size: wgpu::Extent3d {
+                width: target_width,
+                height: target_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TARGET_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.render_target = Some(RetainedRenderTarget {
+            texture,
+            view,
+            width: target_width,
+            height: target_height,
+        });
+        self.resource_observations.target_allocations = self
+            .resource_observations
+            .target_allocations
+            .saturating_add(1);
+        Ok(())
+    }
+
+    fn ensure_vertex_buffer(&mut self, required: u64) -> Result<(), RenderError> {
+        if self
+            .vertex_buffer
+            .as_ref()
+            .is_some_and(|buffer| buffer.capacity >= required)
+        {
+            return Ok(());
+        }
+        let current = self.vertex_buffer.as_ref().map(|buffer| buffer.capacity);
+        let capacity = grow_buffer_capacity(required, current, self.max_buffer_size)?;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lumenplot-offscreen-line-vertices"),
+            size: capacity,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
+            mapped_at_creation: false,
+        });
+        self.vertex_buffer = Some(RetainedBuffer { buffer, capacity });
+        self.resource_observations.vertex_buffer_allocations = self
+            .resource_observations
+            .vertex_buffer_allocations
+            .saturating_add(1);
+        Ok(())
+    }
+
+    fn ensure_readback_buffer(&mut self, required: u64) -> Result<(), RenderError> {
+        if self
+            .readback_buffer
+            .as_ref()
+            .is_some_and(|buffer| buffer.capacity >= required)
+        {
+            return Ok(());
+        }
+        let current = self.readback_buffer.as_ref().map(|buffer| buffer.capacity);
+        let capacity = grow_buffer_capacity(required, current, self.max_buffer_size)?;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lumenplot-offscreen-readback"),
+            size: capacity,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        self.readback_buffer = Some(RetainedBuffer { buffer, capacity });
+        self.resource_observations.readback_buffer_allocations = self
+            .resource_observations
+            .readback_buffer_allocations
+            .saturating_add(1);
+        Ok(())
     }
 }
 
@@ -493,6 +674,52 @@ struct GpuResources {
     pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
+}
+
+fn grow_dimension(required: u32, current: Option<u32>, maximum: u32) -> Result<u32, RenderError> {
+    if required == 0 || required > maximum {
+        return Err(RenderError::new(
+            RenderErrorKind::CapacityExceeded,
+            "retained target dimensions exceed the device capacity",
+        ));
+    }
+    let mut capacity = current.unwrap_or(1).max(1);
+    while capacity < required {
+        let next = capacity.saturating_mul(2).min(maximum);
+        if next == capacity {
+            return Err(RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "retained target dimensions exceed the device capacity",
+            ));
+        }
+        capacity = next;
+    }
+    Ok(capacity)
+}
+
+fn grow_buffer_capacity(
+    required: u64,
+    current: Option<u64>,
+    maximum: u64,
+) -> Result<u64, RenderError> {
+    if required == 0 || required > maximum {
+        return Err(RenderError::new(
+            RenderErrorKind::CapacityExceeded,
+            "retained buffer size exceeds the device capacity",
+        ));
+    }
+    let mut capacity = current.unwrap_or(1).max(1);
+    while capacity < required {
+        let next = capacity.saturating_mul(2).min(maximum);
+        if next == capacity {
+            return Err(RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "retained buffer size exceeds the device capacity",
+            ));
+        }
+        capacity = next;
+    }
+    Ok(capacity)
 }
 
 fn create_gpu_resources(device: &wgpu::Device) -> Result<GpuResources, RenderError> {
@@ -1091,6 +1318,36 @@ fn block_on<F: Future>(future: F) -> F::Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_capacities_grow_monotonically_and_fail_closed() {
+        assert_eq!(
+            grow_dimension(160, None, 1024).expect("initial target capacity"),
+            256
+        );
+        assert_eq!(
+            grow_dimension(200, Some(256), 1024).expect("retained target capacity"),
+            256
+        );
+        assert_eq!(
+            grow_dimension(300, Some(256), 1024).expect("grown target capacity"),
+            512
+        );
+        assert_eq!(
+            grow_buffer_capacity(257, Some(256), 1024).expect("grown buffer capacity"),
+            512
+        );
+        assert_eq!(
+            grow_buffer_capacity(512, Some(512), 1024).expect("retained buffer capacity"),
+            512
+        );
+        assert_eq!(
+            grow_buffer_capacity(1025, Some(512), 1024)
+                .expect_err("capacity overflow must fail closed")
+                .kind(),
+            RenderErrorKind::CapacityExceeded
+        );
+    }
 
     #[test]
     fn row_pitch_is_copy_aligned_and_tightly_bounded() {
