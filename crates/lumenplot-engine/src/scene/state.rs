@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::data::SeriesStorage;
 use crate::error::{SceneError, SceneErrorKind};
+use crate::text::PlotLayout;
 
 use super::ids::SeriesId;
 use super::revision::{ComponentRevision, SceneRevision};
@@ -111,6 +112,7 @@ pub(crate) struct SceneState {
     style_revision: ComponentRevision,
     font_revision: ComponentRevision,
     layout_revision: ComponentRevision,
+    plot_layout: Arc<PlotLayout>,
     annotation_revision: ComponentRevision,
     series: BTreeMap<SeriesId, Arc<SeriesStorage>>,
 }
@@ -160,6 +162,7 @@ impl SceneState {
             style_revision: ComponentRevision(0),
             font_revision: ComponentRevision(0),
             layout_revision: ComponentRevision(0),
+            plot_layout: Arc::new(PlotLayout::fixture()?),
             annotation_revision: ComponentRevision(0),
             series: BTreeMap::new(),
         })
@@ -189,6 +192,19 @@ impl SceneState {
         } else {
             base.view_revision
         };
+        let layout_changed = data_changed || view_changed;
+        let layout_revision = if layout_changed {
+            base.layout_revision
+                .checked_next()
+                .ok_or_else(|| SceneError::new(SceneErrorKind::RevisionExhausted))?
+        } else {
+            base.layout_revision
+        };
+        let plot_layout = if layout_changed {
+            Arc::new(base.plot_layout.with_layout_revision(layout_revision.0))
+        } else {
+            base.plot_layout.clone()
+        };
         Ok(Self {
             revision,
             canonical_view,
@@ -198,7 +214,8 @@ impl SceneState {
             view_revision,
             style_revision: base.style_revision,
             font_revision: base.font_revision,
-            layout_revision: base.layout_revision,
+            layout_revision,
+            plot_layout,
             annotation_revision: base.annotation_revision,
             series,
         })
@@ -218,6 +235,18 @@ impl SceneState {
 
     pub(crate) fn scales(&self) -> AxisScales {
         self.scales
+    }
+
+    pub(crate) fn font_revision(&self) -> ComponentRevision {
+        self.font_revision
+    }
+
+    pub(crate) fn layout_revision(&self) -> ComponentRevision {
+        self.layout_revision
+    }
+
+    pub(crate) fn plot_layout(&self) -> &Arc<PlotLayout> {
+        &self.plot_layout
     }
 
     pub(crate) fn series(&self, id: SeriesId) -> Option<&Arc<SeriesStorage>> {
