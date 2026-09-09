@@ -36,6 +36,11 @@ allow = [
     "CC0-1.0",
     "ISC",
     "MIT",
+    # M5-P3i fixture font (AT-SEC-FONTS): the vendored OFL-1.1 test font bytes
+    # under crates/lumenplot-export/tests/fixtures/fonts/ with the OFL license
+    # text vendored alongside as in-PR evidence. Crate-license review stays
+    # under the O-17 gate at the shaping/subset pin slice.
+    "OFL-1.1",
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",
