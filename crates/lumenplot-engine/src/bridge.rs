@@ -1,5 +1,6 @@
 use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::data::{SeriesInput, Topology};
 use crate::error::{self, SceneError as EngineSceneError};
@@ -8,6 +9,13 @@ use crate::scene::{
     PlotScene as EnginePlotScene, SceneRevision as EngineSceneRevision,
     SceneSnapshot as EngineSceneSnapshot, SceneTransaction as EngineSceneTransaction,
     SeriesId as EngineSeriesId, Viewport as EngineViewport,
+};
+
+#[doc(hidden)]
+pub use crate::text::{
+    AnnotationShape, AnnotationSpace, AnnotationTransform, FallbackRoute, FontFeature,
+    FontIdentity, FontVariation, GlyphPosition, PlotLayout, RetainedAnnotation, ShapedRun,
+    TextDirection, TextRole,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -436,6 +444,7 @@ pub struct LineFrame {
     logical_units_per_inch: f64,
     background: SrgbRgba8,
     series: Vec<LineSeries>,
+    plot_layout: Arc<PlotLayout>,
 }
 
 impl LineFrame {
@@ -463,6 +472,11 @@ impl LineFrame {
         &self.series
     }
 
+    /// Retained text/layout result shared by every downstream sink.
+    pub fn plot_layout(&self) -> &PlotLayout {
+        &self.plot_layout
+    }
+
     pub(crate) fn from_parts(
         revision: SceneRevision,
         canvas: LogicalSize,
@@ -470,6 +484,7 @@ impl LineFrame {
         logical_units_per_inch: f64,
         background: SrgbRgba8,
         series: Vec<LineSeries>,
+        plot_layout: Arc<PlotLayout>,
     ) -> Self {
         Self {
             revision,
@@ -478,6 +493,7 @@ impl LineFrame {
             logical_units_per_inch,
             background,
             series,
+            plot_layout,
         }
     }
 }

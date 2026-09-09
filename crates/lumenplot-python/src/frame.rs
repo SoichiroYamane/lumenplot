@@ -25,6 +25,8 @@
 //! - output is deterministic: fixed iteration order, no global state, IEEE
 //!   arithmetic only.
 
+mod agg_line;
+
 use std::io::Write;
 
 use png::{BitDepth, ColorType, Compression, Encoder, Filter, SrgbRenderingIntent};
@@ -118,6 +120,12 @@ pub(crate) struct PathCommand {
     fill_rule: FillRuleSelector,
     antialias: bool,
     clip_rect: Option<[f64; 4]>,
+    /// Apply Matplotlib Agg's automatic rectilinear snap to this command.
+    /// Agg feeds the snapped path to both face and edge when an edge is
+    /// present; fill-only commands retain their unsnapped path.
+    rectilinear_snap: bool,
+    /// Use the deterministic triangle coverage route for mplot3d fills.
+    triangle_agg: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -214,7 +222,19 @@ impl PathCommand {
             fill_rule,
             antialias,
             clip_rect,
+            rectilinear_snap: false,
+            triangle_agg: false,
         })
+    }
+
+    /// Enables Agg-compatible snapping for this command's path geometry.
+    pub(crate) fn set_rectilinear_snap(&mut self, enabled: bool) {
+        self.rectilinear_snap = enabled;
+    }
+
+    /// Enables the deterministic mplot3d triangle coverage route.
+    pub(crate) fn set_triangle_agg(&mut self, enabled: bool) {
+        self.triangle_agg = enabled;
     }
 }
 
@@ -390,12 +410,20 @@ struct LinearPixel {
 }
 
 /// Encoded-sRGB straight (unpremultiplied) pixel accumulator for the
-/// Agg-compat blend mode. Channels stay in encoded-sRGB units so that
-/// source-over runs in exactly the arithmetic matplotlib Agg uses.
+/// general Agg-compat path. Channels stay in encoded-sRGB units so that
+/// source-over preserves the established non-rectangle frame behavior.
 #[derive(Clone, Copy)]
 struct SrgbPixel {
     rgb: [f64; 3],
     alpha: f64,
+}
+
+/// Straight encoded-sRGB bytes used for the exact fixed Agg blend operation
+/// on stroked rectangle commands.
+#[derive(Clone, Copy)]
+struct AggPixel {
+    rgb: [u8; 3],
+    alpha: u8,
 }
 
 fn clamp_unit(value: f64) -> f64 {
@@ -520,6 +548,58 @@ fn srgb_premultiplied_over(source: SrgbPixel, destination: SrgbPixel) -> SrgbPix
     };
     SrgbPixel { rgb, alpha }
 }
+fn agg_multiply(a: u8, b: u8) -> u8 {
+    let t = u32::from(a) * u32::from(b) + 128;
+    (((t >> 8) + t) >> 8).min(u32::from(u8::MAX)) as u8
+}
+
+/// Matches Matplotlib's `fixed_blender_rgba_plain`: `destination` is a
+/// straight encoded channel, `destination_alpha` is the current byte alpha,
+/// and `source_alpha` is already multiplied by the 8-bit cell coverage.
+fn agg_blend_channel(
+    destination: u8,
+    source: u8,
+    destination_alpha: u32,
+    source_alpha: u8,
+    accumulated_alpha: u32,
+) -> u8 {
+    if source_alpha == u8::MAX && destination_alpha == u32::from(u8::MAX) {
+        return source;
+    }
+    let destination_premultiplied = u32::from(destination) * destination_alpha;
+    let source_scaled = u32::from(source) << 8;
+    // The upstream workaround uses unsigned 32-bit arithmetic for this
+    // expression. The bounded operands make the intended result fit in the
+    // accumulator; keep the operation explicit rather than relying on wider
+    // signed conversions to preserve Agg's byte results.
+    let numerator = source_scaled
+        .wrapping_sub(destination_premultiplied)
+        .wrapping_mul(u32::from(source_alpha))
+        .wrapping_add(destination_premultiplied << 8);
+    (numerator / accumulated_alpha).min(u32::from(u8::MAX)) as u8
+}
+
+fn agg_blend_pixel(destination: AggPixel, color: [u8; 4], cover: u8) -> AggPixel {
+    let source_alpha = agg_multiply(color[3], cover);
+    if source_alpha == 0 {
+        return destination;
+    }
+    let destination_alpha = u32::from(destination.alpha);
+    let accumulated_alpha = ((u32::from(source_alpha) + destination_alpha) << 8)
+        - u32::from(source_alpha) * destination_alpha;
+    let alpha = (accumulated_alpha >> 8).min(u32::from(u8::MAX)) as u8;
+    let mut rgb = [0u8; 3];
+    for (channel, value) in rgb.iter_mut().enumerate() {
+        *value = agg_blend_channel(
+            destination.rgb[channel],
+            color[channel],
+            destination_alpha,
+            source_alpha,
+            accumulated_alpha,
+        );
+    }
+    AggPixel { rgb, alpha }
+}
 
 /// One frame's working canvas. The enum discriminates the two ruled
 /// compositing models; every write goes through `composite`.
@@ -548,7 +628,10 @@ impl Canvas {
 
     /// Composites one straight-alpha sRGB8 paint over pixel `index` with
     /// this canvas's ruled color model and the given coverage fraction.
-    fn composite(&mut self, index: usize, coverage: f64, color: [u8; 4]) {
+    /// `fixed_agg` selects Matplotlib's fixed plain-buffer arithmetic for
+    /// stroked rectangles; other Agg commands keep the established float
+    /// compatibility path so tiny-skia's coverage quantization is preserved.
+    fn composite(&mut self, index: usize, coverage: f64, color: [u8; 4], fixed_agg: bool) {
         let style_alpha = f64::from(color[3]) / 255.0;
         let alpha = clamp_unit(style_alpha * coverage);
         if alpha == 0.0 {
@@ -572,17 +655,39 @@ impl Canvas {
                 pixels[index] = source_over(source, pixels[index]);
             }
             Canvas::AggSrgb(pixels) => {
-                let source = srgb_pixel_from_rgba([
-                    color[0],
-                    color[1],
-                    color[2],
-                    quantize_round_half_even(alpha),
-                ]);
-                let destination = pixels[index];
-                pixels[index] = SrgbPixel {
-                    rgb: srgb_premultiplied_over(source, destination).rgb,
-                    alpha: clamp_unit(source.alpha + destination.alpha * (1.0 - source.alpha)),
-                };
+                if fixed_agg {
+                    let destination = pixels[index];
+                    let destination = AggPixel {
+                        rgb: [
+                            quantize_round_half_even(destination.rgb[0]),
+                            quantize_round_half_even(destination.rgb[1]),
+                            quantize_round_half_even(destination.rgb[2]),
+                        ],
+                        alpha: quantize_round_half_even(destination.alpha),
+                    };
+                    let cover = quantize_round_half_even(clamp_unit(coverage));
+                    let blended = agg_blend_pixel(destination, color, cover);
+                    pixels[index] = SrgbPixel {
+                        rgb: [
+                            f64::from(blended.rgb[0]) / 255.0,
+                            f64::from(blended.rgb[1]) / 255.0,
+                            f64::from(blended.rgb[2]) / 255.0,
+                        ],
+                        alpha: f64::from(blended.alpha) / 255.0,
+                    };
+                } else {
+                    let source = srgb_pixel_from_rgba([
+                        color[0],
+                        color[1],
+                        color[2],
+                        quantize_round_half_even(alpha),
+                    ]);
+                    let destination = pixels[index];
+                    pixels[index] = SrgbPixel {
+                        rgb: srgb_premultiplied_over(source, destination).rgb,
+                        alpha: clamp_unit(source.alpha + destination.alpha * (1.0 - source.alpha)),
+                    };
+                }
             }
         }
     }
@@ -712,10 +817,15 @@ fn apply_clip_to_mask(mask: &mut Mask, clip: &DeviceClip, width: u32, height: u3
     }
 }
 
-/// Builds the device-space tiny-skia path for one path command, applying the
-/// affine transform and the display-to-device y-flip in f64, dropping
-/// non-finite or unrepresentable points as pen lifts.
-fn build_device_path(command: &PathCommand, height_px: u32) -> Option<Path> {
+/// Builds a device-space tiny-skia path for one command. `snap_value`
+/// mirrors Agg's PathSnapper offset after the display-to-device transform:
+/// coordinates round with floor(value + 0.5), then odd pixel widths receive
+/// the additional 0.5-pixel center offset.
+fn build_device_path(
+    command: &PathCommand,
+    height_px: u32,
+    snap_value: Option<f64>,
+) -> Option<Path> {
     // Fold the flip into the affine once: y_device = H - y_display.
     let [a, b, c, d, e, f] = command.transform;
     let sa = a;
@@ -739,8 +849,12 @@ fn build_device_path(command: &PathCommand, height_px: u32) -> Option<Path> {
     let mut subpath_start: Option<[f32; 2]> = None;
 
     let map_point = |point: &[f64; 2]| -> Option<[f32; 2]> {
-        let x = sa * point[0] + sc * point[1] + se;
-        let y = sb * point[0] + sd * point[1] + sf;
+        let mut x = sa * point[0] + sc * point[1] + se;
+        let mut y = sb * point[0] + sd * point[1] + sf;
+        if let Some(snap_value) = snap_value {
+            x = (x + 0.5).floor() + snap_value;
+            y = (y + 0.5).floor() + snap_value;
+        }
         if !x.is_finite() || !y.is_finite() {
             return None;
         }
@@ -917,6 +1031,17 @@ fn stroke_selection(command: &PathCommand, scale: f64) -> Result<Option<Stroke>,
     Ok(Some(stroke))
 }
 
+fn agg_rectilinear_snap_value(stroke_width: f64) -> f64 {
+    // Matplotlib's mpl_round_to_int rounds positive values half away from
+    // zero before selecting the odd/even pixel-center offset.
+    let rounded_width = stroke_width.round();
+    if rounded_width.rem_euclid(2.0) == 1.0 {
+        0.5
+    } else {
+        0.0
+    }
+}
+
 fn coverage_mask(width: u32, height: u32, pixel_count: usize) -> Result<Mask, FrameError> {
     let size = IntSize::from_wh(width, height).ok_or(FrameError::Internal("mask size rejected"))?;
     let mut data = Vec::new();
@@ -927,7 +1052,7 @@ fn coverage_mask(width: u32, height: u32, pixel_count: usize) -> Result<Mask, Fr
     Mask::from_vec(data, size).ok_or(FrameError::OutOfMemory)
 }
 
-fn composite_coverage(canvas: &mut Canvas, mask: &Mask, color: [u8; 4]) {
+fn composite_coverage(canvas: &mut Canvas, mask: &Mask, color: [u8; 4], fixed_agg: bool) {
     let style_alpha = f64::from(color[3]) / 255.0;
     if style_alpha == 0.0 {
         return;
@@ -937,7 +1062,7 @@ fn composite_coverage(canvas: &mut Canvas, mask: &Mask, color: [u8; 4]) {
         if coverage == 0.0 {
             continue;
         }
-        canvas.composite(index, coverage, color);
+        canvas.composite(index, coverage, color, fixed_agg);
     }
 }
 
@@ -983,7 +1108,7 @@ fn composite_image(
             let destination_index = device_y as usize * width as usize + device_x as usize;
             // Full coverage for image pixels (the bitmap itself is the
             // coverage); the canvas picks the ruled compositing model.
-            pixels.composite(destination_index, 1.0, color);
+            pixels.composite(destination_index, 1.0, color, false);
         }
     }
 }
@@ -1011,58 +1136,109 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
     for command in &spec.commands {
         match command {
             Command::Path(path) => {
-                let Some(path_geometry) = build_device_path(path, height) else {
+                let Some(path_geometry) = build_device_path(path, height, None) else {
                     continue;
                 };
                 let clip = path
                     .clip_rect
                     .map(|rect| DeviceClip::from_display(rect, width, height));
                 if let Some(fill_rgba) = path.fill_rgba {
-                    let fill_rule = match path.fill_rule {
-                        FillRuleSelector::NonZero => FillRule::Winding,
-                        FillRuleSelector::EvenOdd => FillRule::EvenOdd,
+                    let mut mask = if path.triangle_agg {
+                        agg_line::try_rasterize_triangle_fill(path, width, height, pixel_count)?
+                    } else {
+                        None
                     };
-                    let mut mask = coverage_mask(width, height, pixel_count)?;
-                    mask.fill_path(
-                        &path_geometry,
-                        fill_rule,
-                        path.antialias,
-                        Transform::identity(),
-                    );
+                    if mask.is_none() {
+                        let fill_geometry = if path.rectilinear_snap && path.stroke_rgba.is_some() {
+                            let snap_value = agg_rectilinear_snap_value(path.line_width_pt * scale);
+                            build_device_path(path, height, Some(snap_value))
+                                .ok_or(FrameError::Internal("snapped fill geometry unavailable"))?
+                        } else {
+                            path_geometry.clone()
+                        };
+                        let fill_rule = match path.fill_rule {
+                            FillRuleSelector::NonZero => FillRule::Winding,
+                            FillRuleSelector::EvenOdd => FillRule::EvenOdd,
+                        };
+                        let mut fallback_mask = coverage_mask(width, height, pixel_count)?;
+                        fallback_mask.fill_path(
+                            &fill_geometry,
+                            fill_rule,
+                            path.antialias,
+                            Transform::identity(),
+                        );
+                        mask = Some(fallback_mask);
+                    }
+                    let mut mask = mask.expect("fill coverage route selected");
                     if let Some(clip) = &clip {
                         apply_clip_to_mask(&mut mask, clip, width, height);
                     }
-                    composite_coverage(&mut pixels, &mask, fill_rgba);
+                    composite_coverage(
+                        &mut pixels,
+                        &mask,
+                        fill_rgba,
+                        path.rectilinear_snap && path.stroke_rgba.is_some(),
+                    );
                 }
                 let stroke = stroke_selection(path, scale)?;
                 if let Some(stroke) = stroke {
-                    let stroked = path_geometry
-                        .stroke(&stroke, 1.0)
-                        .ok_or(FrameError::Internal("stroking failed"))?;
-                    let bounds = stroked.bounds();
-                    let representable =
-                        [bounds.left(), bounds.top(), bounds.right(), bounds.bottom()]
-                            .iter()
-                            .all(|side| {
-                                side.is_finite()
-                                    && *side >= -TINY_SKIA_SAFE_PATH_BOUND
-                                    && *side <= TINY_SKIA_SAFE_PATH_BOUND
-                            });
-                    if !representable {
-                        return Err(FrameError::Internal("stroked path is unrepresentable"));
+                    let mut fixed_agg_stroke = false;
+                    let mut mask = if spec.blend_mode() == BlendMode::AggSrgb {
+                        let mask =
+                            agg_line::try_rasterize(path, width, height, pixel_count, scale)?;
+                        fixed_agg_stroke = mask.is_some();
+                        mask
+                    } else {
+                        None
+                    };
+                    if mask.is_none() {
+                        let stroke_geometry = if path.rectilinear_snap {
+                            // Matplotlib's Agg PathSnapper runs after the display
+                            // transform and before stroking. Its odd/even center
+                            // offset is based on the rounded device-space
+                            // linewidth; the face branch uses this same snapped
+                            // path whenever an edge is present.
+                            let snap_value = agg_rectilinear_snap_value(path.line_width_pt * scale);
+                            build_device_path(path, height, Some(snap_value))
+                                .ok_or(FrameError::Internal("snapped path geometry unavailable"))?
+                        } else {
+                            path_geometry.clone()
+                        };
+                        let stroked = stroke_geometry
+                            .stroke(&stroke, 1.0)
+                            .ok_or(FrameError::Internal("stroking failed"))?;
+                        let bounds = stroked.bounds();
+                        let representable =
+                            [bounds.left(), bounds.top(), bounds.right(), bounds.bottom()]
+                                .iter()
+                                .all(|side| {
+                                    side.is_finite()
+                                        && *side >= -TINY_SKIA_SAFE_PATH_BOUND
+                                        && *side <= TINY_SKIA_SAFE_PATH_BOUND
+                                });
+                        if !representable {
+                            return Err(FrameError::Internal("stroked path is unrepresentable"));
+                        }
+                        let mut fallback_mask = coverage_mask(width, height, pixel_count)?;
+                        fallback_mask.fill_path(
+                            &stroked,
+                            FillRule::Winding,
+                            path.antialias,
+                            Transform::identity(),
+                        );
+                        mask = Some(fallback_mask);
                     }
-                    let mut mask = coverage_mask(width, height, pixel_count)?;
-                    mask.fill_path(
-                        &stroked,
-                        FillRule::Winding,
-                        path.antialias,
-                        Transform::identity(),
-                    );
+                    let mut mask = mask.expect("coverage route selected");
                     if let Some(clip) = &clip {
                         apply_clip_to_mask(&mut mask, clip, width, height);
                     }
                     let stroke_rgba = path.stroke_rgba.unwrap_or([0, 0, 0, 255]);
-                    composite_coverage(&mut pixels, &mask, stroke_rgba);
+                    composite_coverage(
+                        &mut pixels,
+                        &mask,
+                        stroke_rgba,
+                        path.rectilinear_snap || fixed_agg_stroke,
+                    );
                 }
             }
             Command::Image(image) => {
@@ -1223,6 +1399,16 @@ mod tests {
             None,
         )
         .expect("path command")
+    }
+
+    #[test]
+    fn agg_rectilinear_snap_uses_rounded_linewidth_parity() {
+        // The pinned Agg rule adds a half-pixel center offset for odd rounded
+        // device widths, including the 1.5 tie, and no offset for even widths.
+        assert_eq!(agg_rectilinear_snap_value(1.0), 0.5);
+        assert_eq!(agg_rectilinear_snap_value(1.5), 0.0);
+        assert_eq!(agg_rectilinear_snap_value(2.0), 0.0);
+        assert_eq!(agg_rectilinear_snap_value(2.5), 0.5);
     }
 
     #[test]

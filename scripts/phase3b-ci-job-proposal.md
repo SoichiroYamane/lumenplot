@@ -30,16 +30,24 @@ The draft job would:
    `filetypes` PNG-only, `required_interactive_framework is None`,
    forbidden legacy exports) and emit a JSON manifest as a workflow artifact.
 
-## Why it was propose-only
+The package-installed public runtime probe is additionally invoked by the
+hardened four-cell container lane in
+`.github/workflows/phase3a2-wheel.yml`. That lane records one path-free result
+for each GIL CPython 3.11, 3.12, 3.13, and 3.14 environment with Matplotlib
+3.11.1, then validates the ordered set before optional evidence upload. The
+Phase-3B workflow above remains a convenience host probe; neither workflow
+creates a support or release claim by itself.
+
+## Why the separate job remains convenience-only
 
 - ADR 0015 §12 orders this evidence after backend implementation; wiring the
   job earlier would have made CI red for reasons the ordered plan already
   anticipated.
-- The manifest is convenience evidence, not acceptance evidence: the offline,
-  containerized, hash-pinned pattern of the Phase-3A2 lane remains the
-  canonical supply-chain gate for release claims.
-- Workflow files execute on third-party infrastructure; adding one is a
-  maintainer-visible decision that belongs in review, not in a worker diff.
+- The host manifest is convenience evidence, not acceptance evidence: the
+  offline, containerized, hash-pinned pattern of the Phase-3A2 lane remains
+  the canonical supply-chain gate for release claims.
+- The four-cell runtime records are evidence of one named CI run only; they do
+  not establish support, compatibility breadth, or publication readiness.
 
 ## How to evaluate
 
@@ -60,7 +68,8 @@ python3 -m unittest scripts.test_phase3b_wheel_evidence
 ## Activation record
 
 1. The local probe reports `surface_status: "implemented"` with every surface
-   boolean true and zero skipped identity checks.
+   boolean true when its declared environment is available; a blocked probe is
+   reported as blocked rather than treated as a pass.
 2. The job now lives at `.github/workflows/phase3b-wheel-evidence.yml`
    (renamed from this proposal), pinned to the reviewed action SHAs from
    `docs/security/pinned-actions.yml`, least-privilege (`contents: read`),

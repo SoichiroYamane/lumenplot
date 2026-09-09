@@ -2,8 +2,10 @@
 
 - Status: **Accepted — Pre-alpha Product Requirements**
 - Date: 2026-08-20
+- Amended: 2026-09-05
 - Product: LumenPlot
 - Publication status: This document records an accepted contract before implementation. It does not report a completed implementation, a supported-platform result, or a measured performance result.
+- Revision note: This requirements revision canonicalizes the fourteen Matplotlib/Agg gap rows (`LP-FUNC-032`–`LP-FUNC-041` and `LP-MPL-020`–`LP-MPL-023`), promotes `LP-FUNC-025` to a v1 3D `MUST`, and defines their shared Agg-oracle acceptance meaning. Their implementation and evidence status remains in `docs/requirements/traceability-v1.0.md`.
 
 ## How to read this document
 
@@ -19,7 +21,7 @@ Only entries carrying a stable `LP-*` identifier are normative or planning state
 - `REFERENCE`: context or candidate technology, not a dependency pin or support claim.
 - `PHASE`: planning placement; a phase placement alone does not prove implementation.
 
-The fields `Target`, `Release`, `Phase`, and `Evidence` describe what must eventually be demonstrated. The current verified state is recorded separately in `docs/requirements/traceability-v1.0.md`; all product requirements are currently `Not implemented` or `Not measured` unless that document says they are a non-goal or reference-only item.
+The fields `Target`, `Release`, `Phase`, and `Evidence` describe what must eventually be demonstrated. The current verified state is recorded separately in `docs/requirements/traceability-v1.0.md`; a bounded result there is not full release closure, and an environment-required result is not a product failure.
 
 Stable requirement families are:
 
@@ -87,13 +89,23 @@ This section preserves the original requirement vocabulary. The classification a
 - **LP-FUNC-022** | `MAY` | Add heatmap support after v1. | Target: future candidate | Release: future | Phase: future | Evidence: `AT-REVIEW-SCOPE`
 - **LP-FUNC-023** | `MAY` | Add image support after v1. | Target: future candidate | Release: future | Phase: future | Evidence: `AT-REVIEW-SCOPE`
 - **LP-FUNC-024** | `MAY` | Add contour support after v1. | Target: future candidate | Release: future | Phase: future | Evidence: `AT-REVIEW-SCOPE`
-- **LP-FUNC-025** | `NON-GOAL` | A 3D rendering engine is outside v1; a post-v1 exploratory candidate does not become a v1 acceptance promise. | Target: scope review | Release: excluded | Phase: future | Evidence: `AT-REVIEW-SCOPE`
+- **LP-FUNC-025** | `MUST` | Support three-dimensional line and triangulated-surface plots with canonical f64 x/y/z bounds, explicit projection/view attributes, and deterministic triangle/depth ordering in native and Matplotlib-adapter output. | Target: pinned `FigureCanvasAgg` mplot3d four-part parity fixtures, including reference projection-order artifacts | Release: v1 | Phase: 3 | Evidence: `AT-FUNC-3D`
 - **LP-FUNC-026** | `MAY` | Add streaming measurement views after the v1 mutation, clock, and backpressure contracts are separately decided. | Target: future candidate | Release: future | Phase: 5+ | Evidence: `AT-REVIEW-SCOPE`
 - **LP-FUNC-027** | `MAY` | Add direct GPU-tensor interoperability after an explicit ownership and lifetime decision; it does not imply NumPy-to-GPU zero-copy in v1. | Target: future candidate | Release: future | Phase: future | Evidence: `AT-REVIEW-SCOPE`
 - **LP-FUNC-028** | `SHOULD` | Add advanced A/B measurement, nearest geometry, delta, and slope tools after the basic cursor contract is stable. | Target: measurement tooling | Release: v1 non-blocking | Phase: 5 | Evidence: `AT-FUNC-MEASUREMENT`
 - **LP-FUNC-029** | `MAY` | Provide an optional series-management panel for large series sets. | Target: optional capability | Release: optional | Phase: 5 | Evidence: `AT-FUNC-SERIES-PANEL`
 - **LP-FUNC-030** | `MUST NOT` | Turn the publication Legend into the primary large-series management panel. | Target: UX review | Release: v1 | Phase: 2 | Evidence: `AT-REVIEW-UX`
 - **LP-FUNC-031** | `SHOULD` | Use a virtualized series list when the optional panel targets very large series counts. | Target: 1000-series fixture if shipped | Release: optional | Phase: 5 | Evidence: `AT-BENCH-SERIES-PANEL`
+- **LP-FUNC-032** | `MUST` | Support filled polygons from `fill`, `fill_between`, and equivalent span/stack constructions with declared face color, edge, alpha, and baseline/span semantics in native and adapter rendering. | Target: Agg-oracle fill geometry, pixel, and style fixtures | Release: v1 | Phase: 3B-cont. | Evidence: `AT-FUNC-FILL`
+- **LP-FUNC-033** | `MUST` | Support bar and histogram rectangles as filled-and-stroked geometry anchored to the declared baseline, including negative, `bottom=`, and stacked cases with per-element style resolution. Binning remains adapter-side. | Target: Agg-oracle rectangle geometry, pixel, and style fixtures | Release: v1 | Phase: 3B-cont. | Evidence: `AT-FUNC-BAR`
+- **LP-FUNC-034** | `MUST` | Support `steps-pre`, `steps-post`, and `steps-mid` line drawstyles with the exact generated vertex sequence and without changing the declared data topology or LOD correctness. | Target: Agg-oracle step vertex, pixel, and style fixtures | Release: v1 | Phase: 3B-cont. | Evidence: `AT-FUNC-DRAWSTYLE`
+- **LP-FUNC-035** | `SHOULD` | Preserve painter's-algorithm ordering and alpha compositing semantics across mixed supported primitive classes, including lines, fills, and bars, in every output path. | Target: Agg-oracle mixed-class ordering and alpha fixtures | Release: v1 quality | Phase: 3B-cont.+1 | Evidence: `AT-SEM-COMPOSITING`
+- **LP-FUNC-036** | `SHOULD` | Support polar projection for declared line and fill primitives with transform, clipping, and angle/radius label semantics equivalent to the declared Matplotlib surface. | Target: fixed Agg-oracle polar transform and clip fixtures | Release: v1 non-blocking | Phase: 5 | Evidence: `AT-FUNC-POLAR`
+- **LP-FUNC-037** | `SHOULD` | Format date- and unit-aware tick labels from Figure-authoritative converter, locator, and formatter results without duplicating renderer-local layout measurement. | Target: Agg-oracle locator/formatter and TextPath outline fixtures | Release: v1 quality | Phase: 3B-cont.+1 | Evidence: `AT-FUNC-DATE-AXIS`
+- **LP-FUNC-038** | `SHOULD` | Support quiver-style vector fields as deterministic arrow glyph geometry with declared scaling and clipping semantics. | Target: fixed Agg-oracle quiver geometry, pixel, and style fixtures | Release: v1 non-blocking | Phase: 5 | Evidence: `AT-FUNC-QUIVER`
+- **LP-FUNC-039** | `MAY` | Add symlog, logit, or other additional axis scales only after an explicit transform/topology decision and an Agg-oracle fixture set are accepted. | Target: scale-extension decision and Agg-oracle fixtures | Release: future | Phase: future | Evidence: `AT-SEM-SCALE-EXT`
+- **LP-FUNC-040** | `MUST` | Preserve non-finite sample fidelity: NaN and masked samples split finite runs exactly as Agg does; no native path may bridge across a gap, and infinities must be rejected or handled by an explicitly equivalent capability. | Target: Agg-oracle gap fixtures for interior, leading, trailing, masked, and infinite data | Release: v1 quality | Phase: 3B-cont.+1 | Evidence: `AT-FUNC-NAN-GAP`
+- **LP-FUNC-041** | `SHOULD` | When scalar-mappable artists become eligible, match Matplotlib normalization and colormap semantics, including under, over, and bad colors and artist/colorbar consistency; native colorbar rendering remains separately scoped. | Target: Agg-oracle normalization and colormap fixtures | Release: v1 non-blocking | Phase: 5 | Evidence: `AT-FUNC-MAPPABLE`
 
 ## 4. Non-goals
 
@@ -248,6 +260,116 @@ The Matplotlib adapter is first-class but one-way. It does not turn LumenPlot co
 - **LP-MPL-015** | `MUST NOT` | Assume that a NumPy-to-GPU path is automatically zero-copy; the upload boundary is explicit. | Target: copy and ownership tests | Release: v1 | Phase: 1 | Evidence: `AT-LIFE-FFI`, `AT-BENCH-FFI`
 - **LP-MPL-016** | `SHOULD` | Leave a future path for Python Buffer Protocol and DLPack interoperability without weakening owned-chunk and lifetime rules. | Target: API review | Release: future | Phase: future | Evidence: `AT-REVIEW-FFI`
 - **LP-MPL-017** | `MUST` | Keep third-party integration one-way: gsplot or another frontend adapts to LumenPlot, and LumenPlot does not depend on gsplot. | Target: dependency scan | Release: v1 | Phase: 1 | Evidence: `AT-REVIEW-DAG`
+- **LP-MPL-020** | `SHOULD` | Extend strict-common-2d eligibility only through an explicit per-class contract containing the whitelist entry, public collector trace, resolved style contract, strict/hybrid behavior, and Agg-oracle fixtures; never enable silent approximation or default-on tolerance. | Target: eligibility-extension review and Agg-oracle fixture checklist | Release: v1 governance | Phase: continuous | Evidence: `AT-MPL-ELIGIBILITY`
+- **LP-MPL-021** | `MUST` | Strict preflight must refuse every Figure that the selected native surface cannot represent completely and must produce no PNG: unsupported scale class, inverted limits, and geometry-stage refusal leaving no projected content are explicit unsupported results, never successful partial or background-only frames. Hybrid success uses the whole-frame Agg path. | Target: preflight soundness and no-write fixtures | Release: v1 quality | Phase: 3B-cont. | Evidence: `AT-MPL-PREFLIGHT-SOUNDNESS`
+- **LP-MPL-022** | `MUST` | Consume publicly converted Matplotlib unit/date data for eligible geometry and preserve Figure-authoritative limits and converter semantics; a converted payload that cannot be represented natively must be refused explicitly rather than dropped or replaced with zero geometry. | Target: converted-data geometry and refusal fixtures against Agg | Release: v1 quality | Phase: 3B-cont.+1 | Evidence: `AT-MPL-UNIT-DATA`
+- **LP-MPL-023** | `SHOULD` | For each eligible collection class, translate elements with per-element style, transform, clip, z-order, and source identity fidelity, or refuse the class explicitly; silent whole-class approximation is prohibited. | Target: collection translation and Agg-oracle fixtures | Release: post-v1 | Phase: W-lane, post-W1 | Evidence: `AT-MPL-COLLECTIONS`
+
+### 15.1 Matplotlib Agg oracle and equivalence contract
+
+This subsection defines the acceptance meaning of the Agg-oracle targets in
+`LP-FUNC-025`, `LP-FUNC-032`–`LP-FUNC-041`, and `LP-MPL-020`–`LP-MPL-023`. It is a shared
+interpretation of those requirement rows, not a new compatibility promise or a
+claim that any row is implemented.
+
+The Agg oracle applies to Matplotlib adapter-originated Figures, including a
+native engine path selected by that adapter. It is the compatibility oracle for
+the public Matplotlib surface. Native PlotScene mode remains governed by the
+engine's own semantic/color contract and its CPU reference; it must share
+meaning, geometry, ordering, and layout with the adapter frame but is not
+required to inherit Agg-specific raster arithmetic. “Native and adapter
+rendering” in the functional rows therefore means that both product paths own
+the capability, while the Agg pixel gate is applied to adapter-originated
+output.
+
+The reference is a pinned, reproducible `FigureCanvasAgg` run using Matplotlib
+3.11.1/backend API 1.1, the declared CPython cell, the same Figure content,
+effective DPI, canvas dimensions, resolved `rcParams`, and exact fixture font
+bytes. A future Matplotlib or patch-version change requires a new oracle
+fixture review; the word “current” never means an unrecorded moving target.
+
+Acceptance has four independent parts:
+
+1. **Semantic and geometry parity.** The native path must retain the same
+   artist meaning, draw order, visibility, transform, clip, gap/subpath
+   structure, and resolved style as the Agg path. Finite geometry agrees to at
+   most `0.25` device pixel before final sink quantization; exact generated
+   vertices are required for step paths, span baselines, and anchored bar
+   rectangles. A native path must not discard a non-finite gap or silently
+   invent a replacement primitive.
+2. **Decoded-pixel parity.** Both PNGs are decoded to top-to-bottom RGBA8 at
+   identical dimensions. Background and fully covered pixels must be byte
+   equal. Antialiased fringe pixels may differ by at most one value in any
+   channel, and the fringe mismatch rate must not exceed `0.1%` of pixels. The
+   fixture records max channel delta, mean delta, and mismatch count; these
+   limits are fixed before implementation and cannot be widened after a failed
+   result. A visual-similarity score alone is not evidence.
+3. **Text and style parity.** Resolved colors, alpha, widths, cap/join/dash
+   state, and clipping must equal the values Agg resolves from the same public
+   Figure. Text-capable rows compare glyph outline geometry against
+   Matplotlib `TextPath` using the same `FontProperties`; raster hinting is
+   not used to excuse a geometry mismatch, and corresponding outline vertices
+   must agree within `1e-6` logical points after the declared transform. If a
+   feature cannot meet this bar, it remains outside strict eligibility.
+4. **Operational parity and fallback.** `hybrid-explicit` renders the original
+   request once through whole-frame Agg when native eligibility is absent and
+   publishes exactly one diagnostic. Its decoded pixels must equal the Agg
+   reference; PNG container metadata/compression byte differences are recorded
+   separately and are not confused with visual parity. Strict mode fails before
+   writing. Capacity, I/O, internal, reentrancy, stale-publication, device-loss,
+   and OOM failures never become visual fallback.
+
+For `AT-FUNC-3D`, all four parts apply to a pinned `FigureCanvasAgg` mplot3d
+render of the same Figure. Every fixture records the explicit public projection
+and view attributes used by the reference; no fixture may infer an unresolved
+projection default. Source x/y/z coordinates and all three axis-bound pairs are
+compared as canonical f64 semantic facts before any renderer-local narrowing,
+and projected line and triangle geometry is compared after the declared
+transform. Triangle/depth ordering must reproduce the reference draw result,
+including visible painter-order or intersecting-geometry artifacts present in
+the pinned Agg output. A depth-buffered result that removes such an artifact but
+changes the reference output is not parity and cannot substitute for this gate:
+`LP-FUNC-025` requires artifacts-included parity, not superiority. Existing
+whole-frame Agg fallback demonstrates fallback correctness only; it cannot by
+itself close the native 3D capability or `AT-FUNC-3D`.
+
+Each parity fixture commits the oracle version/API, Python version, Figure
+construction/options, effective DPI and dimensions, resolved `rcParams`, font
+byte identity, artist-class label, reference PNG digest, and a reference pixel
+class mask. The mask is generated from the fixture's reference geometry and is
+not inferred from the candidate output; its classes are `background`,
+`fully-covered`, `antialias-fringe`, and `text-or-outline` where applicable.
+The comparator reports dimensions, RGBA orientation, max/mean channel delta,
+per-class mismatch counts, and the exact fixture/mask digests. Outside the
+declared antialias fringe, every channel is exact. Inside it, the comparator
+requires `max(abs(delta)) <= 1` and
+`count(fringe pixels with any delta != 0) / total pixel count <= 0.001`.
+Consequently, “fringe tolerance” has a fixed denominator and cannot be
+reinterpreted after a failure. A hybrid fallback additionally compares the
+returned PNG bytes with a direct Agg render of the same original request;
+container differences are permitted only on a native path and are reported
+separately from the decoded-image result.
+
+For line data, the oracle's `Path.iter_segments(remove_nans=True)` behavior is
+part of the fixture: NaN, positive infinity, negative infinity, and masked
+samples terminate the current finite run, and the next finite sample begins a
+new subpath (`MOVETO`). No segment may be drawn across the non-finite sample;
+an implementation that cannot reproduce this behavior must take the explicit
+unsupported/fallback path.
+
+PNG byte identity with Agg is not required because PNG metadata and compression
+are container concerns; same-host native byte determinism is a separate check.
+This exception must never be used to excuse decoded-pixel, semantic, geometry,
+or style differences. The adapter parity path must use an explicitly reviewed
+Agg-equivalent encoded-sRGB compositing rule where Agg's arithmetic differs from
+the native engine's default linear-light export rule; the native/export default
+remains governed by ADR 0007 and must not change implicitly.
+
+Every new strict-eligible artist class must land its whitelist, collector trace,
+style contract, negative cases, Agg fixtures, and rollback/removal rule together.
+If any parity fixture regresses, remove that class from strict eligibility and
+retain explicit whole-frame Agg fallback rather than shipping a lower-fidelity
+approximation.
 
 ## 16. Interactive UI principles
 
@@ -411,7 +533,7 @@ Phase placement is a sequencing map. It does not turn unfinished work into a ver
 - **LP-REL-003** | `PHASE` | Phase 0 covers workspace foundations, Plot IR, DataChunk ownership, f64 tests, the LOD prototype, benchmark framework, security/reproducibility policy, and architecture documentation. | Target: foundation artifacts | Release: no release claim | Phase: 0 | Evidence: `AT-REVIEW-PHASE-MAP`
 - **LP-REL-004** | `PHASE` | Phase 1 covers the portable line renderer, initial window/runtime path, shader artifacts, axes, ticks, text, pan, zoom, Home, and the native MonotonicX 10M path. | Target: native foundation | Release: no release claim | Phase: 1 | Evidence: `AT-REVIEW-PHASE-MAP`
 - **LP-REL-005** | `PHASE` | Phase 2 covers Legend, UI, annotations, cursor, history, shared text/layout, PNG, and PDF. | Target: v1 interaction and export | Release: no release claim | Phase: 2 | Evidence: `AT-REVIEW-PHASE-MAP`
-- **LP-REL-006** | `PHASE` | Phase 3 covers the declared OS benchmark matrix, dependency A/B evaluation, lifecycle matrix, and release evidence. | Target: cross-platform evidence | Release: no release claim | Phase: 3 | Evidence: `AT-REVIEW-PHASE-MAP`
+- **LP-REL-006** | `PHASE` | Phase 3 covers the v1 3D Agg-parity slice after the shared semantic frame, the declared OS benchmark matrix, dependency A/B evaluation, lifecycle matrix, and release evidence. | Target: 3D functional evidence and cross-platform evidence | Release: no release claim | Phase: 3 | Evidence: `AT-REVIEW-PHASE-MAP`
 - **LP-REL-007** | `PHASE` | Phase 4 covers conditional Metal, D3D12, and Vulkan prototypes and their measured comparison with the portable path. | Target: optional native fast paths | Release: future | Phase: 4 | Evidence: `AT-REVIEW-PHASE-MAP`
 - **LP-REL-008** | `PHASE` | Phase 5 covers advanced measurement, ArbitraryXY simplification and picking performance, error bars, scatter, markers, secondary axes, optional series panel, and streaming. | Target: post-v1 expansion | Release: v1.1 or later | Phase: 5 | Evidence: `AT-REVIEW-PHASE-MAP`
 - **LP-REL-009** | `MUST` | Assign every v1 `MUST` or `MUST NOT` to a phase, a release gate, and an evidence type before implementation fan-out. | Target: requirement registry validation | Release: v1 governance | Phase: 0 | Evidence: `AT-REVIEW-TRACEABILITY`
@@ -422,11 +544,11 @@ The following release groups are the canonical replacement for the earlier incom
 
 ### Functional release gates
 
-- **LP-REL-010** | `MUST` | v1 release evidence covers launch on every declared platform, Line2D, multiple series, axes/ticks/labels, linear/log axes, pan, pointer zoom, box zoom, Home, history, grid, basic cursor, publication Legend, Legend click toggle, Legend solo/restore, Legend drag, annotations, PNG, PDF, Python binding, and standalone viewer. | Target: all functional rows pass | Release: v1 | Phase: 1-3 | Evidence: `AT-RELEASE-FUNCTIONAL`
+- **LP-REL-010** | `MUST` | v1 release evidence covers launch on every declared platform, Line2D, multiple series, axes/ticks/labels, linear/log axes, three-dimensional line and triangulated-surface plots, pan, pointer zoom, box zoom, Home, history, grid, basic cursor, publication Legend, Legend click toggle, Legend solo/restore, Legend drag, annotations, PNG, PDF, Python binding, and standalone viewer. | Target: all functional rows pass | Release: v1 | Phase: 1-3 | Evidence: `AT-RELEASE-FUNCTIONAL`
 
 ### Correctness release gates
 
-- **LP-REL-011** | `MUST` | v1 release evidence covers canonical f64, local-f32 precision, extrema-preserving MonotonicX LOD, ArbitraryXY topology/culling correctness, shared Legend/text layout, hidden-series export, state separation, vector PDF semantics, and HiDPI behavior. | Target: all correctness rows pass | Release: v1 | Phase: 0-3 | Evidence: `AT-RELEASE-CORRECTNESS`
+- **LP-REL-011** | `MUST` | v1 release evidence covers canonical f64 x/y/z facts, local-f32 precision, extrema-preserving MonotonicX LOD, ArbitraryXY topology/culling correctness, 3D projection and reference depth-order parity, shared Legend/text layout, hidden-series export, state separation, vector PDF semantics, and HiDPI behavior. | Target: all correctness rows pass | Release: v1 | Phase: 0-3 | Evidence: `AT-RELEASE-CORRECTNESS`
 
 ### Performance release gates
 
@@ -478,8 +600,8 @@ The source intent is retained by section. The last column records only the accep
 | ---: | --- | --- | --- |
 | 1 | Purpose | independent scientific plotting engine, large-data exploration, low-latency native interaction, shared export | first-class one-way Matplotlib adapter added without reversing independence |
 | 2 | Requirement levels | MUST, MUST NOT, SHOULD, MAY vocabulary | `NON-GOAL`, `REFERENCE`, and `PHASE` labels make scope and evidence explicit |
-| 3 | Scope | 2D line plotting and v1 interaction/export list | annotations and standalone viewer added to v1 traceability |
-| 4 | Non-goals | no full Matplotlib parity, browser-first, 3D, GUI toolkit, fitting, analysis framework | public/common adapter retained; 3D remains v1 non-goal and post-v1 only |
+| 3 | Scope | 2D line plotting and v1 interaction/export list | annotations, standalone viewer, and 3D line/triangulated-surface plotting are included in v1 traceability |
+| 4 | Non-goals | no full Matplotlib parity, browser-first, 3D, GUI toolkit, fitting, analysis framework | public/common adapter retained; the 2026-09-05 amendment removes 3D from the non-goal set without changing the other exclusions |
 | 5 | Basic architecture | core, semantic frame, renderer boundary, portable/native paths | concrete GPU/window/frontend types excluded from core; RenderPacket is internal |
 | 6 | Data model | f64 canonical data and chunks | Rust-owned immutable sealed chunks for long-lived state |
 | 7 | GPU precision | local relative f32 representation | direct absolute f64-to-f32 narrowing prohibited |
@@ -507,8 +629,8 @@ The source intent is retained by section. The last column records only the accep
 | 29 | Native adoption | prototype and compare native paths | no automatic adoption; maintenance-cost decision required |
 | 30 | Repository structure | core/data/LOD/text/render/window/python/viewer/shader/bench layout | exact crate split is open; no product code is published by this bundle |
 | 31 | Frontend relationship | standalone engine and gsplot one-way relationship | Matplotlib adapter follows the same one-way rule |
-| 32 | Development phases | Phase 0 through Phase 5 sequencing | v1/Phase/Release inclusion matrix made explicit |
-| 33 | v1 acceptance | functional, correctness, performance checklist | annotations, viewer, accessibility, fallback, safety rows added |
+| 32 | Development phases | Phase 0 through Phase 5 sequencing | v1/Phase/Release inclusion matrix made explicit; the 3D slice is Phase 3 and follows the shared semantic frame |
+| 33 | v1 acceptance | functional, correctness, performance checklist | annotations, viewer, 3D Agg parity, accessibility, fallback, and safety rows added |
 | 34 | Reference versions | dated technology candidates | all versions marked reference-only, never normative pins |
 | 35 | Design principles | correctness and work reduction over novelty | retained as review rubric |
 | 36 | Completion vision | unified interaction, export, precision, and scale | pre-alpha publication explicitly separated from implementation evidence |
@@ -518,12 +640,14 @@ The source intent is retained by section. The last column records only the accep
 1. LumenPlot is an independent GPU-native engine. `lumenplot-mpl` is a first-class, one-way adapter rather than a reverse dependency.
 2. Matplotlib mode treats Figure/Artist as authoritative and LumenPlot Scene as a revisioned derived snapshot/cache. Native mode treats PlotScene as authoritative.
 3. The fixed adapter profiles are `strict-common-2d`, `hybrid-explicit` (default), and opt-in `accelerated-native`. Standard adapter measurements are never merged with native zero-Python claims.
-4. Canonical f64, Rust-owned immutable sealed chunks, origin-relative local f32, MonotonicX dyadic M4/extrema LOD, and ArbitraryXY Phase 5 advanced performance are the data/LOD boundaries.
-5. Semantic/layout data is distinct from the immutable internal process-local RenderPacket. The packet is not public, wire, or persistent format.
-6. Main-thread runtime, single-writer Scene updates, immutable snapshots, bounded workers, generation cancellation, stale-result dropping, no lock across Python callbacks, device-loss rebuild, and explicit OOM are lifecycle boundaries.
-7. Backend Auto uses capability probing and static override. wgpu, winit, raw-window-handle, shader, text, and binding versions remain reference candidates pending gates.
-8. Shared shaping/layout and vector-aware PNG/PDF/SVG semantics are required; PNG/PDF are v1 MUST, SVG is SHOULD and non-blocking, and raster-only PDF is prohibited.
-9. Annotations, standalone viewer, keyboard/focus/contrast/reduced-motion accessibility, safety policy, explicit persistence non-goal, and benchmark protocol are part of v1 traceability.
+4. Agg compatibility is an oracle contract, not an API-presence claim: the pinned FigureCanvasAgg, decoded-RGBA8, geometry, style/text, compositing, NaN-gap, and strict/hybrid operational criteria in §15.1 govern every native eligibility extension. A failed fixture removes that class from strict eligibility; it does not authorize silent approximation.
+5. Canonical f64, Rust-owned immutable sealed chunks, origin-relative local f32, MonotonicX dyadic M4/extrema LOD, and ArbitraryXY Phase 5 advanced performance are the data/LOD boundaries.
+6. Semantic/layout data is distinct from the immutable internal process-local RenderPacket. The packet is not public, wire, or persistent format.
+7. Main-thread runtime, single-writer Scene updates, immutable snapshots, bounded workers, generation cancellation, stale-result dropping, no lock across Python callbacks, device-loss rebuild, and explicit OOM are lifecycle boundaries.
+8. Backend Auto uses capability probing and static override. wgpu, winit, raw-window-handle, shader, text, and binding versions remain reference candidates pending gates.
+9. Shared shaping/layout and vector-aware PNG/PDF/SVG semantics are required; PNG/PDF are v1 MUST, SVG is SHOULD and non-blocking, and raster-only PDF is prohibited.
+10. Annotations, standalone viewer, keyboard/focus/contrast/reduced-motion accessibility, safety policy, explicit persistence non-goal, and benchmark protocol are part of v1 traceability.
+11. `LP-FUNC-025` is a Phase 3 v1 `MUST` for 3D line and triangulated-surface plots after the shared semantic frame. Its `AT-FUNC-3D` gate uses the pinned §15.1 four-part mplot3d oracle, including reference projection-order artifacts; it does not make RenderPacket public or persistent.
 
 ## Appendix C — Public-safe provenance
 

@@ -2,9 +2,13 @@
 
 ## Purpose and status
 
-This list contains decisions that must be settled before implementation fan-out or a support claim. It does not reopen accepted architecture decisions. The published requirements and ADR 0002 remain intentionally honest about the pre-alpha baseline; an open item is a follow-up gate, not permission to invent a public API or to block publication. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) records the accepted Phase-1 native core/facade envelope, [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) records its accepted Phase-1B namespace and observation amendment, [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and PNG boundary, [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) records the staged Phase-3A hidden facade/private helper boundary, and [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) records the staged Phase-3A2 pinned builder and same-wheel evidence boundary. The Phase-1 and bounded Phase-2 records have local implementation evidence; Phase-3A2 helper/package/builder same-wheel evidence is recorded (CI-local manifest; GIL 3.11–3.14 four-cell); and the Phase-3B public Matplotlib contract is recorded in [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) + [API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md), whose first strict-mode and hybrid-explicit implementation slices are merged with local contract-test evidence while packaged public-backend runtime evidence remains pending.
+This list contains decisions that must be settled before implementation fan-out or a support claim. It does not reopen accepted architecture decisions. The published requirements and ADR 0002 remain intentionally honest about the pre-alpha baseline; an open item is a follow-up gate, not permission to invent a public API or to block publication. [ADR 0010](../adr/0010-phase1-native-core-facade-contract.md) records the accepted Phase-1 native core/facade envelope, [ADR 0011](../adr/0011-phase1b-facade-namespace-observation-traits.md) records its accepted Phase-1B namespace and observation amendment, [ADR 0012](../adr/0012-private-line-frame-and-png-contract.md) records the accepted private Phase-2A/2B line-frame and PNG boundary, [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md) records the staged Phase-3A hidden facade/private helper boundary, and [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md) records the staged Phase-3A2 pinned builder and same-wheel evidence boundary. The Phase-1 and bounded Phase-2 records have local implementation evidence; Phase-3A2 helper/package/builder same-wheel evidence is recorded (CI-local manifest; GIL 3.11–3.14 four-cell); and the Phase-3B public Matplotlib contract is recorded in [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) + [API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md), whose first strict-mode and hybrid-explicit implementation slices are merged with local contract-test evidence while packaged public-backend runtime evidence is recorded in PR #89 CI.
 
 Each item should become an ADR, an API decision record, or a reviewed implementation contract. The exact choice must include rationale, affected interfaces, compatibility impact, and verification evidence.
+
+[ADR 0016](../adr/0016-v1-3d-envelope-and-agg-parity.md) records the accepted
+v1 3D envelope. O-19 through O-22 below are its unresolved stop conditions;
+they are not permission to infer implementation defaults.
 
 ## Accepted decisions that are not open
 
@@ -24,6 +28,7 @@ The following are fixed by the accepted architecture and must not be returned to
 - Runtime/window/surface/GPU lifecycle is main-thread confined; Scene is single-writer; snapshots are immutable; workers are bounded and generation-cancellable; no non-reentrant lock crosses a Python callback; device loss rebuilds from retained CPU data; OOM is explicit.
 - Backend Auto uses capability probing plus static override and no default startup microbenchmark.
 - PNG and PDF are v1 MUST outputs; SVG is a v1 SHOULD and non-blocking; supported vector semantics are retained and raster-only PDF is forbidden.
+- `LP-FUNC-025` is a Phase 3 v1 `MUST` for 3D line and triangulated-surface plots, accepted only by the pinned §15.1 four-part mplot3d parity gate including reference ordering artifacts; fallback alone is not implementation evidence.
 - Project/Scene serialization is a v1 non-goal.
 - v1 is pre-alpha; publication, public API stability, MSRV, performance, and platform support are not claimed without evidence.
 
@@ -45,7 +50,7 @@ The following are fixed by the accepted architecture and must not be returned to
 - Decision owner: architecture-authority
 - Needed before: frontend and FFI implementation
 - Record: [API 0001 — native Scene, view, and owned data](api-0001-native-scene-state.md), [API 0003 — Phase-3A Python, NumPy, and private helper](api-0003-python-numpy-matplotlib.md), [ADR 0010 — Phase-1 native core and facade contract](../adr/0010-phase1-native-core-facade-contract.md), [ADR 0011 — Phase-1B facade namespace and observation traits](../adr/0011-phase1b-facade-namespace-observation-traits.md), and [ADR 0013 — hidden line/PNG facade and private Python helper](../adr/0013-hidden-facade-private-python-line-png.md)
-- Accepted scope: ADR 0010 replaces the Phase-1 candidates with the exact opaque view/scale, owned `SeriesData`, `PlotScene`, transaction, snapshot, revision, and receipt observations. ADR 0011 fixes their direct crate-root namespace and exact trait guarantees. API 0003/ADR 0013 fix only the staged private Phase-3A helper, owned NumPy copy boundary, and ABI/runtime evidence gate; the public Phase-3B adapter surface is recorded in [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md)/[API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md) with its first strict-mode and hybrid-explicit implementation slices merged and packaged public-backend runtime evidence pending.
+- Accepted scope: ADR 0010 replaces the Phase-1 candidates with the exact opaque view/scale, owned `SeriesData`, `PlotScene`, transaction, snapshot, revision, and receipt observations. ADR 0011 fixes their direct crate-root namespace and exact trait guarantees. API 0003/ADR 0013 fix only the staged private Phase-3A helper, owned NumPy copy boundary, and ABI/runtime evidence gate; the public Phase-3B adapter surface is recorded in [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md)/[API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md) with its first strict-mode and hybrid-explicit implementation slices merged and packaged public-backend runtime evidence recorded in PR #89 CI.
 - Constraints: signatures must not leak engine chunks, LOD, caches, component revisions, or internal RenderPacket fields; the hidden module is not root-re-exported and has no product/semver/ABI/MSRV promise; no public Matplotlib result, diagnostic, canvas, or fallback schema is inferred.
 - Evidence: Phase-1 local API evidence, conditional hidden-inventory mutations, exact NumPy dtype/stride/GIL/ownership tests, and the locked CPython/wheel matrix before helper integration.
 
@@ -61,13 +66,13 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ### O-04 — Internal RenderPacket schema and resource lifecycle
 
-- State: Accepted — evidence pending
+- State: Accepted — bounded packet validation/generation and logical cache/lease/fence model evidence recorded in PR #91; full renderer-owner integration, device-loss rebuild, and environment evidence pending
 - Decision owner: architecture-authority
 - Needed before: renderer fan-out
 - Record: [ADR 0004 — RenderPacket and renderer resource lifecycle](../adr/0004-renderpacket-resource-lifecycle.md)
 - Accepted scope: packet field families, whole-packet validation, distinct Scene/Work/Device generations, logical-resource cache, lease/fence retirement, and non-public boundary recorded in ADR 0004.
 - Constraints: immutable, validated, process-local, internal, non-serialized; no wgpu/window/Python concrete types; export does not reverse-engineer GPU buffers.
-- Evidence: property tests, schema review, resource-lifetime tests, stale-generation tests, and a no-wire-format check.
+- Evidence: schema review, packet completeness/stale-generation tests, logical cache keying, lease/fence retirement, multiple-owner, device-generation invalidation, and no-wire-format checks are recorded in PR #91; full property coverage and concrete renderer-owner/device-loss rebuild evidence remain pending.
 
 ### O-05 — Scene ownership, mutation, revision, and history
 
@@ -81,7 +86,7 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ### O-06 — Window, viewer, host loop, and lifecycle semantics
 
-- State: Accepted — evidence pending
+- State: Accepted — backend-neutral runtime/viewer lifecycle and semantic-input state-model evidence recorded; real window/present and platform lifecycle matrix pending
 - Decision owner: architecture-authority
 - Needed before: standalone viewer, Python `show`, notebook, and platform fan-out
 - Record: [ADR 0005 — runtime, viewer, and host-loop lifecycle](../adr/0005-runtime-viewer-host-loop.md)
@@ -101,13 +106,13 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ### O-08 — Benchmark protocol and performance accounting
 
-- State: Accepted — evidence pending
+- State: Accepted — strict/hybrid benchmark runner and fail-closed validation evidence recorded; accelerated/native measurements pending
 - Decision owner: architecture-authority
 - Needed before: native gate and dependency updates
 - Record: [ADR 0006 — support cells, benchmark protocol, and native gates](../adr/0006-support-benchmark-native-gates.md)
 - Accepted scope: separate scheduler/GPU/queue/scanout clocks, five fresh-process blocks of at least 1000 frames, raw nearest-rank quantiles, paired bootstrap, no trimming, and inconclusive instrumentation behavior recorded in ADR 0006.
 - Constraints: at least 1000 measured frames per fixture; p50/p95/p99; input-to-present, event-to-packet, packet-to-submit, and submit-to-GPU-complete/readback separate; strict, hybrid, accelerated, and native profiles never combined.
-- Evidence: reproducible benchmark runner, manifest schema, repeated-run analysis, and dependency A/B report.
+- Evidence: reproducible benchmark runner, manifest schema, repeated-run analysis, and dependency A/B report; PR #89 records strict/hybrid validation runs and explicit refusal when accelerated/native environment requirements are unavailable. Native performance measurements remain pending.
 
 ### O-09 — Python ABI and NumPy ingestion policy
 
@@ -121,7 +126,7 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ### O-10 — Matplotlib compatibility and profile matrix
 
-- State: Accepted Phase-3B public Matplotlib adapter contract ([ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) + [API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md)) — first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence pending
+- State: Accepted Phase-3B public Matplotlib adapter contract ([ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) + [API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md)) — first strict-mode and hybrid-explicit implementation slices and packaged public-backend runtime evidence recorded in PR #89 CI; full compatibility/profile closure pending
 - Decision owner: architecture-authority
 - Needed before: adapter release claim
 - Record: [API 0005 — Phase-3B public Matplotlib backend surface](api-0005-phase3b-public-matplotlib-backend-surface.md) and [ADR 0015 — Phase-3B public Matplotlib adapter contract](../adr/0015-phase3b-public-matplotlib-adapter-contract.md); prior staged inputs remain in [API 0003](api-0003-python-numpy-matplotlib.md), [ADR 0013](../adr/0013-hidden-facade-private-python-line-png.md), and [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md)
@@ -141,7 +146,7 @@ The following are fixed by the accepted architecture and must not be returned to
   Matplotlib backend (Agg) for the same Figure — see that document's Section 5.4 for the
   binding geometry/pixel/style/text parity criteria each evidence gate must demonstrate.
   This reference records an accepted quality policy; it opens no new decision.
-- Evidence: Phase-3A helper/wheel/runtime same-wheel evidence is recorded (CI-local manifest; GIL CPython 3.11–3.14); the accepted [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md)/[API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md) contract is exercised by the merged strict-mode and hybrid-explicit slices with local loader/entry-point, public API, strict unsupported, hybrid whole-frame Agg, and diagnostic evidence, while packaged public-backend runtime evidence remains gated on the wheel-install lane.
+- Evidence: Phase-3A helper/wheel/runtime same-wheel evidence is recorded (CI-local manifest; GIL CPython 3.11–3.14); the accepted [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md)/[API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md) contract is exercised by the merged strict-mode and hybrid-explicit slices with local loader/entry-point, public API, strict unsupported, hybrid whole-frame Agg, and diagnostic evidence, and PR #89 CI records installed-wheel/public-backend runtime evidence. Full compatibility/profile/platform/release closure remains gated.
 
 ### O-11 — Coordinate, unit, color, alpha, and ICC policy
 
@@ -185,13 +190,13 @@ The following are fixed by the accepted architecture and must not be returned to
 
 ### O-15 — GPU runtime and shader artifact details
 
-- State: Accepted — evidence pending
+- State: Accepted — static shader provenance, line geometry preparation, and headless offscreen wgpu evidence recorded; real-device/runtime evidence pending
 - Decision owner: architecture-authority
 - Needed before: renderer/runtime fan-out
 - Record: [ADR 0008 — portable GPU runtime and shader artifacts](../adr/0008-portable-gpu-and-shaders.md)
 - Accepted scope: wgpu 29.0.4/winit 0.30.13/raw-window-handle 0.6.2 implementation baseline, static verified WGSL, main-thread resource ownership, device-loss rebuild, and terminal OOM recorded in ADR 0008. These versions are not public support or MSRV claims.
 - Constraints: `Backend::Auto` capability probe plus static override; no default startup microbenchmark; build/CI-time shader artifacts; no runtime untrusted shader compilation/download; Slang-RHI not in core.
-- Evidence: shader validator corpus, artifact provenance, platform lifecycle matrix, device-loss/OOM tests, and benchmark manifest.
+- Evidence: shader validator corpus, artifact provenance, line geometry/readback tests, platform lifecycle matrix, device-loss/OOM tests, and benchmark manifest; PR #89 records the static/headless portion, while real portable-GPU and lifecycle cells remain pending.
 
 ### O-16 — Native backend adoption and retirement gates
 
@@ -224,6 +229,50 @@ The following are fixed by the accepted architecture and must not be returned to
 - Constraints: no v1 Scene/project serialization or RenderPacket wire format; PNG/PDF/SVG are outputs, not persistence.
 - Evidence: separate schema/security ADR and migration/property tests.
 
+### O-19 — 3D projection default
+
+- State: **Accepted — decided by the ADR 0016 amendment of 2026-09-07; implementation/evidence pending**
+- Decision owner: architecture-authority
+- Needed before: a public 3D view default, default-case oracle fixture, or 3D implementation fan-out
+- Record: [ADR 0016 — v1 3D envelope and Agg-parity acceptance](../adr/0016-v1-3d-envelope-and-agg-parity.md)
+- Decision required: choose orthographic or perspective as the initial default, decide whether both are exposed in the first surface, and specify the public default-case semantics without copying a renderer-internal matrix.
+- Accepted decision: perspective default with reference-mirroring view facts (perspective, elevation 30 degrees, azimuth minus 60 degrees, roll 0 degrees, reference focal-length rule); both perspective and orthographic public in the first surface. Orthographic-default, perspective-only, and per-render-options placements rejected; see the ADR 0016 amendment.
+- Fixed constraints: projection/view attributes are backend-neutral semantic-frame facts; explicit-projection fixtures record their values, and no fixture or implementation may infer a default before this decision.
+- Evidence: API/semantic review plus pinned Agg fixtures for each accepted projection and the selected default.
+
+### O-20 — 3D z origin and local-f32 precision
+
+- State: **Accepted — decided by the ADR 0016 amendment of 2026-09-07; implementation/evidence pending**
+- Decision owner: architecture-authority
+- Needed before: any 3D local-f32 conversion, packet geometry, or renderer implementation
+- Record: [ADR 0016 — v1 3D envelope and Agg-parity acceptance](../adr/0016-v1-3d-envelope-and-agg-parity.md)
+- Decision required: define how z participates in origin selection (scene, view, chunk, or axis triple) and fix the permitted error budget for canonical-f64 to origin-relative-local-f32 conversion.
+- Accepted decision: z participates identically to x and y — one per-frame scene origin triple derived deterministically from canonical f64 x/y/z bound pairs, subtraction in f64 before narrowing, one origin shared by all batches; error budget is the §15.1 part-1 bound (at most 0.25 device pixel pre-quantization on projected geometry) with worst-error reporting. Z-excluded, per-chunk, camera/view-relative, and project-absolute-first placements rejected; see the ADR 0016 amendment.
+- Fixed constraints: source x/y/z and all bounds remain canonical f64 semantic facts; direct absolute narrowing is prohibited, and renderer-local conversion cannot change clipping, projection, or pick identity.
+- Evidence: large-offset/short-span property fixtures across all three axes, bound and projection invariants, and explicit worst-error reporting.
+
+### O-21 — scatter3D requirement alignment
+
+- State: **Accepted — decided by the ADR 0016 amendment of 2026-09-07; implementation/evidence pending**
+- Decision owner: architecture-authority
+- Needed before: scatter3D API, adapter eligibility, implementation, or evidence attribution
+- Record: [ADR 0016 — v1 3D envelope and Agg-parity acceptance](../adr/0016-v1-3d-envelope-and-agg-parity.md)
+- Decision required: classify scatter3D under the Phase 3 v1 `LP-FUNC-025` `MUST`, the Phase 5 non-blocking `LP-FUNC-017` `SHOULD`, or a separately accepted row without double-counting evidence.
+- Accepted decision: scatter3D stays aligned with `LP-FUNC-017` (`SHOULD`, Phase 5, `AT-FUNC-SCATTER`); not part of the `LP-FUNC-025` v1 `MUST` minimum; no double-counting toward `AT-FUNC-3D`; counts toward neither gate until the scatter lane accepts 3D-marker semantics. Include-in-`MUST` and brand-new-row options rejected; see the ADR 0016 amendment.
+- Fixed constraints: the accepted LP-FUNC-025 minimum covers 3D lines and triangulated surfaces; scatter3D does not count toward `AT-FUNC-3D` or `AT-FUNC-SCATTER` until this classification is accepted.
+- Evidence: requirement/traceability amendment, public-class eligibility contract, style/collection semantics review, and pinned Agg fixtures for the selected owner.
+
+### O-22 — Internal packet-schema versioning for 3D
+
+- State: **Accepted — decided by the ADR 0016 amendment of 2026-09-07; implementation/evidence pending**
+- Decision owner: architecture-authority
+- Needed before: changing internal RenderPacket field shapes or adding 3D packet consumers
+- Record: [ADR 0016 — v1 3D envelope and Agg-parity acceptance](../adr/0016-v1-3d-envelope-and-agg-parity.md) and [ADR 0004 — RenderPacket resource lifecycle](../adr/0004-renderpacket-resource-lifecycle.md)
+- Decision required: choose whether the existing generation identities are sufficient for a 3D shape change or whether packet identity needs an explicit internal schema version, including mismatch rejection and lifecycle behavior.
+- Accepted decision: generation-triple-only — the existing `SceneRevision`/`WorkGeneration`/`DeviceGeneration` triple is sufficient; no explicit packet-schema version is added. Mismatch rejection rides whole-packet validation plus generation checks plus static guards; negative serialization/persistence guards extend to new 3D fields. Explicit-version option rejected as a wire-lookalike identity; see the ADR 0016 amendment.
+- Fixed constraints: RenderPacket stays validated whole-packet, immutable, process-local, renderer-instance scoped, internal, non-public, non-wire, and non-persistent; export continues to consume the semantic frame.
+- Evidence: producer/consumer mismatch tests, stale-generation and device-generation tests, visibility/static guards, and negative serialization/persistence checks.
+
 ## Decision discipline
 
-O-01 through O-17 are recorded accepted contracts with implementation or environment evidence staged by phase. ADR 0010 and its narrow ADR 0011 amendment are the accepted Phase-1 native core/facade contract; Phase-1A/B implementation and local contract evidence now exist without altering the requirements status. ADR 0012 records the accepted private Phase-2A/2B line-frame and PNG boundary, whose bounded implementation and local evidence do not close full-v1 export. ADR 0013 records the staged Phase-3A hidden facade/private helper boundary, and ADR 0014 records the Phase-3A2 pinned builder, same-wheel matrix, and CI-local evidence schema; Phase-3A2 helper/package/builder same-wheel evidence is recorded (CI-local manifest; GIL 3.11–3.14 four-cell). The public Phase-3B Matplotlib contract is recorded in [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) + [API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md); its first strict-mode and hybrid-explicit implementation slices are merged with local contract-test evidence while packaged public-backend runtime evidence remains pending. O-18 is Deferred/Closed by non-goal. Do not silently promote a reference dependency, candidate API, environment observation, parent research result, or benchmark target into an implementation or support result. If a future decision changes the accepted envelope, supersede or amend ADR 0002 explicitly and update the requirements and traceability registry together.
+O-01 through O-17 are recorded accepted contracts with implementation or environment evidence staged by phase. ADR 0010 and its narrow ADR 0011 amendment are the accepted Phase-1 native core/facade contract; Phase-1A/B implementation and local contract evidence now exist without altering the requirements status. ADR 0012 records the accepted private Phase-2A/2B line-frame and PNG boundary, whose bounded implementation and local evidence do not close full-v1 export. ADR 0013 records the staged Phase-3A hidden facade/private helper boundary, and ADR 0014 records the Phase-3A2 pinned builder, same-wheel matrix, and CI-local evidence schema; Phase-3A2 helper/package/builder same-wheel evidence is recorded (CI-local manifest; GIL 3.11–3.14 four-cell). The public Phase-3B Matplotlib contract is recorded in [ADR 0015](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) + [API 0005](api-0005-phase3b-public-matplotlib-backend-surface.md); its first strict-mode and hybrid-explicit implementation slices are merged with local contract-test evidence while packaged public-backend runtime evidence is recorded in PR #89 CI. O-18 is Deferred/Closed by non-goal. ADR 0016 accepts the v1 3D envelope, and its amendment of 2026-09-07 decides O-19 through O-22; those rows now carry implementation permission under their recorded contracts, with implementation and evidence pending. Do not silently promote a reference dependency, candidate API, environment observation, parent research result, or benchmark target into an implementation or support result. If a future decision changes the accepted envelope, supersede or amend ADR 0002 explicitly and update the requirements and traceability registry together.

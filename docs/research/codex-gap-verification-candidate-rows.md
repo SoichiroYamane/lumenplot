@@ -9,8 +9,9 @@ candidate rows (`LP-FUNC-040`, `LP-FUNC-041`, `LP-MPL-021`, `LP-MPL-022`,
 
 This document records the verification of the external gap probe (codex /
 gpt-5.6-sol, "Agg vs lumenplot gap survey", 2026-08-26, archived at run scope)
-against current `main`, and drafts candidate requirement rows for the gaps that
-survived verification. Per the GAP-R1 card:
+against current `main`, and the five candidate requirement rows that survived
+verification. Per the GAP-R1 card, those rows were adopted through GOV-3 as
+recorded below:
 
 - Executed at adoption (2026-08-26): all five rows in Section 3 are registered
   in [`traceability-v1.0.md`](../requirements/traceability-v1.0.md) verbatim,
@@ -66,15 +67,18 @@ adopted … the canonical registry still reports FUNC max 31 and MPL max 19") is
 **superseded**: the canonical registry at `f87fc8d` carries the nine adopted
 rows `LP-FUNC-032`–`LP-FUNC-039` + `LP-MPL-020` (canonized by GOV-1 / ADR-0017,
 PR #66, commit `555d7f1`), with honest `Not implemented` result entries per the
-release-honesty rule (`LP-REL-014`). The candidate IDs below were verified
-unclaimed on `origin/main` (no occurrence of `FUNC-040`, `FUNC-041`,
-`MPL-021`, `MPL-022`, `MPL-023` anywhere in `docs/`), so they remain free.
+release-honesty rule (`LP-REL-014`). The five GAP-R1 rows below were subsequently
+adopted through GOV-3 on 2026-08-26 and are registered verbatim in the canonical
+registry with honest `Not implemented` result entries. Their five evidence gates
+are registered in the registry vocabulary; adoption is not an implementation
+result.
 
-## 3. Candidate rows
+## 3. Adopted GAP-R1 rows
 
 Format mirrors the adopted parity draft's row table. Each row names its
-evidence gate (new gate names are marked *new*; none collide with the existing
-acceptance-gate vocabulary), a phase proposal, and its gsplot-compat ledger
+evidence gate (the five GAP-R1 gate names are registered in the canonical
+evidence-gate vocabulary; the draft-only *new* markers are retired), a phase
+proposal, and its gsplot-compat ledger
 mapping (G-numbers per
 [`gsplot-compat-gap-ledger-t_43b57c74.md`](gsplot-compat-gap-ledger-t_43b57c74.md)).
 Quality oracle for every row: current Matplotlib Agg backend output, fixed as
@@ -187,8 +191,10 @@ transform-family cost heuristic; phase 5 aligns with `LP-FUNC-038/039`.
 
 ## 6. Explicit non-goals recorded by this verification
 
-- No registry edit, no gate-name registration, no result-column change: all
-  of that is maintainer adoption work in the GOV flow.
+- GOV-3 adoption is complete: the five GAP-R1 rows and their five evidence-gate
+  names are recorded in the canonical registry. This verification claims no
+  implementation or result promotion; all five rows retain honest
+  `Not implemented` results.
 - No change proposed to the LP-FUNC-034 step-family non-finite refusal
   (already conforms).
 - Z-order, decorated axes, tick-label glyphs, fills/bars/steps: verified

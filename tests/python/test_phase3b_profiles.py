@@ -17,8 +17,8 @@ PYTHON-OBSERVABLE profile-selection consequences of that staged contract on
 - exactly the two shipped selection values are accepted, by name;
 - every other value — including the not-yet-shipped ``accelerated-native``
   profile name — fails explicitly (ValueError) instead of approximating;
-- ``strict`` is the staged default of this ordered-delivery slice (pinned so
-  a future default flip to ``hybrid-explicit`` cannot land silently);
+- ``hybrid`` is the shipped default and corresponds to the accepted
+  ``hybrid-explicit`` profile;
 - the selection is immutable after construction and observable via the
   public ``mode`` property;
 - the selection actually drives dispatch: strict raises the stable
@@ -117,16 +117,21 @@ class TestProfileSelectionValues(unittest.TestCase):
     "matplotlib/lumenplot_mpl not in this offline cell",
 )
 class TestStagedDefaultProfile(unittest.TestCase):
-    """The staged slice default is 'strict' (ADR 0015 §12 order).
+    """The shipped default is the accepted hybrid-explicit profile."""
 
-    Pins the current default explicitly so the eventual LP-MPL-003 flip to
-    hybrid-explicit-as-default cannot happen silently: changing it must
-    update this test together with the canon decision, never drift.
-    """
-
-    def test_default_selection_is_strict(self):
+    def test_default_selection_is_hybrid_explicit(self):
         canvas = backend_mod.FigureCanvasLumenPlot(_ineligible_figure())
-        self.assertEqual(canvas.mode, "strict")
+        self.assertEqual(canvas.mode, "hybrid")
+
+    def test_default_selection_dispatches_explicit_whole_frame_fallback(self):
+        canvas = backend_mod.FigureCanvasLumenPlot(_ineligible_figure())
+        result = canvas.render_png()
+        self.assertEqual(len(result.diagnostics), 1)
+        diagnostic = result.diagnostics[0]
+        self.assertEqual(diagnostic.kind, "unsupported-capability")
+        self.assertEqual(diagnostic.scope, "whole-frame")
+        self.assertEqual(diagnostic.representation, "raster")
+        self.assertEqual(diagnostic.fallback_type, "matplotlib-agg")
 
     def test_mode_kwarg_is_keyword_only(self):
         # The selector is keyword-only by signature; passing it positionally

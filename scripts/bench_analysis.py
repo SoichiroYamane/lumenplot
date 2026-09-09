@@ -47,6 +47,7 @@ EXIT_CROSS_PROFILE = 3
 SCHEMA_VERSION = 1
 PROFILES = ("strict", "hybrid", "accelerated", "native")
 CLOCK_DOMAINS = ("scheduler", "gpu", "queue", "scanout")
+REQUIRED_CLOCK_DOMAINS = frozenset(CLOCK_DOMAINS)
 STATUSES = ("complete", "inconclusive")
 QUANTILE_METHOD = "nearest-rank"
 TRIMMING = "none"
@@ -101,6 +102,7 @@ REQUIRED_BLOCK_FIELDS = (
     "p99_ns",
     "raw_samples_path",
 )
+REQUIRED_POOLED_FIELDS = ("clock", "frame_count", "p50_ns", "p95_ns", "p99_ns")
 NULLABLE_QUANTILE_STATUS = "inconclusive"
 
 RFC3339_RE = re.compile(
@@ -121,6 +123,32 @@ _ABSENT = object()
 def is_number(value: Any) -> bool:
     """Return True for real JSON numbers (bool excluded)."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def is_finite_number(value: Any) -> bool:
+    """Return True for a finite JSON number (bool excluded)."""
+    return is_number(value) and (
+        not isinstance(value, float) or math.isfinite(value)
+    )
+
+
+def is_finite_nonnegative_number(value: Any) -> bool:
+    """Return True for a finite, non-negative JSON number."""
+    return is_finite_number(value) and value >= 0
+
+
+def _nonfinite_number_errors(value: Any, path: str = "manifest") -> list[str]:
+    """Find non-standard JSON NaN/Infinity values accepted by ``json.loads``."""
+    errors: list[str] = []
+    if isinstance(value, float) and not math.isfinite(value):
+        errors.append(f"{path}: non-finite numbers are not valid benchmark evidence")
+    elif isinstance(value, dict):
+        for key, child in value.items():
+            errors.extend(_nonfinite_number_errors(child, f"{path}.{key}"))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            errors.extend(_nonfinite_number_errors(child, f"{path}[{index}]"))
+    return errors
 
 
 def is_int(value: Any) -> bool:
@@ -157,9 +185,16 @@ def nearest_rank(values: list[float], quantile: float) -> float:
     """Nearest-rank quantile: rank = ceil(q * n) on ascending sort, 1-indexed."""
     if not values:
         raise ValueError("nearest-rank quantile of an empty sample list")
+    if not is_finite_number(quantile) or not 0.0 <= quantile <= 1.0:
+        raise ValueError("nearest-rank quantile must be finite and between 0 and 1")
+    if any(
+        not is_number(value)
+        or (isinstance(value, float) and not math.isfinite(value))
+        for value in values
+    ):
+        raise ValueError("nearest-rank samples must be finite numbers")
     ordered = sorted(values)
-    scaled = round(quantile * len(ordered), 9)
-    rank = min(max(math.ceil(scaled), 1), len(ordered))
+    rank = min(max(math.ceil(quantile * len(ordered)), 1), len(ordered))
     return ordered[rank - 1]
 
 
@@ -178,6 +213,21 @@ def paired_bootstrap_ci(
     """
     if not deltas:
         raise ValueError("paired bootstrap over an empty delta list")
+    if not is_int(seed):
+        raise ValueError("paired bootstrap seed must be an integer")
+    if not is_int(resamples) or resamples <= 0:
+        raise ValueError("paired bootstrap resamples must be a positive integer")
+    if (
+        not is_finite_number(ci_level)
+        or not 0.0 < ci_level < 1.0
+    ):
+        raise ValueError("paired bootstrap confidence level must be finite and between 0 and 1")
+    if any(
+        not is_number(delta)
+        or (isinstance(delta, float) and not math.isfinite(delta))
+        for delta in deltas
+    ):
+        raise ValueError("paired bootstrap deltas must be finite numbers")
     rng = random.Random(seed)
     count = len(deltas)
     means: list[float] = []
@@ -205,6 +255,7 @@ def validate_manifest(manifest: Any) -> list[str]:
     if not isinstance(manifest, dict):
         return ["manifest: expected a JSON object"]
 
+    errors.extend(_nonfinite_number_errors(manifest))
     for field in REQUIRED_TOP_LEVEL:
         if field not in manifest:
             add(field, "required field is missing")
@@ -256,12 +307,11 @@ def validate_manifest(manifest: Any) -> list[str]:
     )
 
     pooled = manifest.get("pooled")
-    if pooled is not None and not isinstance(pooled, dict):
-        add("pooled", "expected a JSON object of descriptive statistics")
+    _validate_pooled(pooled, manifest.get("status"), add)
 
     max_block_p99 = manifest.get("max_block_p99_ns")
     if max_block_p99 is not None and (
-        not is_number(max_block_p99) or max_block_p99 < 0
+        not is_finite_nonnegative_number(max_block_p99)
     ):
         add("max_block_p99_ns", "expected a non-negative number or null")
 
@@ -270,6 +320,7 @@ def validate_manifest(manifest: Any) -> list[str]:
         manifest.get("inconclusive_reasons", _ABSENT),
         add,
     )
+    _validate_manifest_consistency(manifest, add)
     return errors
 
 
@@ -308,7 +359,7 @@ def _validate_fixture(fixture: Any, add: Any) -> None:
     if "dpi" in fixture:
         if dpi is None:
             add("fixture.dpi", "expected a positive number, got null")
-        elif not is_number(dpi) or dpi <= 0:
+        elif not is_finite_number(dpi) or dpi <= 0:
             add("fixture.dpi", "expected a positive number")
 
 
@@ -334,7 +385,7 @@ def _validate_environment(environment: Any, add: Any) -> None:
     if "display_scale" in environment:
         if scale is None:
             add("environment.display_scale", "expected a positive number, got null")
-        elif not is_number(scale) or scale <= 0:
+        elif not is_finite_number(scale) or scale <= 0:
             add("environment.display_scale", "expected a positive number")
     for field in ("compositor", "present_mode"):
         if field in environment and environment[field] is not None and not is_nonempty_str(
@@ -353,6 +404,141 @@ def _validate_environment(environment: Any, add: Any) -> None:
                 add(f"environment.gpu.{field}", "expected a non-empty string, got null")
             elif not is_nonempty_str(gpu[field]):
                 add(f"environment.gpu.{field}", "expected a non-empty string")
+
+
+def _validate_pooled(pooled: Any, status: Any, add: Any) -> None:
+    """Validate the descriptive pooled summary without accepting fake values."""
+    if pooled is None:
+        return
+    if not isinstance(pooled, dict):
+        add("pooled", "expected a JSON object of descriptive statistics or null")
+        return
+    for field in REQUIRED_POOLED_FIELDS:
+        if field not in pooled:
+            add(f"pooled.{field}", "required field is missing")
+
+    clock = pooled.get("clock")
+    if "clock" in pooled:
+        if clock is None:
+            add("pooled.clock", "expected a non-empty string, got null")
+        elif not is_nonempty_str(clock):
+            add("pooled.clock", "expected a non-empty string")
+
+    frame_count = pooled.get("frame_count")
+    if "frame_count" in pooled:
+        if frame_count is None:
+            add("pooled.frame_count", "expected a non-negative int, got null")
+        elif not is_int(frame_count) or frame_count < 0:
+            add("pooled.frame_count", "expected a non-negative int")
+
+    quantiles: list[float] = []
+    for field in ("p50_ns", "p95_ns", "p99_ns"):
+        value = pooled.get(field)
+        if value is None:
+            if status != NULLABLE_QUANTILE_STATUS:
+                add(
+                    f"pooled.{field}",
+                    "expected a non-negative number or null when inconclusive",
+                )
+            continue
+        if not is_finite_nonnegative_number(value):
+            add(f"pooled.{field}", "expected a non-negative number")
+        else:
+            quantiles.append(value)
+    if len(quantiles) == 3 and not (
+        quantiles[0] <= quantiles[1] <= quantiles[2]
+    ):
+        add("pooled", "expected p50_ns <= p95_ns <= p99_ns")
+
+
+def _validate_manifest_consistency(manifest: dict[str, Any], add: Any) -> None:
+    """Validate cross-field facts that are knowable without raw JSONL files."""
+    clocks = manifest.get("clocks")
+    blocks = manifest.get("blocks")
+    status = manifest.get("status")
+    if isinstance(clocks, list):
+        valid_clocks = [clock for clock in clocks if isinstance(clock, dict)]
+        clock_names = {
+            clock["name"]
+            for clock in valid_clocks
+            if is_nonempty_str(clock.get("name"))
+        }
+        scheduler_names = [
+            clock["name"]
+            for clock in valid_clocks
+            if clock.get("domain") == "scheduler"
+            and is_nonempty_str(clock.get("name"))
+        ]
+        if isinstance(manifest.get("pooled"), dict):
+            pooled_clock = manifest["pooled"].get("clock")
+            if is_nonempty_str(pooled_clock):
+                if pooled_clock not in clock_names:
+                    add("pooled.clock", "must name a clock in clocks")
+                elif scheduler_names and pooled_clock != scheduler_names[0]:
+                    add(
+                        "pooled.clock",
+                        "must name the first scheduler-domain clock used for gate statistics",
+                    )
+        measurement = manifest.get("measurement")
+        if isinstance(measurement, dict):
+            scheduler_clock = measurement.get("scheduler_clock")
+            if is_nonempty_str(scheduler_clock):
+                if scheduler_clock not in scheduler_names:
+                    add(
+                        "measurement.scheduler_clock",
+                        "must name a scheduler-domain clock in clocks",
+                    )
+            for field in ("present_observed", "scanout_observed"):
+                if field in measurement and not isinstance(measurement[field], bool):
+                    add(f"measurement.{field}", "expected a bool")
+            if status == "complete" and (
+                measurement.get("present_observed") is False
+                or measurement.get("scanout_observed") is False
+            ):
+                add(
+                    "measurement",
+                    "complete status is not allowed when present or scanout observation is unavailable",
+                )
+        if status == "complete":
+            for index, clock in enumerate(valid_clocks):
+                if clock.get("available") is not True:
+                    add(
+                        f"clocks[{index}].available",
+                        "complete status requires every clock to be explicitly available",
+                    )
+    if isinstance(blocks, list) and isinstance(manifest.get("pooled"), dict):
+        frame_counts = [
+            block["frame_count"]
+            for block in blocks
+            if isinstance(block, dict) and is_int(block.get("frame_count"))
+        ]
+        pooled_count = manifest["pooled"].get("frame_count")
+        if len(frame_counts) == len(blocks) and is_int(pooled_count):
+            expected_count = sum(frame_counts)
+            if pooled_count != expected_count:
+                add(
+                    "pooled.frame_count",
+                    f"must equal the sum of block frame counts ({expected_count}), "
+                    f"got {pooled_count!r}",
+                )
+    if isinstance(blocks, list):
+        p99_values = [
+            block["p99_ns"]
+            for block in blocks
+            if isinstance(block, dict)
+            and is_finite_nonnegative_number(block.get("p99_ns"))
+        ]
+        reported_max = manifest.get("max_block_p99_ns")
+        if p99_values and reported_max is not None:
+            expected_max = max(p99_values)
+            if reported_max != expected_max:
+                add(
+                    "max_block_p99_ns",
+                    f"must equal the maximum available block p99 ({expected_max!r}), "
+                    f"got {reported_max!r}",
+                )
+
+
 
 
 def _validate_protocol(protocol: Any, add: Any) -> None:
@@ -464,6 +650,7 @@ def _validate_clocks(clocks: Any, add: Any) -> None:
     if not clocks:
         add("clocks", "expected at least one clock entry")
     seen_names: set[str] = set()
+    seen_domains: set[str] = set()
     for index, clock in enumerate(clocks):
         path = f"clocks[{index}]"
         if not isinstance(clock, dict):
@@ -495,6 +682,8 @@ def _validate_clocks(clocks: Any, add: Any) -> None:
                     f"{path}.domain",
                     f"expected one of {list(CLOCK_DOMAINS)}, got {domain!r}",
                 )
+            else:
+                seen_domains.add(domain)
         unit = clock.get("unit")
         if "unit" in clock and unit != "ns":
             # Null is not absent: an explicit unit=null is rejected, while a
@@ -515,6 +704,9 @@ def _validate_clocks(clocks: Any, add: Any) -> None:
         if domain == "queue" and is_nonempty_str(name):
             if not name.startswith("queue_"):
                 add(f"{path}.name", "queue-domain clock names must start with \"queue_\"")
+    for domain in CLOCK_DOMAINS:
+        if domain not in seen_domains:
+            add(f"clocks.{domain}", "required clock domain is missing")
 
 
 def _validate_blocks(
@@ -534,6 +726,7 @@ def _validate_blocks(
     if len(blocks) != BLOCK_COUNT:
         add("blocks", f"expected exactly {BLOCK_COUNT} blocks, got {len(blocks)}")
     indexes: list[int] = []
+    pids: list[int] = []
     for index, block in enumerate(blocks):
         path = f"blocks[{index}]"
         if not isinstance(block, dict):
@@ -556,6 +749,8 @@ def _validate_blocks(
                 add(f"{path}.pid", "expected a positive int, got null")
             elif not is_int(pid) or pid <= 0:
                 add(f"{path}.pid", "expected a positive int")
+            else:
+                pids.append(pid)
         started_at = block.get("started_at_utc")
         if "started_at_utc" in block:
             if started_at is None:
@@ -579,7 +774,7 @@ def _validate_blocks(
                     continue
                 add(f"{path}.{field}", "expected a non-negative number or null when inconclusive")
                 continue
-            if not is_number(value) or value < 0:
+            if not is_finite_nonnegative_number(value):
                 add(f"{path}.{field}", "expected a non-negative number")
             else:
                 quantiles.append(value)
@@ -598,6 +793,8 @@ def _validate_blocks(
             "blocks[].block_index",
             f"expected block_index 0..{BLOCK_COUNT - 1} exactly once each, got {sorted(indexes)}",
         )
+    if len(pids) != len(set(pids)):
+        add("blocks[].pid", "each fresh-process block must have a distinct pid")
 
 
 def _validate_status(status: Any, reasons: Any, add: Any) -> None:
@@ -670,7 +867,7 @@ def load_measurement_rows(path: Path) -> list[dict[str, Any]]:
     for line_number, line in enumerate(text.splitlines(), start=1):
         stripped = line.strip()
         if not stripped:
-            continue
+            raise InputError(f"{path}:{line_number}: blank lines are not allowed")
         try:
             row = json.loads(stripped)
         except json.JSONDecodeError as error:
@@ -680,15 +877,18 @@ def load_measurement_rows(path: Path) -> list[dict[str, Any]]:
         for field in ("block_index", "frame_index"):
             if not is_int(row.get(field)):
                 raise InputError(f"{path}:{line_number}: {field} must be an int")
+            if row[field] < 0:
+                raise InputError(f"{path}:{line_number}: {field} must be non-negative")
         clocks = row.get("clocks")
         if not isinstance(clocks, dict):
             raise InputError(f"{path}:{line_number}: clocks must be a JSON object")
         for name, value in clocks.items():
             if not isinstance(name, str) or not name:
                 raise InputError(f"{path}:{line_number}: clock names must be non-empty strings")
-            if value is not None and not is_number(value):
+            if value is not None and not is_finite_nonnegative_number(value):
                 raise InputError(
-                    f"{path}:{line_number}: clock {name!r} must be a number or null"
+                    f"{path}:{line_number}: clock {name!r} must be a non-negative number or null; "
+                    "non-finite values are rejected"
                 )
         rows.append(row)
     return rows
@@ -734,12 +934,22 @@ def command_quantiles(args: argparse.Namespace) -> int:
         return EXIT_INVALID
     values: list[float] = []
     unavailable = 0
+    missing = 0
     for row in rows:
         clocks = row["clocks"]
-        if clock not in clocks or clocks[clock] is None:
+        if clock not in clocks:
+            missing += 1
+        elif clocks[clock] is None:
             unavailable += 1
         else:
             values.append(clocks[clock])
+    if missing:
+        print(
+            f"ERROR: {args.quantiles}: requested clock {clock!r} is missing "
+            f"from {missing} raw sample rows",
+            file=sys.stderr,
+        )
+        return EXIT_INVALID
     result = {
         "clock": clock,
         "method": QUANTILE_METHOD,

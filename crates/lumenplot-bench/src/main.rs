@@ -10,7 +10,10 @@
 //! parent process re-executes itself once per block with the internal
 //! `--internal-block-runner` mode flag (see `runner`), so a full run spawns
 //! 5 fresh child processes, one per block. Output defaults to `./bench-out/`
-//! and receives `manifest.json` plus `samples-<block>.jsonl` raw files.
+//! and receives `manifest.json` plus `samples-<block>.jsonl` raw files. The
+//! accelerated profile uses the portable offscreen renderer and records an
+//! offscreen readback boundary; it never labels that CPU interval as
+//! display-present latency.
 
 #![forbid(unsafe_code)]
 

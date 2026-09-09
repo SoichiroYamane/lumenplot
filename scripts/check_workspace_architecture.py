@@ -58,12 +58,14 @@ EXPECTED_ENGINE_SOURCE_FILES = {
     "src/scene/state.rs",
     "src/scene/transaction.rs",
     "src/scene/snapshot.rs",
+    "src/text.rs",
 }
 EXPECTED_EXPORT_SOURCE_FILES = {
     "src/lib.rs",
     "src/error.rs",
     "src/raster.rs",
     "src/compositor.rs",
+    "src/pdf.rs",
     "src/png.rs",
 }
 EXPECTED_BENCH_SOURCE_FILES = {
@@ -93,6 +95,62 @@ METAL_TARGET_EXTERNAL_DEPENDENCIES = {
 }
 # The exact Cargo target-gate expression the pinned edges live behind.
 METAL_TARGET_GATE = 'cfg(target_os = "macos")'
+WGPU_EXTERNAL_DEPENDENCIES = {
+    "wgpu": {
+        "version": "=29.0.4",
+        "default-features": False,
+        "features": ["std", "wgsl", "vulkan"],
+    },
+}
+WGPU_BUILD_EXTERNAL_DEPENDENCIES = {
+    "naga": {
+        "version": "=29.0.4",
+        "default-features": False,
+        "features": ["wgsl-in"],
+    },
+    "sha2": {
+        "version": "=0.10.9",
+        "default-features": False,
+    },
+}
+WGPU_SOURCE_FILES = {"src/lib.rs", "src/shader.rs"}
+WGPU_SHADER_PATH = "shaders/line.wgsl"
+WGPU_SHADER_SHA256 = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3"
+# M4 runtime/viewer lane. Runtime input routing is a private module admitted
+# alongside the lifecycle owner; viewer remains a single-source edge.
+RUNTIME_SOURCE_FILES = {"src/lib.rs", "src/input.rs"}
+VIEWER_SOURCE_FILES = {"src/lib.rs"}
+RUNTIME_VIEWER_FORBIDDEN_CODE_PATTERNS = (
+    ("unsafe code", re.compile(r"\bunsafe\b")),
+    (
+        "serialization or wire code",
+        re.compile(r"\b(?:serde|bincode|postcard|rmp|wire|persistence|serialize|deserialize)\b"),
+    ),
+    (
+        "frontend bridge code",
+        re.compile(r"\b(?:python|matplotlib|numpy|pyo3)\b", re.I),
+    ),
+    ("Metal backend naming", re.compile(r"\b(?:metal|mtl|objc2)\b", re.I)),
+)
+VIEWER_FORBIDDEN_CODE_PATTERNS = RUNTIME_VIEWER_FORBIDDEN_CODE_PATTERNS + (
+    (
+        "concrete runtime backend code",
+        re.compile(r"\b(?:wgpu|winit|window)\b", re.I),
+    ),
+)
+RUNTIME_VIEWER_PUBLIC_PUMP_PATTERNS = {
+    "lumenplot-runtime": re.compile(r"\bpub\s+fn\s+pump_once\b"),
+    "lumenplot-viewer": re.compile(r"\bpub\s+fn\s+pump\b"),
+}
+# Option A from the accepted architecture decision permits only the accepted
+# system-device boundary.  These are exact path, symbol, signature, and
+# statement anchors; they are not a crate-wide unsafe waiver.
+METAL_FFI_SOURCE_PATH = "src/device.rs"
+METAL_FFI_EXTERN_SIGNATURE = "fn MTLCreateSystemDefaultDevice() -> *mut AnyObject;"
+METAL_FFI_CALL_STATEMENTS = (
+    "let raw = unsafe { MTLCreateSystemDefaultDevice() };",
+    "let inner = unsafe { Retained::from_raw(raw) }?;",
+)
 EXPORT_TYPES = {"ExportErrorKind", "ExportError", "PngSpec"}
 EXPORT_ENUM_VARIANTS = {
     "ExportErrorKind": {
@@ -414,6 +472,7 @@ BRIDGE_METHODS = {
     "logical_units_per_inch",
     "background",
     "series",
+    "plot_layout",
     "id",
     "style",
     "segments",
@@ -467,6 +526,7 @@ BRIDGE_METHODS_BY_TYPE = {
         "logical_units_per_inch",
         "background",
         "series",
+        "plot_layout",
     },
     "LineSeries": {"id", "style", "segments"},
     "LineSegment": {"points"},
@@ -507,6 +567,7 @@ BRIDGE_PHASE2_SIGNATURES = {
         "logical_units_per_inch": "pub fn logical_units_per_inch(&self) -> f64",
         "background": "pub fn background(&self) -> SrgbRgba8",
         "series": "pub fn series(&self) -> &[LineSeries]",
+        "plot_layout": "pub fn plot_layout(&self) -> &PlotLayout",
     },
     "LineSeries": {
         "id": "pub fn id(&self) -> SeriesId",
@@ -556,10 +617,15 @@ EXPECTED_EDGES = {
     "lumenplot-render-api": {"lumenplot-engine"},
     "lumenplot-render-metal": {"lumenplot-render-api"},
     "lumenplot-render-wgpu": {"lumenplot-render-api"},
-    "lumenplot-runtime": {"lumenplot-render-wgpu"},
+    "lumenplot-runtime": {"lumenplot-render-api", "lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
     "lumenplot-python": {"lumenplot"},
-    "lumenplot-bench": {"lumenplot", "lumenplot-engine", "lumenplot-render-api"},
+    "lumenplot-bench": {
+        "lumenplot",
+        "lumenplot-engine",
+        "lumenplot-render-api",
+        "lumenplot-render-wgpu",
+    },
 }
 EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES = {
     "tiny-skia": {
@@ -584,7 +650,7 @@ PHASE3A2_MATURIN_WHEEL_SHA256 = "dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13
 # Probed from
 # https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init
 # and cross-checked against the published rustup-init.sha256 sidecar.
-PHASE3A2_RUSTUP_INIT_SHA256 = "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+PHASE3A2_RUSTUP_INIT_SHA256 = "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
 PHASE3A2_NUMPY_WHEEL_SHA256 = {
     "cp311": "89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93",
     "cp312": "90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853",
@@ -721,6 +787,13 @@ PUBLIC_ITEM_RE = re.compile(
     re.MULTILINE,
 )
 PUBLIC_REEXPORT_RE = re.compile(r"^\s*pub\s+use\b", re.MULTILINE)
+ENGINE_TEXT_REEXPORT_RE = re.compile(
+    r"^\s*pub\s+use\s+crate::text::\{\s*"
+    r"AnnotationShape,\s*AnnotationSpace,\s*AnnotationTransform,\s*"
+    r"FallbackRoute,\s*FontFeature,\s*FontIdentity,\s*FontVariation,\s*GlyphPosition,\s*"
+    r"PlotLayout,\s*RetainedAnnotation,\s*ShapedRun,\s*TextDirection,\s*TextRole,\s*\};\s*",
+    re.MULTILINE,
+)
 PUBLIC_BARE_ITEM_RE = re.compile(
     r"^\s*pub\s+(?:use|struct|enum|trait|fn|type|const|static|mod|macro|union|extern|impl)\b",
     re.MULTILINE,
@@ -965,6 +1038,59 @@ def _check_stub_source(package_name: str, source_dir: Path, root: Path, errors: 
     if NO_MANGLE_RE.search(code):
         errors.append(f"package {package_name}: exported ABI is not allowed")
     _check_forbidden_code(package_name, code, errors)
+
+
+def _check_runtime_viewer_source(
+    package_name: str,
+    source_dir: Path,
+    root: Path,
+    errors: list[str],
+) -> None:
+    """Enforce the narrow active M4 source and safety boundary."""
+
+    rust_files = sorted(
+        path.relative_to(source_dir.parent).as_posix() for path in source_dir.rglob("*.rs")
+    ) if source_dir.is_dir() else []
+    expected_files = sorted(
+        RUNTIME_SOURCE_FILES if package_name == "lumenplot-runtime" else VIEWER_SOURCE_FILES
+    )
+    if rust_files != expected_files:
+        missing = sorted(set(expected_files) - set(rust_files))
+        extra = sorted(set(rust_files) - set(expected_files))
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ",".join(missing))
+        if extra:
+            details.append("extra " + ",".join(extra))
+        errors.append(
+            f"package {package_name}: exact active source inventory mismatch"
+            + (" (" + "; ".join(details) + ")" if details else "")
+        )
+        return
+
+    source_path = source_dir / "lib.rs"
+    try:
+        source = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        errors.append(f"package {package_name}: cannot read {_logical_path(source_path, root)}")
+        return
+    code = _strip_rust_comments_and_literals(source)
+    if not code.strip():
+        errors.append(f"package {package_name}: active source must contain implementation code")
+        return
+    if NO_MANGLE_RE.search(code):
+        errors.append(f"package {package_name}: exported ABI is not allowed")
+    public_pump = RUNTIME_VIEWER_PUBLIC_PUMP_PATTERNS[package_name]
+    if public_pump.search(code):
+        errors.append(f"package {package_name}: generic pump API must remain internal")
+    patterns = (
+        VIEWER_FORBIDDEN_CODE_PATTERNS
+        if package_name == "lumenplot-viewer"
+        else RUNTIME_VIEWER_FORBIDDEN_CODE_PATTERNS
+    )
+    for label, pattern in patterns:
+        if pattern.search(code):
+            errors.append(f"package {package_name}: {label} is not allowed")
 
 
 def _find_matching_brace(code: str, opening: int) -> int:
@@ -2405,7 +2531,8 @@ def _normalize_bridge_signature(signature: str) -> str:
 
 
 def _check_engine_bridge(code: str, errors: list[str]) -> None:
-    if PUBLIC_REEXPORT_RE.search(code):
+    code_without_text_reexport = ENGINE_TEXT_REEXPORT_RE.sub("", code, count=1)
+    if PUBLIC_REEXPORT_RE.search(code_without_text_reexport):
         errors.append("package lumenplot-engine: bridge re-export is not allowed")
     if re.search(r"\bRenderPacket\b", code):
         errors.append("package lumenplot-engine: bridge public signature uses forbidden RenderPacket")
@@ -2471,7 +2598,7 @@ def _check_engine_bridge(code: str, errors: list[str]) -> None:
                 f"package lumenplot-engine: bridge public method inventory mismatch for {type_name!r}"
             )
 
-    for line in code.splitlines():
+    for line in code_without_text_reexport.splitlines():
         if not re.match(r"^\s*pub\s+", line):
             continue
         if re.match(r"^\s*pub\s+(?:struct|enum|fn)\b", line):
@@ -2593,7 +2720,7 @@ def _check_engine_source(package_dir: Path, root: Path, errors: list[str]) -> No
         return
 
     root_code = sources["src/lib.rs"]
-    for module in ("error", "frame", "data", "lod", "scene"):
+    for module in ("error", "frame", "data", "lod", "scene", "text"):
         if not re.search(rf"^\s*mod\s+{module}\s*;", root_code, re.MULTILINE):
             errors.append(f"package lumenplot-engine: private root module {module!r} is missing")
     hidden_bridge = re.compile(
@@ -2612,7 +2739,7 @@ def _check_engine_source(package_dir: Path, root: Path, errors: list[str]) -> No
 
     for relative, code in sources.items():
         _check_forbidden_code("lumenplot-engine", code, errors)
-        if relative in {"src/lib.rs", "src/bridge.rs"}:
+        if relative in {"src/lib.rs", "src/bridge.rs", "src/text.rs"}:
             continue
         if PUBLIC_REEXPORT_RE.search(code) or PUBLIC_BARE_ITEM_RE.search(code):
             errors.append(f"package lumenplot-engine: public item outside bridge in {relative}")
@@ -2653,6 +2780,9 @@ def _check_export_source(package_dir: Path, root: Path, errors: list[str]) -> No
         return
 
     all_code = "\n".join(sources.values())
+    production_code = "\n".join(
+        source.split("#[cfg(test)]", 1)[0] for source in sources.values()
+    )
     forbidden = (
         ("unsafe code", re.compile(r"\bunsafe\b")),
         (
@@ -2670,14 +2800,18 @@ def _check_export_source(package_dir: Path, root: Path, errors: list[str]) -> No
         ),
     )
     for label, pattern in forbidden:
-        if pattern.search(all_code):
+        scan_code = production_code if label == "concrete frontend/backend code" else all_code
+        if pattern.search(scan_code):
             errors.append(f"package lumenplot-export: {label} is not allowed")
 
     root_code = sources["src/lib.rs"]
-    module_pattern = re.compile(r"^\s*mod\s+(compositor|error|png|raster)\s*;", re.MULTILINE)
+    module_pattern = re.compile(
+        r"^\s*mod\s+(compositor|error|pdf|png|raster)\s*;", re.MULTILINE
+    )
     if {match.group(1) for match in module_pattern.finditer(root_code)} != {
         "compositor",
         "error",
+        "pdf",
         "png",
         "raster",
     }:
@@ -3205,10 +3339,17 @@ def _phase3a2_activation_reasons(root: Path) -> list[str]:
 
 
 PHASE3A2_PHASE3B_PACKAGE_FILES = frozenset(
-    {"backend.py", "__init__.py", "textpath.py"}
+    {
+        "__init__.py",
+        "backend.py",
+        "backend_preflight.py",
+        "backend_support.py",
+        "backend_types.py",
+        "textpath.py",
+    }
 )
 # While the Phase-3B allowance is active, these are the ONLY matplotlib
-# shapes still rejected inside the three phase3b-owned package files; every
+# shapes still rejected inside the phase3b-owned package files; every
 # other occurrence (qualified chains such as matplotlib.lines.Line2D,
 # rcParams access, docstring prose) is admitted because the backend module
 # itself is the adapter and textpath.py consumes the documented public
@@ -3263,6 +3404,44 @@ def _render_api_activation_reason(root: Path) -> str | None:
     return None
 
 
+def _wgpu_activation_reason(root: Path) -> str | None:
+    """Return why the portable renderer static contract activates, or None."""
+
+    source_dir = root / "crates" / "lumenplot-render-wgpu" / "src"
+    if any(path.suffix == ".rs" for path in source_dir.glob("*.rs") if path.name != "lib.rs"):
+        return "crates/lumenplot-render-wgpu/src/*.rs beyond src/lib.rs"
+    manifest = _read_toml(root / "crates/lumenplot-render-wgpu/Cargo.toml", root, [])
+    if isinstance(manifest, dict):
+        dependencies = manifest.get("dependencies")
+        if isinstance(dependencies, dict) and dependencies.get("wgpu") == WGPU_EXTERNAL_DEPENDENCIES["wgpu"]:
+            return "crates/lumenplot-render-wgpu/Cargo.toml wgpu dependency"
+    return None
+
+
+def _runtime_viewer_activation_reason(root: Path) -> str | None:
+    """Return why the paired M4 runtime/viewer contract activates, or None.
+
+    Both crates must contain implementation code before either crate leaves
+    the Phase-0 documentation-only guard.  This prevents a partial lane from
+    silently gaining the active allowance and mirrors the fail-closed policy
+    used by the other staged implementation boundaries.
+    """
+
+    packages = ("lumenplot-runtime", "lumenplot-viewer")
+    active: list[str] = []
+    for package_name in packages:
+        source_path = root / "crates" / package_name / "src" / "lib.rs"
+        try:
+            source = source_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return None
+        if _strip_rust_comments_and_literals(source).strip():
+            active.append(package_name)
+    if len(active) == len(packages):
+        return "paired runtime/viewer src/lib.rs implementation"
+    return None
+
+
 RENDER_API_FORBIDDEN_CODE_PATTERNS = (
     FORBIDDEN_CODE_PATTERNS[0],
     FORBIDDEN_CODE_PATTERNS[1],
@@ -3296,6 +3475,12 @@ def _check_render_api_source(package_dir: Path, root: Path, errors: list[str]) -
         errors.append(f"package lumenplot-render-api: cannot read {_logical_path(lib_path, root)}")
         return
     code = _strip_rust_comments_and_literals(lib_source)
+    if not re.search(r"(?m)^#\[doc\(hidden\)\]\s*\npub\s+mod\s+__internal\s*\{", lib_source):
+        errors.append("package lumenplot-render-api: hidden internal module is missing")
+    if re.search(r"(?m)^pub\s+(?:use|struct|enum|type)\b[^\n]*\bRenderPacket\b", code):
+        errors.append("package lumenplot-render-api: RenderPacket root export is not allowed")
+    if re.search(r"(?m)^\s*pub\s+fn\s+new\s*\([^\n]*\)\s*->\s*RenderPacket\b", code):
+        errors.append("package lumenplot-render-api: RenderPacket public constructor is not allowed")
     if NO_MANGLE_RE.search(code):
         errors.append("package lumenplot-render-api: exported ABI is not allowed")
     for module_path in sorted((package_dir / "src").rglob("*.rs")):
@@ -3310,6 +3495,70 @@ def _check_render_api_source(package_dir: Path, root: Path, errors: list[str]) -
         for label, pattern in RENDER_API_FORBIDDEN_CODE_PATTERNS:
             if pattern.search(module_code):
                 errors.append(f"package lumenplot-render-api: {label} is not allowed")
+
+
+WGPU_FORBIDDEN_CODE_PATTERNS = (
+    FORBIDDEN_CODE_PATTERNS[0],
+    FORBIDDEN_CODE_PATTERNS[1],
+    (
+        "higher-level frontend code",
+        re.compile(r"\b(?:python|matplotlib|numpy|pyo3|winit|raw_window_handle)\b", re.I),
+    ),
+    (
+        "Metal backend naming",
+        re.compile(r"\b(?:metal|mtl|objc2)\b", re.I),
+    ),
+)
+
+
+def _check_wgpu_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the bounded portable renderer and static shader artifact lane."""
+
+    source_dir = package_dir / "src"
+    rust_files = (
+        {path.relative_to(package_dir).as_posix() for path in source_dir.rglob("*.rs")}
+        if source_dir.is_dir()
+        else set()
+    )
+    if rust_files != WGPU_SOURCE_FILES:
+        missing = sorted(WGPU_SOURCE_FILES - rust_files)
+        extra = sorted(rust_files - WGPU_SOURCE_FILES)
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ",".join(missing))
+        if extra:
+            details.append("extra " + ",".join(extra))
+        errors.append(
+            "package lumenplot-render-wgpu: exact source inventory mismatch"
+            + (" (" + "; ".join(details) + ")" if details else "")
+        )
+
+    for module_path in sorted(source_dir.rglob("*.rs")):
+        try:
+            module_source = module_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            errors.append(
+                f"package lumenplot-render-wgpu: cannot read {_logical_path(module_path, root)}"
+            )
+            continue
+        module_code = _strip_rust_comments_and_literals(module_source)
+        if NO_MANGLE_RE.search(module_code):
+            errors.append("package lumenplot-render-wgpu: exported ABI is not allowed")
+        for label, pattern in WGPU_FORBIDDEN_CODE_PATTERNS:
+            if pattern.search(module_code):
+                errors.append(f"package lumenplot-render-wgpu: {label} is not allowed")
+
+    shader_path = package_dir / WGPU_SHADER_PATH
+    try:
+        shader_bytes = shader_path.read_bytes()
+    except (OSError, UnicodeError):
+        errors.append(
+            f"package lumenplot-render-wgpu: cannot read {_logical_path(shader_path, root)}"
+        )
+    else:
+        digest = hashlib.sha256(shader_bytes).hexdigest()
+        if digest != WGPU_SHADER_SHA256:
+            errors.append("package lumenplot-render-wgpu: static shader hash mismatch")
 
 
 def _metal_activation_reason(root: Path) -> str | None:
@@ -3576,6 +3825,12 @@ def _phase3a2_check_workflow(root: Path, errors: list[str]) -> set[str]:
     shell_code = _phase3a2_strip_shell_comments("\n".join(run_blocks))
     docker_runs = _phase3a2_docker_run_segments(shell_code)
     repositories = _phase3a2_check_workflow_actions(text, errors)
+    rustup_init_pins = re.findall(
+        r"(?m)^[ \t]*PHASE3A2_RUSTUP_INIT_SHA256:[ \t]*[\"']([0-9a-f]{64})[\"'][ \t]*(?:#.*)?$",
+        text,
+    )
+    if rustup_init_pins != [PHASE3A2_RUSTUP_INIT_SHA256]:
+        errors.append("phase3a2 workflow: rustup-init digest must match the reviewed checker pin")
     required_fragments = (
         ("pull_request", "pull_request trigger"),
         ("push:", "push trigger"),
@@ -4418,16 +4673,126 @@ def _check_bench_source(package_dir: Path, root: Path, errors: list[str]) -> Non
         errors.append("package lumenplot-bench: public item is not allowed in src/lib.rs")
 
 
-def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> None:
-    """Enforce the B2-P Metal-lane stub contract while the sentinel is active.
+def _normalise_rust_whitespace(source: str) -> str:
+    """Compare a small allowlisted Rust fragment without accepting new items."""
 
-    The prototype lane may carry Rust source beyond `src/lib.rs` only while
-    `_metal_activation_reason` fires.  Unlike the accepted O-08 bench
-    inventory, the prototype module set is deliberately not pinned yet; the
-    follow-up prototype task owns that decision.  `src/lib.rs` itself must
-    remain documentation-only with no public items so the crate boundary
-    never widens from documentation.
+    return " ".join(source.split())
+
+
+def _metal_raw_extern_c(source: str, position: int) -> bool:
+    """Return whether *position* has an ``extern`` whose ABI value is ``C``."""
+
+    cursor = position + len("extern")
+    # The code-only pass blanks ABI string literals, so inspect the raw source
+    # here.  Rust comments are token trivia; skip them without changing the
+    # source offset used by the caller.  Block comments may nest.
+    while cursor < len(source):
+        if source[cursor].isspace():
+            cursor += 1
+            continue
+        if source.startswith("//", cursor):
+            newline = source.find("\n", cursor + 2)
+            if newline < 0:
+                return False
+            cursor = newline + 1
+            continue
+        if source.startswith("/*", cursor):
+            depth = 1
+            cursor += 2
+            while cursor < len(source) and depth:
+                if source.startswith("/*", cursor):
+                    depth += 1
+                    cursor += 2
+                elif source.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+            if depth:
+                return False
+            continue
+        break
+    abi_source = source[cursor:]
+    quoted_match = re.match(r'"([^"\\]*)"(?!\w)', abi_source)
+    if quoted_match is not None:
+        return quoted_match.group(1) == "C"
+
+    # Rust raw strings may use any matching number of hash delimiters.  Treat
+    # each spelling whose semantic value is exactly ``C`` as the same ABI token;
+    # raw spelling does not create another FFI allowance.  Reject a trailing
+    # identifier or hash so an invalid token prefix cannot inherit the match.
+    raw_match = re.match(r'r(?P<hashes>#*)"C"(?P=hashes)(?![\w#])', abi_source)
+    return raw_match is not None
+
+
+def _metal_allowlisted_positions(
+    relative_path: str,
+    source: str,
+    code: str,
+) -> tuple[set[int], set[int]]:
+    """Return exact allowed ``unsafe`` and ``extern "C"`` token positions.
+
+    The exception is deliberately structural and count-checked.  A matching
+    token in any other file, a duplicate call, a changed declaration body, or
+    an additional item receives no allowance and is reported by the caller.
     """
+
+    if relative_path != METAL_FFI_SOURCE_PATH:
+        return set(), set()
+
+    allowed_unsafe: set[int] = set()
+    allowed_extern: set[int] = set()
+
+    # The two accepted call sites are exact statements, not expression or
+    # symbol-prefix patterns.  Requiring one occurrence of each prevents a
+    # copied call from inheriting the exception.
+    statement_positions: dict[str, list[int]] = {
+        statement: [] for statement in METAL_FFI_CALL_STATEMENTS
+    }
+    line_start = 0
+    for line in code.splitlines(keepends=True):
+        normalised = _normalise_rust_whitespace(line)
+        for statement in METAL_FFI_CALL_STATEMENTS:
+            if normalised == statement:
+                unsafe_position = line.find("unsafe")
+                if unsafe_position >= 0:
+                    statement_positions[statement].append(line_start + unsafe_position)
+        line_start += len(line)
+    for positions in statement_positions.values():
+        if len(positions) == 1:
+            allowed_unsafe.add(positions[0])
+
+    # The declaration is the sole item in the exact unsafe extern block.  The
+    # raw source is consulted only to preserve the ABI string literal, which
+    # the normal lexical pass intentionally blanks.
+    if code.count("fn MTLCreateSystemDefaultDevice") != 1:
+        return allowed_unsafe, allowed_extern
+    for unsafe_match in re.finditer(r"\bunsafe\b", code):
+        cursor = unsafe_match.end()
+        while cursor < len(code) and code[cursor].isspace():
+            cursor += 1
+        if not code.startswith("extern", cursor):
+            continue
+        extern_position = cursor
+        if not _metal_raw_extern_c(source, extern_position):
+            continue
+        opening = code.find("{", extern_position + len("extern"))
+        if opening >= len(code):
+            continue
+        closing = _find_matching_brace(code, opening)
+        if closing >= len(code):
+            continue
+        body = _normalise_rust_whitespace(code[opening + 1 : closing])
+        if body != _normalise_rust_whitespace(METAL_FFI_EXTERN_SIGNATURE):
+            continue
+        allowed_unsafe.add(unsafe_match.start())
+        allowed_extern.add(extern_position)
+        break
+    return allowed_unsafe, allowed_extern
+
+
+def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the B2-P Metal source and confined FFI-boundary contract."""
 
     source_dir = package_dir / "src"
     rust_files = sorted(
@@ -4449,6 +4814,35 @@ def _check_metal_source(package_dir: Path, root: Path, errors: list[str]) -> Non
         errors.append("package lumenplot-render-metal: public item is not allowed in src/lib.rs")
     if NO_MANGLE_RE.search(code):
         errors.append("package lumenplot-render-metal: exported ABI is not allowed")
+
+    # Defense-in-depth over the complete source set.  Only the exact
+    # named device declaration and its two ownership-preserving call sites are
+    # exempt; all other unsafe or extern declarations fail closed.  The source
+    # inventory itself remains open for later prototype modules; each future
+    # module inherits no FFI allowance.
+    for module_path in sorted(source_dir.rglob("*.rs")):
+        try:
+            module_source = module_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            errors.append(
+                f"package lumenplot-render-metal: cannot read {_logical_path(module_path, root)}"
+            )
+            continue
+        module_code = _strip_rust_comments_and_literals(module_source)
+        relative_path = module_path.relative_to(source_dir.parent).as_posix()
+        allowed_unsafe, allowed_extern = _metal_allowlisted_positions(
+            relative_path,
+            module_source,
+            module_code,
+        )
+        for unsafe_match in re.finditer(r"\bunsafe\b", module_code):
+            if unsafe_match.start() not in allowed_unsafe:
+                errors.append("package lumenplot-render-metal: unsafe code is not allowed")
+        if NO_MANGLE_RE.search(module_code):
+            errors.append("package lumenplot-render-metal: exported ABI is not allowed")
+        for extern_match in re.finditer(r"\bextern\b", module_code):
+            if extern_match.start() not in allowed_extern:
+                errors.append('package lumenplot-render-metal: extern "C" is not allowed')
 
 
 def _check_package_source(
@@ -4473,8 +4867,15 @@ def _check_package_source(
         and _render_api_activation_reason(root) is not None
     ):
         _check_render_api_source(package_dir, root, errors)
+    elif package_name == "lumenplot-render-wgpu" and _wgpu_activation_reason(root) is not None:
+        _check_wgpu_source(package_dir, root, errors)
     elif package_name == "lumenplot-render-metal" and _metal_activation_reason(root) is not None:
         _check_metal_source(package_dir, root, errors)
+    elif (
+        package_name in {"lumenplot-runtime", "lumenplot-viewer"}
+        and _runtime_viewer_activation_reason(root) is not None
+    ):
+        _check_runtime_viewer_source(package_name, package_dir / "src", root, errors)
     else:
         _check_stub_source(package_name, package_dir / "src", root, errors)
 
@@ -4497,6 +4898,11 @@ def _check_dependencies(
         and _metal_activation_reason(root) is not None
     ):
         expected_external = METAL_TARGET_EXTERNAL_DEPENDENCIES
+    elif (
+        package_name == "lumenplot-render-wgpu"
+        and _wgpu_activation_reason(root) is not None
+    ):
+        expected_external = WGPU_EXTERNAL_DEPENDENCIES
     elif package_name == "lumenplot-python" and phase3a2_active:
         expected_external = PHASE3A2_PYTHON_DEPENDENCIES
         if phase3b_active:
@@ -4506,8 +4912,15 @@ def _check_dependencies(
             }
     else:
         expected_external = {}
+    expected_build_external = (
+        WGPU_BUILD_EXTERNAL_DEPENDENCIES
+        if package_name == "lumenplot-render-wgpu"
+        and _wgpu_activation_reason(root) is not None
+        else {}
+    )
     actual_edges: set[str] = set()
     actual_external: set[str] = set()
+    actual_build_external: set[str] = set()
     metal_gate_active = (
         package_name == "lumenplot-render-metal"
         # Same activation sentinel as the expected-inventory branch above;
@@ -4517,6 +4930,27 @@ def _check_dependencies(
     for table_path, dependencies in _walk_tables(manifest):
         if not isinstance(dependencies, dict):
             errors.append(f"package {package_name}: dependency table is invalid")
+            continue
+        if table_path == ("build-dependencies",):
+            if not expected_build_external:
+                if dependencies:
+                    errors.append(
+                        f"package {package_name}: only runtime path dependencies are allowed"
+                    )
+                continue
+            for dependency_name in sorted(dependencies):
+                specification = dependencies[dependency_name]
+                expected_specification = expected_build_external.get(dependency_name)
+                if expected_specification is None:
+                    errors.append(
+                        f"package {package_name}: external build dependency {dependency_name!r} is not allowed"
+                    )
+                elif specification != expected_specification:
+                    errors.append(
+                        f"package {package_name}: external build dependency {dependency_name!r} has an unexpected specification"
+                    )
+                else:
+                    actual_build_external.add(dependency_name)
             continue
         if table_path != ("dependencies",):
             if metal_gate_active and table_path == ("target", METAL_TARGET_GATE, "dependencies"):
@@ -4594,6 +5028,18 @@ def _check_dependencies(
         if details:
             errors.append(
                 f"package {package_name}: exact external dependency inventory mismatch ({'; '.join(details)})"
+            )
+    if actual_build_external != set(expected_build_external):
+        missing = sorted(set(expected_build_external) - actual_build_external)
+        extra = sorted(actual_build_external - set(expected_build_external))
+        details = []
+        if missing:
+            details.append(f"missing {','.join(missing)}")
+        if extra:
+            details.append(f"extra {','.join(extra)}")
+        if details:
+            errors.append(
+                f"package {package_name}: exact build dependency inventory mismatch ({'; '.join(details)})"
             )
 
 

@@ -19,3 +19,4 @@ phase3a2-wheel-evidence.json
 /wheelhouse/
 /cargo-home/
 /evidence/
+/python/lumenplot_mpl/_native*.so

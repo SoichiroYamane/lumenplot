@@ -392,7 +392,7 @@ class TestDerivedSnapshotIntegrity(unittest.TestCase):
 
     def test_strict_error_names_the_same_single_spent_generation(self):
         canvas = backend_mod.FigureCanvasLumenPlot(
-            _ineligible_reason_builder(marker=True)()
+            _ineligible_reason_builder(marker=True)(), mode="strict"
         )
         before = canvas._generation
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:

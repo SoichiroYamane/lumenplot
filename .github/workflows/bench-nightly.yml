@@ -1,0 +1,167 @@
+name: Benchmark evidence
+
+on:
+  schedule:
+    - cron: "30 21 * * *"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "One profile; native is an explicit environment-required refusal until implemented"
+        required: true
+        type: choice
+        default: strict
+        options:
+          - strict
+          - hybrid
+          - accelerated
+          - native
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-nightly
+  cancel-in-progress: false
+
+jobs:
+  select_profiles:
+    name: Select benchmark profiles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      profiles: ${{ steps.profiles.outputs.profiles }}
+    steps:
+      - name: Validate input and select profiles
+        id: profiles
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == schedule ]]; then
+            profiles='["strict","hybrid","accelerated"]'
+          else
+            case "$PROFILE" in
+              strict|hybrid|accelerated|native)
+                profiles="[\"$PROFILE\"]"
+                ;;
+              *)
+                printf 'error: unsupported benchmark profile %q\n' "$PROFILE" >&2
+                exit 1
+                ;;
+            esac
+          fi
+          printf 'profiles=%s\n' "$profiles" >> "$GITHUB_OUTPUT"
+
+  benchmark:
+    name: Benchmark evidence (${{ matrix.profile }})
+    needs: select_profiles
+    # Scheduled runs exercise only profiles executable on the hosted CPU. The
+    # native cell is offered only for an explicit manual attempt; its current
+    # pre-run refusal remains a non-green result and never a required gate.
+    if: always() && needs.select_profiles.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(needs.select_profiles.outputs.profiles) }}
+    env:
+      PROFILE: ${{ matrix.profile }}
+      OUT_DIR: ${{ github.workspace }}/.bench-out/${{ matrix.profile }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Resolve repository Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          plain = Path("rust-toolchain")
+          toml = Path("rust-toolchain.toml")
+          if plain.exists() and toml.exists():
+              raise SystemExit("both rust-toolchain and rust-toolchain.toml exist")
+
+          channel = "stable"
+          source = "no repository toolchain file; stable channel fallback"
+          if plain.exists():
+              channel = plain.read_text(encoding="utf-8").strip()
+              source = "rust-toolchain"
+          elif toml.exists():
+              config = tomllib.loads(toml.read_text(encoding="utf-8"))
+              toolchain = config.get("toolchain", {})
+              if not isinstance(toolchain, dict):
+                  raise SystemExit("[toolchain] must be a TOML table")
+              channel = toolchain.get("channel", "")
+              source = "rust-toolchain.toml"
+
+          channel_pattern = re.compile(
+              r"(?:stable|beta|nightly)(?:-\d{4}-\d{2}-\d{2})?"
+              r"|(?:\d+\.){1,2}\d+(?:-[A-Za-z0-9._-]+)?"
+          )
+          if not isinstance(channel, str) or not channel_pattern.fullmatch(channel):
+              raise SystemExit(f"unsupported or unsafe Rust channel: {channel!r}")
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"channel={channel}\n")
+          print(f"Rust toolchain source: {source}; channel: {channel}")
+          PY
+
+      - name: Install resolved Rust toolchain
+        uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+
+      - name: Test benchmark evidence validator mutations
+        run: python3 -m unittest scripts.test_bench_ci -v
+
+      - name: Run benchmark profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -e "$OUT_DIR" ]]; then
+            rm -rf -- "$OUT_DIR"
+          fi
+          cargo run --release --locked -p lumenplot-bench -- \
+            --profile "$PROFILE" \
+            --out "$OUT_DIR"
+
+      - name: Validate emitted manifest with bench_analysis
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$OUT_DIR/manifest.json"
+          python3 scripts/bench_analysis.py --validate "$OUT_DIR/manifest.json"
+
+      - name: Validate raw samples and upload allowlist
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/bench_ci.py --validate-run "$OUT_DIR" --profile "$PROFILE"
+
+      - name: Upload validated benchmark evidence
+        # Uploads are convenience trend evidence only. The explicit success()
+        # guard follows both required validation steps, and the trusted-ref
+        # guard prevents artifacts from untrusted manual refs.
+        if: >-
+          success() &&
+          github.ref == 'refs/heads/main' &&
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ github.workspace }}/.bench-out/${{ matrix.profile }}/manifest.json
+            ${{ github.workspace }}/.bench-out/${{ matrix.profile }}/samples-*.jsonl
+          if-no-files-found: error
+          retention-days: 30

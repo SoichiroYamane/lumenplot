@@ -1,0 +1,557 @@
+{
+  "schema_version": "agg-oracle-manifest-v1",
+  "fixture_id": "fill-fill-between-span-stack-opaque",
+  "oracle": {
+    "backend": "FigureCanvasAgg",
+    "matplotlib_version": "3.11.1",
+    "api_version": "1.1",
+    "canvas_construction": "matplotlib.backends.backend_agg.FigureCanvasAgg(figure)",
+    "render_call": "canvas.print_png(buffer, metadata={})"
+  },
+  "python_version": ">=3.11,<3.15",
+  "figure": {
+    "construction": "matplotlib.figure.Figure(figsize=(2.0, 1.0), dpi=100.0, facecolor='white', edgecolor='white')",
+    "options": {
+      "figsize_inches": [
+        2.0,
+        1.0
+      ],
+      "dpi": 100.0,
+      "facecolor": "white",
+      "edgecolor": "white",
+      "axes_construction": "figure.add_axes((0.1, 0.1, 0.8, 0.8))",
+      "axes_rect": [
+        0.1,
+        0.1,
+        0.8,
+        0.8
+      ],
+      "axes_facecolor": "none",
+      "axis_on": false,
+      "xlim": [
+        0.0,
+        10.0
+      ],
+      "ylim": [
+        -2.0,
+        6.0
+      ],
+      "savefig_format": "png",
+      "print_png_metadata": {}
+    }
+  },
+  "effective_dpi": 100.0,
+  "dimensions": {
+    "width": 200,
+    "height": 100
+  },
+  "orientation": "top-to-bottom",
+  "channels": "RGBA8",
+  "rcparams": {
+    "agg.path.chunksize": 0,
+    "axes.facecolor": "none",
+    "figure.dpi": 100.0,
+    "figure.edgecolor": "white",
+    "figure.facecolor": "white",
+    "font.family": [
+      "DejaVu Sans"
+    ],
+    "font.size": 10.0,
+    "lines.antialiased": true,
+    "lines.solid_capstyle": "butt",
+    "lines.solid_joinstyle": "miter",
+    "patch.antialiased": true,
+    "patch.edgecolor": "none",
+    "patch.facecolor": "red",
+    "patch.force_edgecolor": false,
+    "patch.linewidth": 0.0,
+    "path.simplify": false,
+    "path.simplify_threshold": 0.0,
+    "savefig.dpi": 100.0,
+    "savefig.edgecolor": "white",
+    "savefig.facecolor": "white",
+    "savefig.format": "png",
+    "savefig.transparent": false,
+    "text.antialiased": true
+  },
+  "font": {
+    "family": "DejaVu Sans",
+    "properties": {
+      "style": "normal",
+      "variant": "normal",
+      "weight": "normal",
+      "stretch": "normal",
+      "size": 10.0
+    },
+    "file": "DejaVuSans.ttf",
+    "bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22"
+  },
+  "font_bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22",
+  "artist_class": "matplotlib.patches.Polygon + matplotlib.collections.FillBetweenPolyCollection + matplotlib.patches.Rectangle",
+  "primitive": {
+    "family": [
+      "matplotlib.patches.Polygon",
+      "matplotlib.collections.FillBetweenPolyCollection",
+      "matplotlib.patches.Rectangle"
+    ],
+    "style": {
+      "facecolor": "explicit per artist",
+      "edgecolor": "none",
+      "linewidth": 0.0,
+      "alpha": 1.0,
+      "antialiased": true
+    },
+    "input_data": {
+      "fill": {
+        "x": [
+          0.5,
+          2.5,
+          2.5,
+          0.5
+        ],
+        "y": [
+          0.0,
+          0.0,
+          2.0,
+          2.0
+        ],
+        "face": "red"
+      },
+      "fill_between": {
+        "x": [
+          3.0,
+          4.0,
+          5.0
+        ],
+        "y1": [
+          2.0,
+          2.0,
+          2.0
+        ],
+        "y2": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "face": "blue"
+      },
+      "vspan": {
+        "x": [
+          6.0,
+          7.5
+        ],
+        "face": "green"
+      },
+      "hspan": {
+        "y": [
+          -1.5,
+          -0.5
+        ],
+        "face": "yellow"
+      },
+      "stack": {
+        "x": [
+          8.0,
+          9.0,
+          10.0
+        ],
+        "layers": [
+          [
+            1.0,
+            1.0,
+            1.0
+          ],
+          [
+            0.5,
+            0.5,
+            0.5
+          ]
+        ],
+        "faces": [
+          "orange",
+          "purple"
+        ]
+      },
+      "cases": {
+        "fill": {
+          "artist": "matplotlib.patches.Polygon",
+          "face": "red"
+        },
+        "fill_between": {
+          "artist": "matplotlib.collections.FillBetweenPolyCollection",
+          "face": "blue"
+        },
+        "vspan": {
+          "artist": "matplotlib.patches.Rectangle",
+          "face": "green"
+        },
+        "hspan": {
+          "artist": "matplotlib.patches.Rectangle",
+          "face": "yellow"
+        },
+        "stack": {
+          "artist": "matplotlib.collections.FillBetweenPolyCollection",
+          "faces": [
+            "orange",
+            "purple"
+          ],
+          "layers": 2
+        }
+      }
+    }
+  },
+  "input_data": {
+    "fill": {
+      "x": [
+        0.5,
+        2.5,
+        2.5,
+        0.5
+      ],
+      "y": [
+        0.0,
+        0.0,
+        2.0,
+        2.0
+      ],
+      "face": "red"
+    },
+    "fill_between": {
+      "x": [
+        3.0,
+        4.0,
+        5.0
+      ],
+      "y1": [
+        2.0,
+        2.0,
+        2.0
+      ],
+      "y2": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "face": "blue"
+    },
+    "vspan": {
+      "x": [
+        6.0,
+        7.5
+      ],
+      "face": "green"
+    },
+    "hspan": {
+      "y": [
+        -1.5,
+        -0.5
+      ],
+      "face": "yellow"
+    },
+    "stack": {
+      "x": [
+        8.0,
+        9.0,
+        10.0
+      ],
+      "layers": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ],
+        [
+          0.5,
+          0.5,
+          0.5
+        ]
+      ],
+      "faces": [
+        "orange",
+        "purple"
+      ]
+    },
+    "cases": {
+      "fill": {
+        "artist": "matplotlib.patches.Polygon",
+        "face": "red"
+      },
+      "fill_between": {
+        "artist": "matplotlib.collections.FillBetweenPolyCollection",
+        "face": "blue"
+      },
+      "vspan": {
+        "artist": "matplotlib.patches.Rectangle",
+        "face": "green"
+      },
+      "hspan": {
+        "artist": "matplotlib.patches.Rectangle",
+        "face": "yellow"
+      },
+      "stack": {
+        "artist": "matplotlib.collections.FillBetweenPolyCollection",
+        "faces": [
+          "orange",
+          "purple"
+        ],
+        "layers": 2
+      }
+    }
+  },
+  "topology": {
+    "fill": {
+      "class": "matplotlib.patches.Polygon",
+      "api": "patch.get_path().vertices/codes",
+      "path": {
+        "vertices": [
+          [
+            0.5,
+            0.0
+          ],
+          [
+            2.5,
+            0.0
+          ],
+          [
+            2.5,
+            2.0
+          ],
+          [
+            0.5,
+            2.0
+          ],
+          [
+            0.5,
+            0.0
+          ]
+        ],
+        "codes": [
+          1,
+          2,
+          2,
+          2,
+          79
+        ]
+      },
+      "zorder": 1.0
+    },
+    "fill_between": {
+      "class": "matplotlib.collections.FillBetweenPolyCollection",
+      "api": "collection.get_paths()",
+      "loops": [
+        {
+          "vertices": [
+            [
+              3.0,
+              0.0
+            ],
+            [
+              3.0,
+              2.0
+            ],
+            [
+              4.0,
+              2.0
+            ],
+            [
+              5.0,
+              2.0
+            ],
+            [
+              5.0,
+              0.0
+            ],
+            [
+              5.0,
+              0.0
+            ],
+            [
+              4.0,
+              0.0
+            ],
+            [
+              3.0,
+              0.0
+            ],
+            [
+              3.0,
+              0.0
+            ]
+          ],
+          "codes": [
+            1,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            2,
+            79
+          ]
+        }
+      ],
+      "zorder": 1.0
+    },
+    "vspan": {
+      "class": "matplotlib.patches.Rectangle",
+      "api": "patch.get_xy()/get_width()/get_height()",
+      "xy": [
+        6.0,
+        0.0
+      ],
+      "width": 1.5,
+      "height": 1.0,
+      "zorder": 1.0
+    },
+    "hspan": {
+      "class": "matplotlib.patches.Rectangle",
+      "api": "patch.get_xy()/get_width()/get_height()",
+      "xy": [
+        0.0,
+        -1.5
+      ],
+      "width": 1.0,
+      "height": 1.0,
+      "zorder": 1.0
+    },
+    "stack": {
+      "class": "matplotlib.collections.FillBetweenPolyCollection",
+      "api": "collection.get_paths()",
+      "layers": [
+        {
+          "loops": [
+            {
+              "vertices": [
+                [
+                  8.0,
+                  1.0
+                ],
+                [
+                  8.0,
+                  0.0
+                ],
+                [
+                  9.0,
+                  0.0
+                ],
+                [
+                  10.0,
+                  0.0
+                ],
+                [
+                  10.0,
+                  1.0
+                ],
+                [
+                  10.0,
+                  1.0
+                ],
+                [
+                  9.0,
+                  1.0
+                ],
+                [
+                  8.0,
+                  1.0
+                ],
+                [
+                  8.0,
+                  1.0
+                ]
+              ],
+              "codes": [
+                1,
+                2,
+                2,
+                2,
+                2,
+                2,
+                2,
+                2,
+                79
+              ]
+            }
+          ],
+          "zorder": 1.0
+        },
+        {
+          "loops": [
+            {
+              "vertices": [
+                [
+                  8.0,
+                  1.5
+                ],
+                [
+                  8.0,
+                  1.0
+                ],
+                [
+                  9.0,
+                  1.0
+                ],
+                [
+                  10.0,
+                  1.0
+                ],
+                [
+                  10.0,
+                  1.5
+                ],
+                [
+                  10.0,
+                  1.5
+                ],
+                [
+                  9.0,
+                  1.5
+                ],
+                [
+                  8.0,
+                  1.5
+                ],
+                [
+                  8.0,
+                  1.5
+                ]
+              ],
+              "codes": [
+                1,
+                2,
+                2,
+                2,
+                2,
+                2,
+                2,
+                2,
+                79
+              ]
+            }
+          ],
+          "zorder": 1.0
+        }
+      ]
+    }
+  },
+  "mask_generation": "reference-only: figure facecolor and resolved fill face colors; candidate/native pixels are not observed",
+  "reference_png_file": "fill_reference.png",
+  "reference_png_sha256": "ee259e6e60a0e4afeb0cdb3bf1da1cd31b878fdd1d007bcba1c6a128a1ea7b33",
+  "mask_file": "fill_mask.json",
+  "mask_sha256": "ee967ed1df313dd6a261139c226152a1560d7e6c453775d5117c9579e3febd09",
+  "pixel_classes": [
+    "background",
+    "fully-covered",
+    "antialias-fringe",
+    "text-or-outline"
+  ],
+  "contract": {
+    "orientation": "top-to-bottom",
+    "channels": "RGBA8",
+    "background": "byte-equal",
+    "fully-covered": "byte-equal",
+    "fringe_max_channel_delta": 1,
+    "fringe_mismatch_rate_denominator": "total-pixels",
+    "fringe_mismatch_rate_max": 0.001
+  }
+}

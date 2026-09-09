@@ -1,0 +1,15 @@
+{
+  "schema_version": "agg-oracle-mask-v1",
+  "orientation": "top-to-bottom",
+  "shape": [2, 4],
+  "classes": [
+    "background",
+    "fully-covered",
+    "antialias-fringe",
+    "text-or-outline"
+  ],
+  "data": [
+    [0, 0, 2, 1],
+    [3, 2, 1, 0]
+  ]
+}

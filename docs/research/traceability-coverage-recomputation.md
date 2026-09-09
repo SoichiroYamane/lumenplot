@@ -1,6 +1,6 @@
-# Traceability coverage-summary recomputation — t_88a9a591
+# Traceability coverage-summary recomputation
 
-Date: 2026-08-26 · Lane: review rework for [`wt/t_88a9a591`](../../requirements/traceability-v1.0.md)
+Date: 2026-08-26 · Lane: traceability registry review ([canonical registry](../requirements/traceability-v1.0.md))
 Scope: `docs/requirements/traceability-v1.0.md` bookkeeping only; no requirement
 row, class, phase placement, gate definition, or result cell was altered beyond
 the two corrections below.
@@ -21,12 +21,12 @@ The review of the GAP-R1 adoption commit (a3450c9) required two fixes:
    SHOULD (two advisory), matching the source research document's own row
    levels exactly. Both occurrences corrected to "three normative, two advisory".
 
-Provenance note: these two corrections were applied to the working tree during
-this lane's recomputation and landed on this branch as commit 167a884
-(maintainer-authored, 2026-08-26 22:09 JST, doc file only). Their committed
-content was checked against this lane's independent recomputation and is
-identical — every number and both split phrases match. This lane's remaining
-diff is the regression-prevention layer below.
+Provenance note: these two corrections originated in maintainer commit `167a884`
+(2026-08-26 22:09 JST, doc file only) and were ported onto this recovery
+candidate as commit `7cbee58`. Their committed content was checked against this
+lane's independent recomputation and is identical — every number and both split
+phrases match. This lane's remaining diff is the regression-prevention layer
+below.
 
 ## Method
 
@@ -56,9 +56,9 @@ than transcribed from the reviewer's list:
 - `scripts/verify_traceability_coverage.py` — permanent verifier; recomputes
   everything above and asserts the published block equals the recomputation,
   closure == normative set, GAP-R1 split against both registry and the source
-  research doc (`docs/research/codex-gap-verification-candidate-rows-t_3f634d0b.md`),
-  all five new gates present, and baseline-chain arithmetic. Exit 0 iff all
-  checks pass. Current run: 22/22 PASS.
+  research doc ([GAP-R1 candidate-row record](codex-gap-verification-candidate-rows.md)),
+  all five GAP-R1 gates present, and baseline-chain arithmetic. Exit 0 iff all
+  checks pass. Current run: 25/25 PASS (including the five per-gate checks).
 - `scripts/test_verify_traceability_coverage.py` — mutation suite (six cases):
   unmodified doc passes; entry-total drift, split regression, missing closure
   row, class drift against source, and gate-name typo are each rejected with a
@@ -72,7 +72,7 @@ than transcribed from the reviewer's list:
 
 ## Commands
 
-    python3 scripts/verify_traceability_coverage.py          # exit 0, 22 checks PASS
+    python3 scripts/verify_traceability_coverage.py          # exit 0, 25 checks PASS
     python3 -m unittest scripts/test_verify_traceability_coverage.py -v   # 6 tests OK
     python3 scripts/check_workspace_architecture.py          # OK (policy tooling accepts additions)
 

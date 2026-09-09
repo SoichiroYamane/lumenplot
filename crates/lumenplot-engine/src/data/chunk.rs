@@ -542,6 +542,19 @@ mod tests {
         assert_eq!(storage.chunks().len(), 2);
         assert!(storage.chunks()[0].continues_after);
         assert!(storage.chunks()[1].continues_before);
+        assert_eq!(storage.chunks()[0].point_start, 0);
+        assert_eq!(storage.chunks()[0].x.len(), MAX_POINTS_PER_CHUNK);
+        assert_eq!(storage.chunks()[1].point_start, MAX_POINTS_PER_CHUNK);
+        assert_eq!(storage.chunks()[1].x.len(), 3);
+        assert_eq!(storage.chunks()[0].source_start, 0);
+        assert_eq!(storage.chunks()[0].source_end, MAX_POINTS_PER_CHUNK as u64);
+        assert_eq!(
+            storage.chunks()[1].source_start,
+            MAX_POINTS_PER_CHUNK as u64
+        );
+        assert_eq!(storage.chunks()[1].source_end, count as u64);
+        assert_eq!(storage.chunks()[0].topology, Topology::MonotonicX);
+        assert_eq!(storage.chunks()[1].topology, Topology::MonotonicX);
         assert_eq!(
             storage.chunks()[1].segments[0].source_start,
             MAX_POINTS_PER_CHUNK as u64
@@ -564,6 +577,8 @@ mod tests {
             ChunkRevision(1),
         )
         .expect("first series");
+        let old_chunk = first.chunks()[0].clone();
+        let old_next_revision = first.next_chunk_revision();
         let appended = SeriesStorage::append(
             &first,
             input(
@@ -581,6 +596,8 @@ mod tests {
         assert_eq!(appended.point_count(), 1);
         assert_eq!(first.source_len(), 1);
         assert_eq!(first.chunks().len(), appended.chunks().len());
+        assert!(Arc::ptr_eq(&old_chunk, &appended.chunks()[0]));
+        assert_eq!(appended.next_chunk_revision(), old_next_revision);
     }
 
     #[test]
@@ -610,5 +627,139 @@ mod tests {
         .expect("append succeeds")
         .expect("gap-only append changes source length");
         assert_eq!(appended.gaps(), &[GapSpan { start: 1, end: 5 }]);
+    }
+
+    #[test]
+    fn chunks_retain_canonical_f64_columns_without_narrowing() {
+        // LP-DATA-001/002: both the normalized points and each sealed SoA
+        // column retain exact f64 payloads. The near-one values would change
+        // under an accidental f32 canonical store.
+        let x = vec![-0.0, f64::from_bits(1), 1.0 + 2.0 * f64::EPSILON, f64::MAX];
+        let y = vec![
+            f64::from_bits(0x8000_0000_0000_0000 | 1),
+            -f64::from_bits(1),
+            -1.0 - 2.0 * f64::EPSILON,
+            f64::MIN_POSITIVE,
+        ];
+        let storage = SeriesStorage::from_normalized(
+            SeriesInput::from_owned_xy(Topology::ArbitraryXY, x.clone(), y.clone(), None)
+                .expect("finite input")
+                .into_normalized(),
+            DataEpoch(3),
+            ChunkRevision(1),
+        )
+        .expect("storage");
+
+        for (index, point) in storage.points().iter().enumerate() {
+            assert_eq!(point.x.to_bits(), x[index].to_bits());
+            assert_eq!(point.y.to_bits(), y[index].to_bits());
+        }
+        for chunk in storage.chunks() {
+            for (local, (&chunk_x, &chunk_y)) in chunk.x.iter().zip(&chunk.y).enumerate() {
+                let point = &storage.points()[chunk.point_start + local];
+                assert_eq!(chunk_x.to_bits(), point.x.to_bits());
+                assert_eq!(chunk_y.to_bits(), point.y.to_bits());
+            }
+        }
+        assert_ne!(((x[2] as f32) as f64).to_bits(), x[2].to_bits());
+        assert_ne!(((y[2] as f32) as f64).to_bits(), y[2].to_bits());
+    }
+
+    #[test]
+    fn sealed_chunk_arcs_survive_storage_drop_with_independent_addressing() {
+        // LP-DATA-003/006: chunks are independently addressable owned values,
+        // and an Arc retained by a long-lived consumer keeps its data alive
+        // after the parent storage is released.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Chunk>();
+
+        let count = MAX_POINTS_PER_CHUNK + 1;
+        let x: Vec<_> = (0..count).map(|value| value as f64).collect();
+        let storage = SeriesStorage::from_normalized(
+            SeriesInput::from_owned_xy(Topology::MonotonicX, x.clone(), x, None)
+                .expect("input")
+                .into_normalized(),
+            DataEpoch(9),
+            ChunkRevision(4),
+        )
+        .expect("storage");
+        let first = storage.chunks()[0].clone();
+        let second = storage.chunks()[1].clone();
+        let first_lifetime = Arc::downgrade(&first);
+
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(first.x.len(), MAX_POINTS_PER_CHUNK);
+        assert_eq!(second.x.len(), 1);
+        assert_eq!(first.x[0].to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            second.x[0].to_bits(),
+            (MAX_POINTS_PER_CHUNK as f64).to_bits()
+        );
+        assert!(Arc::strong_count(&first) >= 2);
+
+        drop(storage);
+        assert!(first_lifetime.upgrade().is_some());
+        assert_eq!(first.x[0].to_bits(), 0.0_f64.to_bits());
+        drop(first);
+        assert!(first_lifetime.upgrade().is_none());
+        drop(second);
+    }
+
+    #[test]
+    fn append_allocates_monotonic_chunk_revisions_and_keeps_old_storage_unchanged() {
+        // LP-DATA-007: append preserves the epoch, seals a new storage view
+        // with revisions after the old view, and leaves old snapshot chunks
+        // readable with their original revision identities.
+        let initial_count = MAX_POINTS_PER_CHUNK + 1;
+        let x: Vec<_> = (0..initial_count).map(|value| value as f64).collect();
+        let old = SeriesStorage::from_normalized(
+            SeriesInput::from_owned_xy(Topology::MonotonicX, x.clone(), x, None)
+                .expect("old input")
+                .into_normalized(),
+            DataEpoch(12),
+            ChunkRevision(7),
+        )
+        .expect("old storage");
+        let old_chunks: Vec<_> = old.chunks().to_vec();
+        let old_source_len = old.source_len();
+        let old_next_revision = old.next_chunk_revision();
+
+        let appended = SeriesStorage::append(
+            &old,
+            SeriesInput::from_owned_xy(
+                Topology::MonotonicX,
+                vec![initial_count as f64, (initial_count + 1) as f64],
+                vec![10.0, 11.0],
+                None,
+            )
+            .expect("append input")
+            .into_normalized(),
+        )
+        .expect("append succeeds")
+        .expect("nonempty append changes state");
+
+        assert_eq!(old.epoch(), DataEpoch(12));
+        assert_eq!(appended.epoch(), old.epoch());
+        assert_eq!(old.source_len(), old_source_len);
+        assert_eq!(old.next_chunk_revision(), old_next_revision);
+        assert_eq!(old_chunks[0].revision, ChunkRevision(7));
+        assert_eq!(old_chunks[1].revision, ChunkRevision(8));
+        assert_eq!(appended.chunks()[0].revision, ChunkRevision(9));
+        assert_eq!(appended.chunks()[1].revision, ChunkRevision(10));
+        assert_eq!(appended.next_chunk_revision(), ChunkRevision(11));
+        assert_eq!(appended.source_len(), (initial_count + 2) as u64);
+        assert_eq!(
+            appended.points()[initial_count].source,
+            initial_count as u64
+        );
+        assert_eq!(
+            appended.points()[initial_count + 1].source,
+            (initial_count + 1) as u64
+        );
+        assert_eq!(old_chunks[0].x[0].to_bits(), 0.0_f64.to_bits());
+        assert_eq!(
+            old_chunks[1].x[0].to_bits(),
+            (MAX_POINTS_PER_CHUNK as f64).to_bits()
+        );
     }
 }

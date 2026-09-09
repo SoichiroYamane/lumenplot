@@ -1,11 +1,34 @@
+"""Runtime checks for the compiled Phase-3A2 helper.
+
+These tests require the package build to have produced
+``lumenplot_mpl._native``. A clean source checkout intentionally has no native
+extension, so only this native-runtime class is skipped until ``pip install .``
+(or an equivalent maturin build) has run. Import failures from an existing but
+unusable extension remain errors rather than being classified as setup.
+"""
+
 import unittest
 
 import numpy as np
 
 from lumenplot_mpl import LumenPlotError
-from lumenplot_mpl import _native
+
+try:
+    from lumenplot_mpl import _native
+except ImportError as error:
+    # A source-only checkout has no generated extension. Keep this guard
+    # narrow so wrong-platform/load/link failures still fail closed.
+    if "cannot import name '_native'" not in str(error):
+        raise
+    _native = None
+
+NATIVE_AVAILABLE = _native is not None
 
 
+@unittest.skipUnless(
+    NATIVE_AVAILABLE,
+    "compiled lumenplot_mpl._native seam not available; run pip install . first",
+)
 class NativeLinePngTests(unittest.TestCase):
     def setUp(self) -> None:
         self.kwargs = {

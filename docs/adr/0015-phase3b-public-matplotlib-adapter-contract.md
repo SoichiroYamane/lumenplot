@@ -1,6 +1,6 @@
 # ADR 0015: Phase-3B public Matplotlib adapter contract
 
-- Status: **Accepted contract — Phase-3B first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence pending**
+- Status: **Accepted contract — Phase-3B first strict-mode and hybrid-explicit implementation slices merged with local contract-test evidence; packaged public-backend runtime evidence recorded in PR #89 CI; full compatibility/release evidence remains pending**
 - Date: 2026-08-23
 - Decision owner: architecture-authority
 - Recorded by: engineering-worker
@@ -16,12 +16,12 @@ Phase-3B public Matplotlib adapter contract for the first implementable strict
 slice; independent review passed with no blocking findings at branch head
 `d9a7366`, and merged Phase-3A helper plus Phase-3A2 same-wheel evidence
 recorded in [ADR 0014](0014-phase3a2-pinned-manylinux-wheel-evidence.md) reconcile
-with this boundary. It freezes no implementation: no Python source,
-manifest, lockfile entry, wheel, workflow, or package artifact is authorized by
-this record. Every exact public Python surface name lives in API 0005's
-"Provisional names" section and remains unimplemented until the Phase-3B slice
-lands. The broad v1 Matplotlib requirements remain normative; this record does
-not close any full-v1 traceability row.
+with this boundary. The original record froze no implementation: no Python source, manifest,
+lockfile entry, wheel, workflow, or package artifact was authorized by the
+contract record alone. PR #89 now implements the bounded names recorded in API
+0005's "Names used by the bounded Phase-3B slice" section. The broad v1
+Matplotlib requirements remain normative; this record does not close any
+full-v1 traceability row.
 
 ## Requirement references
 
@@ -51,11 +51,12 @@ point mechanics, point-unit linewidth semantics, style representability gaps,
 file-output semantics, and the known risks of inherited base-class format
 fallback.
 
-The repository still has no merged helper/wheel runtime evidence (Phase-3A/3A2
-implementation evidence is pending on a separate lane), and overview.md records
-the public Phase-3B contract as open. This proposal is therefore recorded now,
-against main, as a docs-only lane: it can be reviewed and reconciled with helper
-evidence without colliding with implementation work, but it authorizes none.
+The Phase-3A/3A2 helper and wheel runtime evidence is recorded in the
+CI-local same-wheel manifest, and PR #89 records the bounded Phase-3B public
+backend implementation, installed-wheel runtime smoke, hybrid default, and
+local contract-test evidence. This record remains the contract authority; it
+must not be read as a claim of full-v1 compatibility, platform support,
+accelerated-native delivery, or release readiness.
 
 ## Decision
 
@@ -150,6 +151,71 @@ axis labels, offset text, tick label text (the T-lane deliverable), visible
 minor tick lines or minor gridlines (major-only slice), non-solid gridline
 styles, subplotspec/gridspec child axes, and any non-exact `Axes` subclass.
 An undecorated fixture (`axison=False`) remains eligible unchanged.
+
+#### 4b. Legend amendment (PRAC-A-L lane, 2026-08-26)
+
+Amended by the accepted PRAC-A-L legend lane decision (2026-08-26): the
+standard `matplotlib.legend.Legend` attached to an eligible Axes joins the
+strict surface so that F-11 legend rendering works natively in this slice.
+Per LP-MPL-020 the whitelist entry, collector-trace expectation, style
+contract, and fixtures landed together.
+
+The eligible legend object is narrow by contract:
+
+- exactly `matplotlib.legend.Legend` (subclasses refuse), attached to a
+  standard `Axes` (`Legend.axes`); figure-level legends refuse;
+- single column (verified from the public legend layout geometry;
+  multi-column layouts refuse);
+- no shadow, no title text;
+- one or more entries, each pairing a plain `Line2D` handle with a visible
+  non-empty label; every other handle type refuses;
+- each handle re-checks through the fixed line stroke surface
+  (`_check_line2d_static`: butt cap, miter join, solid, no markers, default
+  drawstyle — the legend never relaxes its owner's style contract);
+- each label re-checks through the tick-label text contract plus a positive
+  font-size guard (no math/TeX, no path effects, no leading/trailing
+  whitespace, no newlines).
+
+The collector grammar widens accordingly. Since the LP-FUNC-035 D2
+amendment (interleaved class-mixed acceptance, order-free axes body) the
+axes group carries no whole-trace ordering to widen; the legend's own
+group structure is what matters: one balanced `legend` group inside the
+axes group containing (frame-on legends) one `patch` group carrying the
+rounded frame outline and (per entry, in draw order) one `line2d` group
+with the proxy handle stroke and one `text` group whose `draw_text`
+callback must match the statically enumerated legend label queue. Legend
+geometry provenance:
+Matplotlib's own `Legend.draw` layout executes under the collector and hands
+over display-space geometry — the frame path arrives already transformed to
+display pixels (the collector records its affine flag), and each handle
+stroke arrives in handlebox-local coordinates with its layout affine, which
+the adapter applies explicitly. The adapter never re-derives legend layout
+algebra from getters; drift between static enumeration and the live stream
+refuses through the existing label cross-check.
+
+Rendered commands, ordered by the compositing contract below (LP-FUNC-035
+D1): the frame outline and handle strokes ride as one bundle at the
+`Legend` artist's real public zorder inside the axes' single stable sort —
+exactly where Matplotlib paints the legend relative to decorations and
+content lines (default zorder 5 paints above default content; negative
+content zorders sink below it):
+
+1. the frame outline as one filled+stroked path command (`decoration:
+   "legend_frame"`): facecolor from the collected patch face, edge color /
+   width / alpha from the collected graphics context, identity transform,
+   full-canvas clip. This is the slice's only sanctioned curved outline
+   (`BoxStyle.Round` MOVETO/LINETO/CURVE3/CLOSEPOLY); other code sets, a
+   polygonal frame, hatching, dashes, sketch, or path effects refuse;
+2. one polyline per handle (`decoration: "legend_handle"`) with the §5
+   stroke surface resolved from the collected graphics context;
+3. one glyph-path command per entry label via the public `textpath`
+   module (`decoration: "legend_label"`), identical route to tick labels.
+
+Still outside the slice and refused with an explicit reason: figure-level
+legends, legend subclasses, multi-column layouts, shadows, titles,
+non-`Line2D` handles, handles violating the stroke contract, empty legends,
+unsupported label text, and any legend on axes whose projection is
+unsupported by this slice.
 
 ### 5. Fixed-style guards, no approximation (hazard 5)
 
@@ -251,11 +317,11 @@ whole-frame Agg fallback, and accelerated-native explicitly deferred out of this
 slice. Errors reuse the lowercase API-0002 tokens through the existing exhaustive
 BridgeError mapping, with `LumenPlotError(RuntimeError)` remaining the only
 LumenPlot exception class; savefig/print_png keep `None` return semantics and a
-separate provisional helper returns owned bytes plus immutable diagnostics. The
+separate helper returns owned bytes plus immutable diagnostics. The
 crate DAG is unchanged: `lumenplot-python -> lumenplot ->
 {lumenplot-engine, lumenplot-export}`, with the engine free of Python and
-Matplotlib concrete types. Exact result/diagnostic field names remain in API
-0005's provisional-names section.
+Matplotlib concrete types. Exact bounded result/diagnostic field names are
+recorded in API 0005's names section.
 
 ### 12. Ordered delivery after acceptance
 
@@ -311,21 +377,21 @@ Costs and residual constraints:
   comparisons are tolerance-based by design, not by omission.
 - The collector executes user artist code during preflight; this is documented,
   bounded to run before native allocation, and never a mutation.
-- Acceptance additionally requires reconciliation against merged Phase-3A/3A2
-  helper and wheel evidence; this document records no such evidence today.
+- PR #89 reconciles the bounded Phase-3B implementation with the merged
+  Phase-3A/3A2 helper and wheel evidence; full compatibility and release
+  evidence remain separate gates.
 
 ## Verification and evidence boundary
 
-Acceptance adds documentation only: two records and their index entries. No
-product source, manifests, lockfiles, CI dependencies, wheel artifacts,
-workflows, or publication settings exist for this slice yet, and no existing
-ADR/API record is edited. The workspace architecture checker and its unittest
-suite stayed green on the acceptance branch. After implementation, the governing
-verification is the API 0005 tests matrix (loader/import, collector trace,
-geometry/style oracle, native output, option/error matrix, fallback and terminal-
-failure injection, lifecycle/generation, forbidden-name scans, packaging and
-evidence gates), with any timing or compatibility-breadth claim routed through
-the benchmark skill's named-workload protocol.
+The original acceptance was documentation-only: two records and their index
+entries. Subsequent PR #89 supplies the bounded product source, manifest,
+workflow, wheel/runtime smoke, and local contract-test evidence described above.
+The governing verification remains the API 0005 tests matrix (loader/import,
+collector trace, geometry/style oracle, native output, option/error matrix,
+fallback and terminal-failure injection, lifecycle/generation, forbidden-name
+scans, packaging and evidence gates), with any timing or compatibility-breadth
+claim routed through the benchmark skill's named-workload protocol. The full-v1
+profile, platform, performance, and release gates remain open.
 
 ## Related records
 

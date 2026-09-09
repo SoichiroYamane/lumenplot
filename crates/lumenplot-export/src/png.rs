@@ -51,6 +51,37 @@ pub fn encode_line_frame_png(
         )?;
     }
 
+    // M5-B2: consume the ONE retained layout result shared with the screen and
+    // CPU consumers. Glyph cells come from stored positions with zero
+    // remeasurement; canvas-scoped compositing lets axis/title/legend labels
+    // outside the plot rect still land on the page.
+    let text_mask = raster::rasterize_retained_text(frame, &plan)?;
+    let text_plan = plan.text_plan();
+    composite_mask(
+        &mut pixels,
+        &text_mask,
+        &text_plan,
+        raster::TEXT_INK_RGBA8,
+        text_plan.width(),
+        text_plan.height(),
+    )?;
+
+    // M5-P2: stored-geometry annotation ink from the same retained result.
+    // Line/arrow shafts and rectangle outlines stroke at the fixture width
+    // while text fills its stored coarse box. The pass is canvas-scoped like
+    // retained text, so annotations outside the plot rect still land, and it
+    // composites with the fixed fixture ink.
+    let annotation_mask = raster::rasterize_annotations(frame, &plan)?;
+    let annotation_plan = plan.text_plan();
+    composite_mask(
+        &mut pixels,
+        &annotation_mask,
+        &annotation_plan,
+        raster::ANNOTATION_INK_RGBA8,
+        annotation_plan.width(),
+        annotation_plan.height(),
+    )?;
+
     let rgba = to_rgba8(&pixels)?;
     encode_png(plan.width(), plan.height(), &rgba, plan.output_estimate())
 }
@@ -212,6 +243,133 @@ mod tests {
         let info = reader.next_frame(&mut data).expect("frame");
         data.truncate(info.buffer_size());
         (info.width, info.height, data)
+    }
+
+    #[test]
+    fn retained_labels_render_from_one_result_with_stable_bytes() {
+        let (_, frame, spec) = make_frame(
+            (160.0, 90.0),
+            (8.0, 8.0, 56.0, 56.0),
+            1.0,
+            (vec![0.0, 10.0], vec![0.0, 0.0]),
+            (SrgbRgba8::new(255, 0, 0, 255), 1.0),
+            SrgbRgba8::new(255, 255, 255, 255),
+        );
+        // ONE retained result: repeated reads observe the same allocation, and
+        // the axis/title/legend families below are the stored sources.
+        let layout = frame.plot_layout();
+        assert!(std::ptr::eq(layout, frame.plot_layout()));
+        assert_eq!(layout.runs().len(), 6);
+        assert_eq!(layout.runs()[3].source(), "x");
+        assert_eq!(layout.runs()[4].source(), "measurement");
+        assert_eq!(layout.runs()[5].source(), "series-0");
+        let first = encode_line_frame_png(&frame, &spec).expect("PNG");
+        let second = encode_line_frame_png(&frame, &spec).expect("PNG");
+        assert_eq!(first, second);
+        let (width, height, data) = decode_rgba(&first);
+        assert_eq!((width, height), (160, 90));
+        // The legend cell for "series-0" opens at stored origin (72, 64) with
+        // a 5x7 block, outside the plot rect: its center lands as text ink.
+        let center = (67u32 * 160 + 74) as usize * 4;
+        assert_eq!(&data[center..center + 4], &[0, 0, 0, 255]);
+        // A page corner no stored run reaches stays background.
+        let corner = (89u32 * 160 + 159) as usize * 4;
+        assert_eq!(&data[corner..corner + 4], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn stale_retained_generations_fail_the_sink_predicate() {
+        let (_, frame, spec) = make_frame(
+            (160.0, 90.0),
+            (8.0, 8.0, 56.0, 56.0),
+            1.0,
+            (vec![0.0, 10.0], vec![0.0, 0.0]),
+            (SrgbRgba8::new(255, 0, 0, 255), 1.0),
+            SrgbRgba8::new(255, 255, 255, 255),
+        );
+        let layout = frame.plot_layout();
+        assert!(layout.validate());
+        assert!(layout.validate_for_generation(layout.font_revision(), layout.layout_revision()));
+        assert!(!layout.validate_for_generation(
+            layout.font_revision().saturating_add(1),
+            layout.layout_revision()
+        ));
+        assert!(!layout.validate_for_generation(
+            layout.font_revision(),
+            layout.layout_revision().saturating_add(1)
+        ));
+        // The sink plan re-validates the retained digest before any fill, so
+        // a valid retained result plans cleanly here while a corrupt digest
+        // would fail with `InvalidInput` before allocation.
+        crate::raster::RasterPlan::new(&frame, &spec).expect("valid layout plans");
+    }
+
+    #[test]
+    fn stored_annotation_geometry_lands_as_ink() {
+        // AT-EXPORT-ANNOTATION inclusion: every stored fixture kind lands as
+        // ink through the P2 fixture mapping (declared space read as canvas
+        // logical identity at unit scale). The canvas is tall enough to hold
+        // the DisplayLogical rectangle (100,100)-(140,120) as well.
+        let (_, frame, spec) = make_frame(
+            (160.0, 140.0),
+            (8.0, 8.0, 56.0, 56.0),
+            1.0,
+            (vec![0.0, 10.0], vec![0.0, 0.0]),
+            (SrgbRgba8::new(255, 0, 0, 255), 1.0),
+            SrgbRgba8::new(255, 255, 255, 255),
+        );
+        assert_eq!(frame.plot_layout().annotations().len(), 4);
+        let first = encode_line_frame_png(&frame, &spec).expect("PNG");
+        let second = encode_line_frame_png(&frame, &spec).expect("PNG");
+        assert_eq!(first, second);
+        let (width, height, data) = decode_rgba(&first);
+        assert_eq!((width, height), (160, 140));
+        let pixel = |x: u32, y: u32| -> [u8; 4] {
+            let offset = (y * 160 + x) as usize * 4;
+            data[offset..offset + 4]
+                .try_into()
+                .expect("pixel inside the canvas")
+        };
+        // Text fixture-box: stored Data2D bounds (-2,16,22,24) fill their
+        // interior; (10,20) is clear of shafts, glyph cells, and series ink.
+        assert_eq!(pixel(10, 20), [0, 0, 0, 255]);
+        // Line shaft: AxesLogical (0,0)-(64,32) crosses (8,4), clear of every
+        // other stored geometry.
+        assert_ne!(pixel(8, 4), [255, 255, 255, 255]);
+        // Arrow shaft: FigureLogical (8,8)-(40,24) crosses (24,16), clear of
+        // the line shaft, text cells, and the text fixture-box (x_max=22).
+        assert_ne!(pixel(24, 16), [255, 255, 255, 255]);
+        // Rectangle outline: DisplayLogical (100,100)-(140,120); the top
+        // edge carries ink while the interior stays background (outline
+        // only, never filled).
+        assert_ne!(pixel(120, 100), [255, 255, 255, 255]);
+        assert_eq!(pixel(120, 110), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn export_contains_no_transient_chrome() {
+        // AT-EXPORT-STATE negative: the PNG seam reads only the retained
+        // frame plus spec — the encoder takes no hover, selection, cursor,
+        // toolbar, or drag input — so a page corner no stored series, text,
+        // or annotation geometry reaches stays background, and repeated
+        // encodes are byte-identical.
+        let (_, frame, spec) = make_frame(
+            (160.0, 140.0),
+            (8.0, 8.0, 56.0, 56.0),
+            1.0,
+            (vec![0.0, 10.0], vec![0.0, 0.0]),
+            (SrgbRgba8::new(255, 0, 0, 255), 1.0),
+            SrgbRgba8::new(255, 255, 255, 255),
+        );
+        let first = encode_line_frame_png(&frame, &spec).expect("PNG");
+        let second = encode_line_frame_png(&frame, &spec).expect("PNG");
+        assert_eq!(first, second);
+        let (width, height, data) = decode_rgba(&first);
+        assert_eq!((width, height), (160, 140));
+        // (159,139): beyond the series line (y=56), every glyph cell
+        // (y<=71), and every annotation box/shaft (x<=140, y<=120).
+        let corner = (139u32 * 160 + 159) as usize * 4;
+        assert_eq!(&data[corner..corner + 4], &[255, 255, 255, 255]);
     }
 
     #[test]

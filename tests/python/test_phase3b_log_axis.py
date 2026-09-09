@@ -245,7 +245,7 @@ class TestLogAxisStrictEligibility(unittest.TestCase):
         refusal is the FIRST diagnostic on this fixture: it fires in the
         stage-one static walk before scale/geometry checks run."""
         fig = figure.Figure(figsize=(3.0, 2.0), dpi=100)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         ax = fig.add_axes([0.1, 0.1, 0.85, 0.85])
         _log_line(ax)
         ax.minorticks_off()
@@ -260,7 +260,7 @@ class TestLogAxisStrictEligibility(unittest.TestCase):
         allows them) and the existing gate keeps refusing; labels are
         suppressed so the scale gate is the first refusal."""
         fig = figure.Figure(figsize=(3.0, 2.0), dpi=100)
-        canvas = backend_mod.FigureCanvasLumenPlot(fig)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
         ax = fig.add_axes([0.1, 0.1, 0.85, 0.85])
         _log_line(ax)
         ax.tick_params(labelbottom=False, labelleft=False)

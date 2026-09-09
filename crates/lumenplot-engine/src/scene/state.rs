@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::data::SeriesStorage;
 use crate::error::{SceneError, SceneErrorKind};
+use crate::text::{PlotLayout, RetainedAnnotation};
 
 use super::ids::SeriesId;
 use super::revision::{ComponentRevision, SceneRevision};
@@ -100,6 +101,9 @@ impl AxisScales {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct AnnotationId(pub(crate) u64);
+
 #[derive(Debug)]
 pub(crate) struct SceneState {
     revision: SceneRevision,
@@ -111,8 +115,10 @@ pub(crate) struct SceneState {
     style_revision: ComponentRevision,
     font_revision: ComponentRevision,
     layout_revision: ComponentRevision,
+    plot_layout: Arc<PlotLayout>,
     annotation_revision: ComponentRevision,
     series: BTreeMap<SeriesId, Arc<SeriesStorage>>,
+    annotations: BTreeMap<AnnotationId, RetainedAnnotation>,
 }
 
 pub(crate) struct PublishValues {
@@ -122,10 +128,13 @@ pub(crate) struct PublishValues {
     revision: SceneRevision,
     data_changed: bool,
     view_changed: bool,
+    annotation_changed: bool,
     series: BTreeMap<SeriesId, Arc<SeriesStorage>>,
+    annotations: BTreeMap<AnnotationId, RetainedAnnotation>,
 }
 
 impl PublishValues {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         canonical_view: Viewport,
         viewport: Viewport,
@@ -133,7 +142,9 @@ impl PublishValues {
         revision: SceneRevision,
         data_changed: bool,
         view_changed: bool,
+        annotation_changed: bool,
         series: BTreeMap<SeriesId, Arc<SeriesStorage>>,
+        annotations: BTreeMap<AnnotationId, RetainedAnnotation>,
     ) -> Self {
         Self {
             canonical_view,
@@ -142,7 +153,9 @@ impl PublishValues {
             revision,
             data_changed,
             view_changed,
+            annotation_changed,
             series,
+            annotations,
         }
     }
 }
@@ -160,8 +173,10 @@ impl SceneState {
             style_revision: ComponentRevision(0),
             font_revision: ComponentRevision(0),
             layout_revision: ComponentRevision(0),
+            plot_layout: Arc::new(PlotLayout::fixture()?),
             annotation_revision: ComponentRevision(0),
             series: BTreeMap::new(),
+            annotations: BTreeMap::new(),
         })
     }
 
@@ -173,7 +188,9 @@ impl SceneState {
             revision,
             data_changed,
             view_changed,
+            annotation_changed,
             series,
+            annotations,
         } = values;
         let data_revision = if data_changed {
             base.data_revision
@@ -189,6 +206,26 @@ impl SceneState {
         } else {
             base.view_revision
         };
+        let layout_changed = data_changed || view_changed;
+        let layout_revision = if layout_changed {
+            base.layout_revision
+                .checked_next()
+                .ok_or_else(|| SceneError::new(SceneErrorKind::RevisionExhausted))?
+        } else {
+            base.layout_revision
+        };
+        let annotation_revision = if annotation_changed {
+            base.annotation_revision
+                .checked_next()
+                .ok_or_else(|| SceneError::new(SceneErrorKind::RevisionExhausted))?
+        } else {
+            base.annotation_revision
+        };
+        let plot_layout = if layout_changed {
+            Arc::new(base.plot_layout.with_layout_revision(layout_revision.0))
+        } else {
+            base.plot_layout.clone()
+        };
         Ok(Self {
             revision,
             canonical_view,
@@ -198,9 +235,11 @@ impl SceneState {
             view_revision,
             style_revision: base.style_revision,
             font_revision: base.font_revision,
-            layout_revision: base.layout_revision,
-            annotation_revision: base.annotation_revision,
+            layout_revision,
+            plot_layout,
+            annotation_revision,
             series,
+            annotations,
         })
     }
 
@@ -220,12 +259,36 @@ impl SceneState {
         self.scales
     }
 
+    pub(crate) fn font_revision(&self) -> ComponentRevision {
+        self.font_revision
+    }
+
+    pub(crate) fn layout_revision(&self) -> ComponentRevision {
+        self.layout_revision
+    }
+
+    pub(crate) fn plot_layout(&self) -> &Arc<PlotLayout> {
+        &self.plot_layout
+    }
+
     pub(crate) fn series(&self, id: SeriesId) -> Option<&Arc<SeriesStorage>> {
         self.series.get(&id)
     }
 
     pub(crate) fn series_map(&self) -> &BTreeMap<SeriesId, Arc<SeriesStorage>> {
         &self.series
+    }
+
+    pub(crate) fn annotation_revision(&self) -> ComponentRevision {
+        self.annotation_revision
+    }
+
+    pub(crate) fn annotation(&self, id: AnnotationId) -> Option<&RetainedAnnotation> {
+        self.annotations.get(&id)
+    }
+
+    pub(crate) fn annotations_map(&self) -> &BTreeMap<AnnotationId, RetainedAnnotation> {
+        &self.annotations
     }
 
     #[cfg(test)]
@@ -239,6 +302,7 @@ pub(crate) struct PlotScene {
     pub(crate) state: Arc<SceneState>,
     pub(crate) next_series_id: u64,
     pub(crate) next_epoch: u64,
+    pub(crate) next_annotation_id: u64,
 }
 
 impl PlotScene {
@@ -247,6 +311,7 @@ impl PlotScene {
             state: Arc::new(SceneState::new(canonical_view, scales)?),
             next_series_id: 1,
             next_epoch: 1,
+            next_annotation_id: 1,
         })
     }
 

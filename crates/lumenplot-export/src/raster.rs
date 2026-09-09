@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use lumenplot_engine::bridge::{LineFrame, LineSeries};
+use lumenplot_engine::bridge::{AnnotationShape, AnnotationTransform, LineFrame, LineSeries};
 use tiny_skia::{FillRule, IntSize, LineCap, LineJoin, Mask, PathBuilder, Stroke, Transform};
 
 use crate::compositor::{pixel_storage_bytes, quantize_round_half_even, rgba_storage_bytes};
@@ -17,6 +17,33 @@ pub(crate) const MAX_PATH_POINTS: usize = 1_000_000;
 // `Mask::fill_path`, rejects bounds outside `SCALAR_MAX * 0.25`. Keep this
 // local precondition aligned with that pinned dependency version.
 const TINY_SKIA_SAFE_PATH_BOUND: f32 = f32::MAX * 0.25;
+const MAX_CLIP_STACK: usize = 4;
+
+// B2 retained-text fixture rule (ADR 0007 TextToPath initial PNG boundary):
+// each stored glyph origin contributes one axis-aligned block cell. The cell
+// size is sink-local and fixed; the sink never measures text. Origins come
+// from the ONE retained PlotLayout, and no font or shaping path is linked.
+// Ink is fixed opaque black; per-run clip/style scopes stay a later contract
+// (fixture refs are validated non-zero but not interpreted as distinct scopes
+// in this slice).
+pub(crate) const TEXT_GLYPH_WIDTH_LOGICAL: f64 = 5.0;
+pub(crate) const TEXT_GLYPH_HEIGHT_LOGICAL: f64 = 7.0;
+pub(crate) const TEXT_INK_RGBA8: [u8; 4] = [0, 0, 0, 255];
+const TEXT_CORNERS_PER_GLYPH: usize = 4;
+const RETAINED_LAYOUT_ERROR: &str = "retained text layout is invalid";
+
+// P2 stored-geometry annotation fixture rule (AT-EXPORT-ANNOTATION): the
+// carrier retains clip/style references but no resolved style table, so the
+// sink strokes line/arrow shafts and rectangle outlines at one fixed logical
+// width. Per-annotation clip/style scopes stay a later contract (fixture
+// refs are validated non-zero by the retained digest but never interpreted
+// as distinct scopes in this slice), mirroring the retained-text rule above.
+pub(crate) const ANNOTATION_STROKE_WIDTH_LOGICAL: f64 = 1.0;
+/// Fixed opaque-black fixture ink for stored annotation geometry, matching
+/// the retained-text fixture ink until annotation styles resolve.
+pub(crate) const ANNOTATION_INK_RGBA8: [u8; 4] = [0, 0, 0, 255];
+const ANNOTATION_CORNERS_PER_BOX: usize = 4;
+const ANNOTATION_POINTS_PER_SHAFT: usize = 2;
 
 #[derive(Clone, Copy)]
 struct ClipRect {
@@ -26,12 +53,55 @@ struct ClipRect {
     y_max: f64,
 }
 
+/// Ordered intersection stack for the sink-local rectangular clips.
+///
+/// The current line frame contributes one plot clip. Keeping a bounded stack
+/// here makes the ordering explicit without adding a public layout schema or
+/// allocating while a raster plan is assembled.
+#[derive(Clone, Copy)]
+struct ClipStack {
+    rects: [ClipRect; MAX_CLIP_STACK],
+    len: usize,
+}
+
+impl ClipStack {
+    fn from_rects(rects: &[ClipRect]) -> Result<Self, ExportError> {
+        if rects.is_empty() || rects.len() > MAX_CLIP_STACK {
+            return Err(ExportError::invalid_input());
+        }
+        let mut stack = Self {
+            rects: [rects[0]; MAX_CLIP_STACK],
+            len: rects.len(),
+        };
+        stack.rects[..rects.len()].copy_from_slice(rects);
+        Ok(stack)
+    }
+
+    fn coverage(self, x: usize, y: usize) -> f64 {
+        let x = x as f64;
+        let y = y as f64;
+        let mut x_min: f64 = 0.0;
+        let mut y_min: f64 = 0.0;
+        let mut x_max: f64 = f64::INFINITY;
+        let mut y_max: f64 = f64::INFINITY;
+        for clip in &self.rects[..self.len] {
+            x_min = x_min.max(clip.x_min);
+            y_min = y_min.max(clip.y_min);
+            x_max = x_max.min(clip.x_max);
+            y_max = y_max.min(clip.y_max);
+        }
+        let x_overlap = (x_max.min(x + 1.0) - x_min.max(x)).max(0.0);
+        let y_overlap = (y_max.min(y + 1.0) - y_min.max(y)).max(0.0);
+        (x_overlap * y_overlap).clamp(0.0, 1.0)
+    }
+}
+
 pub(crate) struct RasterPlan {
     width: u32,
     height: u32,
     pixel_count: usize,
     scale: f64,
-    clip: ClipRect,
+    clips: ClipStack,
     output_estimate: usize,
 }
 
@@ -51,6 +121,19 @@ impl RasterPlan {
             return Err(ExportError::invalid_input());
         }
 
+        // The retained result is re-validated at the sink: a corrupt digest,
+        // an empty run set, or any invalid stored position fails here with
+        // `InvalidInput` before any raster allocation. Generation staleness
+        // itself is rejected upstream at frame resolution and packet
+        // validation; the sink only ever receives a resolved frame and never
+        // remeasures.
+        if !frame.plot_layout().validate() {
+            return Err(ExportError::new(
+                ExportErrorKind::InvalidInput,
+                RETAINED_LAYOUT_ERROR,
+            ));
+        }
+
         let canvas = frame.canvas();
         let width = checked_dimension(canvas.width(), scale)?;
         let height = checked_dimension(canvas.height(), scale)?;
@@ -68,11 +151,13 @@ impl RasterPlan {
 
         let clip = frame.plot_rect();
         let clip = ClipRect {
-            x_min: clip.x_min() * scale,
-            y_min: clip.y_min() * scale,
-            x_max: clip.x_max() * scale,
-            y_max: clip.y_max() * scale,
+            x_min: checked_scale(clip.x_min(), scale)?,
+            y_min: checked_scale(clip.y_min(), scale)?,
+            x_max: checked_scale(clip.x_max(), scale)?,
+            y_max: checked_scale(clip.y_max(), scale)?,
         };
+        let canvas_width = checked_scale(canvas.width(), scale)?;
+        let canvas_height = checked_scale(canvas.height(), scale)?;
         if ![clip.x_min, clip.y_min, clip.x_max, clip.y_max]
             .iter()
             .all(|value| value.is_finite())
@@ -80,11 +165,12 @@ impl RasterPlan {
             || clip.y_min < 0.0
             || clip.x_min >= clip.x_max
             || clip.y_min >= clip.y_max
-            || clip.x_max > canvas.width() * scale
-            || clip.y_max > canvas.height() * scale
+            || clip.x_max > canvas_width
+            || clip.y_max > canvas_height
         {
             return Err(ExportError::invalid_input());
         }
+        let clips = ClipStack::from_rects(std::slice::from_ref(&clip))?;
 
         let mut path_points = 0usize;
         for series in frame.series() {
@@ -106,6 +192,55 @@ impl RasterPlan {
                     validate_pixel_point(point.x(), point.y(), scale, width, height)?;
                 }
             }
+        }
+
+        // Retained glyphs ride the same path-point ceiling as line art: each
+        // stored position contributes one fixture cell (four corners) to the
+        // sink representation. Counting happens here, before any estimate, so
+        // a hostile run length fails before allocation.
+        let mut text_glyphs = 0usize;
+        for run in frame.plot_layout().runs() {
+            text_glyphs = text_glyphs
+                .checked_add(run.positions().len())
+                .ok_or_else(ExportError::capacity_exceeded)?;
+            if text_glyphs > MAX_PATH_POINTS {
+                return Err(ExportError::capacity_exceeded());
+            }
+        }
+        let text_path_points = text_glyphs
+            .checked_mul(TEXT_CORNERS_PER_GLYPH)
+            .ok_or_else(ExportError::capacity_exceeded)?;
+        if text_path_points > MAX_PATH_POINTS {
+            return Err(ExportError::capacity_exceeded());
+        }
+        // Stored annotations ride the same path-point ceiling: each text or
+        // rectangle box contributes four corners and each line or arrow shaft
+        // two endpoints to the sink representation. Counting happens here,
+        // before any estimate, so a hostile annotation count fails before
+        // allocation.
+        let mut annotation_points = 0usize;
+        for annotation in frame.plot_layout().annotations() {
+            let points = match annotation.shape() {
+                AnnotationShape::Text { .. } | AnnotationShape::Rectangle { .. } => {
+                    ANNOTATION_CORNERS_PER_BOX
+                }
+                AnnotationShape::Line { .. } | AnnotationShape::Arrow { .. } => {
+                    ANNOTATION_POINTS_PER_SHAFT
+                }
+            };
+            annotation_points = annotation_points
+                .checked_add(points)
+                .ok_or_else(ExportError::capacity_exceeded)?;
+            if annotation_points > MAX_PATH_POINTS {
+                return Err(ExportError::capacity_exceeded());
+            }
+        }
+        let total_path_points = path_points
+            .checked_add(text_path_points)
+            .and_then(|total| total.checked_add(annotation_points))
+            .ok_or_else(ExportError::capacity_exceeded)?;
+        if total_path_points > MAX_PATH_POINTS {
+            return Err(ExportError::capacity_exceeded());
         }
 
         let raw_bytes =
@@ -138,12 +273,25 @@ impl RasterPlan {
         let pixel_bytes =
             pixel_storage_bytes(pixel_count).ok_or_else(ExportError::capacity_exceeded)?;
         let mask_bytes = pixel_count;
-        let path_bytes = path_points
+        // A second full-canvas A8 mask carries the retained-text cells; it is
+        // bounded exactly like the line-art mask.
+        let text_mask_bytes = pixel_count;
+        // The annotation pass peaks at two full-canvas A8 masks: one fill
+        // mask for text fixture-boxes and one stroke mask for line/arrow
+        // shafts and rectangle outlines, merged by per-pixel maximum into a
+        // single returned mask. Both are bounded exactly like the masks
+        // above.
+        let annotation_mask_bytes = pixel_count
+            .checked_mul(2)
+            .ok_or_else(ExportError::capacity_exceeded)?;
+        let path_bytes = total_path_points
             .checked_mul(size_of::<[f32; 2]>())
-            .and_then(|value| value.checked_add(path_points.checked_mul(24)?))
+            .and_then(|value| value.checked_add(total_path_points.checked_mul(24)?))
             .ok_or_else(ExportError::capacity_exceeded)?;
         let work_bytes = pixel_bytes
             .checked_add(mask_bytes)
+            .and_then(|value| value.checked_add(text_mask_bytes))
+            .and_then(|value| value.checked_add(annotation_mask_bytes))
             .and_then(|value| value.checked_add(raw_bytes))
             .and_then(|value| value.checked_add(path_bytes))
             .and_then(|value| value.checked_add(output_estimate))
@@ -157,7 +305,7 @@ impl RasterPlan {
             height,
             pixel_count,
             scale,
-            clip,
+            clips,
             output_estimate,
         })
     }
@@ -183,12 +331,36 @@ impl RasterPlan {
     }
 
     pub(crate) fn clip_a8(&self, x: usize, y: usize) -> u8 {
-        let x = x as f64;
-        let y = y as f64;
-        let x_overlap = (self.clip.x_max.min(x + 1.0) - self.clip.x_min.max(x)).max(0.0);
-        let y_overlap = (self.clip.y_max.min(y + 1.0) - self.clip.y_min.max(y)).max(0.0);
-        let area = (x_overlap * y_overlap).clamp(0.0, 1.0);
-        quantize_round_half_even(area)
+        // A8 quantization is the sink's deterministic round-half-even snap;
+        // the semantic frame remains fractional until this point.
+        quantize_round_half_even(self.clips.coverage(x, y))
+    }
+
+    /// Canvas-scoped clip view for the retained-text pass.
+    ///
+    /// Line art keeps the plot clip above; labels (axis/title/legend) live
+    /// outside the plot rect by definition, so the text pass composites
+    /// against full canvas coverage. Dimensions, scale, and estimates are
+    /// unchanged, and the existing `composite_mask` path is reused untouched.
+    pub(crate) fn text_plan(&self) -> Self {
+        let canvas_clip = ClipRect {
+            x_min: 0.0,
+            y_min: 0.0,
+            x_max: f64::from(self.width),
+            y_max: f64::from(self.height),
+        };
+        // Width and height are checked positive at construction, so the
+        // full-canvas rect always forms a valid one-entry stack; the fallback
+        // below is unreachable defense-in-depth, never a panic.
+        let clips = ClipStack::from_rects(std::slice::from_ref(&canvas_clip)).unwrap_or(self.clips);
+        Self {
+            width: self.width,
+            height: self.height,
+            pixel_count: self.pixel_count,
+            scale: self.scale,
+            clips,
+            output_estimate: self.output_estimate,
+        }
     }
 }
 
@@ -196,8 +368,8 @@ fn checked_dimension(logical_dimension: f64, scale: f64) -> Result<u32, ExportEr
     if !logical_dimension.is_finite() || logical_dimension <= 0.0 {
         return Err(ExportError::invalid_input());
     }
-    let pixels = logical_dimension * scale;
-    if !pixels.is_finite() || pixels <= 0.0 {
+    let pixels = checked_scale(logical_dimension, scale)?;
+    if pixels <= 0.0 {
         return Err(ExportError::capacity_exceeded());
     }
     let rounded_up = pixels.ceil();
@@ -206,6 +378,14 @@ fn checked_dimension(logical_dimension: f64, scale: f64) -> Result<u32, ExportEr
     }
     let rounded_up = rounded_up as u64;
     u32::try_from(rounded_up).map_err(|_| ExportError::capacity_exceeded())
+}
+
+fn checked_scale(value: f64, scale: f64) -> Result<f64, ExportError> {
+    let scaled = value * scale;
+    if !value.is_finite() || !scale.is_finite() || !scaled.is_finite() {
+        return Err(ExportError::capacity_exceeded());
+    }
+    Ok(scaled)
 }
 
 #[cfg(test)]
@@ -284,6 +464,371 @@ pub(crate) fn rasterize_series(
     Ok(mask)
 }
 
+/// Rasterizes the ONE retained layout into an A8 mask without measuring text.
+///
+/// Every stored glyph origin contributes one axis-aligned fixture cell; the
+/// sink reads origins, never shapes, measures, or substitutes glyphs. Cells
+/// that fall fully outside the canvas are skipped without error: labels
+/// routinely sit outside small canvases, unlike engine-clipped line art which
+/// must stay inside. An invalid retained digest fails with `InvalidInput`
+/// before any fill, mirroring the plan-time gate.
+pub(crate) fn rasterize_retained_text(
+    frame: &LineFrame,
+    plan: &RasterPlan,
+) -> Result<Mask, ExportError> {
+    if allocation_is_forced_to_fail() {
+        return Err(ExportError::allocation_failed());
+    }
+    let layout = frame.plot_layout();
+    if !layout.validate() {
+        return Err(ExportError::new(
+            ExportErrorKind::InvalidInput,
+            RETAINED_LAYOUT_ERROR,
+        ));
+    }
+    let scale = plan.scale();
+    let canvas_width = f64::from(plan.width());
+    let canvas_height = f64::from(plan.height());
+    let mut path_builder = PathBuilder::new();
+    let mut has_glyph = false;
+    for run in layout.runs() {
+        for position in run.positions() {
+            let Some((left, top, right, bottom)) = glyph_cell_pixels(
+                position.x(),
+                position.y(),
+                scale,
+                canvas_width,
+                canvas_height,
+            ) else {
+                continue;
+            };
+            // f32 narrowing happens only here, at the sink-local boundary,
+            // after finite and canvas-range checks; the frame stays f64.
+            path_builder.move_to(left, top);
+            path_builder.line_to(right, top);
+            path_builder.line_to(right, bottom);
+            path_builder.line_to(left, bottom);
+            path_builder.close();
+            has_glyph = true;
+        }
+    }
+
+    let data = zero_mask_data(plan.pixel_count())?;
+    let size = IntSize::from_wh(plan.width(), plan.height()).ok_or_else(ExportError::internal)?;
+    let mut mask = Mask::from_vec(data, size).ok_or_else(ExportError::allocation_failed)?;
+    if !has_glyph {
+        return Ok(mask);
+    }
+    let path = path_builder.finish().ok_or_else(ExportError::internal)?;
+    mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    Ok(mask)
+}
+
+/// Rasterizes stored annotation geometry into an A8 mask without measuring
+/// text or projecting spaces.
+///
+/// P2 fixture mapping rule (AT-EXPORT-ANNOTATION; ADR 0007 space projections
+/// deferred): each annotation's stored local geometry folds through its
+/// retained affine into its declared space, then reads as canvas logical
+/// identity at the plan scale. True Data2D/axes/figure-to-display
+/// projections stay a later contract — the resolved frame carries no
+/// viewport for the sink to project through — so this pass pins inclusion
+/// (stored geometry lands as ink), not projection.
+///
+/// Text fills its stored coarse box (fixture-box until real shaping lands);
+/// line and arrow shafts stroke at the fixture width (arrow heads render as
+/// shaft only, the head length already widening the stored coarse box);
+/// rectangles stroke their outline. Non-finite mapped geometry and geometry
+/// fully outside the canvas clip without error, like retained text. Shafts
+/// with any endpoint outside the canvas are skipped the same way; exact
+/// segment clipping stays a later contract with the projections above. An
+/// invalid retained digest fails with `InvalidInput` before any fill,
+/// mirroring the plan-time gate. Fill and stroke coverage merge by per-pixel
+/// maximum, so overlapping ink unions instead of double-darkening
+/// antialiased edges and the result is independent of annotation order.
+pub(crate) fn rasterize_annotations(
+    frame: &LineFrame,
+    plan: &RasterPlan,
+) -> Result<Mask, ExportError> {
+    if allocation_is_forced_to_fail() {
+        return Err(ExportError::allocation_failed());
+    }
+    let layout = frame.plot_layout();
+    if !layout.validate() {
+        return Err(ExportError::new(
+            ExportErrorKind::InvalidInput,
+            RETAINED_LAYOUT_ERROR,
+        ));
+    }
+    let scale = plan.scale();
+    let canvas_width = f64::from(plan.width());
+    let canvas_height = f64::from(plan.height());
+    let mut fill_builder = PathBuilder::new();
+    let mut stroke_builder = PathBuilder::new();
+    let mut has_fill = false;
+    let mut has_stroke = false;
+    for annotation in layout.annotations() {
+        let transform = annotation.transform();
+        match annotation.shape() {
+            AnnotationShape::Text { .. } => {
+                let (x_min, y_min, x_max, y_max) = annotation.bounds();
+                let Some(rect) = annotation_box_pixels(
+                    transform,
+                    x_min,
+                    y_min,
+                    x_max,
+                    y_max,
+                    scale,
+                    canvas_width,
+                    canvas_height,
+                ) else {
+                    continue;
+                };
+                push_closed_rect(&mut fill_builder, rect);
+                has_fill = true;
+            }
+            AnnotationShape::Rectangle {
+                x_min,
+                y_min,
+                x_max,
+                y_max,
+            } => {
+                let Some(rect) = annotation_box_pixels(
+                    transform,
+                    x_min,
+                    y_min,
+                    x_max,
+                    y_max,
+                    scale,
+                    canvas_width,
+                    canvas_height,
+                ) else {
+                    continue;
+                };
+                push_closed_rect(&mut stroke_builder, rect);
+                has_stroke = true;
+            }
+            AnnotationShape::Line { x1, y1, x2, y2 }
+            | AnnotationShape::Arrow { x1, y1, x2, y2, .. } => {
+                let Some((start, end)) = annotation_shaft_pixels(
+                    transform,
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    scale,
+                    canvas_width,
+                    canvas_height,
+                ) else {
+                    continue;
+                };
+                stroke_builder.move_to(start[0], start[1]);
+                stroke_builder.line_to(end[0], end[1]);
+                has_stroke = true;
+            }
+        }
+    }
+
+    let size = IntSize::from_wh(plan.width(), plan.height()).ok_or_else(ExportError::internal)?;
+    if !has_fill && !has_stroke {
+        let data = zero_mask_data(plan.pixel_count())?;
+        return Mask::from_vec(data, size).ok_or_else(ExportError::allocation_failed);
+    }
+    // The fixture stroke width fails here, before any mask allocation, when
+    // the plan scale drives it out of the representable range.
+    let stroke_width = ANNOTATION_STROKE_WIDTH_LOGICAL * scale;
+    if has_stroke
+        && (!stroke_width.is_finite() || stroke_width <= 0.0 || stroke_width > f64::from(f32::MAX))
+    {
+        return Err(ExportError::invalid_input());
+    }
+    let mut fill_mask = Mask::from_vec(zero_mask_data(plan.pixel_count())?, size)
+        .ok_or_else(ExportError::allocation_failed)?;
+    if has_fill {
+        let path = fill_builder.finish().ok_or_else(ExportError::internal)?;
+        fill_mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    }
+    if has_stroke {
+        let path = stroke_builder.finish().ok_or_else(ExportError::internal)?;
+        let stroke = Stroke {
+            width: stroke_width as f32,
+            miter_limit: 4.0,
+            line_cap: LineCap::Butt,
+            line_join: LineJoin::Miter,
+            dash: None,
+        };
+        let stroked = path
+            .stroke(&stroke, 1.0)
+            .ok_or_else(ExportError::internal)?;
+        ensure_stroked_path_is_representable(&stroked)?;
+        let mut stroke_mask = Mask::from_vec(zero_mask_data(plan.pixel_count())?, size)
+            .ok_or_else(ExportError::allocation_failed)?;
+        stroke_mask.fill_path(&stroked, FillRule::Winding, true, Transform::identity());
+        for (fill, stroke) in fill_mask
+            .data_mut()
+            .iter_mut()
+            .zip(stroke_mask.data().iter())
+        {
+            *fill = (*fill).max(*stroke);
+        }
+    }
+    Ok(fill_mask)
+}
+
+/// Pushes one closed axis-aligned rect into a path builder.
+fn push_closed_rect(builder: &mut PathBuilder, rect: (f32, f32, f32, f32)) {
+    let (left, top, right, bottom) = rect;
+    builder.move_to(left, top);
+    builder.line_to(right, top);
+    builder.line_to(right, bottom);
+    builder.line_to(left, bottom);
+    builder.close();
+}
+
+/// Maps one stored annotation box through its retained affine to
+/// canvas-clipped pixel bounds.
+///
+/// The four local corners fold through the retained map (mirroring the
+/// carrier's coarse-geometry rule), then read as canvas logical identity at
+/// the plan scale per the P2 fixture mapping. Returns `None` when a corner
+/// leaves the finite range or the box falls fully outside the canvas: both
+/// mean "nothing to draw here", never a bounds error.
+#[allow(clippy::too_many_arguments)]
+fn annotation_box_pixels(
+    transform: AnnotationTransform,
+    x_min: f64,
+    y_min: f64,
+    x_max: f64,
+    y_max: f64,
+    scale: f64,
+    canvas_width: f64,
+    canvas_height: f64,
+) -> Option<(f32, f32, f32, f32)> {
+    let corners = [
+        transform.apply(x_min, y_min)?,
+        transform.apply(x_min, y_max)?,
+        transform.apply(x_max, y_min)?,
+        transform.apply(x_max, y_max)?,
+    ];
+    let mut folded: Option<(f64, f64, f64, f64)> = None;
+    for (x, y) in corners {
+        folded = Some(match folded {
+            None => (x, y, x, y),
+            Some((lo_x, lo_y, hi_x, hi_y)) => (x.min(lo_x), y.min(lo_y), x.max(hi_x), y.max(hi_y)),
+        });
+    }
+    let (x_min, y_min, x_max, y_max) = folded?;
+    let left = x_min * scale;
+    let top = y_min * scale;
+    let right = x_max * scale;
+    let bottom = y_max * scale;
+    if ![left, top, right, bottom]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return None;
+    }
+    let left = left.clamp(0.0, canvas_width);
+    let top = top.clamp(0.0, canvas_height);
+    let right = right.clamp(0.0, canvas_width);
+    let bottom = bottom.clamp(0.0, canvas_height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    if right > f64::from(f32::MAX) || bottom > f64::from(f32::MAX) {
+        return None;
+    }
+    Some((left as f32, top as f32, right as f32, bottom as f32))
+}
+
+/// Maps one stored shaft through its retained affine to pixel endpoints.
+///
+/// Endpoints fold through the retained map, then read as canvas logical
+/// identity at the plan scale per the P2 fixture mapping. Returns `None`
+/// when an endpoint leaves the finite range, rests outside the canvas, or
+/// collapses onto its partner: all mean "nothing to draw here", never a
+/// bounds error.
+#[allow(clippy::too_many_arguments)]
+fn annotation_shaft_pixels(
+    transform: AnnotationTransform,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    scale: f64,
+    canvas_width: f64,
+    canvas_height: f64,
+) -> Option<([f32; 2], [f32; 2])> {
+    let (x1, y1) = transform.apply(x1, y1)?;
+    let (x2, y2) = transform.apply(x2, y2)?;
+    let (x1, y1, x2, y2) = (x1 * scale, y1 * scale, x2 * scale, y2 * scale);
+    if ![x1, y1, x2, y2].iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    if x1 < 0.0
+        || y1 < 0.0
+        || x2 < 0.0
+        || y2 < 0.0
+        || x1 > canvas_width
+        || y1 > canvas_height
+        || x2 > canvas_width
+        || y2 > canvas_height
+    {
+        return None;
+    }
+    // f32 narrowing happens only here, at the sink-local boundary, after the
+    // finite and canvas-range checks above; the frame stays f64.
+    let start = [x1 as f32, y1 as f32];
+    let end = [x2 as f32, y2 as f32];
+    if start == end {
+        return None;
+    }
+    Some((start, end))
+}
+
+/// Maps one stored glyph origin to canvas-clipped pixel bounds.
+///
+/// Returns `None` when the fixture cell falls fully outside the canvas or
+/// when the scaled geometry is non-finite. Both cases mean "nothing to draw
+/// here", never a bounds error: out-of-canvas text is ordinary clipping.
+fn glyph_cell_pixels(
+    x: f64,
+    y: f64,
+    scale: f64,
+    canvas_width: f64,
+    canvas_height: f64,
+) -> Option<(f32, f32, f32, f32)> {
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let right_logical = x + TEXT_GLYPH_WIDTH_LOGICAL;
+    let bottom_logical = y + TEXT_GLYPH_HEIGHT_LOGICAL;
+    if !right_logical.is_finite() || !bottom_logical.is_finite() {
+        return None;
+    }
+    let left = x * scale;
+    let top = y * scale;
+    let right = right_logical * scale;
+    let bottom = bottom_logical * scale;
+    if ![left, top, right, bottom]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return None;
+    }
+    let left = left.clamp(0.0, canvas_width);
+    let top = top.clamp(0.0, canvas_height);
+    let right = right.clamp(0.0, canvas_width);
+    let bottom = bottom.clamp(0.0, canvas_height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    if right > f64::from(f32::MAX) || bottom > f64::from(f32::MAX) {
+        return None;
+    }
+    Some((left as f32, top as f32, right as f32, bottom as f32))
+}
+
 fn ensure_stroked_path_is_representable(path: &tiny_skia::Path) -> Result<(), ExportError> {
     let bounds = path.bounds();
     let sides = [bounds.left(), bounds.top(), bounds.right(), bounds.bottom()];
@@ -313,8 +858,8 @@ fn zero_mask_data(pixel_count: usize) -> Result<Vec<u8>, ExportError> {
 }
 
 fn to_pixel_point(x: f64, y: f64, plan: &RasterPlan) -> Result<[f32; 2], ExportError> {
-    let x = x * plan.scale();
-    let y = y * plan.scale();
+    let x = checked_scale(x, plan.scale())?;
+    let y = checked_scale(y, plan.scale())?;
     validate_pixel_point(x, y, 1.0, plan.width(), plan.height())?;
     Ok([x as f32, y as f32])
 }
@@ -350,7 +895,7 @@ mod tests {
 
     use lumenplot_engine::bridge::{
         AxisScale, AxisScales, LineFrameSpec, LineStyle, LogicalRect, LogicalSize, PlotScene,
-        SeriesData, SeriesTopology, SrgbRgba8, Viewport,
+        SeriesData, SeriesTopology, SrgbRgba8, TextRole, Viewport,
     };
 
     fn make_frame(style_width: f64) -> lumenplot_engine::bridge::LineFrame {
@@ -377,6 +922,126 @@ mod tests {
             .expect("frame")
     }
 
+    fn make_canvas_frame(
+        canvas: (f64, f64),
+        plot: (f64, f64, f64, f64),
+    ) -> lumenplot_engine::bridge::LineFrame {
+        let canvas = LogicalSize::new(canvas.0, canvas.1).expect("canvas");
+        let plot = LogicalRect::new(plot.0, plot.1, plot.2, plot.3).expect("plot");
+        let style = LineStyle::new(SrgbRgba8::new(255, 0, 0, 255), 1.0).expect("style");
+        let frame_spec =
+            LineFrameSpec::new(canvas, plot, 1.0, style, SrgbRgba8::new(255, 255, 255, 255))
+                .expect("spec");
+        let view = Viewport::from_bounds(0.0, 10.0, 0.0, 10.0).expect("view");
+        let mut scene = PlotScene::new(view, AxisScales::new(AxisScale::Linear, AxisScale::Linear))
+            .expect("scene");
+        let data =
+            SeriesData::from_owned_xy(SeriesTopology::MonotonicX, vec![0.0, 10.0], vec![0.0, 0.0])
+                .expect("data");
+        {
+            let mut transaction = scene.transaction();
+            transaction.add_series(data).expect("series");
+            transaction.commit().expect("commit");
+        }
+        scene
+            .snapshot()
+            .resolve_line_frame(&frame_spec)
+            .expect("frame")
+    }
+
+    #[test]
+    fn retained_layout_validates_and_stale_generations_fail_the_predicate() {
+        let frame = make_frame(1.0);
+        let layout = frame.plot_layout();
+        assert!(layout.validate());
+        assert_eq!(layout.runs().len(), 6);
+        assert!(layout.validate_for_generation(layout.font_revision(), layout.layout_revision()));
+        assert!(!layout.validate_for_generation(
+            layout.font_revision().saturating_add(1),
+            layout.layout_revision()
+        ));
+        assert!(!layout.validate_for_generation(
+            layout.font_revision(),
+            layout.layout_revision().saturating_add(1)
+        ));
+        // Axis, title, and legend families ride the same result screens read.
+        assert_eq!(layout.runs()[3].source(), "x");
+        assert_eq!(layout.runs()[4].source(), "measurement");
+        assert_eq!(layout.runs()[5].source(), "series-0");
+        assert_eq!(layout.runs()[3].role(), TextRole::AxisLabel);
+        assert_eq!(layout.runs()[4].role(), TextRole::AxisTitle);
+        assert_eq!(layout.runs()[5].role(), TextRole::LegendEntry);
+    }
+
+    #[test]
+    fn retained_text_mask_is_canvas_scoped_and_clips_without_error() {
+        // Small canvas: every fixture origin sits outside it, so the text pass
+        // is a no-op instead of a bounds error and the line seam stays green.
+        let small = make_frame(1.0);
+        let small_spec = PngSpec::new(1.0).expect("spec");
+        let small_plan = RasterPlan::new(&small, &small_spec).expect("plan");
+        let small_mask = rasterize_retained_text(&small, &small_plan).expect("mask");
+        assert!(small_mask.data().iter().all(|coverage| *coverage == 0));
+
+        // Large canvas with a small plot rect: the legend cell opens at
+        // logical (72, 64), outside the plot, yet still covers canvas pixels.
+        let frame = make_canvas_frame((160.0, 90.0), (8.0, 8.0, 56.0, 56.0));
+        let spec = PngSpec::new(1.0).expect("spec");
+        let plan = RasterPlan::new(&frame, &spec).expect("plan");
+        let mask = rasterize_retained_text(&frame, &plan).expect("mask");
+        assert!(mask.data().iter().any(|coverage| *coverage != 0));
+        let legend_center = 67usize * 160 + 74;
+        assert_ne!(mask.data()[legend_center], 0);
+        // The line plan keeps the plot clip while the text plan covers the
+        // canvas, so the same pixel is clipped for lines and kept for text.
+        assert_eq!(plan.clip_a8(74, 67), 0);
+        assert_ne!(plan.text_plan().clip_a8(74, 67), 0);
+        // Mask rasterization is deterministic for the same retained result.
+        let again = rasterize_retained_text(&frame, &plan).expect("mask");
+        assert_eq!(mask.data(), again.data());
+    }
+
+    #[test]
+    fn annotation_mask_carries_all_four_kinds_and_clips_without_error() {
+        // Small canvas: every fixture annotation falls outside it (text box
+        // at y>=16, line/arrow shafts leave the 4x4 page, rectangle far
+        // outside), so the annotation pass is a no-op instead of a bounds
+        // error.
+        let small = make_frame(1.0);
+        let small_spec = PngSpec::new(1.0).expect("spec");
+        let small_plan = RasterPlan::new(&small, &small_spec).expect("plan");
+        let small_mask = rasterize_annotations(&small, &small_plan).expect("mask");
+        assert!(small_mask.data().iter().all(|coverage| *coverage == 0));
+
+        // Large canvas: all four fixture kinds land as coverage, and the
+        // mask is deterministic for the same retained result.
+        let frame = make_canvas_frame((160.0, 140.0), (8.0, 8.0, 56.0, 56.0));
+        let spec = PngSpec::new(1.0).expect("spec");
+        let plan = RasterPlan::new(&frame, &spec).expect("plan");
+        let mask = rasterize_annotations(&frame, &plan).expect("mask");
+        assert!(mask.data().iter().any(|coverage| *coverage != 0));
+        // Text fixture-box interior, fully covered.
+        let text_interior = 20usize * 160 + 10;
+        assert_ne!(mask.data()[text_interior], 0);
+        // Line shaft crossing, arrow shaft crossing, rectangle top edge.
+        let line_crossing = 4usize * 160 + 8;
+        assert_ne!(mask.data()[line_crossing], 0);
+        let arrow_crossing = 16usize * 160 + 24;
+        assert_ne!(mask.data()[arrow_crossing], 0);
+        let rect_edge = 100usize * 160 + 120;
+        assert_ne!(mask.data()[rect_edge], 0);
+        // Rectangle interior carries no fill ink (outline only).
+        let rect_interior = 110usize * 160 + 120;
+        assert_eq!(mask.data()[rect_interior], 0);
+        let again = rasterize_annotations(&frame, &plan).expect("mask");
+        assert_eq!(mask.data(), again.data());
+
+        set_allocation_failure_for_test(true);
+        let error = rasterize_annotations(&frame, &plan).expect_err("allocation");
+        set_allocation_failure_for_test(false);
+        assert_eq!(error.kind(), ExportErrorKind::AllocationFailed);
+    }
+
     #[test]
     fn clip_coverage_is_rectangular_and_half_open() {
         let clip = ClipRect {
@@ -390,7 +1055,7 @@ mod tests {
             height: 2,
             pixel_count: 4,
             scale: 1.0,
-            clip,
+            clips: ClipStack::from_rects(&[clip]).expect("clip stack"),
             output_estimate: 0,
         };
         assert_eq!(plan.clip_a8(0, 0), quantize_round_half_even(0.375));
@@ -400,10 +1065,55 @@ mod tests {
     }
 
     #[test]
+    fn clip_stack_uses_the_intersection_of_each_declared_clip() {
+        let stack = ClipStack::from_rects(&[
+            ClipRect {
+                x_min: 0.25,
+                y_min: 0.5,
+                x_max: 1.75,
+                y_max: 1.5,
+            },
+            ClipRect {
+                x_min: 0.5,
+                y_min: 0.75,
+                x_max: 1.25,
+                y_max: 1.25,
+            },
+        ])
+        .expect("clip stack");
+        assert_eq!(
+            quantize_round_half_even(stack.coverage(0, 0)),
+            quantize_round_half_even(0.125)
+        );
+        assert_eq!(
+            quantize_round_half_even(stack.coverage(1, 1)),
+            quantize_round_half_even(0.0625)
+        );
+        assert_eq!(stack.coverage(2, 0), 0.0);
+
+        assert!(ClipStack::from_rects(&[]).is_err());
+        let clip = ClipRect {
+            x_min: 0.0,
+            y_min: 0.0,
+            x_max: 1.0,
+            y_max: 1.0,
+        };
+        assert!(ClipStack::from_rects(&[clip; MAX_CLIP_STACK + 1]).is_err());
+    }
+
+    #[test]
     fn dimensions_use_checked_ceil() {
         assert_eq!(checked_dimension(1.0, 1.0).expect("dimension"), 1);
         assert_eq!(checked_dimension(1.01, 1.0).expect("dimension"), 2);
         assert!(checked_dimension(16_384.1, 1.0).is_err());
+    }
+
+    #[test]
+    fn logical_to_device_scale_rejects_nonfinite_products() {
+        let error = checked_scale(f64::MAX, 2.0).expect_err("overflow");
+        assert_eq!(error.kind(), ExportErrorKind::CapacityExceeded);
+        let error = checked_scale(f64::NAN, 1.0).expect_err("non-finite value");
+        assert_eq!(error.kind(), ExportErrorKind::CapacityExceeded);
     }
 
     #[test]

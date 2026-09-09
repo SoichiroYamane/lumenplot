@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / "scripts" / "verify_traceability_coverage.py"
 TRACE = ROOT / "docs" / "requirements" / "traceability-v1.0.md"
-GAPR1 = ROOT / "docs" / "research" / "codex-gap-verification-candidate-rows-t_3f634d0b.md"
+GAPR1 = ROOT / "docs" / "research" / "codex-gap-verification-candidate-rows.md"
 
 
 class TraceabilityCoverageMutationTests(unittest.TestCase):
@@ -61,7 +61,7 @@ class TraceabilityCoverageMutationTests(unittest.TestCase):
             returncode, output = self.run_checker(Path(temporary))
             self.assertEqual(returncode, 0, output)
             self.assertIn("OK: traceability coverage bookkeeping verified", output)
-            self.assertIn("237 entries, 156 normative, 106 gates", output)
+            self.assertIn("237 entries, 157 normative, 107 gates", output)
 
     def test_published_entry_total_drift_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
@@ -70,6 +70,14 @@ class TraceabilityCoverageMutationTests(unittest.TestCase):
                               "Requirement entries: **238**.")
 
         self.assert_rejected(mutate, "[FAIL] published entries == recomputed")
+
+    def test_3d_amendment_arithmetic_regression_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            self.replace_once(root,
+                              "the controlled totals change from 156 to 157",
+                              "the controlled totals change from 156 to 158")
+
+        self.assert_rejected(mutate, "[FAIL] 2026-09-05 note records 3D reclassification")
 
     def test_normative_split_regression_is_rejected(self) -> None:
         def mutate(root: Path) -> None:

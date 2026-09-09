@@ -23,7 +23,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 TRACE = REPO / "docs" / "requirements" / "traceability-v1.0.md"
-GAPR1 = REPO / "docs" / "research" / "codex-gap-verification-candidate-rows-t_3f634d0b.md"
+GAPR1 = REPO / "docs" / "research" / "codex-gap-verification-candidate-rows.md"
 
 ROW = re.compile(r"^\|\s*`(LP-[A-Z]+-\d+)`\s*\|\s*`([A-Z][A-Z -]*?)`\s*\|(.*)$")
 GATE = re.compile(r"`(AT-[A-Z0-9-]+)`")
@@ -175,16 +175,27 @@ def main() -> int:
     check("2026-08-25 note records pre-adoption baseline 223/150/92",
           "the pre-adoption baseline was 223 entries / 150 normative / 92 gates" in text)
     # Chain: note-1 base + its nine additions == note-2's recorded pre-adoption
-    # baseline (232/153/101); note-2 base + five additions == published totals.
-    check("adoption-note arithmetic chains 223+9 -> 232 -> +5 -> published",
+    # baseline (232/153/101); note-2 base + five additions == the totals before
+    # the later 3D reclassification.
+    check("adoption-note arithmetic chains 223+9 -> 232 -> +5 -> pre-3D totals",
           223 + 9 == 232 and 150 + 3 == 153 and 92 + 9 == 101
-          and 232 + 5 == pub_entries and 153 + 3 == pub_norm and 101 + 5 == pub_gates,
+          and 232 + 5 == 237 and 153 + 3 == 156 and 101 + 5 == 106,
           f"{pub_entries}/{pub_norm}/{pub_gates}")
     # GAP-R1 (2026-08-26): five entries onto the post-Matplotlib-wave base.
     check("2026-08-26 note records pre-adoption baseline 232/153/101",
           "pre-adoption baseline was 232 entries / 153 normative / 101 gates" in text)
-    check("2026-08-26 baseline arithmetic (232 + 5 == published)",
-          232 + 5 == pub_entries and 153 + 3 == pub_norm and 101 + 5 == pub_gates,
+    check("2026-08-26 baseline arithmetic (232 + 5 == pre-3D totals)",
+          232 + 5 == 237 and 153 + 3 == 156 and 101 + 5 == 106,
+          f"{pub_entries}/{pub_norm}/{pub_gates}")
+    # The 2026-09-05 3D envelope reclassified one existing row and added one
+    # evidence gate; it did not add a requirement row.  Keep this amendment in
+    # the arithmetic chain so a stale historical baseline cannot fail closed
+    # against the intentionally updated published totals.
+    check("2026-09-05 note records 3D reclassification",
+          "the controlled totals change from 156 to 157\n"
+          "normative entries and from 106 to 107 distinct gates." in text)
+    check("2026-09-05 amendment arithmetic (no entries, +1 normative, +1 gate)",
+          237 + 0 == pub_entries and 156 + 1 == pub_norm and 106 + 1 == pub_gates,
           f"{pub_entries}/{pub_norm}/{pub_gates}")
     check("adoption note says three normative, two advisory",
           "three normative, two advisory" in text and "two normative, three advisory" not in text)

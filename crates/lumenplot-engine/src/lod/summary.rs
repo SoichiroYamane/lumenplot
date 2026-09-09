@@ -465,4 +465,38 @@ mod tests {
             naive_summary_of(&storage, 10, count)
         );
     }
+
+    #[test]
+    fn cross_chunk_ties_keep_earliest_source_and_exact_f64_payloads() {
+        // LP-DATA-001/002 and LP-LOD-003/005: a range crossing the fixed
+        // chunk cut must preserve the f64 payload and choose the earliest
+        // source for both extrema when every y value ties.
+        let count = CHUNK_LIMIT + 7;
+        let x: Vec<_> = (0..count).map(|value| value as f64).collect();
+        let tied_y = 1.0 + 2.0 * f64::EPSILON;
+        let y = vec![tied_y; count];
+        let storage = SeriesStorage::from_normalized(
+            SeriesInput::from_owned_xy(Topology::MonotonicX, x.clone(), y, None)
+                .expect("input")
+                .into_normalized(),
+            DataEpoch(5),
+            crate::data::ChunkRevision(1),
+        )
+        .expect("storage");
+        let start = CHUNK_LIMIT - 3;
+        let end = CHUNK_LIMIT + 4;
+        let summary = storage
+            .indexed_summary_for_segment_range(0, start, end)
+            .expect("cross-chunk summary");
+
+        assert_eq!(summary.first.source, start as u64);
+        assert_eq!(summary.last.source, (end - 1) as u64);
+        assert_eq!(summary.min_y.source, start as u64);
+        assert_eq!(summary.max_y.source, start as u64);
+        assert_eq!(summary.first.x.to_bits(), x[start].to_bits());
+        assert_eq!(summary.last.x.to_bits(), x[end - 1].to_bits());
+        assert_eq!(summary.min_y.y.to_bits(), tied_y.to_bits());
+        assert_eq!(summary.max_y.y.to_bits(), tied_y.to_bits());
+        assert_ne!(((tied_y as f32) as f64).to_bits(), tied_y.to_bits());
+    }
 }

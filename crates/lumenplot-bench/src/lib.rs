@@ -29,3 +29,8 @@
 //! values carry a `derived_` prefix and are excluded from gate statistics.
 //! Domains whose instrumentation is unavailable are reported with
 //! `"available": false` and null values instead of zeros.
+//!
+//! The accelerated profile resolves an accepted frame packet and submits it
+//! to the portable offscreen renderer. Its scheduler sample ends at the
+//! offscreen readback boundary; no window surface, physical present, or
+//! scanout claim is implied.

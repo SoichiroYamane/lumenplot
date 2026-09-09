@@ -1,16 +1,126 @@
 #[cfg(test)]
 use std::cell::Cell;
+use std::sync::Arc;
 
 use crate::bridge::{
-    LineFrame, LineFrameSpec, LinePoint, LineSegment, LineSeries, LogicalRect, SceneRevision,
-    SeriesId,
+    LineFrame, LineFrameSpec, LinePoint, LineSegment, LineSeries, LogicalRect, LogicalSize,
+    SceneRevision, SeriesId,
 };
 use crate::error::{SceneError, SceneErrorKind};
-use crate::scene::{AxisScale, SceneSnapshot};
+use crate::scene::{AxisRange, AxisScale, SceneSnapshot};
 
 pub(crate) const MAX_FRAME_SERIES: usize = 65_536;
 pub(crate) const MAX_FRAME_SEGMENTS: usize = 1_000_000;
 pub(crate) const MAX_FRAME_POINTS: usize = 1_000_000;
+
+/// Layout facts resolved once for one immutable snapshot.
+///
+/// The line slice has one plot clip today, but keeping the transform and clip
+/// inputs together makes the semantic result the single source for every
+/// consumer. Sinks receive the resolved frame; they do not reconstruct this
+/// mapping from scene state.
+#[derive(Clone, Copy)]
+struct ResolvedLayout {
+    canvas: LogicalSize,
+    plot_rect: LogicalRect,
+    logical_units_per_inch: f64,
+    x_range: AxisRange,
+    y_range: AxisRange,
+}
+
+impl ResolvedLayout {
+    fn new(
+        canvas: LogicalSize,
+        plot_rect: LogicalRect,
+        logical_units_per_inch: f64,
+        viewport: crate::scene::Viewport,
+    ) -> Result<Self, SceneError> {
+        let x_range = viewport.x();
+        let y_range = viewport.y();
+        let x_span = x_range.max() - x_range.min();
+        let y_span = y_range.max() - y_range.min();
+        if !logical_units_per_inch.is_finite()
+            || logical_units_per_inch <= 0.0
+            || !canvas.width().is_finite()
+            || !canvas.height().is_finite()
+            || canvas.width() <= 0.0
+            || canvas.height() <= 0.0
+            || !x_span.is_finite()
+            || !y_span.is_finite()
+            || x_span <= 0.0
+            || y_span <= 0.0
+            || plot_rect.x_min() < 0.0
+            || plot_rect.y_min() < 0.0
+            || plot_rect.x_max() > canvas.width()
+            || plot_rect.y_max() > canvas.height()
+        {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        Ok(Self {
+            canvas,
+            plot_rect,
+            logical_units_per_inch,
+            x_range,
+            y_range,
+        })
+    }
+
+    fn transform_point(&self, x: f64, y: f64) -> Result<LinePoint, SceneError> {
+        let x_offset = x - self.x_range.min();
+        let y_offset = self.y_range.max() - y;
+        if !x_offset.is_finite() || !y_offset.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        let x_fraction = x_offset / (self.x_range.max() - self.x_range.min());
+        let y_fraction = y_offset / (self.y_range.max() - self.y_range.min());
+        if !x_fraction.is_finite() || !y_fraction.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        let x_scaled = x_fraction * (self.plot_rect.x_max() - self.plot_rect.x_min());
+        let y_scaled = y_fraction * (self.plot_rect.y_max() - self.plot_rect.y_min());
+        if !x_scaled.is_finite() || !y_scaled.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        let display_x = self.plot_rect.x_min() + x_scaled;
+        let display_y = self.plot_rect.y_min() + y_scaled;
+        if !display_x.is_finite() || !display_y.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        Ok(LinePoint::from_parts(display_x, display_y))
+    }
+
+    fn inverse_point(&self, display_x: f64, display_y: f64) -> Result<(f64, f64), SceneError> {
+        if !display_x.is_finite() || !display_y.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        let plot_width = self.plot_rect.x_max() - self.plot_rect.x_min();
+        let plot_height = self.plot_rect.y_max() - self.plot_rect.y_min();
+        let x_span = self.x_range.max() - self.x_range.min();
+        let y_span = self.y_range.max() - self.y_range.min();
+        if !plot_width.is_finite()
+            || !plot_height.is_finite()
+            || !x_span.is_finite()
+            || !y_span.is_finite()
+            || plot_width <= 0.0
+            || plot_height <= 0.0
+            || x_span <= 0.0
+            || y_span <= 0.0
+        {
+            return Err(SceneError::new(SceneErrorKind::Internal));
+        }
+        let x_fraction = (display_x - self.plot_rect.x_min()) / plot_width;
+        let y_fraction = (display_y - self.plot_rect.y_min()) / plot_height;
+        if !x_fraction.is_finite() || !y_fraction.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        let x = self.x_range.min() + x_fraction * x_span;
+        let y = self.y_range.max() - y_fraction * y_span;
+        if !x.is_finite() || !y.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        Ok((x, y))
+    }
+}
 
 #[cfg(test)]
 thread_local! {
@@ -31,13 +141,22 @@ pub(crate) fn resolve_line_frame(
     if scales.x() != AxisScale::Linear || scales.y() != AxisScale::Linear {
         return Err(SceneError::new(SceneErrorKind::UnsupportedCapability));
     }
+    let layout = ResolvedLayout::new(
+        canvas,
+        plot_rect,
+        logical_units_per_inch,
+        snapshot.state.viewport(),
+    )?;
 
+    let plot_layout: Arc<crate::text::PlotLayout> = snapshot.plot_layout();
+    if !plot_layout.validate_for_generation(snapshot.font_revision(), snapshot.layout_revision()) {
+        return Err(SceneError::new(SceneErrorKind::Internal));
+    }
     let series_map = snapshot.state.series_map();
     if series_map.len() > MAX_FRAME_SERIES {
         return Err(SceneError::new(SceneErrorKind::CapacityExceeded));
     }
 
-    let viewport = snapshot.state.viewport();
     let mut frame_series = Vec::new();
     reserve(&mut frame_series, series_map.len())?;
     let mut counts = Counts::default();
@@ -60,9 +179,14 @@ pub(crate) fn resolve_line_frame(
             let mut transformed = Vec::new();
             reserve(&mut transformed, source_points.len())?;
             for point in source_points {
-                transformed.push(transform_point(point.x, point.y, viewport, plot_rect)?);
+                transformed.push(layout.transform_point(point.x, point.y)?);
             }
-            append_clipped_structural_segment(&mut segments, &transformed, plot_rect, &mut counts)?;
+            append_clipped_structural_segment_with_clips(
+                &mut segments,
+                &transformed,
+                std::slice::from_ref(&layout.plot_rect),
+                &mut counts,
+            )?;
         }
         let bridge_id = SeriesId::from_engine(*id);
         frame_series.push(LineSeries::from_parts(bridge_id, style, segments));
@@ -70,12 +194,155 @@ pub(crate) fn resolve_line_frame(
 
     Ok(LineFrame::from_parts(
         SceneRevision::from_engine(snapshot.revision()),
+        layout.canvas,
+        layout.plot_rect,
+        layout.logical_units_per_inch,
+        background,
+        frame_series,
+        plot_layout,
+    ))
+}
+
+/// Nearest retained data point behind a cursor query, in scientific units.
+///
+/// `series` is the engine series key the pointer-oriented router reports for
+/// selection; `point` counts retained points of that series in storage order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NearestInspectedPoint {
+    series: u64,
+    point: usize,
+    x: f64,
+    y: f64,
+    display_distance: f64,
+}
+
+impl NearestInspectedPoint {
+    /// Returns the engine key of the nearest series.
+    pub(crate) fn series(self) -> u64 {
+        self.series
+    }
+
+    /// Returns the storage index of the nearest point within its series.
+    pub(crate) fn point(self) -> usize {
+        self.point
+    }
+
+    /// Returns the scientific x of the nearest point.
+    pub(crate) fn x(self) -> f64 {
+        self.x
+    }
+
+    /// Returns the scientific y of the nearest point.
+    pub(crate) fn y(self) -> f64 {
+        self.y
+    }
+
+    /// Returns the display-space distance from the query to the point.
+    pub(crate) fn display_distance(self) -> f64 {
+        self.display_distance
+    }
+}
+
+/// Cursor inspection result: scientific position plus nearest retained point.
+///
+/// The result is transient inspection data. It never enters scene, layout,
+/// or export state, and computing it mutates nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CursorInspection {
+    x: f64,
+    y: f64,
+    nearest: Option<NearestInspectedPoint>,
+}
+
+impl CursorInspection {
+    /// Returns the scientific x under the query.
+    pub(crate) fn x(self) -> f64 {
+        self.x
+    }
+
+    /// Returns the scientific y under the query.
+    pub(crate) fn y(self) -> f64 {
+        self.y
+    }
+
+    /// Returns the nearest retained series point, if any series holds data.
+    pub(crate) fn nearest(self) -> Option<NearestInspectedPoint> {
+        self.nearest
+    }
+}
+
+/// Inspects the retained scene at one display position without mutating state.
+///
+/// `layout` is the retained carrier previously resolved for `spec`; it is
+/// rejected when its generations no longer match `snapshot`, so inspection
+/// cannot report against moved geometry. The scientific position is the exact
+/// inverse of the forward frame map, so queries outside the plot area
+/// extrapolate instead of clamping. The nearest point scans retained series
+/// data in display space, where proximity matches what the pointer overlaps;
+/// ties resolve to the smallest series key, then the smallest point index.
+/// Gap-affiliated points stay inspectable: inspection reads retained data,
+/// not clipped segments.
+pub(crate) fn inspect_cursor(
+    layout: &crate::text::PlotLayout,
+    snapshot: &SceneSnapshot,
+    spec: &LineFrameSpec,
+    display_x: f64,
+    display_y: f64,
+) -> Result<CursorInspection, SceneError> {
+    if !display_x.is_finite() || !display_y.is_finite() {
+        return Err(SceneError::new(SceneErrorKind::InvalidInput));
+    }
+    let scales = snapshot.state.scales();
+    if scales.x() != AxisScale::Linear || scales.y() != AxisScale::Linear {
+        return Err(SceneError::new(SceneErrorKind::UnsupportedCapability));
+    }
+    if !layout.validate_for_generation(snapshot.font_revision(), snapshot.layout_revision()) {
+        return Err(SceneError::new(SceneErrorKind::Internal));
+    }
+    let (canvas, plot_rect, logical_units_per_inch, _, _) = spec.parts();
+    let mapping = ResolvedLayout::new(
         canvas,
         plot_rect,
         logical_units_per_inch,
-        background,
-        frame_series,
-    ))
+        snapshot.state.viewport(),
+    )?;
+    let (x, y) = mapping.inverse_point(display_x, display_y)?;
+    let mut best: Option<(u64, usize, f64, f64, f64)> = None;
+    for (id, storage) in snapshot.state.series_map() {
+        for (index, point) in storage.points().iter().enumerate() {
+            let display = match mapping.transform_point(point.x, point.y) {
+                Ok(display) => display,
+                Err(_) => continue,
+            };
+            let dx = display.x() - display_x;
+            let dy = display.y() - display_y;
+            if !dx.is_finite() || !dy.is_finite() {
+                continue;
+            }
+            let squared = dx * dx + dy * dy;
+            if !squared.is_finite() {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                Some((_, _, _, _, best_squared)) => squared < best_squared,
+            };
+            if better {
+                best = Some((id.0, index, point.x, point.y, squared));
+            }
+        }
+    }
+    Ok(CursorInspection {
+        x,
+        y,
+        nearest: best.map(|(series, point, x, y, squared)| NearestInspectedPoint {
+            series,
+            point,
+            x,
+            y,
+            display_distance: squared.sqrt(),
+        }),
+    })
 }
 
 #[derive(Default)]
@@ -97,61 +364,28 @@ fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<(), SceneError> 
         .map_err(|_| SceneError::new(SceneErrorKind::AllocationFailed))
 }
 
-fn transform_point(
-    x: f64,
-    y: f64,
-    viewport: crate::scene::Viewport,
-    plot_rect: LogicalRect,
-) -> Result<LinePoint, SceneError> {
-    let x_range = viewport.x();
-    let y_range = viewport.y();
-    let x_span = x_range.max() - x_range.min();
-    let y_span = y_range.max() - y_range.min();
-    let plot_width = plot_rect.x_max() - plot_rect.x_min();
-    let plot_height = plot_rect.y_max() - plot_rect.y_min();
-    if !x_span.is_finite()
-        || !y_span.is_finite()
-        || !plot_width.is_finite()
-        || !plot_height.is_finite()
-        || x_span <= 0.0
-        || y_span <= 0.0
-        || plot_width <= 0.0
-        || plot_height <= 0.0
-    {
-        return Err(SceneError::new(SceneErrorKind::InvalidInput));
-    }
-
-    let x_offset = x - x_range.min();
-    let y_offset = y_range.max() - y;
-    if !x_offset.is_finite() || !y_offset.is_finite() {
-        return Err(SceneError::new(SceneErrorKind::InvalidInput));
-    }
-    let x_fraction = x_offset / x_span;
-    let y_fraction = y_offset / y_span;
-    if !x_fraction.is_finite() || !y_fraction.is_finite() {
-        return Err(SceneError::new(SceneErrorKind::InvalidInput));
-    }
-    let x_scaled = x_fraction * plot_width;
-    let y_scaled = y_fraction * plot_height;
-    if !x_scaled.is_finite() || !y_scaled.is_finite() {
-        return Err(SceneError::new(SceneErrorKind::InvalidInput));
-    }
-    let display_x = plot_rect.x_min() + x_scaled;
-    let display_y = plot_rect.y_min() + y_scaled;
-    if !display_x.is_finite() || !display_y.is_finite() {
-        return Err(SceneError::new(SceneErrorKind::InvalidInput));
-    }
-    Ok(LinePoint::from_parts(display_x, display_y))
-}
-
 fn append_clipped_structural_segment(
     output: &mut Vec<LineSegment>,
     points: &[LinePoint],
     plot_rect: LogicalRect,
     counts: &mut Counts,
 ) -> Result<(), SceneError> {
+    append_clipped_structural_segment_with_clips(
+        output,
+        points,
+        std::slice::from_ref(&plot_rect),
+        counts,
+    )
+}
+
+fn append_clipped_structural_segment_with_clips(
+    output: &mut Vec<LineSegment>,
+    points: &[LinePoint],
+    clips: &[LogicalRect],
+    counts: &mut Counts,
+) -> Result<(), SceneError> {
     if points.len() == 1 {
-        if point_inside(points[0], plot_rect) {
+        if clips.iter().all(|clip| point_inside(points[0], *clip)) {
             let mut path = Vec::new();
             append_path_point(&mut path, points[0], counts)?;
             push_output_segment(output, path, counts)?;
@@ -161,7 +395,7 @@ fn append_clipped_structural_segment(
 
     let mut current: Option<Vec<LinePoint>> = None;
     for pair in points.windows(2) {
-        let clipped = clip_segment(pair[0], pair[1], plot_rect)?;
+        let clipped = clip_segment_stack(pair[0], pair[1], clips)?;
         let Some((enter, exit)) = clipped else {
             flush_path(output, &mut current, counts)?;
             continue;
@@ -245,6 +479,34 @@ fn clip_segment(
     } else {
         Ok(Some((enter, exit)))
     }
+}
+
+/// Intersect a segment with each transformed clip in declaration order.
+///
+/// The interval remains in the original segment's parameter space, so a
+/// later clip can remove an exit/re-entry run without reconnecting it to a
+/// neighboring structural segment.
+fn clip_segment_stack(
+    first: LinePoint,
+    second: LinePoint,
+    clips: &[LogicalRect],
+) -> Result<Option<(f64, f64)>, SceneError> {
+    let mut enter: f64 = 0.0;
+    let mut exit: f64 = 1.0;
+    for clip in clips {
+        let Some((clip_enter, clip_exit)) = clip_segment(first, second, *clip)? else {
+            return Ok(None);
+        };
+        enter = enter.max(clip_enter);
+        exit = exit.min(clip_exit);
+        if !enter.is_finite() || !exit.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        if enter > exit {
+            return Ok(None);
+        }
+    }
+    Ok(Some((enter, exit)))
 }
 
 fn interpolate(first: LinePoint, second: LinePoint, ratio: f64) -> Result<LinePoint, SceneError> {
@@ -405,6 +667,45 @@ mod tests {
     }
 
     #[test]
+    fn large_absolute_coordinates_are_reduced_before_display_mapping() {
+        // The accepted Phase-1/2 frame boundary keeps geometry in f64 and
+        // subtracts the viewport origin before scaling. A direct absolute
+        // f64-to-f32 conversion would collapse these nearby scientific
+        // coordinates, while the existing origin-relative frame remains
+        // distinguishable and bounded for a sink-local conversion.
+        let origin = 1.0e15_f64;
+        let view = Viewport::from_bounds(origin, origin + 10.0, origin - 10.0, origin + 10.0)
+            .expect("large finite view");
+        let mut scene = PlotScene::new(view, AxisScales::new(AxisScale::Linear, AxisScale::Linear))
+            .expect("scene");
+        {
+            let mut transaction = scene.transaction();
+            transaction
+                .add_series(
+                    SeriesData::from_owned_xy(
+                        SeriesTopology::ArbitraryXY,
+                        vec![origin, origin + 5.0, origin + 10.0],
+                        vec![origin - 10.0, origin, origin + 10.0],
+                    )
+                    .expect("series"),
+                )
+                .expect("add series");
+            transaction.commit().expect("commit");
+        }
+        let frame = scene.snapshot().resolve_line_frame(&spec()).expect("frame");
+        let points = frame.series()[0].segments()[0].points();
+
+        assert_eq!((origin as f32), ((origin + 10.0) as f32));
+        assert_close(points[0].x(), 10.0);
+        assert_close(points[1].x(), 50.0);
+        assert_close(points[2].x(), 90.0);
+        assert_close(points[0].y(), 60.0);
+        assert_close(points[1].y(), 40.0);
+        assert_close(points[2].y(), 20.0);
+        assert_ne!(points[0].x(), points[2].x());
+    }
+
+    #[test]
     fn series_order_is_ascending_even_after_identity_burn() {
         let view = Viewport::from_bounds(0.0, 10.0, 0.0, 10.0).expect("view");
         let mut scene = PlotScene::new(view, AxisScales::new(AxisScale::Linear, AxisScale::Linear))
@@ -524,6 +825,46 @@ mod tests {
     }
 
     #[test]
+    fn ordered_clip_stack_intersects_each_clip_without_reconnecting_runs() {
+        let outer = LogicalRect::new(0.0, 0.0, 10.0, 10.0).expect("outer");
+        let inner = LogicalRect::new(2.0, 2.0, 8.0, 8.0).expect("inner");
+        let points = [
+            LinePoint::from_parts(-1.0, 5.0),
+            LinePoint::from_parts(11.0, 5.0),
+            LinePoint::from_parts(-1.0, 5.0),
+        ];
+        let mut output = Vec::new();
+        let mut counts = Counts::default();
+        append_clipped_structural_segment_with_clips(
+            &mut output,
+            &points,
+            &[outer, inner],
+            &mut counts,
+        )
+        .expect("stacked clip");
+        assert_eq!(output.len(), 2);
+        assert_close(output[0].points()[0].x(), 2.0);
+        assert_close(output[0].points()[1].x(), 8.0);
+        assert_close(output[1].points()[0].x(), 8.0);
+        assert_close(output[1].points()[1].x(), 2.0);
+
+        let disjoint = LogicalRect::new(12.0, 0.0, 14.0, 10.0).expect("disjoint");
+        let mut output = Vec::new();
+        let mut counts = Counts::default();
+        append_clipped_structural_segment_with_clips(
+            &mut output,
+            &[
+                LinePoint::from_parts(-1.0, 5.0),
+                LinePoint::from_parts(11.0, 5.0),
+            ],
+            &[outer, disjoint],
+            &mut counts,
+        )
+        .expect("disjoint clip stack");
+        assert!(output.is_empty());
+    }
+
+    #[test]
     fn all_boundary_crossings_and_exact_boundary_points_are_retained() {
         let rect = LogicalRect::new(0.0, 0.0, 10.0, 10.0).expect("rect");
         let cases = [
@@ -621,6 +962,38 @@ mod tests {
             error.kind(),
             crate::bridge::SceneErrorKind::UnsupportedCapability
         );
+    }
+
+    #[test]
+    fn resolved_frame_keeps_the_published_snapshot_after_later_state_changes() {
+        let view = Viewport::from_bounds(0.0, 10.0, 0.0, 10.0).expect("view");
+        let mut scene = PlotScene::new(view, AxisScales::new(AxisScale::Linear, AxisScale::Linear))
+            .expect("scene");
+        let old_snapshot = scene.snapshot();
+        let old_frame = old_snapshot.resolve_line_frame(&spec()).expect("old frame");
+
+        {
+            let mut transaction = scene.transaction();
+            transaction
+                .add_series(
+                    SeriesData::from_owned_xy(
+                        SeriesTopology::ArbitraryXY,
+                        vec![0.0, 10.0],
+                        vec![0.0, 10.0],
+                    )
+                    .expect("data"),
+                )
+                .expect("series");
+            transaction.commit().expect("commit");
+        }
+
+        assert!(old_frame.series().is_empty());
+        let current_frame = scene
+            .snapshot()
+            .resolve_line_frame(&spec())
+            .expect("current frame");
+        assert!(current_frame.revision() > old_frame.revision());
+        assert_eq!(current_frame.series().len(), 1);
     }
 
     #[test]
@@ -757,5 +1130,166 @@ mod tests {
                 mismatch => panic!("clip mismatch: {mismatch:?}"),
             }
         }
+    }
+
+    use crate::data::{SeriesInput, Topology};
+    use crate::scene::{
+        AxisScale as EngineAxisScale, AxisScales as EngineAxisScales, PlotScene as EnginePlotScene,
+        Viewport as EngineViewport,
+    };
+
+    fn engine_scene_with_points(
+        x_min: f64,
+        x_max: f64,
+        y_min: f64,
+        y_max: f64,
+        series: Vec<(Vec<f64>, Vec<f64>)>,
+    ) -> EnginePlotScene {
+        let view = EngineViewport::from_bounds(x_min, x_max, y_min, y_max).expect("engine view");
+        let mut scene = EnginePlotScene::new(
+            view,
+            EngineAxisScales::new(EngineAxisScale::Linear, EngineAxisScale::Linear),
+        )
+        .expect("engine scene");
+        {
+            let mut transaction = scene.transaction();
+            for (x, y) in series {
+                let data = SeriesInput::from_owned_xy(Topology::ArbitraryXY, x, y, None)
+                    .expect("engine data");
+                transaction.add_series(data).expect("add engine series");
+            }
+            transaction.commit().expect("commit engine series");
+        }
+        scene
+    }
+
+    #[test]
+    fn cursor_centre_reports_scientific_midpoint_and_nearest_point() {
+        let scene = engine_scene_with_points(
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            vec![(vec![0.0, 5.0, 10.0], vec![0.0, 5.0, 10.0])],
+        );
+        let snapshot = scene.snapshot();
+        let layout = snapshot.plot_layout();
+        let inspection = inspect_cursor(&layout, &snapshot, &spec(), 50.0, 40.0).expect("cursor");
+        assert_close(inspection.x(), 5.0);
+        assert_close(inspection.y(), 5.0);
+        let nearest = inspection.nearest().expect("nearest point");
+        assert_eq!(nearest.series(), 1);
+        assert_eq!(nearest.point(), 1);
+        assert_close(nearest.x(), 5.0);
+        assert_close(nearest.y(), 5.0);
+        assert_close(nearest.display_distance(), 0.0);
+    }
+
+    #[test]
+    fn cursor_ties_resolve_to_smallest_series_then_point() {
+        let scene = engine_scene_with_points(
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            vec![(vec![5.0], vec![5.0]), (vec![5.0], vec![5.0])],
+        );
+        let snapshot = scene.snapshot();
+        let layout = snapshot.plot_layout();
+        let inspection = inspect_cursor(&layout, &snapshot, &spec(), 50.0, 40.0).expect("cursor");
+        let nearest = inspection.nearest().expect("nearest point");
+        assert_eq!(nearest.series(), 1);
+        assert_eq!(nearest.point(), 0);
+        assert_close(nearest.display_distance(), 0.0);
+    }
+
+    #[test]
+    fn cursor_outside_plot_extrapolates_and_keeps_nearest() {
+        let scene = engine_scene_with_points(
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            vec![(vec![0.0, 5.0, 10.0], vec![0.0, 5.0, 10.0])],
+        );
+        let snapshot = scene.snapshot();
+        let layout = snapshot.plot_layout();
+        let inspection = inspect_cursor(&layout, &snapshot, &spec(), 0.0, 0.0).expect("cursor");
+        assert_close(inspection.x(), -1.25);
+        assert_close(inspection.y(), 15.0);
+        let nearest = inspection.nearest().expect("nearest point");
+        assert_eq!(nearest.series(), 1);
+        assert_eq!(nearest.point(), 0);
+        assert_close(nearest.x(), 0.0);
+        assert_close(nearest.y(), 0.0);
+        assert_close(nearest.display_distance(), 3700.0_f64.sqrt());
+    }
+
+    #[test]
+    fn cursor_without_series_reports_coordinates_only() {
+        let scene = engine_scene_with_points(0.0, 10.0, 0.0, 10.0, vec![]);
+        let snapshot = scene.snapshot();
+        let layout = snapshot.plot_layout();
+        let inspection = inspect_cursor(&layout, &snapshot, &spec(), 50.0, 40.0).expect("cursor");
+        assert_close(inspection.x(), 5.0);
+        assert_close(inspection.y(), 5.0);
+        assert!(inspection.nearest().is_none());
+    }
+
+    #[test]
+    fn cursor_rejects_non_finite_stale_and_log_scale() {
+        let mut scene = engine_scene_with_points(
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            vec![(vec![0.0, 5.0, 10.0], vec![0.0, 5.0, 10.0])],
+        );
+        let snapshot = scene.snapshot();
+        let layout = snapshot.plot_layout();
+        let error = inspect_cursor(&layout, &snapshot, &spec(), f64::NAN, 40.0)
+            .expect_err("non-finite query");
+        assert_eq!(error.kind(), SceneErrorKind::InvalidInput);
+
+        let before_layout = layout;
+        {
+            let mut transaction = scene.transaction();
+            transaction
+                .set_viewport(EngineViewport::from_bounds(1.0, 9.0, 1.0, 9.0).expect("view"))
+                .expect("moved view");
+            transaction.commit().expect("commit view");
+        }
+        let after = scene.snapshot();
+        let error =
+            inspect_cursor(&before_layout, &after, &spec(), 50.0, 40.0).expect_err("stale carrier");
+        assert_eq!(error.kind(), SceneErrorKind::Internal);
+        let current = after.plot_layout();
+        let inspection =
+            inspect_cursor(&current, &after, &spec(), 50.0, 40.0).expect("current carrier");
+        assert_close(inspection.x(), 5.0);
+        assert_close(inspection.y(), 5.0);
+        assert!(inspection.nearest().is_some());
+
+        let view = EngineViewport::from_bounds(1.0, 10.0, 1.0, 10.0).expect("log view");
+        let mut log_scene = EnginePlotScene::new(
+            view,
+            EngineAxisScales::new(EngineAxisScale::Linear, EngineAxisScale::Linear),
+        )
+        .expect("log scene");
+        {
+            let mut transaction = log_scene.transaction();
+            transaction
+                .set_axis_scales(EngineAxisScales::new(
+                    EngineAxisScale::Log10,
+                    EngineAxisScale::Linear,
+                ))
+                .expect("log scales");
+            transaction.commit().expect("commit log scales");
+        }
+        let log_snapshot = log_scene.snapshot();
+        let log_layout = log_snapshot.plot_layout();
+        let error = inspect_cursor(&log_layout, &log_snapshot, &spec(), 50.0, 40.0)
+            .expect_err("log scale has no cursor map");
+        assert_eq!(error.kind(), SceneErrorKind::UnsupportedCapability);
     }
 }

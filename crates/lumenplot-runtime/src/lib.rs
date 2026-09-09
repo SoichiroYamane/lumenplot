@@ -1,3 +1,2434 @@
-//! Private Phase-0 documentation stub for runtime lifecycle ownership.
+//! Main-thread-owned runtime lifecycle skeleton.
 //!
-//! Runtime implementation is deferred until the renderer boundary is ready.
+//! This crate owns the lifecycle boundary around the portable renderer.  The
+//! state machine is deliberately usable without a window-system transport so
+//! lifecycle transitions can be tested on a headless host.  [`EngineSession`]
+//! can also retain a real portable renderer through [`EngineSession::try_new`]
+//! or [`EngineSession::with_renderer`].  The logical surface records in this
+//! slice are not window or surface handles and do not make a platform-support
+//! claim.
+//!
+//! `PlotScene` remains outside this crate.  Submission records carry an
+//! opaque caller-owned scene revision key only for stale-result rejection;
+//! the runtime never creates, mutates, or persists scene state.  Work and
+//! device generations are independent runtime records.
+
+#![forbid(unsafe_code)]
+
+use std::cell::{Cell, RefCell, RefMut};
+use std::collections::VecDeque;
+use std::marker::PhantomData;
+use std::rc::Rc;
+use std::thread::{self, ThreadId};
+
+use lumenplot_render_api::__internal::{
+    CompletionFence, DeviceGeneration as PacketDeviceGeneration, PacketValidationError,
+    PacketValidationErrorKind, RenderPacket, RenderPacketBuilder, ResourceCache, ResourceLease,
+    ResourceLifecycleError, ResourceLifecycleErrorKind, SceneRevision as PacketSceneRevision,
+    WorkGeneration as PacketWorkGeneration,
+};
+use lumenplot_render_api::FramePacket;
+use lumenplot_render_wgpu::{RenderError, RenderErrorKind, Renderer};
+
+mod input;
+
+const MAX_SURFACES: usize = 64;
+const MAX_SURFACE_DIMENSION: u32 = 16_384;
+const MAX_PENDING_WORK: usize = 64;
+
+/// Explicit ownership mode for the runtime loop.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum LoopMode {
+    /// The standalone viewer owns the blocking native loop boundary.
+    NativeOwned,
+    /// An embedding host owns the loop and drives the internal pump boundary.
+    HostPumped,
+}
+
+/// Coarse lifecycle state of one engine session.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum SessionState {
+    /// The session has been created but its loop has not been entered.
+    Created,
+    /// The session can accept lifecycle work and logical submissions.
+    Running,
+    /// Device resources are invalid and recovery is required before work can continue.
+    DeviceLost,
+    /// Allocation or submission reached a terminal memory-exhaustion state.
+    OutOfMemory,
+    /// Explicit close completed; the state cannot be reopened.
+    Closed,
+}
+
+/// Lifecycle state of one logical surface owned by a session.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum SurfaceState {
+    /// The surface is configured and can accept a ready submission.
+    Active,
+    /// A resize or resume requires configuration before the next submission.
+    ReconfigurePending,
+    /// The surface is intentionally not drawable.
+    Suspended,
+    /// The surface lost its backend resource and must be recreated explicitly.
+    Lost,
+}
+
+/// Opaque identity for a session-owned logical surface.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SurfaceId(u64);
+
+/// Condition observed at the present boundary for one submission attempt.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum SurfaceCondition {
+    /// The surface is drawable at this attempt.
+    Ready,
+    /// The surface is occluded; the attempt is skipped without a retry loop.
+    Occluded,
+    /// The surface did not become available before the bounded wait expired.
+    Timeout,
+}
+
+/// A submission skip that is not a user-facing operation error.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum SkipReason {
+    /// The host or compositor reported occlusion.
+    Occluded,
+    /// The bounded present wait expired.
+    Timeout,
+    /// The surface was explicitly suspended.
+    Suspended,
+}
+
+/// Result of entering or pumping a declared loop boundary.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum LoopOutcome {
+    /// Native ownership was entered from the owner thread.
+    NativeLoopEntered,
+    /// The native loop was already active.
+    NativeLoopAlreadyRunning,
+    /// One host-pumped iteration completed.
+    HostPumpCompleted,
+}
+
+/// Observable result of a lifecycle transition.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum LifecycleOutcome {
+    Resized,
+    Suspended,
+    AlreadySuspended,
+    Resumed,
+    AlreadyActive,
+    SurfaceLost,
+    AlreadyLost,
+    SurfaceRecreated,
+    DeviceLost,
+    AlreadyDeviceLost,
+    DeviceRebuilt,
+    TerminalOutOfMemory,
+    AlreadyOutOfMemory,
+    CloseRequested,
+    AlreadyClosed,
+}
+
+/// Stable runtime operation-error categories from API 0002.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum RuntimeErrorKind {
+    InvalidInput,
+    Closed,
+    InvalidState,
+    HostLoopMisuse,
+    Reentrancy,
+    UnsupportedCapability,
+    BackendUnavailable,
+    DeviceLost,
+    RecoveryFailed,
+    OutOfMemory,
+    ResourceInvalid,
+    Internal,
+}
+
+impl RuntimeErrorKind {
+    /// Stable lowercase operation code for the runtime boundary.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidInput => "invalid-input",
+            Self::Closed => "closed",
+            Self::InvalidState => "invalid-state",
+            Self::HostLoopMisuse => "host-loop-misuse",
+            Self::Reentrancy => "reentrancy",
+            Self::UnsupportedCapability => "unsupported-capability",
+            Self::BackendUnavailable => "backend-unavailable",
+            Self::DeviceLost => "device-lost",
+            Self::RecoveryFailed => "recovery-failed",
+            Self::OutOfMemory => "out-of-memory",
+            Self::ResourceInvalid => "resource-invalid",
+            Self::Internal => "internal",
+        }
+    }
+}
+
+/// Sanitized error returned by an explicit runtime operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RuntimeError {
+    kind: RuntimeErrorKind,
+    message: &'static str,
+}
+
+impl RuntimeError {
+    const fn new(kind: RuntimeErrorKind, message: &'static str) -> Self {
+        Self { kind, message }
+    }
+
+    /// Machine-readable runtime failure kind.
+    pub const fn kind(self) -> RuntimeErrorKind {
+        self.kind
+    }
+
+    /// Non-contract human-readable detail.
+    pub const fn message(self) -> &'static str {
+        self.message
+    }
+}
+
+impl std::fmt::Display for RuntimeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for RuntimeError {}
+
+/// Caller-owned opaque scene revision key carried by a submission token.
+///
+/// This is metadata for stale comparison, not a second scene authority.  The
+/// owner of the `PlotScene` supplies it at the submission boundary.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SceneRevision(u64);
+
+impl SceneRevision {
+    /// Wrap a caller-owned monotonic scene revision value.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+/// Generation for bounded derived work.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WorkGeneration(u64);
+
+impl WorkGeneration {
+    /// Initial work generation for a newly-created session.
+    pub const fn initial() -> Self {
+        Self(0)
+    }
+
+    fn next(self) -> Result<Self, RuntimeError> {
+        self.0.checked_add(1).map(Self).ok_or_else(|| {
+            RuntimeError::new(RuntimeErrorKind::Internal, "work generation exhausted")
+        })
+    }
+}
+
+/// Generation for retained adapter/device resources.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DeviceGeneration(u64);
+
+impl DeviceGeneration {
+    /// Initial device generation for a newly-created session.
+    pub const fn initial() -> Self {
+        Self(0)
+    }
+
+    fn next(self) -> Result<Self, RuntimeError> {
+        self.0.checked_add(1).map(Self).ok_or_else(|| {
+            RuntimeError::new(RuntimeErrorKind::Internal, "device generation exhausted")
+        })
+    }
+}
+
+/// Immutable submission metadata used for stale-result rejection.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SubmissionToken {
+    scene_revision: SceneRevision,
+    work_generation: WorkGeneration,
+    device_generation: DeviceGeneration,
+}
+
+impl SubmissionToken {
+    /// Scene revision supplied by the authoritative scene owner.
+    pub const fn scene_revision(self) -> SceneRevision {
+        self.scene_revision
+    }
+
+    /// Work generation captured when the token was issued.
+    pub const fn work_generation(self) -> WorkGeneration {
+        self.work_generation
+    }
+
+    /// Device generation captured when the token was issued.
+    pub const fn device_generation(self) -> DeviceGeneration {
+        self.device_generation
+    }
+}
+
+/// Result of a bounded submission acceptance attempt.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum SubmissionOutcome {
+    /// The lifecycle state machine accepted the submission for the active surface.
+    /// This is not a GPU-present or platform-support claim.
+    Ready,
+    /// The resize/resume configuration was applied before accepting this attempt.
+    Reconfigured,
+    /// The result was stale and was dropped without publication.
+    StaleDropped,
+    /// The attempt was skipped without a busy retry loop.
+    Skipped(SkipReason),
+}
+
+struct SurfaceSlot {
+    id: SurfaceId,
+    size: [u32; 2],
+    state: SurfaceState,
+}
+
+/// Internal outcome for bounded derived work.
+///
+/// Cancellation and stale dropping are scheduler control flow. They are kept
+/// separate here so tests can prove that a cancelled ticket is never accepted
+/// as ready work without expanding the public runtime result surface.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+enum WorkOutcome {
+    Ready,
+    Cancelled,
+    StaleDropped,
+}
+
+/// Opaque key for one queued derived-work candidate.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct WorkTicket {
+    scene_revision: SceneRevision,
+    generation: WorkGeneration,
+}
+
+/// Small bounded queue used by the runtime's derived-work boundary.
+///
+/// The queue deliberately stores only generation-bearing tickets. It does not
+/// retain a Scene, packet, backend object, or caller buffer. Repeated
+/// submissions for one scene/work pair share a key; a newer scene or runtime
+/// generation evicts older keys before publication.
+struct WorkQueue {
+    capacity: usize,
+    pending: VecDeque<WorkTicket>,
+    cancelled_count: usize,
+    stale_dropped_count: usize,
+}
+
+impl WorkQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            pending: VecDeque::new(),
+            cancelled_count: 0,
+            stale_dropped_count: 0,
+        }
+    }
+
+    fn enqueue(
+        &mut self,
+        scene_revision: SceneRevision,
+        generation: WorkGeneration,
+    ) -> Result<(), RuntimeError> {
+        let ticket = WorkTicket {
+            scene_revision,
+            generation,
+        };
+        if self.pending.contains(&ticket) {
+            return Ok(());
+        }
+        if self.pending.len() >= self.capacity {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ResourceInvalid,
+                "derived-work queue capacity is exhausted",
+            ));
+        }
+        self.pending.try_reserve(1).map_err(|_| {
+            RuntimeError::new(
+                RuntimeErrorKind::OutOfMemory,
+                "derived-work queue allocation failed",
+            )
+        })?;
+        self.pending.push_back(ticket);
+        Ok(())
+    }
+
+    fn outcome(&mut self, ticket: WorkTicket, current_generation: WorkGeneration) -> WorkOutcome {
+        if ticket.generation != current_generation
+            || !self.pending.iter().any(|pending| *pending == ticket)
+        {
+            self.stale_dropped_count = self.stale_dropped_count.saturating_add(1);
+            return WorkOutcome::StaleDropped;
+        }
+        WorkOutcome::Ready
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn cancel(&mut self, ticket: WorkTicket) -> WorkOutcome {
+        let Some(index) = self.pending.iter().position(|pending| *pending == ticket) else {
+            self.stale_dropped_count = self.stale_dropped_count.saturating_add(1);
+            return WorkOutcome::StaleDropped;
+        };
+        let _ = self.pending.remove(index);
+        self.cancelled_count = self.cancelled_count.saturating_add(1);
+        WorkOutcome::Cancelled
+    }
+
+    fn cancel_older_than(&mut self, scene_revision: SceneRevision) {
+        let mut dropped = 0;
+        self.pending.retain(|ticket| {
+            let keep = ticket.scene_revision >= scene_revision;
+            if !keep {
+                dropped += 1;
+            }
+            keep
+        });
+        self.stale_dropped_count = self.stale_dropped_count.saturating_add(dropped);
+    }
+
+    fn cancel_except(&mut self, current_generation: WorkGeneration) {
+        let mut cancelled = 0;
+        self.pending.retain(|ticket| {
+            let keep = ticket.generation == current_generation;
+            if !keep {
+                cancelled += 1;
+            }
+            keep
+        });
+        self.cancelled_count = self.cancelled_count.saturating_add(cancelled);
+    }
+
+    fn cancel_all(&mut self) {
+        self.cancelled_count = self.cancelled_count.saturating_add(self.pending.len());
+        self.pending.clear();
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn cancelled_count(&self) -> usize {
+        self.cancelled_count
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn stale_dropped_count(&self) -> usize {
+        self.stale_dropped_count
+    }
+}
+
+struct PreparedPacket {
+    packet: RenderPacket,
+    lease: Option<ResourceLease>,
+    fence: CompletionFence,
+}
+
+/// Backend-neutral owner-side packet lifecycle.
+///
+/// The owner retains an immutable CPU semantic frame and keeps resource lease
+/// and completion handling beside the renderer owner.  No backend object enters
+/// this structure; the portable renderer receives only the validated packet.
+struct PacketOwner {
+    cache: ResourceCache,
+    retained_frame: Option<FramePacket>,
+    retained_scene_revision: Option<SceneRevision>,
+    next_fence_sequence: u64,
+}
+
+impl PacketOwner {
+    fn new() -> Self {
+        Self {
+            cache: ResourceCache::new(PacketDeviceGeneration::initial()),
+            retained_frame: None,
+            retained_scene_revision: None,
+            next_fence_sequence: 1,
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        frame: FramePacket,
+        scene_revision: SceneRevision,
+        work_generation: WorkGeneration,
+        device_generation: DeviceGeneration,
+    ) -> Result<PreparedPacket, RuntimeError> {
+        if self.next_fence_sequence == u64::MAX {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::Internal,
+                "resource completion sequence exhausted",
+            ));
+        }
+        let internal_scene = PacketSceneRevision::new(scene_revision.0);
+        let internal_work = PacketWorkGeneration::new(work_generation.0);
+        let internal_device = PacketDeviceGeneration::new(device_generation.0);
+        let builder =
+            RenderPacketBuilder::for_scene(internal_scene, internal_work, internal_device);
+        let packet = builder
+            .build(frame.clone(), internal_work, internal_device)
+            .map_err(map_packet_error)?;
+        let lease = self
+            .cache
+            .acquire_for_owner(&packet, internal_scene, internal_work)
+            .map_err(map_resource_error)?;
+        self.retained_frame = Some(frame);
+        self.retained_scene_revision = Some(scene_revision);
+        Ok(PreparedPacket {
+            packet,
+            lease: Some(lease),
+            fence: CompletionFence::new(internal_device, self.next_fence_sequence),
+        })
+    }
+
+    fn prepare_retained(
+        &mut self,
+        work_generation: WorkGeneration,
+        device_generation: DeviceGeneration,
+    ) -> Result<Option<PreparedPacket>, RuntimeError> {
+        let (Some(frame), Some(scene_revision)) =
+            (self.retained_frame.clone(), self.retained_scene_revision)
+        else {
+            return Ok(None);
+        };
+        self.prepare(frame, scene_revision, work_generation, device_generation)
+            .map(Some)
+    }
+
+    fn commit(&mut self, mut prepared: PreparedPacket) -> Result<(), RuntimeError> {
+        let lease = prepared.lease.take().ok_or_else(|| {
+            RuntimeError::new(
+                RuntimeErrorKind::Internal,
+                "packet resource lease was already consumed",
+            )
+        })?;
+        self.cache
+            .submit(lease, prepared.fence)
+            .map_err(map_resource_error)?;
+        self.cache
+            .complete(prepared.fence)
+            .map_err(map_resource_error)?;
+        self.next_fence_sequence = self.next_fence_sequence.checked_add(1).ok_or_else(|| {
+            RuntimeError::new(
+                RuntimeErrorKind::Internal,
+                "resource completion sequence exhausted",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn invalidate_device_generation(&self, generation: DeviceGeneration) {
+        let _ = self
+            .cache
+            .invalidate_device_generation(PacketDeviceGeneration::new(generation.0));
+    }
+
+    #[cfg(test)]
+    fn has_retained_state(&self) -> bool {
+        self.retained_frame.is_some() && self.retained_scene_revision.is_some()
+    }
+}
+
+/// RAII guard that cannot leave the host-pump reentrancy flag set after an
+/// early return or a future panic boundary.
+struct PumpGuard<'a> {
+    pumping: &'a mut bool,
+}
+
+impl<'a> PumpGuard<'a> {
+    fn new(pumping: &'a mut bool) -> Self {
+        *pumping = true;
+        Self { pumping }
+    }
+}
+
+impl Drop for PumpGuard<'_> {
+    fn drop(&mut self) {
+        *self.pumping = false;
+    }
+}
+
+/// Main-thread-owned session around the portable renderer lifecycle.
+///
+/// ```compile_fail
+/// fn move_session_to_worker(session: lumenplot_runtime::EngineSession) {
+///     std::thread::spawn(move || drop(session));
+/// }
+/// ```
+///
+/// The optional renderer is present only when the portable offscreen backend
+/// was successfully created.  The state-only constructor is intentional: it
+/// permits headless lifecycle tests and does not pretend that a window system,
+/// surface transport, or GPU adapter is available.  When present, the
+/// renderer is owned here and cannot be moved to a worker because the session
+/// is explicitly non-sendable.
+pub struct EngineSession {
+    loop_mode: LoopMode,
+    state: SessionState,
+    owner_thread: ThreadId,
+    renderer: Option<Renderer>,
+    backend_attached: bool,
+    packet_owner: PacketOwner,
+    surfaces: Vec<SurfaceSlot>,
+    next_surface_id: u64,
+    work_generation: WorkGeneration,
+    device_generation: DeviceGeneration,
+    latest_scene_revision: Option<SceneRevision>,
+    highest_requested_scene_revision: Cell<Option<SceneRevision>>,
+    work_queue: RefCell<WorkQueue>,
+    // The internal host-pump entry is staged until an accepted transport
+    // drives it outside the lifecycle tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pumping: bool,
+    _main_thread_only: PhantomData<Rc<()>>,
+}
+
+impl EngineSession {
+    /// Creates a lifecycle shell without probing a backend.
+    ///
+    /// Use [`Self::try_new`] when a real portable renderer is required.  The
+    /// shell is useful for explicit, headless lifecycle coordination and makes
+    /// backend absence an observable operation result rather than an implicit
+    /// fallback.
+    pub fn new(loop_mode: LoopMode) -> Self {
+        Self::from_renderer(loop_mode, None, false)
+    }
+
+    /// Creates a session and probes the reviewed portable renderer baseline.
+    pub fn try_new(loop_mode: LoopMode) -> Result<Self, RuntimeError> {
+        let renderer = Renderer::new().map_err(|error| map_renderer_error(error, false))?;
+        Ok(Self::from_renderer(loop_mode, Some(renderer), true))
+    }
+
+    /// Wraps an already-created portable renderer in the main-thread session.
+    pub fn with_renderer(loop_mode: LoopMode, renderer: Renderer) -> Self {
+        Self::from_renderer(loop_mode, Some(renderer), true)
+    }
+
+    fn from_renderer(
+        loop_mode: LoopMode,
+        mut renderer: Option<Renderer>,
+        backend_attached: bool,
+    ) -> Self {
+        if let Some(renderer) = renderer.as_mut() {
+            renderer.bind_device_generation(PacketDeviceGeneration::initial());
+        }
+        Self {
+            loop_mode,
+            state: SessionState::Created,
+            owner_thread: thread::current().id(),
+            renderer,
+            backend_attached,
+            packet_owner: PacketOwner::new(),
+            surfaces: Vec::new(),
+            next_surface_id: 1,
+            work_generation: WorkGeneration::initial(),
+            device_generation: DeviceGeneration::initial(),
+            latest_scene_revision: None,
+            highest_requested_scene_revision: Cell::new(None),
+            work_queue: RefCell::new(WorkQueue::new(MAX_PENDING_WORK)),
+            pumping: false,
+            _main_thread_only: PhantomData,
+        }
+    }
+
+    /// Declared loop ownership mode.
+    pub const fn loop_mode(&self) -> LoopMode {
+        self.loop_mode
+    }
+
+    /// Current session lifecycle state.
+    pub const fn state(&self) -> SessionState {
+        self.state
+    }
+
+    /// Whether explicit close has completed.
+    pub const fn is_closed(&self) -> bool {
+        matches!(self.state, SessionState::Closed)
+    }
+
+    /// Current work generation, kept distinct from scene and device generations.
+    pub const fn work_generation(&self) -> WorkGeneration {
+        self.work_generation
+    }
+
+    /// Current device generation, kept distinct from scene and work generations.
+    pub const fn device_generation(&self) -> DeviceGeneration {
+        self.device_generation
+    }
+
+    /// Number of logical surfaces owned by this session.
+    pub fn surface_count(&self) -> usize {
+        self.surfaces.len()
+    }
+
+    /// Enters the native-owned loop boundary on the owner thread.
+    ///
+    /// The skeleton records ownership and returns; a real native event source
+    /// will provide the blocking loop in the platform/viewer implementation.
+    pub fn run_native_loop(&mut self) -> Result<LoopOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        if !matches!(self.loop_mode, LoopMode::NativeOwned) {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::HostLoopMisuse,
+                "native-owned loop requested from a host-pumped session",
+            ));
+        }
+        match self.state {
+            SessionState::Created => {
+                self.state = SessionState::Running;
+                Ok(LoopOutcome::NativeLoopEntered)
+            }
+            SessionState::Running => Ok(LoopOutcome::NativeLoopAlreadyRunning),
+            SessionState::DeviceLost => Err(RuntimeError::new(
+                RuntimeErrorKind::DeviceLost,
+                "device recovery is required before entering the loop",
+            )),
+            SessionState::OutOfMemory => Err(RuntimeError::new(
+                RuntimeErrorKind::OutOfMemory,
+                "session is out of memory",
+            )),
+            SessionState::Closed => Err(RuntimeError::new(
+                RuntimeErrorKind::Closed,
+                "session is closed",
+            )),
+        }
+    }
+
+    /// Pumps one nonblocking host-owned loop iteration.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn pump_once(&mut self) -> Result<LoopOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        if !matches!(self.loop_mode, LoopMode::HostPumped) {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::HostLoopMisuse,
+                "host pump requested from a native-owned session",
+            ));
+        }
+        if self.pumping {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::Reentrancy,
+                "host pump is already active",
+            ));
+        }
+
+        let _pump_guard = PumpGuard::new(&mut self.pumping);
+        match self.state {
+            SessionState::Created => {
+                self.state = SessionState::Running;
+                Ok(LoopOutcome::HostPumpCompleted)
+            }
+            SessionState::Running => Ok(LoopOutcome::HostPumpCompleted),
+            SessionState::DeviceLost => Err(RuntimeError::new(
+                RuntimeErrorKind::DeviceLost,
+                "device recovery is required before pumping",
+            )),
+            SessionState::OutOfMemory => Err(RuntimeError::new(
+                RuntimeErrorKind::OutOfMemory,
+                "session is out of memory",
+            )),
+            SessionState::Closed => Err(RuntimeError::new(
+                RuntimeErrorKind::Closed,
+                "session is closed",
+            )),
+        }
+    }
+
+    /// Creates one logical surface owned by this main-thread session.
+    pub fn create_surface(&mut self, size: [u32; 2]) -> Result<SurfaceId, RuntimeError> {
+        self.ensure_owner()?;
+        self.ensure_not_terminal()?;
+        validate_surface_size(size)?;
+        if self.surfaces.len() >= MAX_SURFACES {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ResourceInvalid,
+                "session surface capacity is exhausted",
+            ));
+        }
+        let id = SurfaceId(self.next_surface_id);
+        self.next_surface_id = self.next_surface_id.checked_add(1).ok_or_else(|| {
+            RuntimeError::new(
+                RuntimeErrorKind::ResourceInvalid,
+                "surface identity is exhausted",
+            )
+        })?;
+        self.surfaces.push(SurfaceSlot {
+            id,
+            size,
+            state: SurfaceState::Active,
+        });
+        Ok(id)
+    }
+
+    /// Observes a logical surface state.
+    pub fn surface_state(&self, id: SurfaceId) -> Result<SurfaceState, RuntimeError> {
+        self.ensure_observable()?;
+        self.find_surface(id).map(|surface| surface.state)
+    }
+
+    /// Observes a logical surface size.
+    pub fn surface_size(&self, id: SurfaceId) -> Result<[u32; 2], RuntimeError> {
+        self.ensure_observable()?;
+        self.find_surface(id).map(|surface| surface.size)
+    }
+
+    /// Records a resize and invalidates older derived work.
+    pub fn resize(
+        &mut self,
+        id: SurfaceId,
+        size: [u32; 2],
+    ) -> Result<LifecycleOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        self.ensure_not_terminal()?;
+        validate_surface_size(size)?;
+        self.find_surface(id)?;
+        let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
+        let surface = self.find_surface_mut(id)?;
+        surface.size = size;
+        if !matches!(surface.state, SurfaceState::Suspended | SurfaceState::Lost) {
+            surface.state = SurfaceState::ReconfigurePending;
+        }
+        Ok(LifecycleOutcome::Resized)
+    }
+
+    /// Suspends one surface without spinning on submissions.
+    pub fn suspend(&mut self, id: SurfaceId) -> Result<LifecycleOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        self.ensure_not_terminal()?;
+        let current = self.find_surface(id)?.state;
+        if matches!(current, SurfaceState::Suspended) {
+            return Ok(LifecycleOutcome::AlreadySuspended);
+        }
+        if matches!(current, SurfaceState::Lost) {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ResourceInvalid,
+                "lost surface must be recreated before suspension",
+            ));
+        }
+        let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
+        self.find_surface_mut(id)?.state = SurfaceState::Suspended;
+        Ok(LifecycleOutcome::Suspended)
+    }
+
+    /// Resumes one suspended surface and schedules reconfiguration.
+    pub fn resume(&mut self, id: SurfaceId) -> Result<LifecycleOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        self.ensure_not_terminal()?;
+        let current = self.find_surface(id)?.state;
+        if matches!(current, SurfaceState::Suspended) {
+            let next_work = self.next_work_generation()?;
+            self.commit_work_generation(next_work)?;
+            self.find_surface_mut(id)?.state = SurfaceState::ReconfigurePending;
+            return Ok(LifecycleOutcome::Resumed);
+        }
+        if matches!(current, SurfaceState::Lost) {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ResourceInvalid,
+                "lost surface must be recreated before resume",
+            ));
+        }
+        Ok(LifecycleOutcome::AlreadyActive)
+    }
+
+    /// Records explicit surface loss. Recovery is a separate owner operation.
+    pub fn handle_surface_loss(&mut self, id: SurfaceId) -> Result<LifecycleOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        self.ensure_not_terminal()?;
+        let current = self.find_surface(id)?.state;
+        if matches!(current, SurfaceState::Lost) {
+            return Ok(LifecycleOutcome::AlreadyLost);
+        }
+        let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
+        self.find_surface_mut(id)?.state = SurfaceState::Lost;
+        Ok(LifecycleOutcome::SurfaceLost)
+    }
+
+    /// Recreates a lost surface through this session's owner thread.
+    pub fn recreate_surface(&mut self, id: SurfaceId) -> Result<LifecycleOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        self.ensure_not_terminal()?;
+        let current = self.find_surface(id)?.state;
+        if !matches!(current, SurfaceState::Lost) {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidState,
+                "surface recreation requires a lost surface",
+            ));
+        }
+        let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
+        self.find_surface_mut(id)?.state = SurfaceState::ReconfigurePending;
+        Ok(LifecycleOutcome::SurfaceRecreated)
+    }
+
+    /// Records device loss, invalidates surfaces, and advances DeviceGeneration.
+    pub fn handle_device_loss(&mut self) -> Result<LifecycleOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        if matches!(self.state, SessionState::Closed) {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::Closed,
+                "session is closed",
+            ));
+        }
+        if matches!(self.state, SessionState::OutOfMemory) {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::OutOfMemory,
+                "session is out of memory",
+            ));
+        }
+        if matches!(self.state, SessionState::DeviceLost) {
+            return Ok(LifecycleOutcome::AlreadyDeviceLost);
+        }
+        let next_device = self.device_generation.next()?;
+        let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
+        self.device_generation = next_device;
+        self.packet_owner
+            .invalidate_device_generation(self.device_generation);
+        self.state = SessionState::DeviceLost;
+        self.renderer = None;
+        for surface in &mut self.surfaces {
+            surface.state = SurfaceState::Lost;
+        }
+        Ok(LifecycleOutcome::DeviceLost)
+    }
+
+    /// Rebuilds a previously attached portable renderer after device loss.
+    ///
+    /// The caller retains the authoritative CPU scene; this method only
+    /// recreates runtime-owned backend resources.  A state-only session has no
+    /// backend recovery implementation and returns `RecoveryFailed` rather
+    /// than pretending to have rebuilt a device.
+    pub fn recover_device(&mut self) -> Result<LifecycleOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        match self.state {
+            SessionState::DeviceLost => {}
+            SessionState::OutOfMemory => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::OutOfMemory,
+                    "out-of-memory is terminal for this session",
+                ));
+            }
+            SessionState::Closed => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::Closed,
+                    "session is closed",
+                ));
+            }
+            SessionState::Created | SessionState::Running => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidState,
+                    "device recovery was not requested",
+                ));
+            }
+        }
+        if !self.backend_attached {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::RecoveryFailed,
+                "portable backend recovery is unavailable",
+            ));
+        }
+
+        let mut replacement = match Renderer::new() {
+            Ok(renderer) => renderer,
+            Err(error) if matches!(error.kind(), RenderErrorKind::OutOfMemory) => {
+                let _ = self.handle_out_of_memory();
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::OutOfMemory,
+                    "portable backend recovery ran out of memory",
+                ));
+            }
+            Err(_) => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::RecoveryFailed,
+                    "portable backend recovery failed",
+                ));
+            }
+        };
+        replacement.bind_device_generation(PacketDeviceGeneration::new(self.device_generation.0));
+        let next_work = self.next_work_generation()?;
+        self.commit_work_generation(next_work)?;
+        let retained = match self
+            .packet_owner
+            .prepare_retained(self.work_generation, self.device_generation)
+        {
+            Ok(retained) => retained,
+            Err(error) if matches!(error.kind(), RuntimeErrorKind::OutOfMemory) => {
+                let _ = self.handle_out_of_memory();
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(prepared) = retained {
+            let expected_scene = prepared.packet.scene_revision();
+            let expected_work = prepared.packet.work_generation();
+            let expected_device = prepared.packet.device_generation();
+            let render_result = replacement.render_validated(
+                &prepared.packet,
+                expected_scene,
+                expected_work,
+                expected_device,
+            );
+            if let Err(error) = render_result {
+                let kind = error.kind();
+                drop(prepared);
+                if matches!(kind, RenderErrorKind::OutOfMemory) {
+                    let _ = self.handle_out_of_memory();
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::OutOfMemory,
+                        "portable backend recovery ran out of memory",
+                    ));
+                }
+                return Err(map_renderer_error(error, true));
+            }
+            match self.packet_owner.commit(prepared) {
+                Ok(()) => {}
+                Err(error) if matches!(error.kind(), RuntimeErrorKind::OutOfMemory) => {
+                    let _ = self.handle_out_of_memory();
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        self.renderer = Some(replacement);
+        self.state = SessionState::Running;
+        for surface in &mut self.surfaces {
+            surface.state = SurfaceState::ReconfigurePending;
+        }
+        Ok(LifecycleOutcome::DeviceRebuilt)
+    }
+
+    /// Records terminal out-of-memory and disables all further submissions.
+    pub fn handle_out_of_memory(&mut self) -> Result<LifecycleOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        if matches!(self.state, SessionState::Closed) {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::Closed,
+                "session is closed",
+            ));
+        }
+        if matches!(self.state, SessionState::OutOfMemory) {
+            return Ok(LifecycleOutcome::AlreadyOutOfMemory);
+        }
+        self.borrow_work_queue_mut()?.cancel_all();
+        self.state = SessionState::OutOfMemory;
+        self.renderer = None;
+        self.packet_owner
+            .invalidate_device_generation(self.device_generation);
+        for surface in &mut self.surfaces {
+            surface.state = SurfaceState::Lost;
+        }
+        Ok(LifecycleOutcome::TerminalOutOfMemory)
+    }
+
+    /// Issues a token carrying the current work and device generations.
+    ///
+    /// Issuing a newer scene revision advances an owner-thread watermark. Any
+    /// older token already held by derived work is therefore dropped even if
+    /// it completes before the newer token is submitted.
+    pub fn begin_submission(
+        &self,
+        scene_revision: SceneRevision,
+    ) -> Result<SubmissionToken, RuntimeError> {
+        self.ensure_owner()?;
+        self.ensure_running()?;
+        let highest = self.highest_requested_scene_revision.get();
+        let current_work_generation = self.work_generation;
+        let mut work_queue = self.borrow_work_queue_mut()?;
+        if highest.is_none_or(|current| scene_revision > current) {
+            work_queue.cancel_older_than(scene_revision);
+        }
+        let is_older = highest.is_some_and(|current| scene_revision < current);
+        if !is_older {
+            work_queue.enqueue(scene_revision, current_work_generation)?;
+        }
+        drop(work_queue);
+        if highest.is_none_or(|current| scene_revision > current) {
+            self.highest_requested_scene_revision
+                .set(Some(scene_revision));
+        }
+        Ok(SubmissionToken {
+            scene_revision,
+            work_generation: self.work_generation,
+            device_generation: self.device_generation,
+        })
+    }
+
+    /// Accepts one bounded submission attempt, dropping stale work explicitly.
+    pub fn submit(
+        &mut self,
+        id: SurfaceId,
+        token: SubmissionToken,
+        condition: SurfaceCondition,
+    ) -> Result<SubmissionOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        self.ensure_running()?;
+        if token.work_generation != self.work_generation
+            || token.device_generation != self.device_generation
+        {
+            return Ok(SubmissionOutcome::StaleDropped);
+        }
+        let highest_requested = self.highest_requested_scene_revision.get();
+        let latest_observed = self.latest_scene_revision;
+        let watermark = highest_requested.into_iter().chain(latest_observed).max();
+        if watermark.is_some_and(|latest| token.scene_revision < latest) {
+            return Ok(SubmissionOutcome::StaleDropped);
+        }
+
+        // Validate the target before recording a publication watermark. A
+        // failed submission must not mutate the runtime's observed revision.
+        let surface_state = self.find_surface(id)?.state;
+        if matches!(surface_state, SurfaceState::Lost) {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ResourceInvalid,
+                "surface must be recreated before submission",
+            ));
+        }
+        let ticket = WorkTicket {
+            scene_revision: token.scene_revision,
+            generation: token.work_generation,
+        };
+        let current_work_generation = self.work_generation;
+        if !matches!(
+            self.borrow_work_queue_mut()?
+                .outcome(ticket, current_work_generation),
+            WorkOutcome::Ready
+        ) {
+            return Ok(SubmissionOutcome::StaleDropped);
+        }
+        if latest_observed.is_none_or(|latest| token.scene_revision > latest) {
+            self.latest_scene_revision = Some(token.scene_revision);
+        }
+        if matches!(surface_state, SurfaceState::Suspended) {
+            return Ok(SubmissionOutcome::Skipped(SkipReason::Suspended));
+        }
+        match condition {
+            SurfaceCondition::Occluded => Ok(SubmissionOutcome::Skipped(SkipReason::Occluded)),
+            SurfaceCondition::Timeout => Ok(SubmissionOutcome::Skipped(SkipReason::Timeout)),
+            SurfaceCondition::Ready => {
+                if matches!(surface_state, SurfaceState::ReconfigurePending) {
+                    let surface = self.find_surface_mut(id)?;
+                    surface.state = SurfaceState::Active;
+                    Ok(SubmissionOutcome::Reconfigured)
+                } else {
+                    Ok(SubmissionOutcome::Ready)
+                }
+            }
+        }
+    }
+
+    /// Builds, validates, leases, and renders one M2 packet at the owner edge.
+    ///
+    /// This hidden method keeps the public M1 frame submission surface intact
+    /// while giving the runtime an all-or-nothing packet publication path.
+    #[doc(hidden)]
+    pub fn submit_frame(
+        &mut self,
+        id: SurfaceId,
+        frame: FramePacket,
+        token: SubmissionToken,
+        condition: SurfaceCondition,
+    ) -> Result<SubmissionOutcome, RuntimeError> {
+        let outcome = self.submit(id, token, condition)?;
+        if !matches!(
+            outcome,
+            SubmissionOutcome::Ready | SubmissionOutcome::Reconfigured
+        ) {
+            return Ok(outcome);
+        }
+        let prepared = match self.packet_owner.prepare(
+            frame,
+            token.scene_revision,
+            self.work_generation,
+            self.device_generation,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) if matches!(error.kind(), RuntimeErrorKind::OutOfMemory) => {
+                let _ = self.handle_out_of_memory();
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(renderer) = self.renderer.as_mut() else {
+            drop(prepared);
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::BackendUnavailable,
+                "portable backend is unavailable",
+            ));
+        };
+        let expected_scene = prepared.packet.scene_revision();
+        let expected_work = prepared.packet.work_generation();
+        let expected_device = prepared.packet.device_generation();
+        let render_result = renderer.render_validated(
+            &prepared.packet,
+            expected_scene,
+            expected_work,
+            expected_device,
+        );
+        match render_result {
+            Ok(_) => match self.packet_owner.commit(prepared) {
+                Ok(()) => Ok(outcome),
+                Err(error) if matches!(error.kind(), RuntimeErrorKind::OutOfMemory) => {
+                    let _ = self.handle_out_of_memory();
+                    Err(error)
+                }
+                Err(error) => Err(error),
+            },
+            Err(error) => {
+                let kind = error.kind();
+                drop(prepared);
+                if matches!(kind, RenderErrorKind::DeviceLost) {
+                    let _ = self.handle_device_loss();
+                } else if matches!(kind, RenderErrorKind::OutOfMemory) {
+                    let _ = self.handle_out_of_memory();
+                }
+                Err(map_renderer_error(error, false))
+            }
+        }
+    }
+
+    /// Closes the session. Repeated calls are successful and observable.
+    pub fn close(&mut self) -> Result<LifecycleOutcome, RuntimeError> {
+        self.ensure_owner()?;
+        if matches!(self.state, SessionState::Closed) {
+            return Ok(LifecycleOutcome::AlreadyClosed);
+        }
+        self.borrow_work_queue_mut()?.cancel_all();
+        self.state = SessionState::Closed;
+        self.renderer = None;
+        self.surfaces.clear();
+        Ok(LifecycleOutcome::CloseRequested)
+    }
+
+    fn ensure_owner(&self) -> Result<(), RuntimeError> {
+        if thread::current().id() != self.owner_thread {
+            Err(RuntimeError::new(
+                RuntimeErrorKind::HostLoopMisuse,
+                "runtime operation must run on its owner thread",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ensure_observable(&self) -> Result<(), RuntimeError> {
+        self.ensure_owner()?;
+        if matches!(self.state, SessionState::Closed) {
+            Err(RuntimeError::new(
+                RuntimeErrorKind::Closed,
+                "session is closed",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ensure_not_terminal(&self) -> Result<(), RuntimeError> {
+        match self.state {
+            SessionState::Closed => Err(RuntimeError::new(
+                RuntimeErrorKind::Closed,
+                "session is closed",
+            )),
+            SessionState::OutOfMemory => Err(RuntimeError::new(
+                RuntimeErrorKind::OutOfMemory,
+                "session is out of memory",
+            )),
+            SessionState::DeviceLost => Err(RuntimeError::new(
+                RuntimeErrorKind::DeviceLost,
+                "device recovery is required",
+            )),
+            SessionState::Created | SessionState::Running => Ok(()),
+        }
+    }
+
+    fn ensure_running(&self) -> Result<(), RuntimeError> {
+        match self.state {
+            SessionState::Running => Ok(()),
+            SessionState::Created => Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidState,
+                "loop ownership has not been entered",
+            )),
+            SessionState::DeviceLost => Err(RuntimeError::new(
+                RuntimeErrorKind::DeviceLost,
+                "device recovery is required",
+            )),
+            SessionState::OutOfMemory => Err(RuntimeError::new(
+                RuntimeErrorKind::OutOfMemory,
+                "session is out of memory",
+            )),
+            SessionState::Closed => Err(RuntimeError::new(
+                RuntimeErrorKind::Closed,
+                "session is closed",
+            )),
+        }
+    }
+
+    fn next_work_generation(&self) -> Result<WorkGeneration, RuntimeError> {
+        self.work_generation.next()
+    }
+
+    fn commit_work_generation(&mut self, generation: WorkGeneration) -> Result<(), RuntimeError> {
+        self.borrow_work_queue_mut()?.cancel_except(generation);
+        self.work_generation = generation;
+        Ok(())
+    }
+
+    fn borrow_work_queue_mut(&self) -> Result<RefMut<'_, WorkQueue>, RuntimeError> {
+        self.work_queue.try_borrow_mut().map_err(|_| {
+            RuntimeError::new(
+                RuntimeErrorKind::Reentrancy,
+                "derived-work queue is already borrowed",
+            )
+        })
+    }
+
+    fn find_surface(&self, id: SurfaceId) -> Result<&SurfaceSlot, RuntimeError> {
+        self.surfaces
+            .iter()
+            .find(|surface| surface.id == id)
+            .ok_or_else(|| {
+                RuntimeError::new(RuntimeErrorKind::ResourceInvalid, "surface is invalid")
+            })
+    }
+
+    fn find_surface_mut(&mut self, id: SurfaceId) -> Result<&mut SurfaceSlot, RuntimeError> {
+        self.surfaces
+            .iter_mut()
+            .find(|surface| surface.id == id)
+            .ok_or_else(|| {
+                RuntimeError::new(RuntimeErrorKind::ResourceInvalid, "surface is invalid")
+            })
+    }
+}
+
+// M4-B1 private headless native transport seam.
+//
+// Headless, dependency-free model of the one-surface native-owned path that a
+// future license-reviewed baseline will drive. It composes the existing public
+// lifecycle primitives (create/resize/suspend/resume/loss/recreate plus
+// session-wide device-loss/OOM/close) and the existing submit path
+// (occlusion/timeout/reconfigure/stale gating) without adding a public API, a
+// dependency, or a physical present claim. Initial configure is the existing
+// `create_surface`; later configure is `resize`. Physical present, OS event
+// source, and platform matrix remain environment-required and are never
+// claimed from this seam.
+#[cfg_attr(not(test), allow(dead_code))]
+const NATIVE_TRANSPORT_SINGLE_SURFACE_LIMIT: usize = 1;
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeEvent {
+    Configure([u32; 2]),
+    Resize([u32; 2]),
+    Suspend,
+    Resume,
+    SurfaceLost,
+    Recreate,
+    DeviceLost,
+    OutOfMemory,
+    CloseRequest,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativePresent {
+    Presented,
+    Reconfigured,
+    Skipped(SkipReason),
+    StaleDropped,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl NativePresent {
+    const fn from_submission(outcome: SubmissionOutcome) -> Self {
+        match outcome {
+            SubmissionOutcome::Ready => Self::Presented,
+            SubmissionOutcome::Reconfigured => Self::Reconfigured,
+            SubmissionOutcome::Skipped(reason) => Self::Skipped(reason),
+            SubmissionOutcome::StaleDropped => Self::StaleDropped,
+        }
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct NativeTransport {
+    close_requested: bool,
+    presents: u64,
+    reconfigures: u64,
+    skips: u64,
+    stale_drops: u64,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl NativeTransport {
+    const fn new() -> Self {
+        Self {
+            close_requested: false,
+            presents: 0,
+            reconfigures: 0,
+            skips: 0,
+            stale_drops: 0,
+        }
+    }
+
+    const fn is_close_requested(self) -> bool {
+        self.close_requested
+    }
+
+    fn drive(
+        &mut self,
+        session: &mut EngineSession,
+        id: SurfaceId,
+        event: NativeEvent,
+    ) -> Result<LifecycleOutcome, RuntimeError> {
+        ensure_single_native_surface(session)?;
+        // Session-wide transitions still name one owned surface so the
+        // one-surface scope stays explicit; the id is otherwise unused for
+        // device, memory, and close transitions.
+        match event {
+            NativeEvent::Configure(size) | NativeEvent::Resize(size) => session.resize(id, size),
+            NativeEvent::Suspend => session.suspend(id),
+            NativeEvent::Resume => session.resume(id),
+            NativeEvent::SurfaceLost => session.handle_surface_loss(id),
+            NativeEvent::Recreate => session.recreate_surface(id),
+            NativeEvent::DeviceLost => session.handle_device_loss(),
+            NativeEvent::OutOfMemory => session.handle_out_of_memory(),
+            NativeEvent::CloseRequest => {
+                self.close_requested = true;
+                session.close()
+            }
+        }
+    }
+
+    fn present(
+        &mut self,
+        session: &mut EngineSession,
+        id: SurfaceId,
+        token: SubmissionToken,
+        condition: SurfaceCondition,
+    ) -> Result<NativePresent, RuntimeError> {
+        ensure_single_native_surface(session)?;
+        let outcome = session.submit(id, token, condition)?;
+        let present = NativePresent::from_submission(outcome);
+        match present {
+            NativePresent::Presented => self.presents += 1,
+            NativePresent::Reconfigured => self.reconfigures += 1,
+            NativePresent::Skipped(_) => self.skips += 1,
+            NativePresent::StaleDropped => self.stale_drops += 1,
+        }
+        Ok(present)
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn ensure_single_native_surface(session: &EngineSession) -> Result<(), RuntimeError> {
+    if session.surface_count() > NATIVE_TRANSPORT_SINGLE_SURFACE_LIMIT {
+        return Err(RuntimeError::new(
+            RuntimeErrorKind::UnsupportedCapability,
+            "native transport slice owns at most one surface",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_surface_size(size: [u32; 2]) -> Result<(), RuntimeError> {
+    if size[0] == 0
+        || size[1] == 0
+        || size[0] > MAX_SURFACE_DIMENSION
+        || size[1] > MAX_SURFACE_DIMENSION
+    {
+        return Err(RuntimeError::new(
+            RuntimeErrorKind::InvalidInput,
+            "surface size is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn map_packet_error(error: PacketValidationError) -> RuntimeError {
+    match error.kind() {
+        PacketValidationErrorKind::StaleSceneRevision
+        | PacketValidationErrorKind::StaleWorkGeneration => {
+            RuntimeError::new(RuntimeErrorKind::InvalidState, "render packet is stale")
+        }
+        PacketValidationErrorKind::StaleDeviceGeneration => RuntimeError::new(
+            RuntimeErrorKind::DeviceLost,
+            "render packet device is stale",
+        ),
+        PacketValidationErrorKind::CapacityExceeded
+        | PacketValidationErrorKind::AllocationFailed => RuntimeError::new(
+            RuntimeErrorKind::OutOfMemory,
+            "render packet capacity is unavailable",
+        ),
+        PacketValidationErrorKind::FrameInvalid => RuntimeError::new(
+            RuntimeErrorKind::InvalidInput,
+            "render packet frame is invalid",
+        ),
+        PacketValidationErrorKind::InvalidResourceId
+        | PacketValidationErrorKind::InvalidResourceReference
+        | PacketValidationErrorKind::InvalidDrawRange
+        | PacketValidationErrorKind::InvalidDrawOrder
+        | PacketValidationErrorKind::IncompletePacket => RuntimeError::new(
+            RuntimeErrorKind::ResourceInvalid,
+            "render packet validation failed",
+        ),
+    }
+}
+
+fn map_resource_error(error: ResourceLifecycleError) -> RuntimeError {
+    match error.kind() {
+        ResourceLifecycleErrorKind::DeviceGenerationMismatch => {
+            RuntimeError::new(RuntimeErrorKind::DeviceLost, "resource generation is stale")
+        }
+        ResourceLifecycleErrorKind::AllocationFailed => RuntimeError::new(
+            RuntimeErrorKind::OutOfMemory,
+            "resource lifecycle allocation failed",
+        ),
+        ResourceLifecycleErrorKind::CapacityExceeded => RuntimeError::new(
+            RuntimeErrorKind::ResourceInvalid,
+            "resource lifecycle capacity is exhausted",
+        ),
+        ResourceLifecycleErrorKind::InvalidPacket
+        | ResourceLifecycleErrorKind::InvalidLease
+        | ResourceLifecycleErrorKind::InvalidFence => RuntimeError::new(
+            RuntimeErrorKind::ResourceInvalid,
+            "resource lifecycle validation failed",
+        ),
+    }
+}
+
+fn map_renderer_error(error: RenderError, during_recovery: bool) -> RuntimeError {
+    let kind = error.kind();
+    match kind {
+        RenderErrorKind::AdapterUnavailable | RenderErrorKind::DeviceUnavailable => {
+            if during_recovery {
+                RuntimeError::new(
+                    RuntimeErrorKind::RecoveryFailed,
+                    "portable backend recovery is unavailable",
+                )
+            } else {
+                RuntimeError::new(
+                    RuntimeErrorKind::BackendUnavailable,
+                    "portable backend is unavailable",
+                )
+            }
+        }
+        RenderErrorKind::SurfaceUnavailable => RuntimeError::new(
+            RuntimeErrorKind::UnsupportedCapability,
+            "window surface transport is unsupported in this runtime slice",
+        ),
+        RenderErrorKind::SurfaceLost => RuntimeError::new(
+            RuntimeErrorKind::ResourceInvalid,
+            "surface resource is lost",
+        ),
+        RenderErrorKind::DeviceLost => {
+            RuntimeError::new(RuntimeErrorKind::DeviceLost, "portable device is lost")
+        }
+        RenderErrorKind::OutOfMemory => RuntimeError::new(
+            RuntimeErrorKind::OutOfMemory,
+            "portable backend is out of memory",
+        ),
+        RenderErrorKind::WrongThread => RuntimeError::new(
+            RuntimeErrorKind::HostLoopMisuse,
+            "portable backend operation used the wrong thread",
+        ),
+        RenderErrorKind::InvalidInput
+        | RenderErrorKind::CapacityExceeded
+        | RenderErrorKind::ShaderInvalid
+        | RenderErrorKind::ReadbackFailed
+        | RenderErrorKind::Internal => RuntimeError::new(
+            RuntimeErrorKind::Internal,
+            "portable backend operation failed",
+        ),
+        _ => RuntimeError::new(
+            RuntimeErrorKind::Internal,
+            "portable backend operation failed",
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn retained_frame() -> FramePacket {
+        use lumenplot_render_api::__internal::{SrgbRgba8, Viewport};
+        use lumenplot_render_api::{FrameSpec, SceneHandle};
+
+        let mut scene = SceneHandle::new(Viewport::from_bounds(0.0, 1.0, 0.0, 1.0).expect("view"))
+            .expect("scene");
+        scene
+            .add_series(vec![0.0, 0.5, 1.0], vec![0.0, 1.0, 0.0])
+            .expect("series");
+        let spec = FrameSpec::new(
+            [64, 48],
+            [4, 4, 60, 44],
+            96.0,
+            SrgbRgba8::new(31, 119, 180, 255),
+            2.0,
+            SrgbRgba8::new(255, 255, 255, 255),
+        )
+        .expect("spec");
+        scene.resolve_frame(&spec).expect("frame")
+    }
+
+    #[test]
+    fn packet_owner_retains_cpu_frame_and_rebuilds_after_device_invalidation() {
+        let mut owner = PacketOwner::new();
+        let prepared = owner
+            .prepare(
+                retained_frame(),
+                SceneRevision::new(1),
+                WorkGeneration::initial(),
+                DeviceGeneration::initial(),
+            )
+            .expect("initial packet");
+        assert_eq!(
+            prepared.packet.scene_revision(),
+            PacketSceneRevision::new(1)
+        );
+        owner.commit(prepared).expect("initial completion");
+        assert!(owner.has_retained_state());
+
+        owner.invalidate_device_generation(DeviceGeneration(1));
+        let rebuilt = owner
+            .prepare_retained(WorkGeneration(2), DeviceGeneration(1))
+            .expect("retained rebuild")
+            .expect("retained frame");
+        assert_eq!(rebuilt.packet.scene_revision(), PacketSceneRevision::new(1));
+        assert_eq!(
+            rebuilt.packet.work_generation(),
+            PacketWorkGeneration::new(2)
+        );
+        assert_eq!(
+            rebuilt.packet.device_generation(),
+            PacketDeviceGeneration::new(1)
+        );
+        owner.commit(rebuilt).expect("rebuilt completion");
+    }
+
+    fn running(mode: LoopMode) -> EngineSession {
+        let mut session = EngineSession::new(mode);
+        match mode {
+            LoopMode::NativeOwned => session
+                .run_native_loop()
+                .expect("native loop")
+                .eq(&LoopOutcome::NativeLoopEntered),
+            LoopMode::HostPumped => session
+                .pump_once()
+                .expect("host pump")
+                .eq(&LoopOutcome::HostPumpCompleted),
+        };
+        session
+    }
+
+    #[test]
+    fn loop_ownership_modes_are_explicit_and_non_interchangeable() {
+        let mut native = EngineSession::new(LoopMode::NativeOwned);
+        assert_eq!(
+            native.run_native_loop().expect("native loop"),
+            LoopOutcome::NativeLoopEntered
+        );
+        assert_eq!(
+            native.run_native_loop().expect("idempotent native entry"),
+            LoopOutcome::NativeLoopAlreadyRunning
+        );
+        assert_eq!(
+            native
+                .pump_once()
+                .expect_err("native loop cannot be pumped")
+                .kind(),
+            RuntimeErrorKind::HostLoopMisuse
+        );
+
+        let mut host = EngineSession::new(LoopMode::HostPumped);
+        assert_eq!(
+            host.pump_once().expect("host pump"),
+            LoopOutcome::HostPumpCompleted
+        );
+        assert_eq!(
+            host.run_native_loop()
+                .expect_err("host owns the loop")
+                .kind(),
+            RuntimeErrorKind::HostLoopMisuse
+        );
+    }
+
+    #[test]
+    fn surface_resize_suspend_resume_and_loss_are_observable() {
+        let mut session = running(LoopMode::HostPumped);
+        let first = session.create_surface([640, 480]).expect("surface");
+        let second = session.create_surface([320, 240]).expect("second surface");
+        assert_eq!(session.surface_count(), 2);
+        assert_eq!(
+            session.surface_state(first).expect("state"),
+            SurfaceState::Active
+        );
+        assert_eq!(session.surface_size(second).expect("size"), [320, 240]);
+
+        assert_eq!(
+            session.resize(first, [800, 600]).expect("resize"),
+            LifecycleOutcome::Resized
+        );
+        assert_eq!(
+            session.surface_state(first).expect("pending state"),
+            SurfaceState::ReconfigurePending
+        );
+        assert_eq!(
+            session.suspend(first).expect("suspend"),
+            LifecycleOutcome::Suspended
+        );
+        assert_eq!(
+            session.suspend(first).expect("idempotent suspend"),
+            LifecycleOutcome::AlreadySuspended
+        );
+        assert_eq!(
+            session.resume(first).expect("resume"),
+            LifecycleOutcome::Resumed
+        );
+        assert_eq!(
+            session.surface_state(first).expect("resume state"),
+            SurfaceState::ReconfigurePending
+        );
+        assert_eq!(
+            session.handle_surface_loss(first).expect("surface loss"),
+            LifecycleOutcome::SurfaceLost
+        );
+        assert_eq!(
+            session.recreate_surface(first).expect("surface recreation"),
+            LifecycleOutcome::SurfaceRecreated
+        );
+        assert_eq!(
+            session.surface_state(first).expect("recreated state"),
+            SurfaceState::ReconfigurePending
+        );
+    }
+
+    #[test]
+    fn timeout_occlusion_and_reconfiguration_never_busy_retry() {
+        let mut session = running(LoopMode::HostPumped);
+        let surface = session.create_surface([64, 64]).expect("surface");
+        let token = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("token");
+        assert_eq!(
+            session
+                .submit(surface, token, SurfaceCondition::Occluded)
+                .expect("occlusion"),
+            SubmissionOutcome::Skipped(SkipReason::Occluded)
+        );
+        assert_eq!(
+            session
+                .submit(surface, token, SurfaceCondition::Timeout)
+                .expect("timeout"),
+            SubmissionOutcome::Skipped(SkipReason::Timeout)
+        );
+        assert_eq!(
+            session.resize(surface, [128, 128]).expect("resize"),
+            LifecycleOutcome::Resized
+        );
+        let reconfigured_token = session
+            .begin_submission(SceneRevision::new(2))
+            .expect("new token");
+        assert_eq!(
+            session
+                .submit(surface, reconfigured_token, SurfaceCondition::Ready)
+                .expect("reconfigure"),
+            SubmissionOutcome::Reconfigured
+        );
+        assert_eq!(
+            session
+                .submit(surface, reconfigured_token, SurfaceCondition::Ready)
+                .expect("ready"),
+            SubmissionOutcome::Ready
+        );
+    }
+
+    #[test]
+    fn stale_work_scene_and_device_submissions_are_dropped_or_rejected() {
+        let mut session = running(LoopMode::NativeOwned);
+        let surface = session.create_surface([64, 64]).expect("surface");
+        let first = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("first token");
+        assert_eq!(
+            session.resize(surface, [96, 96]).expect("resize"),
+            LifecycleOutcome::Resized
+        );
+        assert_eq!(
+            session
+                .submit(surface, first, SurfaceCondition::Ready)
+                .expect("stale work"),
+            SubmissionOutcome::StaleDropped
+        );
+
+        let newer = session
+            .begin_submission(SceneRevision::new(2))
+            .expect("new token");
+        assert_eq!(session.work_queue.borrow().pending_len(), 1);
+        assert_eq!(session.work_queue.borrow().cancelled_count(), 1);
+        assert_eq!(
+            session
+                .submit(surface, newer, SurfaceCondition::Ready)
+                .expect("new work"),
+            SubmissionOutcome::Reconfigured
+        );
+        let older_scene = SubmissionToken {
+            scene_revision: SceneRevision::new(1),
+            work_generation: session.work_generation(),
+            device_generation: session.device_generation(),
+        };
+        assert_eq!(
+            session
+                .submit(surface, older_scene, SurfaceCondition::Ready)
+                .expect("stale scene"),
+            SubmissionOutcome::StaleDropped
+        );
+
+        let previous_device = session.device_generation();
+        assert_eq!(
+            session.handle_device_loss().expect("device loss"),
+            LifecycleOutcome::DeviceLost
+        );
+        assert_ne!(session.device_generation(), previous_device);
+        assert_eq!(
+            session
+                .begin_submission(SceneRevision::new(3))
+                .expect_err("device loss quiesces submissions")
+                .kind(),
+            RuntimeErrorKind::DeviceLost
+        );
+        assert_eq!(
+            session
+                .recover_device()
+                .expect_err("state-only recovery is explicit")
+                .kind(),
+            RuntimeErrorKind::RecoveryFailed
+        );
+    }
+
+    #[test]
+    fn out_of_memory_is_terminal_and_close_is_idempotent() {
+        let mut session = running(LoopMode::HostPumped);
+        let surface = session.create_surface([64, 64]).expect("surface");
+        let token = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("token");
+        assert_eq!(
+            session.handle_out_of_memory().expect("oom"),
+            LifecycleOutcome::TerminalOutOfMemory
+        );
+        assert_eq!(session.work_queue.borrow().pending_len(), 0);
+        assert_eq!(session.work_queue.borrow().cancelled_count(), 1);
+        assert_eq!(
+            session.handle_out_of_memory().expect("idempotent oom"),
+            LifecycleOutcome::AlreadyOutOfMemory
+        );
+        assert_eq!(
+            session
+                .begin_submission(SceneRevision::new(1))
+                .expect_err("oom rejects tokens")
+                .kind(),
+            RuntimeErrorKind::OutOfMemory
+        );
+        assert_eq!(
+            session
+                .submit(surface, token, SurfaceCondition::Ready)
+                .expect_err("oom rejects submissions")
+                .kind(),
+            RuntimeErrorKind::OutOfMemory
+        );
+        assert_eq!(
+            session
+                .recover_device()
+                .expect_err("oom cannot recover")
+                .kind(),
+            RuntimeErrorKind::OutOfMemory
+        );
+        assert_eq!(
+            session.close().expect("close"),
+            LifecycleOutcome::CloseRequested
+        );
+        assert_eq!(
+            session.close().expect("repeat close"),
+            LifecycleOutcome::AlreadyClosed
+        );
+        assert!(session.is_closed());
+        assert_eq!(
+            session.pump_once().expect_err("closed host pump").kind(),
+            RuntimeErrorKind::Closed
+        );
+        assert_eq!(
+            session
+                .create_surface([64, 64])
+                .expect_err("closed session cannot create surfaces")
+                .kind(),
+            RuntimeErrorKind::Closed
+        );
+        assert_eq!(
+            session
+                .surface_state(surface)
+                .expect_err("closed session cannot observe surfaces")
+                .kind(),
+            RuntimeErrorKind::Closed
+        );
+    }
+
+    #[test]
+    fn reentrant_host_pump_and_invalid_sizes_are_explicit_errors() {
+        let mut session = running(LoopMode::HostPumped);
+        session.pumping = true;
+        assert_eq!(
+            session.pump_once().expect_err("reentrant pump").kind(),
+            RuntimeErrorKind::Reentrancy
+        );
+        session.pumping = false;
+        assert_eq!(
+            session
+                .create_surface([0, 64])
+                .expect_err("zero surface width")
+                .kind(),
+            RuntimeErrorKind::InvalidInput
+        );
+        assert_eq!(
+            session
+                .create_surface([MAX_SURFACE_DIMENSION + 1, 64])
+                .expect_err("oversized surface")
+                .kind(),
+            RuntimeErrorKind::InvalidInput
+        );
+        assert_eq!(RuntimeErrorKind::OutOfMemory.as_str(), "out-of-memory");
+
+        let queue_borrow = session.work_queue.borrow_mut();
+        assert_eq!(
+            session
+                .begin_submission(SceneRevision::new(1))
+                .expect_err("nested queue access")
+                .kind(),
+            RuntimeErrorKind::Reentrancy
+        );
+        drop(queue_borrow);
+
+        session.handle_device_loss().expect("device loss");
+        assert_eq!(
+            session
+                .pump_once()
+                .expect_err("device loss blocks host pumping")
+                .kind(),
+            RuntimeErrorKind::DeviceLost
+        );
+        assert!(!session.pumping, "pump guard must release on an error");
+    }
+
+    #[test]
+    fn bounded_work_queue_exposes_capacity_cancellation_and_stale_ordering() {
+        let generation = WorkGeneration::initial();
+        let mut queue = WorkQueue::new(2);
+        let first = WorkTicket {
+            scene_revision: SceneRevision::new(1),
+            generation,
+        };
+        let second = WorkTicket {
+            scene_revision: SceneRevision::new(2),
+            generation,
+        };
+        queue
+            .enqueue(first.scene_revision, generation)
+            .expect("first ticket");
+        queue
+            .enqueue(second.scene_revision, generation)
+            .expect("second ticket");
+        assert_eq!(queue.pending_len(), 2);
+        assert_eq!(
+            queue
+                .enqueue(SceneRevision::new(3), generation)
+                .expect_err("bounded queue must reject excess work")
+                .kind(),
+            RuntimeErrorKind::ResourceInvalid
+        );
+
+        assert_eq!(queue.cancel(first), WorkOutcome::Cancelled);
+        assert_eq!(queue.pending_len(), 1);
+        assert_eq!(queue.outcome(second, generation), WorkOutcome::Ready);
+        assert_eq!(queue.cancel(second), WorkOutcome::Cancelled);
+        assert_eq!(queue.pending_len(), 0);
+        assert_eq!(queue.outcome(second, generation), WorkOutcome::StaleDropped);
+        assert_eq!(queue.cancelled_count(), 2);
+        assert_eq!(queue.stale_dropped_count(), 1);
+    }
+
+    #[test]
+    fn submission_admission_reports_bounded_queue_backpressure() {
+        let session = running(LoopMode::HostPumped);
+        session.work_queue.borrow_mut().capacity = 0;
+        assert_eq!(
+            session
+                .begin_submission(SceneRevision::new(1))
+                .expect_err("zero-capacity queue"),
+            RuntimeError::new(
+                RuntimeErrorKind::ResourceInvalid,
+                "derived-work queue capacity is exhausted",
+            )
+        );
+        assert_eq!(session.highest_requested_scene_revision.get(), None);
+    }
+
+    #[test]
+    fn generation_advance_cancels_pending_work_before_publication() {
+        let mut session = running(LoopMode::HostPumped);
+        let surface = session.create_surface([64, 64]).expect("surface");
+        let old_generation = session.work_generation();
+        let ticket = WorkTicket {
+            scene_revision: SceneRevision::new(1),
+            generation: old_generation,
+        };
+        session
+            .work_queue
+            .borrow_mut()
+            .enqueue(ticket.scene_revision, old_generation)
+            .expect("queued work");
+        assert_eq!(session.work_queue.borrow().pending_len(), 1);
+
+        session.resize(surface, [96, 96]).expect("resize");
+        assert_ne!(session.work_generation(), old_generation);
+        assert_eq!(session.work_queue.borrow().pending_len(), 0);
+        assert_eq!(
+            session
+                .work_queue
+                .borrow_mut()
+                .outcome(ticket, session.work_generation()),
+            WorkOutcome::StaleDropped
+        );
+        assert_eq!(session.work_queue.borrow().cancelled_count(), 1);
+    }
+
+    #[test]
+    fn issued_scene_revisions_reserve_a_stale_watermark() {
+        let mut session = running(LoopMode::NativeOwned);
+        let surface = session.create_surface([64, 64]).expect("surface");
+        let old = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("old token");
+        let newer = session
+            .begin_submission(SceneRevision::new(2))
+            .expect("new token");
+        assert_eq!(session.work_queue.borrow().pending_len(), 1);
+        assert_eq!(session.work_queue.borrow().stale_dropped_count(), 1);
+
+        assert_eq!(
+            session
+                .submit(surface, old, SurfaceCondition::Ready)
+                .expect("old result is dropped"),
+            SubmissionOutcome::StaleDropped
+        );
+        assert_eq!(
+            session
+                .submit(surface, newer, SurfaceCondition::Ready)
+                .expect("new result"),
+            SubmissionOutcome::Ready
+        );
+    }
+
+    #[test]
+    fn failed_surface_submission_does_not_publish_its_revision() {
+        let mut session = running(LoopMode::HostPumped);
+        let token = session
+            .begin_submission(SceneRevision::new(7))
+            .expect("token");
+        let invalid = SurfaceId(u64::MAX);
+        assert_eq!(
+            session
+                .submit(invalid, token, SurfaceCondition::Ready)
+                .expect_err("unknown surface"),
+            RuntimeError::new(RuntimeErrorKind::ResourceInvalid, "surface is invalid")
+        );
+        assert_eq!(session.latest_scene_revision, None);
+    }
+
+    #[test]
+    fn device_loss_invalidates_work_and_failed_recovery_preserves_loss() {
+        let mut session = running(LoopMode::HostPumped);
+        let surface = session.create_surface([64, 64]).expect("surface");
+        let ticket = WorkTicket {
+            scene_revision: SceneRevision::new(1),
+            generation: session.work_generation(),
+        };
+        session
+            .work_queue
+            .borrow_mut()
+            .enqueue(ticket.scene_revision, ticket.generation)
+            .expect("queued work");
+        let previous_device = session.device_generation();
+
+        assert_eq!(
+            session.handle_device_loss().expect("device loss"),
+            LifecycleOutcome::DeviceLost
+        );
+        assert_ne!(session.device_generation(), previous_device);
+        assert_eq!(
+            session.surface_state(surface).expect("lost state"),
+            SurfaceState::Lost
+        );
+        assert_eq!(session.work_queue.borrow().pending_len(), 0);
+        assert_eq!(
+            session
+                .work_queue
+                .borrow_mut()
+                .outcome(ticket, session.work_generation()),
+            WorkOutcome::StaleDropped
+        );
+        assert_eq!(
+            session
+                .recover_device()
+                .expect_err("state-only recovery remains explicit")
+                .kind(),
+            RuntimeErrorKind::RecoveryFailed
+        );
+        assert_eq!(
+            session.surface_state(surface).expect("still lost"),
+            SurfaceState::Lost
+        );
+    }
+
+    #[test]
+    fn generation_exhaustion_and_queue_backpressure_are_atomic() {
+        assert_eq!(
+            WorkGeneration(u64::MAX)
+                .next()
+                .expect_err("work generation overflow")
+                .kind(),
+            RuntimeErrorKind::Internal
+        );
+        assert_eq!(
+            DeviceGeneration(u64::MAX)
+                .next()
+                .expect_err("device generation overflow")
+                .kind(),
+            RuntimeErrorKind::Internal
+        );
+
+        let mut queue = WorkQueue::new(1);
+        queue
+            .enqueue(SceneRevision::new(1), WorkGeneration::initial())
+            .expect("first bounded ticket");
+        assert_eq!(
+            queue
+                .enqueue(SceneRevision::new(2), WorkGeneration::initial())
+                .expect_err("queue capacity")
+                .kind(),
+            RuntimeErrorKind::ResourceInvalid
+        );
+        assert_eq!(queue.pending_len(), 1);
+    }
+
+    #[test]
+    fn native_transport_single_surface_lifecycle_matrix_is_headless_and_observable() {
+        let mut session = EngineSession::new(LoopMode::NativeOwned);
+        assert_eq!(
+            session.run_native_loop().expect("native entry"),
+            LoopOutcome::NativeLoopEntered
+        );
+        let id = session.create_surface([64, 64]).expect("initial configure");
+        let mut transport = NativeTransport::new();
+        assert!(!transport.is_close_requested());
+
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::Configure([128, 128]))
+                .expect("configure"),
+            LifecycleOutcome::Resized
+        );
+        assert_eq!(
+            session.surface_state(id).expect("pending"),
+            SurfaceState::ReconfigurePending
+        );
+        let token = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, token, SurfaceCondition::Ready)
+                .expect("present"),
+            NativePresent::Reconfigured
+        );
+        assert_eq!(transport.reconfigures, 1);
+
+        let token = session
+            .begin_submission(SceneRevision::new(2))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, token, SurfaceCondition::Ready)
+                .expect("present"),
+            NativePresent::Presented
+        );
+        assert_eq!(transport.presents, 1);
+
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::Suspend)
+                .expect("suspend"),
+            LifecycleOutcome::Suspended
+        );
+        let token = session
+            .begin_submission(SceneRevision::new(3))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, token, SurfaceCondition::Ready)
+                .expect("suspended present"),
+            NativePresent::Skipped(SkipReason::Suspended)
+        );
+        assert_eq!(transport.skips, 1);
+
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::Resume)
+                .expect("resume"),
+            LifecycleOutcome::Resumed
+        );
+        let token = session
+            .begin_submission(SceneRevision::new(4))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, token, SurfaceCondition::Ready)
+                .expect("present"),
+            NativePresent::Reconfigured
+        );
+
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::SurfaceLost)
+                .expect("loss"),
+            LifecycleOutcome::SurfaceLost
+        );
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::Recreate)
+                .expect("recreate"),
+            LifecycleOutcome::SurfaceRecreated
+        );
+        let token = session
+            .begin_submission(SceneRevision::new(5))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, token, SurfaceCondition::Ready)
+                .expect("present"),
+            NativePresent::Reconfigured
+        );
+
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::CloseRequest)
+                .expect("close"),
+            LifecycleOutcome::CloseRequested
+        );
+        assert!(transport.is_close_requested());
+        assert!(session.is_closed());
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::CloseRequest)
+                .expect("repeat close"),
+            LifecycleOutcome::AlreadyClosed
+        );
+        assert_eq!(
+            session
+                .create_surface([64, 64])
+                .expect_err("no resurrection")
+                .kind(),
+            RuntimeErrorKind::Closed
+        );
+        assert_eq!(
+            session.run_native_loop().expect_err("closed loop").kind(),
+            RuntimeErrorKind::Closed
+        );
+    }
+
+    #[test]
+    fn native_transport_present_mapping_and_stale_gating_are_explicit() {
+        let mut session = EngineSession::new(LoopMode::NativeOwned);
+        session.run_native_loop().expect("native entry");
+        let id = session.create_surface([64, 64]).expect("surface");
+        let mut transport = NativeTransport::new();
+
+        transport
+            .drive(&mut session, id, NativeEvent::Resize([96, 96]))
+            .expect("resize");
+        let first = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("first token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, first, SurfaceCondition::Occluded)
+                .expect("occlusion"),
+            NativePresent::Skipped(SkipReason::Occluded)
+        );
+        assert_eq!(
+            transport
+                .present(&mut session, id, first, SurfaceCondition::Timeout)
+                .expect("timeout"),
+            NativePresent::Skipped(SkipReason::Timeout)
+        );
+        // Occlusion and timeout skip without a busy retry and never report a
+        // present.
+        assert_eq!(transport.skips, 2);
+        assert_eq!(transport.presents, 0);
+
+        let second = session
+            .begin_submission(SceneRevision::new(2))
+            .expect("second token");
+        assert_eq!(
+            transport
+                .present(&mut session, id, first, SurfaceCondition::Ready)
+                .expect("stale scene"),
+            NativePresent::StaleDropped
+        );
+        assert_eq!(transport.stale_drops, 1);
+        assert_eq!(
+            transport
+                .present(&mut session, id, second, SurfaceCondition::Ready)
+                .expect("fresh present"),
+            NativePresent::Reconfigured
+        );
+
+        transport
+            .drive(&mut session, id, NativeEvent::Resize([128, 128]))
+            .expect("resize");
+        assert_eq!(
+            transport
+                .present(&mut session, id, second, SurfaceCondition::Ready)
+                .expect("stale work"),
+            NativePresent::StaleDropped
+        );
+        assert_eq!(transport.stale_drops, 2);
+    }
+
+    #[test]
+    fn native_transport_single_surface_gate_and_terminal_oom_have_no_resurrection() {
+        let mut session = EngineSession::new(LoopMode::NativeOwned);
+        session.run_native_loop().expect("native entry");
+        let first = session.create_surface([64, 64]).expect("first");
+        let second = session.create_surface([32, 32]).expect("second");
+        let mut transport = NativeTransport::new();
+        assert_eq!(
+            transport
+                .drive(&mut session, first, NativeEvent::Suspend)
+                .expect_err("multi-surface gate")
+                .kind(),
+            RuntimeErrorKind::UnsupportedCapability
+        );
+        let token = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("token");
+        assert_eq!(
+            transport
+                .present(&mut session, first, token, SurfaceCondition::Ready)
+                .expect_err("multi-surface present gate")
+                .kind(),
+            RuntimeErrorKind::UnsupportedCapability
+        );
+        // The public multi-surface records remain, but the B1 native slice
+        // refuses to drive them.
+        assert_eq!(session.surface_count(), 2);
+        let _ = second;
+
+        let mut single = EngineSession::new(LoopMode::NativeOwned);
+        single.run_native_loop().expect("native entry");
+        let id = single.create_surface([64, 64]).expect("surface");
+        let mut transport = NativeTransport::new();
+        assert_eq!(
+            transport
+                .drive(&mut single, id, NativeEvent::OutOfMemory)
+                .expect("oom"),
+            LifecycleOutcome::TerminalOutOfMemory
+        );
+        let token = SubmissionToken {
+            scene_revision: SceneRevision::new(9),
+            work_generation: single.work_generation(),
+            device_generation: single.device_generation(),
+        };
+        assert_eq!(
+            transport
+                .present(&mut single, id, token, SurfaceCondition::Ready)
+                .expect_err("oom rejects present")
+                .kind(),
+            RuntimeErrorKind::OutOfMemory
+        );
+        assert_eq!(
+            transport
+                .drive(&mut single, id, NativeEvent::DeviceLost)
+                .expect_err("oom blocks device transitions")
+                .kind(),
+            RuntimeErrorKind::OutOfMemory
+        );
+        assert_eq!(
+            transport
+                .drive(&mut single, id, NativeEvent::CloseRequest)
+                .expect("close after oom"),
+            LifecycleOutcome::CloseRequested
+        );
+        assert!(single.is_closed());
+        assert_eq!(
+            single
+                .create_surface([64, 64])
+                .expect_err("no resurrection")
+                .kind(),
+            RuntimeErrorKind::Closed
+        );
+    }
+
+    #[test]
+    #[ignore = "environment required: real native loop, surface, and present cell needed; headless logic is covered above and physical present is never claimed here"]
+    fn declared_environment_launch_smoke_is_harness_ready() {
+        let mut session = EngineSession::new(LoopMode::NativeOwned);
+        assert_eq!(
+            session.run_native_loop().expect("native entry"),
+            LoopOutcome::NativeLoopEntered
+        );
+        let id = session.create_surface([320, 240]).expect("surface");
+        let mut transport = NativeTransport::new();
+        transport
+            .drive(&mut session, id, NativeEvent::Configure([640, 480]))
+            .expect("configure");
+        let token = session
+            .begin_submission(SceneRevision::new(1))
+            .expect("token");
+        let present = transport
+            .present(&mut session, id, token, SurfaceCondition::Ready)
+            .expect("headless present");
+        assert!(matches!(
+            present,
+            NativePresent::Reconfigured | NativePresent::Presented
+        ));
+        assert_eq!(
+            transport
+                .drive(&mut session, id, NativeEvent::CloseRequest)
+                .expect("close"),
+            LifecycleOutcome::CloseRequested
+        );
+        assert!(session.is_closed());
+    }
+}

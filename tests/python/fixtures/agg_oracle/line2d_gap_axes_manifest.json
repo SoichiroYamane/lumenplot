@@ -1,0 +1,494 @@
+{
+  "schema_version": "agg-oracle-manifest-v1",
+  "fixture_id": "line2d-gap-axes-interior-leading-trailing-masked-positive-negative-infinity",
+  "oracle": {
+    "backend": "FigureCanvasAgg",
+    "matplotlib_version": "3.11.1",
+    "api_version": "1.1",
+    "canvas_construction": "matplotlib.backends.backend_agg.FigureCanvasAgg(figure)",
+    "render_call": "canvas.print_png(buffer, metadata={})"
+  },
+  "python_version": ">=3.11,<3.15",
+  "figure": {
+    "construction": "matplotlib.figure.Figure(figsize=(2.0, 1.0), dpi=100.0, facecolor='white', edgecolor='white')",
+    "options": {
+      "figsize_inches": [
+        2.0,
+        1.0
+      ],
+      "dpi": 100.0,
+      "facecolor": "white",
+      "edgecolor": "white",
+      "axes_construction": "figure.add_axes((0.1, 0.1, 0.8, 0.8))",
+      "axes_rect": [
+        0.1,
+        0.1,
+        0.8,
+        0.8
+      ],
+      "axes_facecolor": "none",
+      "axis_on": false,
+      "xlim": [
+        -1.0,
+        22.0
+      ],
+      "ylim": [
+        -1.0,
+        12.0
+      ],
+      "savefig_format": "png",
+      "print_png_metadata": {}
+    }
+  },
+  "effective_dpi": 100.0,
+  "dimensions": {
+    "width": 200,
+    "height": 100
+  },
+  "orientation": "top-to-bottom",
+  "channels": "RGBA8",
+  "rcparams": {
+    "agg.path.chunksize": 0,
+    "axes.facecolor": "none",
+    "figure.dpi": 100.0,
+    "figure.edgecolor": "white",
+    "figure.facecolor": "white",
+    "font.family": [
+      "DejaVu Sans"
+    ],
+    "font.size": 10.0,
+    "lines.antialiased": true,
+    "lines.color": "red",
+    "lines.dash_capstyle": "butt",
+    "lines.dash_joinstyle": "miter",
+    "lines.linestyle": "-",
+    "lines.linewidth": 2.0,
+    "lines.solid_capstyle": "butt",
+    "lines.solid_joinstyle": "miter",
+    "path.simplify": false,
+    "path.simplify_threshold": 0.0,
+    "savefig.dpi": 100.0,
+    "savefig.edgecolor": "white",
+    "savefig.facecolor": "white",
+    "savefig.format": "png",
+    "savefig.transparent": false,
+    "text.antialiased": true
+  },
+  "font": {
+    "family": "DejaVu Sans",
+    "properties": {
+      "style": "normal",
+      "variant": "normal",
+      "weight": "normal",
+      "stretch": "normal",
+      "size": 10.0
+    },
+    "file": "DejaVuSans.ttf",
+    "bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22"
+  },
+  "font_bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22",
+  "artist_class": "matplotlib.lines.Line2D",
+  "primitive": {
+    "class": "matplotlib.lines.Line2D",
+    "style": {
+      "color": "red",
+      "linewidth": 2.0,
+      "linestyle": "-",
+      "marker": "None",
+      "drawstyle": "default",
+      "solid_capstyle": "butt",
+      "solid_joinstyle": "miter",
+      "antialiased": true
+    },
+    "input_data": {
+      "x": [
+        "NaN",
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        "+Inf",
+        10.0,
+        11.0,
+        12.0,
+        13.0,
+        14.0,
+        "-Inf",
+        16.0,
+        17.0,
+        18.0,
+        19.0,
+        20.0,
+        "NaN"
+      ],
+      "y": [
+        0.0,
+        0.5,
+        1.0,
+        "NaN",
+        2.0,
+        2.5,
+        3.0,
+        3.5,
+        4.0,
+        4.5,
+        5.0,
+        5.5,
+        "-Inf",
+        6.5,
+        7.0,
+        7.5,
+        8.0,
+        8.5,
+        9.0,
+        9.5,
+        10.0,
+        10.5
+      ],
+      "y_mask": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "cases": {
+        "interior": {
+          "axis": "y",
+          "indices": [
+            3
+          ],
+          "tokens": [
+            "NaN"
+          ]
+        },
+        "leading": {
+          "axis": "x",
+          "indices": [
+            0
+          ],
+          "tokens": [
+            "NaN"
+          ]
+        },
+        "trailing": {
+          "axis": "x",
+          "indices": [
+            21
+          ],
+          "tokens": [
+            "NaN"
+          ]
+        },
+        "masked": {
+          "axis": "y",
+          "indices": [
+            6
+          ],
+          "tokens": [
+            "masked"
+          ]
+        },
+        "infinity": {
+          "indices": [
+            9,
+            12,
+            15
+          ],
+          "tokens": [
+            "+Inf",
+            "-Inf",
+            "-Inf"
+          ],
+          "axes": [
+            "x",
+            "y",
+            "x"
+          ]
+        }
+      }
+    }
+  },
+  "input_data": {
+    "x": [
+      "NaN",
+      1.0,
+      2.0,
+      3.0,
+      4.0,
+      5.0,
+      6.0,
+      7.0,
+      8.0,
+      "+Inf",
+      10.0,
+      11.0,
+      12.0,
+      13.0,
+      14.0,
+      "-Inf",
+      16.0,
+      17.0,
+      18.0,
+      19.0,
+      20.0,
+      "NaN"
+    ],
+    "y": [
+      0.0,
+      0.5,
+      1.0,
+      "NaN",
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      "-Inf",
+      6.5,
+      7.0,
+      7.5,
+      8.0,
+      8.5,
+      9.0,
+      9.5,
+      10.0,
+      10.5
+    ],
+    "y_mask": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "cases": {
+      "interior": {
+        "axis": "y",
+        "indices": [
+          3
+        ],
+        "tokens": [
+          "NaN"
+        ]
+      },
+      "leading": {
+        "axis": "x",
+        "indices": [
+          0
+        ],
+        "tokens": [
+          "NaN"
+        ]
+      },
+      "trailing": {
+        "axis": "x",
+        "indices": [
+          21
+        ],
+        "tokens": [
+          "NaN"
+        ]
+      },
+      "masked": {
+        "axis": "y",
+        "indices": [
+          6
+        ],
+        "tokens": [
+          "masked"
+        ]
+      },
+      "infinity": {
+        "indices": [
+          9,
+          12,
+          15
+        ],
+        "tokens": [
+          "+Inf",
+          "-Inf",
+          "-Inf"
+        ],
+        "axes": [
+          "x",
+          "y",
+          "x"
+        ]
+      }
+    },
+    "nan_indices": {
+      "x": [
+        0,
+        21
+      ],
+      "y": [
+        3
+      ]
+    },
+    "masked_indices": [
+      6
+    ],
+    "positive_infinity_indices": {
+      "x": [
+        9
+      ],
+      "y": []
+    },
+    "negative_infinity_indices": {
+      "x": [
+        15
+      ],
+      "y": [
+        12
+      ]
+    }
+  },
+  "topology": {
+    "api": "line.get_path().iter_segments(remove_nans=True)",
+    "segment_count": 15,
+    "subpath_count": 6,
+    "moveto_count": 6,
+    "lineto_count": 9,
+    "segment_codes": [
+      1,
+      2,
+      1,
+      2,
+      1,
+      2,
+      1,
+      2,
+      1,
+      2,
+      1,
+      2,
+      2,
+      2,
+      2
+    ],
+    "vertices": [
+      [
+        1.0,
+        0.5
+      ],
+      [
+        2.0,
+        1.0
+      ],
+      [
+        4.0,
+        2.0
+      ],
+      [
+        5.0,
+        2.5
+      ],
+      [
+        7.0,
+        3.5
+      ],
+      [
+        8.0,
+        4.0
+      ],
+      [
+        10.0,
+        5.0
+      ],
+      [
+        11.0,
+        5.5
+      ],
+      [
+        13.0,
+        6.5
+      ],
+      [
+        14.0,
+        7.0
+      ],
+      [
+        16.0,
+        8.0
+      ],
+      [
+        17.0,
+        8.5
+      ],
+      [
+        18.0,
+        9.0
+      ],
+      [
+        19.0,
+        9.5
+      ],
+      [
+        20.0,
+        10.0
+      ]
+    ]
+  },
+  "mask_generation": "reference-only: figure facecolor and resolved Line2D stroke; candidate/native pixels are not observed",
+  "reference_png_file": "line2d_gap_axes_reference.png",
+  "reference_png_sha256": "a36c060247025dc801fb184970daa8b7cfe71363eb5e433698de913b4172f8a1",
+  "mask_file": "line2d_gap_axes_mask.json",
+  "mask_sha256": "78f7d0698e847568c1ded311d7d4219951417f1a23b504b50e21907140356284",
+  "pixel_classes": [
+    "background",
+    "fully-covered",
+    "antialias-fringe",
+    "text-or-outline"
+  ],
+  "contract": {
+    "orientation": "top-to-bottom",
+    "channels": "RGBA8",
+    "background": "byte-equal",
+    "fully-covered": "byte-equal",
+    "fringe_max_channel_delta": 1,
+    "fringe_mismatch_rate_denominator": "total-pixels",
+    "fringe_mismatch_rate_max": 0.001
+  }
+}

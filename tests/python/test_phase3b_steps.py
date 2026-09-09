@@ -389,13 +389,8 @@ class TestStepGeometryParity(unittest.TestCase):
             canvas.render_png()
         del fig
 
-    def test_default_drawstyle_keeps_historical_row_filtering(self):
-        """The default drawstyle's NaN row-drop behavior is unchanged.
-
-        LP-FUNC-034 widens eligibility for finite stepped data only; the
-        pre-existing default-style subslice filtering stays exactly as
-        shipped (rows with a non-finite coordinate vanish).
-        """
+    def test_default_drawstyle_preserves_nonfinite_rows_for_pen_lifts(self):
+        """Default lines retain non-finite rows as native pen lifts."""
         fig, canvas = _steps_canvas(drawstyle="default")
         ax = fig.get_axes()[0]
         ax.lines[0].remove()
@@ -416,13 +411,18 @@ class TestStepGeometryParity(unittest.TestCase):
         assert spec is not None
         strokes = _step_stroke_commands(spec)
         self.assertEqual(len(strokes), 1)
-        # Rows 1 and 2 drop -> 3 kept samples stay unexpanded.
-        self.assertEqual(len(strokes[0]["vertices"]), 3)
+        # Rows 1 and 2 remain in the command as non-finite pen-lift
+        # sentinels; the native seam starts a new subpath at row 3.
+        self.assertEqual(len(strokes[0]["vertices"]), 5)
         import numpy as np
 
         expected_x = np.asarray([x[i] for i in (0, 3, 4)])
         expected_y = np.asarray([y[i] for i in (0, 3, 4)])
         got = np.asarray(strokes[0]["vertices"])
+        np.testing.assert_array_equal(
+            np.isfinite(got).all(axis=1),
+            np.asarray([True, False, False, True, True]),
+        )
         bbox = ax.get_window_extent()
         xlim, ylim = ax.get_xlim(), ax.get_ylim()
         want = np.column_stack([
@@ -431,7 +431,7 @@ class TestStepGeometryParity(unittest.TestCase):
             bbox.y0 + (expected_y - ylim[0]) / (ylim[1] - ylim[0])
             * bbox.height,
         ])
-        np.testing.assert_allclose(got, want, atol=1e-9)
+        np.testing.assert_allclose(got[[0, 3, 4]], want, atol=1e-9)
         del fig
 
     def test_all_non_finite_rows_stay_degenerate_refusal(self):
@@ -620,6 +620,7 @@ class TestStepTopologyRecurrence(unittest.TestCase):
 
 
 def _require_real_seam():
+    """Skip real-seam checks when the compiled extension is unavailable."""
     try:
         from lumenplot_mpl import _native  # noqa: F401
     except (ImportError, AttributeError):

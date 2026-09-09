@@ -1,11 +1,13 @@
 mod compositor;
 mod error;
+mod pdf;
 mod png;
 mod raster;
 
 #[cfg(test)]
 pub(crate) fn set_allocation_failure_for_test(fail: bool) {
     compositor::set_allocation_failure_for_test(fail);
+    pdf::set_allocation_failure_for_test(fail);
     raster::set_allocation_failure_for_test(fail);
 }
 
