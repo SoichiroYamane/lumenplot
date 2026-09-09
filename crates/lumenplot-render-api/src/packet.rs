@@ -619,6 +619,16 @@ fn validate_frame(frame: &FramePacket) -> Result<FrameStats, PacketValidationErr
         ));
     }
 
+    if !frame
+        .plot_layout
+        .validate_for_generation(frame.font_revision, frame.layout_revision)
+    {
+        return Err(PacketValidationError::new(
+            PacketValidationErrorKind::FrameInvalid,
+            "packet retained text layout is invalid",
+        ));
+    }
+
     if let Some(three_d) = frame.three_d()
         && !three_d.validate_for_canvas(canvas_width, canvas_height)
     {
@@ -769,7 +779,7 @@ fn validate_draws(
 mod tests {
     use super::*;
     use crate::frame::{FrameSpec, PacketPoint, PacketSegment};
-    use lumenplot_engine::bridge::Viewport;
+    use lumenplot_engine::bridge::{PlotLayout, Viewport};
 
     const WORK: WorkGeneration = WorkGeneration::new(7);
     const DEVICE_GENERATION: DeviceGeneration = DeviceGeneration::new(11);
@@ -1012,6 +1022,26 @@ mod tests {
     }
 
     #[test]
+    fn stale_retained_layout_generation_is_rejected_before_publication() {
+        let builder = RenderPacketBuilder::new(WORK, DEVICE_GENERATION);
+        let mut stale_layout = fixture_frame(4);
+        stale_layout.layout_revision = stale_layout.layout_revision.saturating_add(1);
+        let error = builder
+            .build(stale_layout, WORK, DEVICE_GENERATION)
+            .err()
+            .expect("stale layout generation must fail");
+        assert_eq!(error.kind(), PacketValidationErrorKind::FrameInvalid);
+
+        let mut stale_font = fixture_frame(4);
+        stale_font.font_revision = stale_font.font_revision.saturating_add(1);
+        let error = builder
+            .build(stale_font, WORK, DEVICE_GENERATION)
+            .err()
+            .expect("stale font generation must fail");
+        assert_eq!(error.kind(), PacketValidationErrorKind::FrameInvalid);
+    }
+
+    #[test]
     fn owner_scene_revision_is_revalidated_without_partial_publication() {
         let scene = SceneRevision::new(41);
         let builder = RenderPacketBuilder::for_scene(scene, WORK, DEVICE_GENERATION);
@@ -1042,8 +1072,20 @@ mod tests {
         digest
             .consume(&packet, SceneRevision::initial(), WORK, DEVICE_GENERATION)
             .expect("independent semantic consumer");
+        let screen_layout = screen_layout_consumer(&packet);
+        let export_layout = export_layout_consumer(&packet);
+        assert!(std::ptr::eq(screen_layout, export_layout));
         assert_eq!(digest.frame_count, 1);
         assert_ne!(digest.digest, 0);
+        let recorded_layout = recording.published()[0].semantic_frame().plot_layout();
+        assert_eq!(recorded_layout.layout_digest(), digest.layout_digest);
+        assert_eq!(recorded_layout.runs().len(), digest.layout_run_count);
+        assert_eq!(recorded_layout.runs()[0].source(), "0.0");
+        assert_eq!(recorded_layout.runs()[1].source(), "2026-01-01");
+        assert_eq!(recorded_layout.runs()[2].source(), "mm");
+        assert_eq!(recorded_layout.runs()[3].source(), "x");
+        assert_eq!(recorded_layout.runs()[4].source(), "measurement");
+        assert_eq!(recorded_layout.runs()[5].source(), "series-0");
         assert_eq!(recording.published()[0].frame().series().len(), 1);
     }
     #[test]
@@ -1098,6 +1140,14 @@ mod tests {
         assert_eq!(renderer.published().len(), 1);
     }
 
+    fn screen_layout_consumer(packet: &RenderPacket) -> &PlotLayout {
+        packet.semantic_frame().plot_layout()
+    }
+
+    fn export_layout_consumer(packet: &RenderPacket) -> &PlotLayout {
+        packet.semantic_frame().plot_layout()
+    }
+
     /// Backend-neutral test double that owns only complete internal packets.
     struct RecordingRenderer {
         builder: RenderPacketBuilder,
@@ -1135,6 +1185,8 @@ mod tests {
     struct SemanticDigestRenderer {
         frame_count: usize,
         digest: u64,
+        layout_digest: [u8; 32],
+        layout_run_count: usize,
     }
 
     impl SemanticDigestRenderer {
@@ -1142,6 +1194,8 @@ mod tests {
             Self {
                 frame_count: 0,
                 digest: 0,
+                layout_digest: [0; 32],
+                layout_run_count: 0,
             }
         }
 
@@ -1153,6 +1207,9 @@ mod tests {
             device_generation: DeviceGeneration,
         ) -> Result<(), PacketValidationError> {
             packet.validate_for_owner(scene_revision, work_generation, device_generation)?;
+            let layout = packet.semantic_frame().plot_layout();
+            self.layout_digest = layout.layout_digest();
+            self.layout_run_count = layout.runs().len();
             let mut digest = 0xcbf29ce484222325;
             for series in packet.semantic_frame().frame().series() {
                 for segment in series.segments() {

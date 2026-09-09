@@ -42,5 +42,9 @@ pub mod __internal {
         CompletionFence, ResourceCache, ResourceLease, ResourceLifecycleError,
         ResourceLifecycleErrorKind,
     };
+    pub use lumenplot_engine::bridge::{
+        FallbackRoute, FontFeature, FontIdentity, FontVariation, GlyphPosition, PlotLayout,
+        ShapedRun, TextDirection, TextRole,
+    };
     pub use lumenplot_engine::bridge::{SrgbRgba8, Viewport};
 }

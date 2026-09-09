@@ -1,5 +1,6 @@
 #[cfg(test)]
 use std::cell::Cell;
+use std::sync::Arc;
 
 use crate::bridge::{
     LineFrame, LineFrameSpec, LinePoint, LineSegment, LineSeries, LogicalRect, LogicalSize,
@@ -115,6 +116,10 @@ pub(crate) fn resolve_line_frame(
         snapshot.state.viewport(),
     )?;
 
+    let plot_layout: Arc<crate::text::PlotLayout> = snapshot.plot_layout();
+    if !plot_layout.validate_for_generation(snapshot.font_revision(), snapshot.layout_revision()) {
+        return Err(SceneError::new(SceneErrorKind::Internal));
+    }
     let series_map = snapshot.state.series_map();
     if series_map.len() > MAX_FRAME_SERIES {
         return Err(SceneError::new(SceneErrorKind::CapacityExceeded));
@@ -162,6 +167,7 @@ pub(crate) fn resolve_line_frame(
         layout.logical_units_per_inch,
         background,
         frame_series,
+        plot_layout,
     ))
 }
 
