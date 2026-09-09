@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use lumenplot_engine::bridge::{LineFrame, LineSeries};
+use lumenplot_engine::bridge::{AnnotationShape, AnnotationTransform, LineFrame, LineSeries};
 use tiny_skia::{FillRule, IntSize, LineCap, LineJoin, Mask, PathBuilder, Stroke, Transform};
 
 use crate::compositor::{pixel_storage_bytes, quantize_round_half_even, rgba_storage_bytes};
@@ -31,6 +31,19 @@ pub(crate) const TEXT_GLYPH_HEIGHT_LOGICAL: f64 = 7.0;
 pub(crate) const TEXT_INK_RGBA8: [u8; 4] = [0, 0, 0, 255];
 const TEXT_CORNERS_PER_GLYPH: usize = 4;
 const RETAINED_LAYOUT_ERROR: &str = "retained text layout is invalid";
+
+// P2 stored-geometry annotation fixture rule (AT-EXPORT-ANNOTATION): the
+// carrier retains clip/style references but no resolved style table, so the
+// sink strokes line/arrow shafts and rectangle outlines at one fixed logical
+// width. Per-annotation clip/style scopes stay a later contract (fixture
+// refs are validated non-zero by the retained digest but never interpreted
+// as distinct scopes in this slice), mirroring the retained-text rule above.
+pub(crate) const ANNOTATION_STROKE_WIDTH_LOGICAL: f64 = 1.0;
+/// Fixed opaque-black fixture ink for stored annotation geometry, matching
+/// the retained-text fixture ink until annotation styles resolve.
+pub(crate) const ANNOTATION_INK_RGBA8: [u8; 4] = [0, 0, 0, 255];
+const ANNOTATION_CORNERS_PER_BOX: usize = 4;
+const ANNOTATION_POINTS_PER_SHAFT: usize = 2;
 
 #[derive(Clone, Copy)]
 struct ClipRect {
@@ -200,8 +213,31 @@ impl RasterPlan {
         if text_path_points > MAX_PATH_POINTS {
             return Err(ExportError::capacity_exceeded());
         }
+        // Stored annotations ride the same path-point ceiling: each text or
+        // rectangle box contributes four corners and each line or arrow shaft
+        // two endpoints to the sink representation. Counting happens here,
+        // before any estimate, so a hostile annotation count fails before
+        // allocation.
+        let mut annotation_points = 0usize;
+        for annotation in frame.plot_layout().annotations() {
+            let points = match annotation.shape() {
+                AnnotationShape::Text { .. } | AnnotationShape::Rectangle { .. } => {
+                    ANNOTATION_CORNERS_PER_BOX
+                }
+                AnnotationShape::Line { .. } | AnnotationShape::Arrow { .. } => {
+                    ANNOTATION_POINTS_PER_SHAFT
+                }
+            };
+            annotation_points = annotation_points
+                .checked_add(points)
+                .ok_or_else(ExportError::capacity_exceeded)?;
+            if annotation_points > MAX_PATH_POINTS {
+                return Err(ExportError::capacity_exceeded());
+            }
+        }
         let total_path_points = path_points
             .checked_add(text_path_points)
+            .and_then(|total| total.checked_add(annotation_points))
             .ok_or_else(ExportError::capacity_exceeded)?;
         if total_path_points > MAX_PATH_POINTS {
             return Err(ExportError::capacity_exceeded());
@@ -240,6 +276,14 @@ impl RasterPlan {
         // A second full-canvas A8 mask carries the retained-text cells; it is
         // bounded exactly like the line-art mask.
         let text_mask_bytes = pixel_count;
+        // The annotation pass peaks at two full-canvas A8 masks: one fill
+        // mask for text fixture-boxes and one stroke mask for line/arrow
+        // shafts and rectangle outlines, merged by per-pixel maximum into a
+        // single returned mask. Both are bounded exactly like the masks
+        // above.
+        let annotation_mask_bytes = pixel_count
+            .checked_mul(2)
+            .ok_or_else(ExportError::capacity_exceeded)?;
         let path_bytes = total_path_points
             .checked_mul(size_of::<[f32; 2]>())
             .and_then(|value| value.checked_add(total_path_points.checked_mul(24)?))
@@ -247,6 +291,7 @@ impl RasterPlan {
         let work_bytes = pixel_bytes
             .checked_add(mask_bytes)
             .and_then(|value| value.checked_add(text_mask_bytes))
+            .and_then(|value| value.checked_add(annotation_mask_bytes))
             .and_then(|value| value.checked_add(raw_bytes))
             .and_then(|value| value.checked_add(path_bytes))
             .and_then(|value| value.checked_add(output_estimate))
@@ -479,6 +524,268 @@ pub(crate) fn rasterize_retained_text(
     Ok(mask)
 }
 
+/// Rasterizes stored annotation geometry into an A8 mask without measuring
+/// text or projecting spaces.
+///
+/// P2 fixture mapping rule (AT-EXPORT-ANNOTATION; ADR 0007 space projections
+/// deferred): each annotation's stored local geometry folds through its
+/// retained affine into its declared space, then reads as canvas logical
+/// identity at the plan scale. True Data2D/axes/figure-to-display
+/// projections stay a later contract — the resolved frame carries no
+/// viewport for the sink to project through — so this pass pins inclusion
+/// (stored geometry lands as ink), not projection.
+///
+/// Text fills its stored coarse box (fixture-box until real shaping lands);
+/// line and arrow shafts stroke at the fixture width (arrow heads render as
+/// shaft only, the head length already widening the stored coarse box);
+/// rectangles stroke their outline. Non-finite mapped geometry and geometry
+/// fully outside the canvas clip without error, like retained text. Shafts
+/// with any endpoint outside the canvas are skipped the same way; exact
+/// segment clipping stays a later contract with the projections above. An
+/// invalid retained digest fails with `InvalidInput` before any fill,
+/// mirroring the plan-time gate. Fill and stroke coverage merge by per-pixel
+/// maximum, so overlapping ink unions instead of double-darkening
+/// antialiased edges and the result is independent of annotation order.
+pub(crate) fn rasterize_annotations(
+    frame: &LineFrame,
+    plan: &RasterPlan,
+) -> Result<Mask, ExportError> {
+    if allocation_is_forced_to_fail() {
+        return Err(ExportError::allocation_failed());
+    }
+    let layout = frame.plot_layout();
+    if !layout.validate() {
+        return Err(ExportError::new(
+            ExportErrorKind::InvalidInput,
+            RETAINED_LAYOUT_ERROR,
+        ));
+    }
+    let scale = plan.scale();
+    let canvas_width = f64::from(plan.width());
+    let canvas_height = f64::from(plan.height());
+    let mut fill_builder = PathBuilder::new();
+    let mut stroke_builder = PathBuilder::new();
+    let mut has_fill = false;
+    let mut has_stroke = false;
+    for annotation in layout.annotations() {
+        let transform = annotation.transform();
+        match annotation.shape() {
+            AnnotationShape::Text { .. } => {
+                let (x_min, y_min, x_max, y_max) = annotation.bounds();
+                let Some(rect) = annotation_box_pixels(
+                    transform,
+                    x_min,
+                    y_min,
+                    x_max,
+                    y_max,
+                    scale,
+                    canvas_width,
+                    canvas_height,
+                ) else {
+                    continue;
+                };
+                push_closed_rect(&mut fill_builder, rect);
+                has_fill = true;
+            }
+            AnnotationShape::Rectangle {
+                x_min,
+                y_min,
+                x_max,
+                y_max,
+            } => {
+                let Some(rect) = annotation_box_pixels(
+                    transform,
+                    x_min,
+                    y_min,
+                    x_max,
+                    y_max,
+                    scale,
+                    canvas_width,
+                    canvas_height,
+                ) else {
+                    continue;
+                };
+                push_closed_rect(&mut stroke_builder, rect);
+                has_stroke = true;
+            }
+            AnnotationShape::Line { x1, y1, x2, y2 }
+            | AnnotationShape::Arrow { x1, y1, x2, y2, .. } => {
+                let Some((start, end)) = annotation_shaft_pixels(
+                    transform,
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    scale,
+                    canvas_width,
+                    canvas_height,
+                ) else {
+                    continue;
+                };
+                stroke_builder.move_to(start[0], start[1]);
+                stroke_builder.line_to(end[0], end[1]);
+                has_stroke = true;
+            }
+        }
+    }
+
+    let size = IntSize::from_wh(plan.width(), plan.height()).ok_or_else(ExportError::internal)?;
+    if !has_fill && !has_stroke {
+        let data = zero_mask_data(plan.pixel_count())?;
+        return Mask::from_vec(data, size).ok_or_else(ExportError::allocation_failed);
+    }
+    // The fixture stroke width fails here, before any mask allocation, when
+    // the plan scale drives it out of the representable range.
+    let stroke_width = ANNOTATION_STROKE_WIDTH_LOGICAL * scale;
+    if has_stroke
+        && (!stroke_width.is_finite() || stroke_width <= 0.0 || stroke_width > f64::from(f32::MAX))
+    {
+        return Err(ExportError::invalid_input());
+    }
+    let mut fill_mask = Mask::from_vec(zero_mask_data(plan.pixel_count())?, size)
+        .ok_or_else(ExportError::allocation_failed)?;
+    if has_fill {
+        let path = fill_builder.finish().ok_or_else(ExportError::internal)?;
+        fill_mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    }
+    if has_stroke {
+        let path = stroke_builder.finish().ok_or_else(ExportError::internal)?;
+        let stroke = Stroke {
+            width: stroke_width as f32,
+            miter_limit: 4.0,
+            line_cap: LineCap::Butt,
+            line_join: LineJoin::Miter,
+            dash: None,
+        };
+        let stroked = path
+            .stroke(&stroke, 1.0)
+            .ok_or_else(ExportError::internal)?;
+        ensure_stroked_path_is_representable(&stroked)?;
+        let mut stroke_mask = Mask::from_vec(zero_mask_data(plan.pixel_count())?, size)
+            .ok_or_else(ExportError::allocation_failed)?;
+        stroke_mask.fill_path(&stroked, FillRule::Winding, true, Transform::identity());
+        for (fill, stroke) in fill_mask
+            .data_mut()
+            .iter_mut()
+            .zip(stroke_mask.data().iter())
+        {
+            *fill = (*fill).max(*stroke);
+        }
+    }
+    Ok(fill_mask)
+}
+
+/// Pushes one closed axis-aligned rect into a path builder.
+fn push_closed_rect(builder: &mut PathBuilder, rect: (f32, f32, f32, f32)) {
+    let (left, top, right, bottom) = rect;
+    builder.move_to(left, top);
+    builder.line_to(right, top);
+    builder.line_to(right, bottom);
+    builder.line_to(left, bottom);
+    builder.close();
+}
+
+/// Maps one stored annotation box through its retained affine to
+/// canvas-clipped pixel bounds.
+///
+/// The four local corners fold through the retained map (mirroring the
+/// carrier's coarse-geometry rule), then read as canvas logical identity at
+/// the plan scale per the P2 fixture mapping. Returns `None` when a corner
+/// leaves the finite range or the box falls fully outside the canvas: both
+/// mean "nothing to draw here", never a bounds error.
+#[allow(clippy::too_many_arguments)]
+fn annotation_box_pixels(
+    transform: AnnotationTransform,
+    x_min: f64,
+    y_min: f64,
+    x_max: f64,
+    y_max: f64,
+    scale: f64,
+    canvas_width: f64,
+    canvas_height: f64,
+) -> Option<(f32, f32, f32, f32)> {
+    let corners = [
+        transform.apply(x_min, y_min)?,
+        transform.apply(x_min, y_max)?,
+        transform.apply(x_max, y_min)?,
+        transform.apply(x_max, y_max)?,
+    ];
+    let mut folded: Option<(f64, f64, f64, f64)> = None;
+    for (x, y) in corners {
+        folded = Some(match folded {
+            None => (x, y, x, y),
+            Some((lo_x, lo_y, hi_x, hi_y)) => (x.min(lo_x), y.min(lo_y), x.max(hi_x), y.max(hi_y)),
+        });
+    }
+    let (x_min, y_min, x_max, y_max) = folded?;
+    let left = x_min * scale;
+    let top = y_min * scale;
+    let right = x_max * scale;
+    let bottom = y_max * scale;
+    if ![left, top, right, bottom]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return None;
+    }
+    let left = left.clamp(0.0, canvas_width);
+    let top = top.clamp(0.0, canvas_height);
+    let right = right.clamp(0.0, canvas_width);
+    let bottom = bottom.clamp(0.0, canvas_height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    if right > f64::from(f32::MAX) || bottom > f64::from(f32::MAX) {
+        return None;
+    }
+    Some((left as f32, top as f32, right as f32, bottom as f32))
+}
+
+/// Maps one stored shaft through its retained affine to pixel endpoints.
+///
+/// Endpoints fold through the retained map, then read as canvas logical
+/// identity at the plan scale per the P2 fixture mapping. Returns `None`
+/// when an endpoint leaves the finite range, rests outside the canvas, or
+/// collapses onto its partner: all mean "nothing to draw here", never a
+/// bounds error.
+#[allow(clippy::too_many_arguments)]
+fn annotation_shaft_pixels(
+    transform: AnnotationTransform,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    scale: f64,
+    canvas_width: f64,
+    canvas_height: f64,
+) -> Option<([f32; 2], [f32; 2])> {
+    let (x1, y1) = transform.apply(x1, y1)?;
+    let (x2, y2) = transform.apply(x2, y2)?;
+    let (x1, y1, x2, y2) = (x1 * scale, y1 * scale, x2 * scale, y2 * scale);
+    if ![x1, y1, x2, y2].iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    if x1 < 0.0
+        || y1 < 0.0
+        || x2 < 0.0
+        || y2 < 0.0
+        || x1 > canvas_width
+        || y1 > canvas_height
+        || x2 > canvas_width
+        || y2 > canvas_height
+    {
+        return None;
+    }
+    // f32 narrowing happens only here, at the sink-local boundary, after the
+    // finite and canvas-range checks above; the frame stays f64.
+    let start = [x1 as f32, y1 as f32];
+    let end = [x2 as f32, y2 as f32];
+    if start == end {
+        return None;
+    }
+    Some((start, end))
+}
+
 /// Maps one stored glyph origin to canvas-clipped pixel bounds.
 ///
 /// Returns `None` when the fixture cell falls fully outside the canvas or
@@ -692,6 +999,47 @@ mod tests {
         // Mask rasterization is deterministic for the same retained result.
         let again = rasterize_retained_text(&frame, &plan).expect("mask");
         assert_eq!(mask.data(), again.data());
+    }
+
+    #[test]
+    fn annotation_mask_carries_all_four_kinds_and_clips_without_error() {
+        // Small canvas: every fixture annotation falls outside it (text box
+        // at y>=16, line/arrow shafts leave the 4x4 page, rectangle far
+        // outside), so the annotation pass is a no-op instead of a bounds
+        // error.
+        let small = make_frame(1.0);
+        let small_spec = PngSpec::new(1.0).expect("spec");
+        let small_plan = RasterPlan::new(&small, &small_spec).expect("plan");
+        let small_mask = rasterize_annotations(&small, &small_plan).expect("mask");
+        assert!(small_mask.data().iter().all(|coverage| *coverage == 0));
+
+        // Large canvas: all four fixture kinds land as coverage, and the
+        // mask is deterministic for the same retained result.
+        let frame = make_canvas_frame((160.0, 140.0), (8.0, 8.0, 56.0, 56.0));
+        let spec = PngSpec::new(1.0).expect("spec");
+        let plan = RasterPlan::new(&frame, &spec).expect("plan");
+        let mask = rasterize_annotations(&frame, &plan).expect("mask");
+        assert!(mask.data().iter().any(|coverage| *coverage != 0));
+        // Text fixture-box interior, fully covered.
+        let text_interior = 20usize * 160 + 10;
+        assert_ne!(mask.data()[text_interior], 0);
+        // Line shaft crossing, arrow shaft crossing, rectangle top edge.
+        let line_crossing = 4usize * 160 + 8;
+        assert_ne!(mask.data()[line_crossing], 0);
+        let arrow_crossing = 16usize * 160 + 24;
+        assert_ne!(mask.data()[arrow_crossing], 0);
+        let rect_edge = 100usize * 160 + 120;
+        assert_ne!(mask.data()[rect_edge], 0);
+        // Rectangle interior carries no fill ink (outline only).
+        let rect_interior = 110usize * 160 + 120;
+        assert_eq!(mask.data()[rect_interior], 0);
+        let again = rasterize_annotations(&frame, &plan).expect("mask");
+        assert_eq!(mask.data(), again.data());
+
+        set_allocation_failure_for_test(true);
+        let error = rasterize_annotations(&frame, &plan).expect_err("allocation");
+        set_allocation_failure_for_test(false);
+        assert_eq!(error.kind(), ExportErrorKind::AllocationFailed);
     }
 
     #[test]

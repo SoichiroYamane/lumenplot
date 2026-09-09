@@ -789,8 +789,9 @@ PUBLIC_ITEM_RE = re.compile(
 PUBLIC_REEXPORT_RE = re.compile(r"^\s*pub\s+use\b", re.MULTILINE)
 ENGINE_TEXT_REEXPORT_RE = re.compile(
     r"^\s*pub\s+use\s+crate::text::\{\s*"
+    r"AnnotationShape,\s*AnnotationSpace,\s*AnnotationTransform,\s*"
     r"FallbackRoute,\s*FontFeature,\s*FontIdentity,\s*FontVariation,\s*GlyphPosition,\s*"
-    r"PlotLayout,\s*ShapedRun,\s*TextDirection,\s*TextRole,\s*\};\s*",
+    r"PlotLayout,\s*RetainedAnnotation,\s*ShapedRun,\s*TextDirection,\s*TextRole,\s*\};\s*",
     re.MULTILINE,
 )
 PUBLIC_BARE_ITEM_RE = re.compile(

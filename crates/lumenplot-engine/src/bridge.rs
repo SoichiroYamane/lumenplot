@@ -13,7 +13,8 @@ use crate::scene::{
 
 #[doc(hidden)]
 pub use crate::text::{
-    FallbackRoute, FontFeature, FontIdentity, FontVariation, GlyphPosition, PlotLayout, ShapedRun,
+    AnnotationShape, AnnotationSpace, AnnotationTransform, FallbackRoute, FontFeature,
+    FontIdentity, FontVariation, GlyphPosition, PlotLayout, RetainedAnnotation, ShapedRun,
     TextDirection, TextRole,
 };
 

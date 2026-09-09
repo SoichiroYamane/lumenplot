@@ -564,7 +564,12 @@ impl PlotLayout {
         &self.runs
     }
 
-    pub(crate) fn annotations(&self) -> &[RetainedAnnotation] {
+    /// Returns the retained annotations in layout order.
+    ///
+    /// Sink read paths (PNG inclusion) consume these stored values through
+    /// the hidden-internal bridge surface; see [`AnnotationSpace`] for the
+    /// declared-space rule callers must honor.
+    pub fn annotations(&self) -> &[RetainedAnnotation] {
         &self.annotations
     }
 
@@ -880,7 +885,7 @@ impl AnnotationKind {
 /// through the existing frame inverse first, so this carrier never derives a
 /// projection itself.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum AnnotationSpace {
+pub enum AnnotationSpace {
     Data2D,
     AxesLogical,
     FigureLogical,
@@ -905,7 +910,7 @@ impl AnnotationSpace {
 /// It is plain retained data: every coefficient is a finite `f64`, and hit
 /// paths only evaluate it, never fit or re-derive it.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct AnnotationTransform {
+pub struct AnnotationTransform {
     a: f64,
     b: f64,
     c: f64,
@@ -916,7 +921,7 @@ pub(crate) struct AnnotationTransform {
 
 impl AnnotationTransform {
     /// Returns the retained identity map used by the deterministic fixture.
-    pub(crate) fn identity() -> Self {
+    pub fn identity() -> Self {
         Self {
             a: 1.0,
             b: 0.0,
@@ -936,7 +941,13 @@ impl AnnotationTransform {
         }
     }
 
-    fn apply(self, x: f64, y: f64) -> Option<(f64, f64)> {
+    /// Evaluates the retained affine on one local point.
+    ///
+    /// Pure evaluation of retained values: sink read paths use this to fold
+    /// stored geometry into its declared space without fitting or
+    /// re-deriving anything. Returns `None` when the mapped point leaves
+    /// the finite range, and the caller treats that geometry as clipped.
+    pub fn apply(self, x: f64, y: f64) -> Option<(f64, f64)> {
         let mapped_x = self.a * x + self.b * y + self.c;
         let mapped_y = self.d * x + self.e * y + self.f;
         if mapped_x.is_finite() && mapped_y.is_finite() {
@@ -970,7 +981,7 @@ impl AnnotationTransform {
 /// the stored coarse box, while precise hits stay on the shaft. Rectangle
 /// carries its local edges directly.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum AnnotationShape {
+pub enum AnnotationShape {
     Text {
         x: f64,
         y: f64,
@@ -1167,7 +1178,7 @@ impl AnnotationShape {
 /// coarse `bounds` are resolved from the shape once at construction and
 /// pinned by validation, so every consumer reads stored geometry.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct RetainedAnnotation {
+pub struct RetainedAnnotation {
     id: u64,
     space: AnnotationSpace,
     shape: AnnotationShape,
@@ -1221,22 +1232,22 @@ impl RetainedAnnotation {
     }
 
     /// Returns the declared logical space.
-    pub(crate) fn space(self) -> AnnotationSpace {
+    pub fn space(self) -> AnnotationSpace {
         self.space
     }
 
     /// Returns the retained local shape.
-    pub(crate) fn shape(self) -> AnnotationShape {
+    pub fn shape(self) -> AnnotationShape {
         self.shape
     }
 
     /// Returns the retained local-to-space transform.
-    pub(crate) fn transform(self) -> AnnotationTransform {
+    pub fn transform(self) -> AnnotationTransform {
         self.transform
     }
 
     /// Returns the stored coarse local box resolved at construction.
-    pub(crate) fn bounds(self) -> (f64, f64, f64, f64) {
+    pub fn bounds(self) -> (f64, f64, f64, f64) {
         self.bounds
     }
 

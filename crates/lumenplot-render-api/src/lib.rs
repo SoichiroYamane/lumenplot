@@ -43,6 +43,9 @@ pub mod __internal {
         ResourceLifecycleErrorKind,
     };
     pub use lumenplot_engine::bridge::{
+        AnnotationShape, AnnotationSpace, AnnotationTransform, RetainedAnnotation,
+    };
+    pub use lumenplot_engine::bridge::{
         FallbackRoute, FontFeature, FontIdentity, FontVariation, GlyphPosition, PlotLayout,
         ShapedRun, TextDirection, TextRole,
     };
