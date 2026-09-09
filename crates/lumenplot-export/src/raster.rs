@@ -19,6 +19,19 @@ pub(crate) const MAX_PATH_POINTS: usize = 1_000_000;
 const TINY_SKIA_SAFE_PATH_BOUND: f32 = f32::MAX * 0.25;
 const MAX_CLIP_STACK: usize = 4;
 
+// B2 retained-text fixture rule (ADR 0007 TextToPath initial PNG boundary):
+// each stored glyph origin contributes one axis-aligned block cell. The cell
+// size is sink-local and fixed; the sink never measures text. Origins come
+// from the ONE retained PlotLayout, and no font or shaping path is linked.
+// Ink is fixed opaque black; per-run clip/style scopes stay a later contract
+// (fixture refs are validated non-zero but not interpreted as distinct scopes
+// in this slice).
+pub(crate) const TEXT_GLYPH_WIDTH_LOGICAL: f64 = 5.0;
+pub(crate) const TEXT_GLYPH_HEIGHT_LOGICAL: f64 = 7.0;
+pub(crate) const TEXT_INK_RGBA8: [u8; 4] = [0, 0, 0, 255];
+const TEXT_CORNERS_PER_GLYPH: usize = 4;
+const RETAINED_LAYOUT_ERROR: &str = "retained text layout is invalid";
+
 #[derive(Clone, Copy)]
 struct ClipRect {
     x_min: f64,
@@ -95,6 +108,19 @@ impl RasterPlan {
             return Err(ExportError::invalid_input());
         }
 
+        // The retained result is re-validated at the sink: a corrupt digest,
+        // an empty run set, or any invalid stored position fails here with
+        // `InvalidInput` before any raster allocation. Generation staleness
+        // itself is rejected upstream at frame resolution and packet
+        // validation; the sink only ever receives a resolved frame and never
+        // remeasures.
+        if !frame.plot_layout().validate() {
+            return Err(ExportError::new(
+                ExportErrorKind::InvalidInput,
+                RETAINED_LAYOUT_ERROR,
+            ));
+        }
+
         let canvas = frame.canvas();
         let width = checked_dimension(canvas.width(), scale)?;
         let height = checked_dimension(canvas.height(), scale)?;
@@ -155,6 +181,32 @@ impl RasterPlan {
             }
         }
 
+        // Retained glyphs ride the same path-point ceiling as line art: each
+        // stored position contributes one fixture cell (four corners) to the
+        // sink representation. Counting happens here, before any estimate, so
+        // a hostile run length fails before allocation.
+        let mut text_glyphs = 0usize;
+        for run in frame.plot_layout().runs() {
+            text_glyphs = text_glyphs
+                .checked_add(run.positions().len())
+                .ok_or_else(ExportError::capacity_exceeded)?;
+            if text_glyphs > MAX_PATH_POINTS {
+                return Err(ExportError::capacity_exceeded());
+            }
+        }
+        let text_path_points = text_glyphs
+            .checked_mul(TEXT_CORNERS_PER_GLYPH)
+            .ok_or_else(ExportError::capacity_exceeded)?;
+        if text_path_points > MAX_PATH_POINTS {
+            return Err(ExportError::capacity_exceeded());
+        }
+        let total_path_points = path_points
+            .checked_add(text_path_points)
+            .ok_or_else(ExportError::capacity_exceeded)?;
+        if total_path_points > MAX_PATH_POINTS {
+            return Err(ExportError::capacity_exceeded());
+        }
+
         let raw_bytes =
             rgba_storage_bytes(pixel_count).ok_or_else(ExportError::capacity_exceeded)?;
         let rows_with_filter = raw_bytes
@@ -185,12 +237,16 @@ impl RasterPlan {
         let pixel_bytes =
             pixel_storage_bytes(pixel_count).ok_or_else(ExportError::capacity_exceeded)?;
         let mask_bytes = pixel_count;
-        let path_bytes = path_points
+        // A second full-canvas A8 mask carries the retained-text cells; it is
+        // bounded exactly like the line-art mask.
+        let text_mask_bytes = pixel_count;
+        let path_bytes = total_path_points
             .checked_mul(size_of::<[f32; 2]>())
-            .and_then(|value| value.checked_add(path_points.checked_mul(24)?))
+            .and_then(|value| value.checked_add(total_path_points.checked_mul(24)?))
             .ok_or_else(ExportError::capacity_exceeded)?;
         let work_bytes = pixel_bytes
             .checked_add(mask_bytes)
+            .and_then(|value| value.checked_add(text_mask_bytes))
             .and_then(|value| value.checked_add(raw_bytes))
             .and_then(|value| value.checked_add(path_bytes))
             .and_then(|value| value.checked_add(output_estimate))
@@ -233,6 +289,33 @@ impl RasterPlan {
         // A8 quantization is the sink's deterministic round-half-even snap;
         // the semantic frame remains fractional until this point.
         quantize_round_half_even(self.clips.coverage(x, y))
+    }
+
+    /// Canvas-scoped clip view for the retained-text pass.
+    ///
+    /// Line art keeps the plot clip above; labels (axis/title/legend) live
+    /// outside the plot rect by definition, so the text pass composites
+    /// against full canvas coverage. Dimensions, scale, and estimates are
+    /// unchanged, and the existing `composite_mask` path is reused untouched.
+    pub(crate) fn text_plan(&self) -> Self {
+        let canvas_clip = ClipRect {
+            x_min: 0.0,
+            y_min: 0.0,
+            x_max: f64::from(self.width),
+            y_max: f64::from(self.height),
+        };
+        // Width and height are checked positive at construction, so the
+        // full-canvas rect always forms a valid one-entry stack; the fallback
+        // below is unreachable defense-in-depth, never a panic.
+        let clips = ClipStack::from_rects(std::slice::from_ref(&canvas_clip)).unwrap_or(self.clips);
+        Self {
+            width: self.width,
+            height: self.height,
+            pixel_count: self.pixel_count,
+            scale: self.scale,
+            clips,
+            output_estimate: self.output_estimate,
+        }
     }
 }
 
@@ -336,6 +419,109 @@ pub(crate) fn rasterize_series(
     Ok(mask)
 }
 
+/// Rasterizes the ONE retained layout into an A8 mask without measuring text.
+///
+/// Every stored glyph origin contributes one axis-aligned fixture cell; the
+/// sink reads origins, never shapes, measures, or substitutes glyphs. Cells
+/// that fall fully outside the canvas are skipped without error: labels
+/// routinely sit outside small canvases, unlike engine-clipped line art which
+/// must stay inside. An invalid retained digest fails with `InvalidInput`
+/// before any fill, mirroring the plan-time gate.
+pub(crate) fn rasterize_retained_text(
+    frame: &LineFrame,
+    plan: &RasterPlan,
+) -> Result<Mask, ExportError> {
+    if allocation_is_forced_to_fail() {
+        return Err(ExportError::allocation_failed());
+    }
+    let layout = frame.plot_layout();
+    if !layout.validate() {
+        return Err(ExportError::new(
+            ExportErrorKind::InvalidInput,
+            RETAINED_LAYOUT_ERROR,
+        ));
+    }
+    let scale = plan.scale();
+    let canvas_width = f64::from(plan.width());
+    let canvas_height = f64::from(plan.height());
+    let mut path_builder = PathBuilder::new();
+    let mut has_glyph = false;
+    for run in layout.runs() {
+        for position in run.positions() {
+            let Some((left, top, right, bottom)) = glyph_cell_pixels(
+                position.x(),
+                position.y(),
+                scale,
+                canvas_width,
+                canvas_height,
+            ) else {
+                continue;
+            };
+            // f32 narrowing happens only here, at the sink-local boundary,
+            // after finite and canvas-range checks; the frame stays f64.
+            path_builder.move_to(left, top);
+            path_builder.line_to(right, top);
+            path_builder.line_to(right, bottom);
+            path_builder.line_to(left, bottom);
+            path_builder.close();
+            has_glyph = true;
+        }
+    }
+
+    let data = zero_mask_data(plan.pixel_count())?;
+    let size = IntSize::from_wh(plan.width(), plan.height()).ok_or_else(ExportError::internal)?;
+    let mut mask = Mask::from_vec(data, size).ok_or_else(ExportError::allocation_failed)?;
+    if !has_glyph {
+        return Ok(mask);
+    }
+    let path = path_builder.finish().ok_or_else(ExportError::internal)?;
+    mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    Ok(mask)
+}
+
+/// Maps one stored glyph origin to canvas-clipped pixel bounds.
+///
+/// Returns `None` when the fixture cell falls fully outside the canvas or
+/// when the scaled geometry is non-finite. Both cases mean "nothing to draw
+/// here", never a bounds error: out-of-canvas text is ordinary clipping.
+fn glyph_cell_pixels(
+    x: f64,
+    y: f64,
+    scale: f64,
+    canvas_width: f64,
+    canvas_height: f64,
+) -> Option<(f32, f32, f32, f32)> {
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let right_logical = x + TEXT_GLYPH_WIDTH_LOGICAL;
+    let bottom_logical = y + TEXT_GLYPH_HEIGHT_LOGICAL;
+    if !right_logical.is_finite() || !bottom_logical.is_finite() {
+        return None;
+    }
+    let left = x * scale;
+    let top = y * scale;
+    let right = right_logical * scale;
+    let bottom = bottom_logical * scale;
+    if ![left, top, right, bottom]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return None;
+    }
+    let left = left.clamp(0.0, canvas_width);
+    let top = top.clamp(0.0, canvas_height);
+    let right = right.clamp(0.0, canvas_width);
+    let bottom = bottom.clamp(0.0, canvas_height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    if right > f64::from(f32::MAX) || bottom > f64::from(f32::MAX) {
+        return None;
+    }
+    Some((left as f32, top as f32, right as f32, bottom as f32))
+}
+
 fn ensure_stroked_path_is_representable(path: &tiny_skia::Path) -> Result<(), ExportError> {
     let bounds = path.bounds();
     let sides = [bounds.left(), bounds.top(), bounds.right(), bounds.bottom()];
@@ -402,7 +588,7 @@ mod tests {
 
     use lumenplot_engine::bridge::{
         AxisScale, AxisScales, LineFrameSpec, LineStyle, LogicalRect, LogicalSize, PlotScene,
-        SeriesData, SeriesTopology, SrgbRgba8, Viewport,
+        SeriesData, SeriesTopology, SrgbRgba8, TextRole, Viewport,
     };
 
     fn make_frame(style_width: f64) -> lumenplot_engine::bridge::LineFrame {
@@ -427,6 +613,85 @@ mod tests {
             .snapshot()
             .resolve_line_frame(&frame_spec)
             .expect("frame")
+    }
+
+    fn make_canvas_frame(
+        canvas: (f64, f64),
+        plot: (f64, f64, f64, f64),
+    ) -> lumenplot_engine::bridge::LineFrame {
+        let canvas = LogicalSize::new(canvas.0, canvas.1).expect("canvas");
+        let plot = LogicalRect::new(plot.0, plot.1, plot.2, plot.3).expect("plot");
+        let style = LineStyle::new(SrgbRgba8::new(255, 0, 0, 255), 1.0).expect("style");
+        let frame_spec =
+            LineFrameSpec::new(canvas, plot, 1.0, style, SrgbRgba8::new(255, 255, 255, 255))
+                .expect("spec");
+        let view = Viewport::from_bounds(0.0, 10.0, 0.0, 10.0).expect("view");
+        let mut scene = PlotScene::new(view, AxisScales::new(AxisScale::Linear, AxisScale::Linear))
+            .expect("scene");
+        let data =
+            SeriesData::from_owned_xy(SeriesTopology::MonotonicX, vec![0.0, 10.0], vec![0.0, 0.0])
+                .expect("data");
+        {
+            let mut transaction = scene.transaction();
+            transaction.add_series(data).expect("series");
+            transaction.commit().expect("commit");
+        }
+        scene
+            .snapshot()
+            .resolve_line_frame(&frame_spec)
+            .expect("frame")
+    }
+
+    #[test]
+    fn retained_layout_validates_and_stale_generations_fail_the_predicate() {
+        let frame = make_frame(1.0);
+        let layout = frame.plot_layout();
+        assert!(layout.validate());
+        assert_eq!(layout.runs().len(), 6);
+        assert!(layout.validate_for_generation(layout.font_revision(), layout.layout_revision()));
+        assert!(!layout.validate_for_generation(
+            layout.font_revision().saturating_add(1),
+            layout.layout_revision()
+        ));
+        assert!(!layout.validate_for_generation(
+            layout.font_revision(),
+            layout.layout_revision().saturating_add(1)
+        ));
+        // Axis, title, and legend families ride the same result screens read.
+        assert_eq!(layout.runs()[3].source(), "x");
+        assert_eq!(layout.runs()[4].source(), "measurement");
+        assert_eq!(layout.runs()[5].source(), "series-0");
+        assert_eq!(layout.runs()[3].role(), TextRole::AxisLabel);
+        assert_eq!(layout.runs()[4].role(), TextRole::AxisTitle);
+        assert_eq!(layout.runs()[5].role(), TextRole::LegendEntry);
+    }
+
+    #[test]
+    fn retained_text_mask_is_canvas_scoped_and_clips_without_error() {
+        // Small canvas: every fixture origin sits outside it, so the text pass
+        // is a no-op instead of a bounds error and the line seam stays green.
+        let small = make_frame(1.0);
+        let small_spec = PngSpec::new(1.0).expect("spec");
+        let small_plan = RasterPlan::new(&small, &small_spec).expect("plan");
+        let small_mask = rasterize_retained_text(&small, &small_plan).expect("mask");
+        assert!(small_mask.data().iter().all(|coverage| *coverage == 0));
+
+        // Large canvas with a small plot rect: the legend cell opens at
+        // logical (72, 64), outside the plot, yet still covers canvas pixels.
+        let frame = make_canvas_frame((160.0, 90.0), (8.0, 8.0, 56.0, 56.0));
+        let spec = PngSpec::new(1.0).expect("spec");
+        let plan = RasterPlan::new(&frame, &spec).expect("plan");
+        let mask = rasterize_retained_text(&frame, &plan).expect("mask");
+        assert!(mask.data().iter().any(|coverage| *coverage != 0));
+        let legend_center = 67usize * 160 + 74;
+        assert_ne!(mask.data()[legend_center], 0);
+        // The line plan keeps the plot clip while the text plan covers the
+        // canvas, so the same pixel is clipped for lines and kept for text.
+        assert_eq!(plan.clip_a8(74, 67), 0);
+        assert_ne!(plan.text_plan().clip_a8(74, 67), 0);
+        // Mask rasterization is deterministic for the same retained result.
+        let again = rasterize_retained_text(&frame, &plan).expect("mask");
+        assert_eq!(mask.data(), again.data());
     }
 
     #[test]

@@ -51,6 +51,21 @@ pub fn encode_line_frame_png(
         )?;
     }
 
+    // M5-B2: consume the ONE retained layout result shared with the screen and
+    // CPU consumers. Glyph cells come from stored positions with zero
+    // remeasurement; canvas-scoped compositing lets axis/title/legend labels
+    // outside the plot rect still land on the page.
+    let text_mask = raster::rasterize_retained_text(frame, &plan)?;
+    let text_plan = plan.text_plan();
+    composite_mask(
+        &mut pixels,
+        &text_mask,
+        &text_plan,
+        raster::TEXT_INK_RGBA8,
+        text_plan.width(),
+        text_plan.height(),
+    )?;
+
     let rgba = to_rgba8(&pixels)?;
     encode_png(plan.width(), plan.height(), &rgba, plan.output_estimate())
 }
@@ -212,6 +227,65 @@ mod tests {
         let info = reader.next_frame(&mut data).expect("frame");
         data.truncate(info.buffer_size());
         (info.width, info.height, data)
+    }
+
+    #[test]
+    fn retained_labels_render_from_one_result_with_stable_bytes() {
+        let (_, frame, spec) = make_frame(
+            (160.0, 90.0),
+            (8.0, 8.0, 56.0, 56.0),
+            1.0,
+            (vec![0.0, 10.0], vec![0.0, 0.0]),
+            (SrgbRgba8::new(255, 0, 0, 255), 1.0),
+            SrgbRgba8::new(255, 255, 255, 255),
+        );
+        // ONE retained result: repeated reads observe the same allocation, and
+        // the axis/title/legend families below are the stored sources.
+        let layout = frame.plot_layout();
+        assert!(std::ptr::eq(layout, frame.plot_layout()));
+        assert_eq!(layout.runs().len(), 6);
+        assert_eq!(layout.runs()[3].source(), "x");
+        assert_eq!(layout.runs()[4].source(), "measurement");
+        assert_eq!(layout.runs()[5].source(), "series-0");
+        let first = encode_line_frame_png(&frame, &spec).expect("PNG");
+        let second = encode_line_frame_png(&frame, &spec).expect("PNG");
+        assert_eq!(first, second);
+        let (width, height, data) = decode_rgba(&first);
+        assert_eq!((width, height), (160, 90));
+        // The legend cell for "series-0" opens at stored origin (72, 64) with
+        // a 5x7 block, outside the plot rect: its center lands as text ink.
+        let center = (67u32 * 160 + 74) as usize * 4;
+        assert_eq!(&data[center..center + 4], &[0, 0, 0, 255]);
+        // A page corner no stored run reaches stays background.
+        let corner = (89u32 * 160 + 159) as usize * 4;
+        assert_eq!(&data[corner..corner + 4], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn stale_retained_generations_fail_the_sink_predicate() {
+        let (_, frame, spec) = make_frame(
+            (160.0, 90.0),
+            (8.0, 8.0, 56.0, 56.0),
+            1.0,
+            (vec![0.0, 10.0], vec![0.0, 0.0]),
+            (SrgbRgba8::new(255, 0, 0, 255), 1.0),
+            SrgbRgba8::new(255, 255, 255, 255),
+        );
+        let layout = frame.plot_layout();
+        assert!(layout.validate());
+        assert!(layout.validate_for_generation(layout.font_revision(), layout.layout_revision()));
+        assert!(!layout.validate_for_generation(
+            layout.font_revision().saturating_add(1),
+            layout.layout_revision()
+        ));
+        assert!(!layout.validate_for_generation(
+            layout.font_revision(),
+            layout.layout_revision().saturating_add(1)
+        ));
+        // The sink plan re-validates the retained digest before any fill, so
+        // a valid retained result plans cleanly here while a corrupt digest
+        // would fail with `InvalidInput` before allocation.
+        crate::raster::RasterPlan::new(&frame, &spec).expect("valid layout plans");
     }
 
     #[test]
