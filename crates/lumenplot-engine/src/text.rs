@@ -519,6 +519,172 @@ impl PlotLayout {
             && self.layout_revision == layout_revision
             && self.validate()
     }
+
+    /// Derives one bounding box per legend run from retained origins.
+    ///
+    /// The boxes union each run's stored glyph cells, so hit-testing reads
+    /// the same geometry the sinks draw without measuring text again. Runs
+    /// without a finite glyph cell contribute no box.
+    pub(crate) fn legend_entry_geometry(&self) -> Result<Vec<LegendEntryGeometry>, SceneError> {
+        let mut entries = Vec::new();
+        entries
+            .try_reserve(self.runs.len())
+            .map_err(|_| SceneError::new(SceneErrorKind::AllocationFailed))?;
+        for run in &self.runs {
+            if run.role() != TextRole::LegendEntry {
+                continue;
+            }
+            let mut bounds: Option<(f64, f64, f64, f64)> = None;
+            for position in run.positions() {
+                let (x, y) = (position.x(), position.y());
+                if !x.is_finite() || !y.is_finite() {
+                    continue;
+                }
+                let right = x + LEGEND_GLYPH_CELL_WIDTH;
+                let bottom = y + LEGEND_GLYPH_CELL_HEIGHT;
+                if !right.is_finite() || !bottom.is_finite() {
+                    continue;
+                }
+                bounds = Some(match bounds {
+                    None => (x, y, right, bottom),
+                    Some((x_min, y_min, x_max, y_max)) => (
+                        x.min(x_min),
+                        y.min(y_min),
+                        right.max(x_max),
+                        bottom.max(y_max),
+                    ),
+                });
+            }
+            if let Some((x_min, y_min, x_max, y_max)) = bounds {
+                entries.push(LegendEntryGeometry {
+                    entry: entries.len(),
+                    x_min,
+                    y_min,
+                    x_max,
+                    y_max,
+                });
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Resolves one point to the legend entry below it, if any.
+    ///
+    /// This is a read path: it never mutates scene, layout, visibility, or
+    /// transient state. A stale carrier fails instead of reporting against
+    /// moved geometry, mirroring the frame-resolution gate. `hidden` carries
+    /// the caller's visibility view aligned with
+    /// [`Self::legend_entry_geometry`] order; a hidden entry keeps its box
+    /// and still reports, so the returned flag preserves the hidden/visible
+    /// distinction without owning visibility state here. Callers map the
+    /// reported entry to a series key through the retained run source and
+    /// the router's legend-entry target. Overlapping boxes resolve to the
+    /// earliest entry in layout order.
+    pub(crate) fn hit_legend_entry(
+        &self,
+        x: f64,
+        y: f64,
+        hidden: Option<&[bool]>,
+        font_revision: u64,
+        layout_revision: u64,
+    ) -> Result<Option<LegendHit>, SceneError> {
+        if !x.is_finite() || !y.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        if !self.validate_for_generation(font_revision, layout_revision) {
+            return Err(SceneError::new(SceneErrorKind::Internal));
+        }
+        let entries = self.legend_entry_geometry()?;
+        if hidden.is_some_and(|hidden| hidden.len() != entries.len()) {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        for geometry in &entries {
+            if geometry.contains(x, y) {
+                return Ok(Some(LegendHit {
+                    entry: geometry.entry(),
+                    hidden: hidden.map(|flags| flags[geometry.entry()]).unwrap_or(false),
+                }));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// Logical fixture glyph-cell extent read by retained-geometry consumers.
+///
+/// Every stored glyph origin anchors one axis-aligned cell of this size. The
+/// extent is a fixed property of the retained fixture, not a font query, so
+/// entry boxes derived here agree with the fixture cells the sinks draw
+/// without measuring text again.
+pub(crate) const LEGEND_GLYPH_CELL_WIDTH: f64 = 5.0;
+/// Logical fixture glyph-cell height; see [`LEGEND_GLYPH_CELL_WIDTH`].
+pub(crate) const LEGEND_GLYPH_CELL_HEIGHT: f64 = 7.0;
+
+/// Retained geometry of one legend entry in logical units.
+///
+/// One value is derived per [`TextRole::LegendEntry`] run, in run order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LegendEntryGeometry {
+    entry: usize,
+    x_min: f64,
+    y_min: f64,
+    x_max: f64,
+    y_max: f64,
+}
+
+impl LegendEntryGeometry {
+    /// Counts legend runs in layout order.
+    pub(crate) fn entry(self) -> usize {
+        self.entry
+    }
+
+    /// Returns the left edge of the retained box.
+    pub(crate) fn x_min(self) -> f64 {
+        self.x_min
+    }
+
+    /// Returns the top edge of the retained box.
+    pub(crate) fn y_min(self) -> f64 {
+        self.y_min
+    }
+
+    /// Returns the right edge of the retained box.
+    pub(crate) fn x_max(self) -> f64 {
+        self.x_max
+    }
+
+    /// Returns the bottom edge of the retained box.
+    pub(crate) fn y_max(self) -> f64 {
+        self.y_max
+    }
+
+    /// Returns whether the point rests inside the box, edges included.
+    pub(crate) fn contains(self, x: f64, y: f64) -> bool {
+        x >= self.x_min && x <= self.x_max && y >= self.y_min && y <= self.y_max
+    }
+}
+
+/// Point-in-entry hit against retained legend geometry.
+///
+/// Callers map `entry` to a series key through the retained run source and
+/// the router's legend-entry target; `hidden` preserves the caller's
+/// visibility view for that entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LegendHit {
+    entry: usize,
+    hidden: bool,
+}
+
+impl LegendHit {
+    /// Counts legend runs in layout order.
+    pub(crate) fn entry(self) -> usize {
+        self.entry
+    }
+
+    /// Returns whether the caller's visibility view marks the entry hidden.
+    pub(crate) fn hidden(self) -> bool {
+        self.hidden
+    }
 }
 
 fn fixture_run(
@@ -823,5 +989,183 @@ mod tests {
             (layout.layout_digest(), layout.runs().len())
         }
         assert_eq!(screen_consumer(&layout), export_consumer(&layout));
+    }
+}
+
+/// Focused read-path tests for legend hit-testing.
+///
+/// Every case reads retained geometry only: no scene mutation, no visibility
+/// mutation, no drag, and no remeasurement. The stale-generation case pins
+/// the fail-closed gate the cursor and sink paths share.
+#[cfg(test)]
+mod legend_hit_tests {
+    use super::*;
+
+    fn fixture() -> PlotLayout {
+        PlotLayout::fixture().expect("fixture layout")
+    }
+
+    fn two_entry_layout() -> PlotLayout {
+        let font = FontIdentity::fixture().expect("font");
+        let runs = vec![
+            fixture_run(TextRole::AxisTitle, "title", &font, (0.0, 0.0)).expect("title run"),
+            fixture_run(TextRole::LegendEntry, "aa", &font, (0.0, 0.0)).expect("first entry"),
+            fixture_run(TextRole::LegendEntry, "bb", &font, (100.0, 100.0)).expect("second entry"),
+        ];
+        PlotLayout::from_runs(runs, 0, 0).expect("two-entry layout")
+    }
+
+    #[test]
+    fn fixture_entry_box_unions_the_retained_glyph_cells() {
+        let layout = fixture();
+        let entries = layout.legend_entry_geometry().expect("entry boxes");
+        assert_eq!(entries.len(), 1);
+        let entry = entries[0];
+        assert_eq!(entry.entry(), 0);
+        // "series-0" carries eight glyphs opening at (72, 64); each stored
+        // origin anchors one 5x7 fixture cell.
+        assert_eq!(entry.x_min(), 72.0);
+        assert_eq!(entry.y_min(), 64.0);
+        assert_eq!(entry.x_max(), 72.0 + 7.0 * 8.0 + LEGEND_GLYPH_CELL_WIDTH);
+        assert_eq!(entry.y_max(), 64.0 + LEGEND_GLYPH_CELL_HEIGHT);
+        assert_eq!(layout.runs()[5].source(), "series-0");
+    }
+
+    #[test]
+    fn point_inside_and_on_edges_hits_while_outside_misses() {
+        let layout = fixture();
+        let hit = layout
+            .hit_legend_entry(100.0, 67.5, None, 0, 0)
+            .expect("inside hit")
+            .expect("entry below the point");
+        assert_eq!(hit.entry(), 0);
+        assert!(!hit.hidden());
+        for (x, y) in [
+            (72.0, 64.0),
+            (133.0, 71.0),
+            (72.0, 71.0),
+            (133.0, 64.0),
+            (74.5, 67.0),
+        ] {
+            assert!(
+                layout
+                    .hit_legend_entry(x, y, None, 0, 0)
+                    .expect("edge query")
+                    .is_some(),
+                "edge point ({x}, {y}) must hit"
+            );
+        }
+        for (x, y) in [
+            (71.999, 67.5),
+            (133.001, 67.5),
+            (100.0, 63.999),
+            (100.0, 71.001),
+            (0.0, 0.0),
+            (200.0, 200.0),
+        ] {
+            assert!(
+                layout
+                    .hit_legend_entry(x, y, None, 0, 0)
+                    .expect("outside query")
+                    .is_none(),
+                "outside point ({x}, {y}) must miss"
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_entries_keep_geometry_and_stay_distinguishable() {
+        let layout = fixture();
+        let visible = layout
+            .hit_legend_entry(100.0, 67.5, Some(&[false]), 0, 0)
+            .expect("visible query")
+            .expect("entry below the point");
+        assert_eq!(visible.entry(), 0);
+        assert!(!visible.hidden());
+        let hidden = layout
+            .hit_legend_entry(100.0, 67.5, Some(&[true]), 0, 0)
+            .expect("hidden query")
+            .expect("hidden entry keeps its box");
+        assert_eq!(hidden.entry(), 0);
+        assert!(hidden.hidden());
+        // Geometry is identical either way: only the flag distinguishes.
+        assert_eq!(
+            layout.legend_entry_geometry().expect("boxes"),
+            layout.legend_entry_geometry().expect("boxes")
+        );
+    }
+
+    #[test]
+    fn two_entries_resolve_independently_and_first_wins_overlap() {
+        let layout = two_entry_layout();
+        let entries = layout.legend_entry_geometry().expect("entry boxes");
+        assert_eq!(entries.len(), 2);
+        assert_eq!((entries[0].x_min(), entries[0].y_min()), (0.0, 0.0));
+        assert_eq!((entries[1].x_min(), entries[1].y_min()), (100.0, 100.0));
+        let first = layout
+            .hit_legend_entry(2.0, 3.0, None, 0, 0)
+            .expect("first query")
+            .expect("first entry");
+        assert_eq!(first.entry(), 0);
+        let second = layout
+            .hit_legend_entry(102.0, 103.0, None, 0, 0)
+            .expect("second query")
+            .expect("second entry");
+        assert_eq!(second.entry(), 1);
+        assert!(
+            layout
+                .hit_legend_entry(50.0, 50.0, None, 0, 0)
+                .expect("gap query")
+                .is_none()
+        );
+
+        let font = FontIdentity::fixture().expect("font");
+        let overlapping = PlotLayout::from_runs(
+            vec![
+                fixture_run(TextRole::LegendEntry, "aa", &font, (0.0, 0.0)).expect("run"),
+                fixture_run(TextRole::LegendEntry, "aa", &font, (0.0, 0.0)).expect("run"),
+            ],
+            0,
+            0,
+        )
+        .expect("overlapping layout");
+        let hit = overlapping
+            .hit_legend_entry(2.0, 3.0, None, 0, 0)
+            .expect("overlap query")
+            .expect("overlap resolves");
+        assert_eq!(hit.entry(), 0);
+    }
+
+    #[test]
+    fn non_finite_queries_misaligned_visibility_and_stale_layouts_fail() {
+        let layout = fixture();
+        let error = layout
+            .hit_legend_entry(f64::NAN, 67.5, None, 0, 0)
+            .expect_err("non-finite query");
+        assert_eq!(error.kind(), SceneErrorKind::InvalidInput);
+        let error = layout
+            .hit_legend_entry(100.0, 67.5, Some(&[]), 0, 0)
+            .expect_err("misaligned visibility view");
+        assert_eq!(error.kind(), SceneErrorKind::InvalidInput);
+        let error = layout
+            .hit_legend_entry(100.0, 67.5, Some(&[false, true]), 0, 0)
+            .expect_err("overlong visibility view");
+        assert_eq!(error.kind(), SceneErrorKind::InvalidInput);
+
+        let moved = layout.with_layout_revision(1);
+        let error = moved
+            .hit_legend_entry(100.0, 67.5, None, 0, 0)
+            .expect_err("stale carrier");
+        assert_eq!(error.kind(), SceneErrorKind::Internal);
+        let error = layout
+            .hit_legend_entry(100.0, 67.5, None, 0, 1)
+            .expect_err("stale generation pair");
+        assert_eq!(error.kind(), SceneErrorKind::Internal);
+        assert!(
+            moved
+                .hit_legend_entry(100.0, 67.5, None, 0, 1)
+                .expect("current generation pair")
+                .is_some()
+        );
     }
 }

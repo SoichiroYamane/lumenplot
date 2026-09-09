@@ -88,6 +88,38 @@ impl ResolvedLayout {
         }
         Ok(LinePoint::from_parts(display_x, display_y))
     }
+
+    fn inverse_point(&self, display_x: f64, display_y: f64) -> Result<(f64, f64), SceneError> {
+        if !display_x.is_finite() || !display_y.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        let plot_width = self.plot_rect.x_max() - self.plot_rect.x_min();
+        let plot_height = self.plot_rect.y_max() - self.plot_rect.y_min();
+        let x_span = self.x_range.max() - self.x_range.min();
+        let y_span = self.y_range.max() - self.y_range.min();
+        if !plot_width.is_finite()
+            || !plot_height.is_finite()
+            || !x_span.is_finite()
+            || !y_span.is_finite()
+            || plot_width <= 0.0
+            || plot_height <= 0.0
+            || x_span <= 0.0
+            || y_span <= 0.0
+        {
+            return Err(SceneError::new(SceneErrorKind::Internal));
+        }
+        let x_fraction = (display_x - self.plot_rect.x_min()) / plot_width;
+        let y_fraction = (display_y - self.plot_rect.y_min()) / plot_height;
+        if !x_fraction.is_finite() || !y_fraction.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        let x = self.x_range.min() + x_fraction * x_span;
+        let y = self.y_range.max() - y_fraction * y_span;
+        if !x.is_finite() || !y.is_finite() {
+            return Err(SceneError::new(SceneErrorKind::InvalidInput));
+        }
+        Ok((x, y))
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +201,148 @@ pub(crate) fn resolve_line_frame(
         frame_series,
         plot_layout,
     ))
+}
+
+/// Nearest retained data point behind a cursor query, in scientific units.
+///
+/// `series` is the engine series key the pointer-oriented router reports for
+/// selection; `point` counts retained points of that series in storage order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NearestInspectedPoint {
+    series: u64,
+    point: usize,
+    x: f64,
+    y: f64,
+    display_distance: f64,
+}
+
+impl NearestInspectedPoint {
+    /// Returns the engine key of the nearest series.
+    pub(crate) fn series(self) -> u64 {
+        self.series
+    }
+
+    /// Returns the storage index of the nearest point within its series.
+    pub(crate) fn point(self) -> usize {
+        self.point
+    }
+
+    /// Returns the scientific x of the nearest point.
+    pub(crate) fn x(self) -> f64 {
+        self.x
+    }
+
+    /// Returns the scientific y of the nearest point.
+    pub(crate) fn y(self) -> f64 {
+        self.y
+    }
+
+    /// Returns the display-space distance from the query to the point.
+    pub(crate) fn display_distance(self) -> f64 {
+        self.display_distance
+    }
+}
+
+/// Cursor inspection result: scientific position plus nearest retained point.
+///
+/// The result is transient inspection data. It never enters scene, layout,
+/// or export state, and computing it mutates nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CursorInspection {
+    x: f64,
+    y: f64,
+    nearest: Option<NearestInspectedPoint>,
+}
+
+impl CursorInspection {
+    /// Returns the scientific x under the query.
+    pub(crate) fn x(self) -> f64 {
+        self.x
+    }
+
+    /// Returns the scientific y under the query.
+    pub(crate) fn y(self) -> f64 {
+        self.y
+    }
+
+    /// Returns the nearest retained series point, if any series holds data.
+    pub(crate) fn nearest(self) -> Option<NearestInspectedPoint> {
+        self.nearest
+    }
+}
+
+/// Inspects the retained scene at one display position without mutating state.
+///
+/// `layout` is the retained carrier previously resolved for `spec`; it is
+/// rejected when its generations no longer match `snapshot`, so inspection
+/// cannot report against moved geometry. The scientific position is the exact
+/// inverse of the forward frame map, so queries outside the plot area
+/// extrapolate instead of clamping. The nearest point scans retained series
+/// data in display space, where proximity matches what the pointer overlaps;
+/// ties resolve to the smallest series key, then the smallest point index.
+/// Gap-affiliated points stay inspectable: inspection reads retained data,
+/// not clipped segments.
+pub(crate) fn inspect_cursor(
+    layout: &crate::text::PlotLayout,
+    snapshot: &SceneSnapshot,
+    spec: &LineFrameSpec,
+    display_x: f64,
+    display_y: f64,
+) -> Result<CursorInspection, SceneError> {
+    if !display_x.is_finite() || !display_y.is_finite() {
+        return Err(SceneError::new(SceneErrorKind::InvalidInput));
+    }
+    let scales = snapshot.state.scales();
+    if scales.x() != AxisScale::Linear || scales.y() != AxisScale::Linear {
+        return Err(SceneError::new(SceneErrorKind::UnsupportedCapability));
+    }
+    if !layout.validate_for_generation(snapshot.font_revision(), snapshot.layout_revision()) {
+        return Err(SceneError::new(SceneErrorKind::Internal));
+    }
+    let (canvas, plot_rect, logical_units_per_inch, _, _) = spec.parts();
+    let mapping = ResolvedLayout::new(
+        canvas,
+        plot_rect,
+        logical_units_per_inch,
+        snapshot.state.viewport(),
+    )?;
+    let (x, y) = mapping.inverse_point(display_x, display_y)?;
+    let mut best: Option<(u64, usize, f64, f64, f64)> = None;
+    for (id, storage) in snapshot.state.series_map() {
+        for (index, point) in storage.points().iter().enumerate() {
+            let display = match mapping.transform_point(point.x, point.y) {
+                Ok(display) => display,
+                Err(_) => continue,
+            };
+            let dx = display.x() - display_x;
+            let dy = display.y() - display_y;
+            if !dx.is_finite() || !dy.is_finite() {
+                continue;
+            }
+            let squared = dx * dx + dy * dy;
+            if !squared.is_finite() {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                Some((_, _, _, _, best_squared)) => squared < best_squared,
+            };
+            if better {
+                best = Some((id.0, index, point.x, point.y, squared));
+            }
+        }
+    }
+    Ok(CursorInspection {
+        x,
+        y,
+        nearest: best.map(|(series, point, x, y, squared)| NearestInspectedPoint {
+            series,
+            point,
+            x,
+            y,
+            display_distance: squared.sqrt(),
+        }),
+    })
 }
 
 #[derive(Default)]
@@ -956,5 +1130,166 @@ mod tests {
                 mismatch => panic!("clip mismatch: {mismatch:?}"),
             }
         }
+    }
+
+    use crate::data::{SeriesInput, Topology};
+    use crate::scene::{
+        AxisScale as EngineAxisScale, AxisScales as EngineAxisScales, PlotScene as EnginePlotScene,
+        Viewport as EngineViewport,
+    };
+
+    fn engine_scene_with_points(
+        x_min: f64,
+        x_max: f64,
+        y_min: f64,
+        y_max: f64,
+        series: Vec<(Vec<f64>, Vec<f64>)>,
+    ) -> EnginePlotScene {
+        let view = EngineViewport::from_bounds(x_min, x_max, y_min, y_max).expect("engine view");
+        let mut scene = EnginePlotScene::new(
+            view,
+            EngineAxisScales::new(EngineAxisScale::Linear, EngineAxisScale::Linear),
+        )
+        .expect("engine scene");
+        {
+            let mut transaction = scene.transaction();
+            for (x, y) in series {
+                let data = SeriesInput::from_owned_xy(Topology::ArbitraryXY, x, y, None)
+                    .expect("engine data");
+                transaction.add_series(data).expect("add engine series");
+            }
+            transaction.commit().expect("commit engine series");
+        }
+        scene
+    }
+
+    #[test]
+    fn cursor_centre_reports_scientific_midpoint_and_nearest_point() {
+        let scene = engine_scene_with_points(
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            vec![(vec![0.0, 5.0, 10.0], vec![0.0, 5.0, 10.0])],
+        );
+        let snapshot = scene.snapshot();
+        let layout = snapshot.plot_layout();
+        let inspection = inspect_cursor(&layout, &snapshot, &spec(), 50.0, 40.0).expect("cursor");
+        assert_close(inspection.x(), 5.0);
+        assert_close(inspection.y(), 5.0);
+        let nearest = inspection.nearest().expect("nearest point");
+        assert_eq!(nearest.series(), 1);
+        assert_eq!(nearest.point(), 1);
+        assert_close(nearest.x(), 5.0);
+        assert_close(nearest.y(), 5.0);
+        assert_close(nearest.display_distance(), 0.0);
+    }
+
+    #[test]
+    fn cursor_ties_resolve_to_smallest_series_then_point() {
+        let scene = engine_scene_with_points(
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            vec![(vec![5.0], vec![5.0]), (vec![5.0], vec![5.0])],
+        );
+        let snapshot = scene.snapshot();
+        let layout = snapshot.plot_layout();
+        let inspection = inspect_cursor(&layout, &snapshot, &spec(), 50.0, 40.0).expect("cursor");
+        let nearest = inspection.nearest().expect("nearest point");
+        assert_eq!(nearest.series(), 1);
+        assert_eq!(nearest.point(), 0);
+        assert_close(nearest.display_distance(), 0.0);
+    }
+
+    #[test]
+    fn cursor_outside_plot_extrapolates_and_keeps_nearest() {
+        let scene = engine_scene_with_points(
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            vec![(vec![0.0, 5.0, 10.0], vec![0.0, 5.0, 10.0])],
+        );
+        let snapshot = scene.snapshot();
+        let layout = snapshot.plot_layout();
+        let inspection = inspect_cursor(&layout, &snapshot, &spec(), 0.0, 0.0).expect("cursor");
+        assert_close(inspection.x(), -1.25);
+        assert_close(inspection.y(), 15.0);
+        let nearest = inspection.nearest().expect("nearest point");
+        assert_eq!(nearest.series(), 1);
+        assert_eq!(nearest.point(), 0);
+        assert_close(nearest.x(), 0.0);
+        assert_close(nearest.y(), 0.0);
+        assert_close(nearest.display_distance(), 3700.0_f64.sqrt());
+    }
+
+    #[test]
+    fn cursor_without_series_reports_coordinates_only() {
+        let scene = engine_scene_with_points(0.0, 10.0, 0.0, 10.0, vec![]);
+        let snapshot = scene.snapshot();
+        let layout = snapshot.plot_layout();
+        let inspection = inspect_cursor(&layout, &snapshot, &spec(), 50.0, 40.0).expect("cursor");
+        assert_close(inspection.x(), 5.0);
+        assert_close(inspection.y(), 5.0);
+        assert!(inspection.nearest().is_none());
+    }
+
+    #[test]
+    fn cursor_rejects_non_finite_stale_and_log_scale() {
+        let mut scene = engine_scene_with_points(
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            vec![(vec![0.0, 5.0, 10.0], vec![0.0, 5.0, 10.0])],
+        );
+        let snapshot = scene.snapshot();
+        let layout = snapshot.plot_layout();
+        let error = inspect_cursor(&layout, &snapshot, &spec(), f64::NAN, 40.0)
+            .expect_err("non-finite query");
+        assert_eq!(error.kind(), SceneErrorKind::InvalidInput);
+
+        let before_layout = layout;
+        {
+            let mut transaction = scene.transaction();
+            transaction
+                .set_viewport(EngineViewport::from_bounds(1.0, 9.0, 1.0, 9.0).expect("view"))
+                .expect("moved view");
+            transaction.commit().expect("commit view");
+        }
+        let after = scene.snapshot();
+        let error =
+            inspect_cursor(&before_layout, &after, &spec(), 50.0, 40.0).expect_err("stale carrier");
+        assert_eq!(error.kind(), SceneErrorKind::Internal);
+        let current = after.plot_layout();
+        let inspection =
+            inspect_cursor(&current, &after, &spec(), 50.0, 40.0).expect("current carrier");
+        assert_close(inspection.x(), 5.0);
+        assert_close(inspection.y(), 5.0);
+        assert!(inspection.nearest().is_some());
+
+        let view = EngineViewport::from_bounds(1.0, 10.0, 1.0, 10.0).expect("log view");
+        let mut log_scene = EnginePlotScene::new(
+            view,
+            EngineAxisScales::new(EngineAxisScale::Linear, EngineAxisScale::Linear),
+        )
+        .expect("log scene");
+        {
+            let mut transaction = log_scene.transaction();
+            transaction
+                .set_axis_scales(EngineAxisScales::new(
+                    EngineAxisScale::Log10,
+                    EngineAxisScale::Linear,
+                ))
+                .expect("log scales");
+            transaction.commit().expect("commit log scales");
+        }
+        let log_snapshot = log_scene.snapshot();
+        let log_layout = log_snapshot.plot_layout();
+        let error = inspect_cursor(&log_layout, &log_snapshot, &spec(), 50.0, 40.0)
+            .expect_err("log scale has no cursor map");
+        assert_eq!(error.kind(), SceneErrorKind::UnsupportedCapability);
     }
 }
