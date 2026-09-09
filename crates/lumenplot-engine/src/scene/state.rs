@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::data::SeriesStorage;
 use crate::error::{SceneError, SceneErrorKind};
-use crate::text::PlotLayout;
+use crate::text::{PlotLayout, RetainedAnnotation};
 
 use super::ids::SeriesId;
 use super::revision::{ComponentRevision, SceneRevision};
@@ -101,6 +101,9 @@ impl AxisScales {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct AnnotationId(pub(crate) u64);
+
 #[derive(Debug)]
 pub(crate) struct SceneState {
     revision: SceneRevision,
@@ -115,6 +118,7 @@ pub(crate) struct SceneState {
     plot_layout: Arc<PlotLayout>,
     annotation_revision: ComponentRevision,
     series: BTreeMap<SeriesId, Arc<SeriesStorage>>,
+    annotations: BTreeMap<AnnotationId, RetainedAnnotation>,
 }
 
 pub(crate) struct PublishValues {
@@ -124,10 +128,13 @@ pub(crate) struct PublishValues {
     revision: SceneRevision,
     data_changed: bool,
     view_changed: bool,
+    annotation_changed: bool,
     series: BTreeMap<SeriesId, Arc<SeriesStorage>>,
+    annotations: BTreeMap<AnnotationId, RetainedAnnotation>,
 }
 
 impl PublishValues {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         canonical_view: Viewport,
         viewport: Viewport,
@@ -135,7 +142,9 @@ impl PublishValues {
         revision: SceneRevision,
         data_changed: bool,
         view_changed: bool,
+        annotation_changed: bool,
         series: BTreeMap<SeriesId, Arc<SeriesStorage>>,
+        annotations: BTreeMap<AnnotationId, RetainedAnnotation>,
     ) -> Self {
         Self {
             canonical_view,
@@ -144,7 +153,9 @@ impl PublishValues {
             revision,
             data_changed,
             view_changed,
+            annotation_changed,
             series,
+            annotations,
         }
     }
 }
@@ -165,6 +176,7 @@ impl SceneState {
             plot_layout: Arc::new(PlotLayout::fixture()?),
             annotation_revision: ComponentRevision(0),
             series: BTreeMap::new(),
+            annotations: BTreeMap::new(),
         })
     }
 
@@ -176,7 +188,9 @@ impl SceneState {
             revision,
             data_changed,
             view_changed,
+            annotation_changed,
             series,
+            annotations,
         } = values;
         let data_revision = if data_changed {
             base.data_revision
@@ -200,6 +214,13 @@ impl SceneState {
         } else {
             base.layout_revision
         };
+        let annotation_revision = if annotation_changed {
+            base.annotation_revision
+                .checked_next()
+                .ok_or_else(|| SceneError::new(SceneErrorKind::RevisionExhausted))?
+        } else {
+            base.annotation_revision
+        };
         let plot_layout = if layout_changed {
             Arc::new(base.plot_layout.with_layout_revision(layout_revision.0))
         } else {
@@ -216,8 +237,9 @@ impl SceneState {
             font_revision: base.font_revision,
             layout_revision,
             plot_layout,
-            annotation_revision: base.annotation_revision,
+            annotation_revision,
             series,
+            annotations,
         })
     }
 
@@ -257,6 +279,18 @@ impl SceneState {
         &self.series
     }
 
+    pub(crate) fn annotation_revision(&self) -> ComponentRevision {
+        self.annotation_revision
+    }
+
+    pub(crate) fn annotation(&self, id: AnnotationId) -> Option<&RetainedAnnotation> {
+        self.annotations.get(&id)
+    }
+
+    pub(crate) fn annotations_map(&self) -> &BTreeMap<AnnotationId, RetainedAnnotation> {
+        &self.annotations
+    }
+
     #[cfg(test)]
     pub(crate) fn component_revisions(&self) -> (ComponentRevision, ComponentRevision) {
         (self.data_revision, self.view_revision)
@@ -268,6 +302,7 @@ pub(crate) struct PlotScene {
     pub(crate) state: Arc<SceneState>,
     pub(crate) next_series_id: u64,
     pub(crate) next_epoch: u64,
+    pub(crate) next_annotation_id: u64,
 }
 
 impl PlotScene {
@@ -276,6 +311,7 @@ impl PlotScene {
             state: Arc::new(SceneState::new(canonical_view, scales)?),
             next_series_id: 1,
             next_epoch: 1,
+            next_annotation_id: 1,
         })
     }
 
