@@ -286,7 +286,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-UX-028` | `MUST` | keyboard matrix | 2 | v1 | `AT-FUNC-KEYBOARD-A11Y` | Not implemented |
 | `LP-UX-029` | `SHOULD` | OS interaction review | 2-3 | v1 quality | `AT-FUNC-KEYBOARD-A11Y` | Not implemented |
 | `LP-UX-030` | `MUST` | accessibility review | 2 | v1 | `AT-FUNC-KEYBOARD-A11Y` | Not implemented |
-| `LP-UX-031` | `MUST` | contrast fixture | 2 | v1 | `AT-REVIEW-A11Y` | Not implemented |
+| `LP-UX-031` | `MUST` | contrast fixture | 2 | v1 | `AT-REVIEW-A11Y` | Not implemented (bounded M5-C evidence merged (PR #144 / 9228895): five public default constants and LineCue frozen; unrounded AT-REVIEW-A11Y contrast fixture and checker contract pass; full requirement remains open because no consumer/state/platform closure.) |
 | `LP-UX-032` | `MUST` | preference fixture | 2 | v1 | `AT-REVIEW-A11Y` | Not implemented |
 | `LP-UX-033` | `SHOULD` | platform accessibility review | 2-3 | v1 non-blocking | `AT-REVIEW-A11Y` | Not implemented |
 | `LP-PERF-001` | `MUST` | 10M fixture | 1 | native v1 gate | `AT-BENCH-NATIVE-10M` | Not measured (environment required where hardware or GPU is involved) |
@@ -478,7 +478,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-UX-025` | `MUST NOT` | `AT-REVIEW-UX` | Not implemented |
 | `LP-UX-028` | `MUST` | `AT-FUNC-KEYBOARD-A11Y` | Not implemented |
 | `LP-UX-030` | `MUST` | `AT-FUNC-KEYBOARD-A11Y` | Not implemented |
-| `LP-UX-031` | `MUST` | `AT-REVIEW-A11Y` | Not implemented |
+| `LP-UX-031` | `MUST` | `AT-REVIEW-A11Y` | Not implemented (bounded M5-C evidence merged (PR #144 / 9228895): five public default constants and LineCue frozen; unrounded AT-REVIEW-A11Y contrast fixture and checker contract pass; full requirement remains open because no consumer/state/platform closure.) |
 | `LP-UX-032` | `MUST` | `AT-REVIEW-A11Y` | Not implemented |
 | `LP-PERF-001` | `MUST` | `AT-BENCH-NATIVE-10M` | Not measured (environment required where hardware or GPU is involved) |
 | `LP-PERF-004` | `MUST` | `AT-BENCH-NATIVE-10M` | Not measured (environment required where hardware or GPU is involved) |
