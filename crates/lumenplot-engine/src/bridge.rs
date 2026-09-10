@@ -390,6 +390,97 @@ impl LineStyle {
     }
 }
 
+// M5-C provisional contrast palette (AT-REVIEW-A11Y, LP-UX-031; API-0004
+// acceptance baselines 4.5:1 normal text / 3:1 large text / 3:1 non-text and
+// focus indicators, compared unrounded). Working vocabulary proposed in-PR;
+// explicitly NON-FROZEN: the freeze decision is deferred to release review,
+// and these values carry no legal WCAG conformance claim. The cue vocabulary
+// is data-only in this slice: no renderer, runtime, viewer, or export sink
+// consumes it yet, so adding it changes no rendering behavior and introduces
+// no silent fallback.
+impl SrgbRgba8 {
+    /// Provisional default background (opaque white).
+    pub const DEFAULT_BACKGROUND: SrgbRgba8 = SrgbRgba8 {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    };
+    /// Provisional default text ink (opaque black). Covers both the 4.5:1
+    /// normal-text and the 3:1 large-text baselines against
+    /// [`SrgbRgba8::DEFAULT_BACKGROUND`].
+    pub const DEFAULT_TEXT_INK: SrgbRgba8 = SrgbRgba8 {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 255,
+    };
+    /// Provisional default focus-indicator ink (opaque black, same value as
+    /// text ink by proposal, distinct by outline geometry). Covers the 3:1
+    /// focus-indicator baseline against
+    /// [`SrgbRgba8::DEFAULT_BACKGROUND`].
+    pub const DEFAULT_FOCUS_RING: SrgbRgba8 = SrgbRgba8 {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 255,
+    };
+}
+
+/// Provisional default series palette (opaque). Each entry is proposed to
+/// clear the 3:1 non-text baseline against
+/// [`SrgbRgba8::DEFAULT_BACKGROUND`]; hues are distinct but the set is
+/// NON-FROZEN and makes no color-vision-deficiency safety claim. Pair with
+/// [`DEFAULT_SERIES_CUES`] so no series distinction relies on color alone.
+pub const DEFAULT_SERIES_PALETTE: [SrgbRgba8; 4] = [
+    SrgbRgba8 {
+        r: 0,
+        g: 114,
+        b: 178,
+        a: 255,
+    },
+    SrgbRgba8 {
+        r: 213,
+        g: 94,
+        b: 0,
+        a: 255,
+    },
+    SrgbRgba8 {
+        r: 0,
+        g: 158,
+        b: 115,
+        a: 255,
+    },
+    SrgbRgba8 {
+        r: 93,
+        g: 58,
+        b: 155,
+        a: 255,
+    },
+];
+
+/// Provisional non-color cue working vocabulary (NON-FROZEN). One cue per
+/// [`DEFAULT_SERIES_PALETTE`] entry, all pairwise distinct, so every series
+/// distinction carries at least one non-color cue. Data-only in this slice:
+/// not consumed by any renderer or export sink.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum LineCue {
+    Solid,
+    Dashed,
+    Dotted,
+    DashDot,
+}
+
+/// Provisional per-series cue assignment, index-aligned with
+/// [`DEFAULT_SERIES_PALETTE`].
+pub const DEFAULT_SERIES_CUES: [LineCue; 4] = [
+    LineCue::Solid,
+    LineCue::Dashed,
+    LineCue::Dotted,
+    LineCue::DashDot,
+];
+
 pub struct LineFrameSpec {
     canvas: LogicalSize,
     plot_rect: LogicalRect,
