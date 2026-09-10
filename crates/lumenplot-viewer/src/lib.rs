@@ -10,6 +10,11 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use lumenplot::{PlotScene, PublicError, SceneRevision, SceneSnapshot, Viewport};
+use lumenplot_runtime::input::{
+    FocusDirection, FocusTarget, HistoryDirection, InputRouteError, KeyboardEvent, KeyboardKey,
+    ModifierKeys, NavigationDirection, SemanticAction, TransientUiState, next_focus,
+    previous_focus, route_keyboard,
+};
 use lumenplot_runtime::{
     DeviceGeneration, EngineSession, LifecycleOutcome, LoopMode, LoopOutcome, RuntimeError,
     SessionState, SurfaceId, SurfaceState,
@@ -174,6 +179,12 @@ impl Viewer {
 // are M5 and are never added here. Real pointer-coordinate conversion, drag
 // state, and double-click timing remain future work; view steps below are
 // deterministic headless fractions around the center.
+//
+// Slice-K keyboard wiring consumes `route_keyboard` headlessly: each press is
+// routed against the viewer's 2-variant focus, view-affecting actions apply
+// through exactly one facade transaction, and routed-but-not-yet-applicable
+// actions (grid, cursor, series visibility, Legend, annotation, export)
+// report an explicit deferred outcome with the revision untouched.
 
 const VIEWER_HISTORY_LIMIT: usize = 64;
 
@@ -439,21 +450,17 @@ impl Viewer {
     }
 
     fn move_focus_next(&mut self) -> Option<ViewerFocus> {
-        let next = match self.focus {
-            None => Some(ViewerFocus::Plot),
-            Some(ViewerFocus::Plot) => Some(ViewerFocus::Legend),
-            Some(ViewerFocus::Legend) => Some(ViewerFocus::Plot),
-        };
+        // Reconciled by construction: the runtime headless order agrees with
+        // the 2-variant viewer order, so the viewer delegates instead of
+        // re-implementing the cycle.
+        let next = target_to_viewer_focus(next_focus(viewer_focus_to_target(self.focus)));
         self.focus = next;
         next
     }
 
     fn move_focus_previous(&mut self) -> Option<ViewerFocus> {
-        let next = match self.focus {
-            None => Some(ViewerFocus::Legend),
-            Some(ViewerFocus::Plot) => Some(ViewerFocus::Legend),
-            Some(ViewerFocus::Legend) => Some(ViewerFocus::Plot),
-        };
+        // Same delegation as `move_focus_next`: one shared focus order.
+        let next = target_to_viewer_focus(previous_focus(viewer_focus_to_target(self.focus)));
         self.focus = next;
         next
     }
@@ -472,6 +479,133 @@ impl Viewer {
 
     fn cancel_pending(&mut self) {
         self.pending = None;
+    }
+}
+
+// Slice-K focus reconciliation: the viewer keeps the authorized 2-variant
+// focus while routing through the runtime's focus model. Per-entry focus
+// stays deferred by decision and is non-precedential for v1 scope.
+fn viewer_focus_to_target(focus: Option<ViewerFocus>) -> Option<FocusTarget> {
+    match focus {
+        None => None,
+        Some(ViewerFocus::Plot) => Some(FocusTarget::Plot),
+        Some(ViewerFocus::Legend) => Some(FocusTarget::Legend),
+    }
+}
+
+fn target_to_viewer_focus(target: Option<FocusTarget>) -> Option<ViewerFocus> {
+    match target {
+        None => None,
+        Some(FocusTarget::Plot) => Some(ViewerFocus::Plot),
+        Some(FocusTarget::Legend) => Some(ViewerFocus::Legend),
+        // Unreachable through the viewer (it never produces keyed targets),
+        // mirroring the runtime headless order's collapse to Plot.
+        Some(FocusTarget::LegendEntry(_))
+        | Some(FocusTarget::Series(_))
+        | Some(FocusTarget::Annotation(_)) => Some(ViewerFocus::Plot),
+    }
+}
+
+/// Outcome of applying one routed keyboard press to the viewer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KeyboardOutcome {
+    /// The action was viewer-applicable. The flag reports whether the scene
+    /// changed (revision advanced through exactly one facade transaction) or
+    /// the step was revision-neutral (no-op view, focus move, cancel).
+    Applied(bool),
+    /// The action routed successfully but has no scene transaction yet
+    /// (grid, cursor, series visibility, Legend, annotation, export). The
+    /// revision is untouched by decision, never by silent fallback.
+    Deferred,
+}
+
+/// Failure applying one keyboard press: either the router rejected the
+/// press, or the single facade transaction for an applied step failed.
+#[derive(Debug)]
+enum KeyboardApplyError {
+    /// The press has no accepted semantic action for the current focus.
+    Route(InputRouteError),
+    /// The routed view step failed inside its facade transaction.
+    Apply(PublicError),
+}
+
+impl From<InputRouteError> for KeyboardApplyError {
+    fn from(error: InputRouteError) -> Self {
+        Self::Route(error)
+    }
+}
+
+impl From<PublicError> for KeyboardApplyError {
+    fn from(error: PublicError) -> Self {
+        Self::Apply(error)
+    }
+}
+
+impl Viewer {
+    /// Routes one normalized key press through the runtime keyboard matrix
+    /// and applies viewer-applicable actions headlessly.
+    ///
+    /// View navigation, history, Home, focus moves, and cancellation apply
+    /// through the existing single-transaction seams, so each committed step
+    /// advances the scene revision exactly once. Routed actions without a
+    /// scene transaction yet report [`KeyboardOutcome::Deferred`] with the
+    /// revision untouched. Routing rejections leave revision and focus alone.
+    /// Host key normalization stays outside this edge: callers supply an
+    /// already-normalized [`KeyboardKey`].
+    fn apply_keyboard(
+        &mut self,
+        key: KeyboardKey,
+        modifiers: ModifierKeys,
+    ) -> Result<KeyboardOutcome, KeyboardApplyError> {
+        let event = KeyboardEvent::new(key, modifiers);
+        let state = TransientUiState::with_focus(viewer_focus_to_target(self.focus));
+        match route_keyboard(event, state)? {
+            SemanticAction::Navigate { direction } => {
+                let direction = match direction {
+                    NavigationDirection::Left => ViewerDirection::Left,
+                    NavigationDirection::Right => ViewerDirection::Right,
+                    NavigationDirection::Up => ViewerDirection::Up,
+                    NavigationDirection::Down => ViewerDirection::Down,
+                };
+                Ok(KeyboardOutcome::Applied(self.apply_navigate(direction)?))
+            }
+            SemanticAction::History { direction } => {
+                let changed = match direction {
+                    HistoryDirection::Previous => self.apply_history_previous()?,
+                    HistoryDirection::Next => self.apply_history_next()?,
+                };
+                Ok(KeyboardOutcome::Applied(changed))
+            }
+            SemanticAction::Home => Ok(KeyboardOutcome::Applied(self.apply_home()?)),
+            SemanticAction::MoveFocus { direction } => {
+                let _ = match direction {
+                    FocusDirection::Next => self.move_focus_next(),
+                    FocusDirection::Previous => self.move_focus_previous(),
+                };
+                Ok(KeyboardOutcome::Applied(false))
+            }
+            SemanticAction::Cancel => {
+                self.cancel_pending();
+                Ok(KeyboardOutcome::Applied(false))
+            }
+            SemanticAction::ToggleGrid
+            | SemanticAction::ToggleCursor
+            | SemanticAction::ToggleSeriesVisibility { .. }
+            | SemanticAction::Legend { .. }
+            | SemanticAction::Annotation { .. }
+            | SemanticAction::Export => Ok(KeyboardOutcome::Deferred),
+            // The keyboard matrix never yields pointer-only actions; fail
+            // loudly if the matrix changes rather than deferring silently.
+            SemanticAction::Pan { .. }
+            | SemanticAction::Zoom { .. }
+            | SemanticAction::BoxZoom { .. }
+            | SemanticAction::Select { .. }
+            | SemanticAction::ClearSelection
+            | SemanticAction::Context { .. }
+            | SemanticAction::Hover { .. } => {
+                unreachable!("keyboard route returned a pointer-only semantic action")
+            }
+        }
     }
 }
 
@@ -701,5 +835,288 @@ mod tests {
             LifecycleOutcome::CloseRequested
         );
         assert!(viewer.is_closed());
+    }
+
+    // AT-FUNC-KEYBOARD-A11Y (LP-UX-028 keyboard matrix + LP-UX-030 focus
+    // movement through Viewer): drives the full 20-variant key set through
+    // `Viewer::apply_keyboard`. Tab order is Plot<->Legend and
+    // revision-neutral; focus-gated operations report their routing
+    // rejections without touching revision or focus; applied view steps
+    // advance the revision exactly once per committed transition; routed
+    // actions without a scene transaction yet defer explicitly.
+    #[test]
+    fn at_func_keyboard_a11y_viewer_matrix() {
+        use lumenplot_runtime::input::InputRouteErrorKind;
+
+        fn applied(result: Result<KeyboardOutcome, KeyboardApplyError>) -> bool {
+            match result {
+                Ok(KeyboardOutcome::Applied(changed)) => changed,
+                other => panic!("expected an applied keyboard step, got {other:?}"),
+            }
+        }
+
+        fn deferred(result: Result<KeyboardOutcome, KeyboardApplyError>) {
+            match result {
+                Ok(KeyboardOutcome::Deferred) => {}
+                other => panic!("expected an explicit deferred outcome, got {other:?}"),
+            }
+        }
+
+        fn rejected(result: Result<KeyboardOutcome, KeyboardApplyError>) -> InputRouteErrorKind {
+            match result {
+                Err(KeyboardApplyError::Route(error)) => {
+                    assert!(!error.message().is_empty(), "rejection carries detail");
+                    error.kind()
+                }
+                Err(KeyboardApplyError::Apply(error)) => {
+                    panic!("expected a routing rejection, apply failed: {error:?}")
+                }
+                Ok(outcome) => panic!("expected a routing rejection, got {outcome:?}"),
+            }
+        }
+
+        fn press(
+            viewer: &mut Viewer,
+            key: KeyboardKey,
+            modifiers: ModifierKeys,
+        ) -> Result<KeyboardOutcome, KeyboardApplyError> {
+            viewer.apply_keyboard(key, modifiers)
+        }
+
+        // Focus mapping round-trips the authorized 2-variant order.
+        assert_eq!(viewer_focus_to_target(None), None);
+        assert_eq!(
+            viewer_focus_to_target(Some(ViewerFocus::Plot)),
+            Some(FocusTarget::Plot)
+        );
+        assert_eq!(
+            viewer_focus_to_target(Some(ViewerFocus::Legend)),
+            Some(FocusTarget::Legend)
+        );
+        assert_eq!(target_to_viewer_focus(None), None);
+        assert_eq!(
+            target_to_viewer_focus(Some(FocusTarget::Plot)),
+            Some(ViewerFocus::Plot)
+        );
+        assert_eq!(
+            target_to_viewer_focus(Some(FocusTarget::Legend)),
+            Some(ViewerFocus::Legend)
+        );
+
+        // Tab order from no focus; every step is revision-neutral.
+        let mut viewer = Viewer::new(scene(), LoopMode::NativeOwned);
+        viewer.show().expect("native show");
+        let base = viewer.revision();
+        assert!(!applied(press(
+            &mut viewer,
+            KeyboardKey::Tab,
+            ModifierKeys::NONE
+        )));
+        assert_eq!(viewer.focus, Some(ViewerFocus::Plot));
+        assert_eq!(viewer.revision(), base);
+        assert!(!applied(press(
+            &mut viewer,
+            KeyboardKey::Tab,
+            ModifierKeys::NONE
+        )));
+        assert_eq!(viewer.focus, Some(ViewerFocus::Legend));
+        assert_eq!(viewer.revision(), base);
+        assert!(!applied(press(
+            &mut viewer,
+            KeyboardKey::Tab,
+            ModifierKeys::NONE
+        )));
+        assert_eq!(viewer.focus, Some(ViewerFocus::Plot));
+        assert!(!applied(press(
+            &mut viewer,
+            KeyboardKey::Tab,
+            ModifierKeys::SHIFT
+        )));
+        assert_eq!(viewer.focus, Some(ViewerFocus::Legend));
+        assert!(!applied(press(
+            &mut viewer,
+            KeyboardKey::Tab,
+            ModifierKeys::SHIFT
+        )));
+        assert_eq!(viewer.focus, Some(ViewerFocus::Plot));
+        assert_eq!(viewer.revision(), base);
+
+        // Applied view steps advance the revision exactly once per commit.
+        for key in [
+            KeyboardKey::ArrowLeft,
+            KeyboardKey::ArrowRight,
+            KeyboardKey::ArrowUp,
+            KeyboardKey::ArrowDown,
+        ] {
+            let before = viewer.revision();
+            assert!(applied(press(&mut viewer, key, ModifierKeys::NONE)));
+            assert_ne!(viewer.revision(), before);
+            assert_eq!(viewer.snapshot().revision(), viewer.revision());
+        }
+        assert_eq!(viewer.focus, Some(ViewerFocus::Plot));
+
+        let before_history = viewer.revision();
+        assert!(applied(press(
+            &mut viewer,
+            KeyboardKey::PageUp,
+            ModifierKeys::NONE
+        )));
+        assert_ne!(viewer.revision(), before_history);
+        let before_forward = viewer.revision();
+        assert!(applied(press(
+            &mut viewer,
+            KeyboardKey::PageDown,
+            ModifierKeys::NONE
+        )));
+        assert_ne!(viewer.revision(), before_forward);
+
+        // The arrow pairs above cancel out, so step off canonical before
+        // exercising Home as a committed transition.
+        assert!(applied(press(
+            &mut viewer,
+            KeyboardKey::ArrowLeft,
+            ModifierKeys::NONE
+        )));
+        assert!(applied(press(
+            &mut viewer,
+            KeyboardKey::Home,
+            ModifierKeys::NONE
+        )));
+        assert_eq!(viewer.current_bounds(), viewer.canonical_bounds());
+        let after_home = viewer.revision();
+        assert!(!applied(press(
+            &mut viewer,
+            KeyboardKey::Home,
+            ModifierKeys::NONE
+        )));
+        assert_eq!(viewer.revision(), after_home);
+
+        // Cancellation is revision-neutral with and without a pending step.
+        let bounds = viewer.current_bounds();
+        assert!(!applied(press(
+            &mut viewer,
+            KeyboardKey::Escape,
+            ModifierKeys::NONE
+        )));
+        assert_eq!(viewer.current_bounds(), bounds);
+        viewer.buffer_pan(ViewerAxis::Both);
+        assert!(viewer.pending.is_some());
+        assert!(!applied(press(
+            &mut viewer,
+            KeyboardKey::Escape,
+            ModifierKeys::NONE
+        )));
+        assert_eq!(viewer.pending, None);
+        assert_eq!(viewer.current_bounds(), bounds);
+        assert_eq!(viewer.revision(), after_home);
+
+        // Focus-gated operations: the 2-variant viewer focus admits no keyed
+        // target, so keyed operations reject without touching revision or
+        // focus. Tabs column: 0 = no focus, 1 = Plot, 2 = Legend.
+        let focus_kind = InputRouteErrorKind::FocusRequired;
+        let target_kind = InputRouteErrorKind::UnsupportedFocusTarget;
+        let ambiguous_kind = InputRouteErrorKind::AmbiguousKeyboardCombination;
+        let gate_rejections: [(KeyboardKey, u8, InputRouteErrorKind); 20] = [
+            (KeyboardKey::V, 0, focus_kind),
+            (KeyboardKey::L, 0, focus_kind),
+            (KeyboardKey::R, 0, focus_kind),
+            (KeyboardKey::A, 0, focus_kind),
+            (KeyboardKey::Enter, 0, focus_kind),
+            (KeyboardKey::Space, 0, focus_kind),
+            (KeyboardKey::Delete, 0, focus_kind),
+            (KeyboardKey::V, 1, target_kind),
+            (KeyboardKey::L, 1, target_kind),
+            (KeyboardKey::R, 1, target_kind),
+            (KeyboardKey::Enter, 1, ambiguous_kind),
+            (KeyboardKey::Space, 1, target_kind),
+            (KeyboardKey::Delete, 1, target_kind),
+            (KeyboardKey::V, 2, target_kind),
+            (KeyboardKey::L, 2, target_kind),
+            (KeyboardKey::R, 2, target_kind),
+            (KeyboardKey::A, 2, target_kind),
+            (KeyboardKey::Enter, 2, ambiguous_kind),
+            (KeyboardKey::Space, 2, target_kind),
+            (KeyboardKey::Delete, 2, target_kind),
+        ];
+        assert_eq!(
+            gate_rejections.len(),
+            20,
+            "matrix pins its focus-gated rejection count"
+        );
+        for (key, tabs, expected) in gate_rejections {
+            let mut target = Viewer::new(scene(), LoopMode::NativeOwned);
+            target.show().expect("native show");
+            for _ in 0..tabs {
+                assert!(!applied(press(
+                    &mut target,
+                    KeyboardKey::Tab,
+                    ModifierKeys::NONE
+                )));
+            }
+            let revision = target.revision();
+            let focus = target.focus;
+            assert_eq!(
+                rejected(press(&mut target, key, ModifierKeys::NONE)),
+                expected
+            );
+            assert_eq!(target.revision(), revision);
+            assert_eq!(target.focus, focus);
+        }
+
+        // Routed-but-not-applicable actions defer explicitly: A on Plot
+        // routes to annotation creation, and grid/cursor/export route without
+        // focus, but none has a scene transaction yet.
+        let mut plot_viewer = Viewer::new(scene(), LoopMode::NativeOwned);
+        plot_viewer.show().expect("native show");
+        assert!(!applied(press(
+            &mut plot_viewer,
+            KeyboardKey::Tab,
+            ModifierKeys::NONE
+        )));
+        let plot_revision = plot_viewer.revision();
+        deferred(press(&mut plot_viewer, KeyboardKey::A, ModifierKeys::NONE));
+        assert_eq!(plot_viewer.revision(), plot_revision);
+        assert_eq!(plot_viewer.focus, Some(ViewerFocus::Plot));
+        for key in [KeyboardKey::G, KeyboardKey::C, KeyboardKey::E] {
+            deferred(press(&mut plot_viewer, key, ModifierKeys::NONE));
+            assert_eq!(plot_viewer.revision(), plot_revision);
+            assert_eq!(plot_viewer.focus, Some(ViewerFocus::Plot));
+        }
+
+        // Keys and modifiers outside the matrix reject loudly.
+        let key_rejections = [
+            (
+                KeyboardKey::Other(0xdead),
+                ModifierKeys::NONE,
+                InputRouteErrorKind::UnsupportedKeyboardKey,
+            ),
+            (
+                KeyboardKey::ArrowLeft,
+                ModifierKeys::CONTROL,
+                InputRouteErrorKind::UnsupportedModifierCombination,
+            ),
+            (
+                KeyboardKey::G,
+                ModifierKeys::ALT,
+                InputRouteErrorKind::UnsupportedModifierCombination,
+            ),
+            (
+                KeyboardKey::Tab,
+                ModifierKeys::SHIFT.union(ModifierKeys::CONTROL),
+                InputRouteErrorKind::UnsupportedKeyboardModifiers,
+            ),
+        ];
+        assert_eq!(
+            key_rejections.len(),
+            4,
+            "matrix pins its key/modifier rejection count"
+        );
+        for (key, modifiers, expected) in key_rejections {
+            let revision = plot_viewer.revision();
+            let focus = plot_viewer.focus;
+            assert_eq!(rejected(press(&mut plot_viewer, key, modifiers)), expected);
+            assert_eq!(plot_viewer.revision(), revision);
+            assert_eq!(plot_viewer.focus, focus);
+        }
     }
 }

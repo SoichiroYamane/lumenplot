@@ -50,24 +50,24 @@ pub(crate) enum ModifierKey {
 /// checked [`Self::from_bits`] constructor prevents an unknown host bit from
 /// being silently treated as no modifier.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub(crate) struct ModifierKeys(u8);
+pub struct ModifierKeys(u8);
 
 impl ModifierKeys {
     /// No modifiers are held.
-    pub(crate) const NONE: Self = Self(0);
+    pub const NONE: Self = Self(0);
     /// Shift is held.
-    pub(crate) const SHIFT: Self = Self(1 << 0);
+    pub const SHIFT: Self = Self(1 << 0);
     /// Control is held.
-    pub(crate) const CONTROL: Self = Self(1 << 1);
+    pub const CONTROL: Self = Self(1 << 1);
     /// Alt/Option is held.
-    pub(crate) const ALT: Self = Self(1 << 2);
+    pub const ALT: Self = Self(1 << 2);
     /// Super/Command/Windows is held.
-    pub(crate) const SUPER: Self = Self(1 << 3);
+    pub const SUPER: Self = Self(1 << 3);
 
     const KNOWN_BITS: u8 = Self::SHIFT.0 | Self::CONTROL.0 | Self::ALT.0 | Self::SUPER.0;
 
     /// Returns an empty modifier set.
-    pub(crate) const fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self::NONE
     }
 
@@ -82,7 +82,7 @@ impl ModifierKeys {
     }
 
     /// Creates a set from raw bits, rejecting unknown bits.
-    pub(crate) const fn from_bits(bits: u8) -> Option<Self> {
+    pub const fn from_bits(bits: u8) -> Option<Self> {
         if bits & !Self::KNOWN_BITS == 0 {
             Some(Self(bits))
         } else {
@@ -91,7 +91,7 @@ impl ModifierKeys {
     }
 
     /// Returns the checked bit representation.
-    pub(crate) const fn bits(self) -> u8 {
+    pub const fn bits(self) -> u8 {
         self.0
     }
 
@@ -101,7 +101,7 @@ impl ModifierKeys {
     }
 
     /// Returns whether no modifier is present.
-    pub(crate) const fn is_empty(self) -> bool {
+    pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
 
@@ -111,7 +111,7 @@ impl ModifierKeys {
     }
 
     /// Combines two checked modifier sets.
-    pub(crate) const fn union(self, other: Self) -> Self {
+    pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 }
@@ -121,7 +121,7 @@ pub(crate) type Modifiers = ModifierKeys;
 
 /// Axis scope attached to a pan, zoom, or box-zoom action.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum AxisRestriction {
+pub enum AxisRestriction {
     /// Both x and y dimensions are affected.
     Both,
     /// Only the x dimension is affected.
@@ -166,7 +166,7 @@ pub(crate) enum PointerPhase {
 
 /// A semantic target under a pointer.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum PointerTarget {
+pub enum PointerTarget {
     /// The plot background, with no series geometry under the pointer.
     PlotBackground,
     /// A selectable line/series identified by a runtime-local key.
@@ -207,7 +207,7 @@ impl PointerTarget {
 
 /// A keyboard key after host key normalization.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum KeyboardKey {
+pub enum KeyboardKey {
     /// Left navigation key.
     ArrowLeft,
     /// Right navigation key.
@@ -298,31 +298,31 @@ impl PointerEvent {
 
 /// A keyboard input supplied to the semantic router.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct KeyboardEvent {
+pub struct KeyboardEvent {
     key: KeyboardKey,
     modifiers: ModifierKeys,
 }
 
 impl KeyboardEvent {
     /// Constructs a normalized key-press event.
-    pub(crate) const fn new(key: KeyboardKey, modifiers: ModifierKeys) -> Self {
+    pub const fn new(key: KeyboardKey, modifiers: ModifierKeys) -> Self {
         Self { key, modifiers }
     }
 
     /// Returns the normalized key.
-    pub(crate) const fn key(self) -> KeyboardKey {
+    pub const fn key(self) -> KeyboardKey {
         self.key
     }
 
     /// Returns the modifier set.
-    pub(crate) const fn modifiers(self) -> ModifierKeys {
+    pub const fn modifiers(self) -> ModifierKeys {
         self.modifiers
     }
 }
 
 /// A focusable transient UI target.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum FocusTarget {
+pub enum FocusTarget {
     /// The plot surface.
     Plot,
     /// The Legend as a whole.
@@ -342,7 +342,7 @@ pub(crate) enum FocusTarget {
 /// of them. Routing currently reads only `focus`, while the other fields make
 /// the ownership boundary explicit for hover/cursor/context consumers.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct TransientUiState {
+pub struct TransientUiState {
     cursor: Option<PointerTarget>,
     hover: Option<PointerTarget>,
     context: Option<PointerTarget>,
@@ -351,7 +351,7 @@ pub(crate) struct TransientUiState {
 
 impl TransientUiState {
     /// Creates an empty transient UI state.
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             cursor: None,
             hover: None,
@@ -361,7 +361,7 @@ impl TransientUiState {
     }
 
     /// Returns a state with the supplied focus target.
-    pub(crate) const fn with_focus(focus: Option<FocusTarget>) -> Self {
+    pub const fn with_focus(focus: Option<FocusTarget>) -> Self {
         Self {
             cursor: None,
             hover: None,
@@ -406,14 +406,14 @@ impl TransientUiState {
     }
 
     /// Returns the focused target.
-    pub(crate) const fn focus(self) -> Option<FocusTarget> {
+    pub const fn focus(self) -> Option<FocusTarget> {
         self.focus
     }
 }
 
 /// The two ways focus can move through the semantic control order.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum FocusDirection {
+pub enum FocusDirection {
     /// Move to the next focusable target.
     Next,
     /// Move to the previous focusable target.
@@ -422,7 +422,7 @@ pub(crate) enum FocusDirection {
 
 /// Direction for keyboard view navigation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum NavigationDirection {
+pub enum NavigationDirection {
     /// Move toward the lower x range.
     Left,
     /// Move toward the higher x range.
@@ -435,7 +435,7 @@ pub(crate) enum NavigationDirection {
 
 /// Direction for view-history traversal.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum HistoryDirection {
+pub enum HistoryDirection {
     /// Restore the prior view entry.
     Previous,
     /// Restore the next view entry.
@@ -444,7 +444,7 @@ pub(crate) enum HistoryDirection {
 
 /// An operation on the formal publication Legend.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum LegendAction {
+pub enum LegendAction {
     /// Toggle one series' visibility while retaining Legend geometry.
     ToggleVisibility { series: u64 },
     /// Solo one series, retaining the prior visibility snapshot in UI state.
@@ -456,7 +456,7 @@ pub(crate) enum LegendAction {
 /// An annotation operation. Annotation state itself belongs to Plot State;
 /// focus and editing chrome around it do not.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum AnnotationAction {
+pub enum AnnotationAction {
     /// Begin creation of an annotation.
     Create,
     /// Begin editing an existing annotation.
@@ -467,7 +467,7 @@ pub(crate) enum AnnotationAction {
 
 /// A selectable target for a transient selection highlight.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum SelectionTarget {
+pub enum SelectionTarget {
     /// A line/series target.
     Series(u64),
     /// An annotation target.
@@ -476,7 +476,7 @@ pub(crate) enum SelectionTarget {
 
 /// The required anchor semantics for pointer zoom.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum ZoomAnchor {
+pub enum ZoomAnchor {
     /// Preserve the scientific point under the pointer.
     Pointer,
 }
@@ -498,7 +498,7 @@ pub(crate) enum ActionStateScope {
 /// pointer gestures select their operation from phase, button, modifiers, and
 /// target; keyboard commands select the same semantic operation directly.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum SemanticAction {
+pub enum SemanticAction {
     /// Pan the current viewport.
     Pan { axis: AxisRestriction },
     /// Zoom around the pointer, with optional axis restriction.
@@ -591,7 +591,7 @@ pub(crate) enum MotionPreference {
 
 /// Machine-readable input-routing failure.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum InputRouteErrorKind {
+pub enum InputRouteErrorKind {
     /// The host supplied an unnormalized press/move/release phase.
     UnsupportedPointerPhase,
     /// A button-bearing phase omitted its button.
@@ -620,7 +620,7 @@ pub(crate) enum InputRouteErrorKind {
 
 /// Sanitized error returned when no unique semantic action can be selected.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct InputRouteError {
+pub struct InputRouteError {
     kind: InputRouteErrorKind,
     message: &'static str,
 }
@@ -631,12 +631,12 @@ impl InputRouteError {
     }
 
     /// Returns the machine-readable failure kind.
-    pub(crate) const fn kind(self) -> InputRouteErrorKind {
+    pub const fn kind(self) -> InputRouteErrorKind {
         self.kind
     }
 
     /// Returns sanitized human-readable detail.
-    pub(crate) const fn message(self) -> &'static str {
+    pub const fn message(self) -> &'static str {
         self.message
     }
 }
@@ -828,7 +828,7 @@ fn require_no_modifiers(modifiers: ModifierKeys) -> Result<(), InputRouteError> 
 }
 
 /// Routes a normalized keyboard event using transient focus state.
-pub(crate) fn route_keyboard(
+pub fn route_keyboard(
     event: KeyboardEvent,
     state: TransientUiState,
 ) -> Result<SemanticAction, InputRouteError> {
@@ -1353,7 +1353,7 @@ pub(crate) const fn home_viewport(canonical: [f64; 4]) -> [f64; 4] {
 }
 
 /// Advances focus through the B1 headless order (plot then Legend).
-pub(crate) const fn next_focus(current: Option<FocusTarget>) -> Option<FocusTarget> {
+pub const fn next_focus(current: Option<FocusTarget>) -> Option<FocusTarget> {
     match current {
         None => Some(FocusTarget::Plot),
         Some(FocusTarget::Plot) => Some(FocusTarget::Legend),
@@ -1363,7 +1363,7 @@ pub(crate) const fn next_focus(current: Option<FocusTarget>) -> Option<FocusTarg
 }
 
 /// Moves focus backward through the B1 headless order.
-pub(crate) const fn previous_focus(current: Option<FocusTarget>) -> Option<FocusTarget> {
+pub const fn previous_focus(current: Option<FocusTarget>) -> Option<FocusTarget> {
     match current {
         None => Some(FocusTarget::Legend),
         Some(FocusTarget::Plot) => Some(FocusTarget::Legend),
