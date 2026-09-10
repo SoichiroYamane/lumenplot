@@ -894,8 +894,8 @@ mod tests {
     use super::*;
 
     use lumenplot_engine::bridge::{
-        AxisScale, AxisScales, LineFrameSpec, LineStyle, LogicalRect, LogicalSize, PlotScene,
-        SeriesData, SeriesTopology, SrgbRgba8, TextRole, Viewport,
+        AnnotationShape, AxisScale, AxisScales, LineFrameSpec, LineStyle, LogicalRect, LogicalSize,
+        PlotScene, SeriesData, SeriesTopology, SrgbRgba8, TextRole, Viewport,
     };
 
     fn make_frame(style_width: f64) -> lumenplot_engine::bridge::LineFrame {
@@ -1155,5 +1155,118 @@ mod tests {
 
         let error = ensure_stroked_path_is_representable(&stroked).expect_err("bounds");
         assert_eq!(error.kind(), ExportErrorKind::CapacityExceeded);
+    }
+
+    #[test]
+    fn annotation_revision_is_pinned_and_new_state_exports() {
+        // LP-EXPORT-004/007 annotation counterpart: the four stored fixture
+        // kinds ride the revision-pinned retained result. After a scene
+        // change the new frame still carries all four kinds, the annotation
+        // mask is unchanged (annotations are retained, not transient), the
+        // stale generation fails the sink predicate, and the new export
+        // carries both the new series ink and the retained annotation ink.
+        let canvas = LogicalSize::new(160.0, 140.0).expect("canvas");
+        let plot = LogicalRect::new(8.0, 8.0, 56.0, 56.0).expect("plot");
+        let style = LineStyle::new(SrgbRgba8::new(255, 0, 0, 255), 1.0).expect("style");
+        let frame_spec =
+            LineFrameSpec::new(canvas, plot, 1.0, style, SrgbRgba8::new(255, 255, 255, 255))
+                .expect("spec");
+        let view = Viewport::from_bounds(0.0, 10.0, 0.0, 10.0).expect("view");
+        let mut scene = PlotScene::new(view, AxisScales::new(AxisScale::Linear, AxisScale::Linear))
+            .expect("scene");
+        let spec = PngSpec::new(1.0).expect("spec");
+        {
+            let data = SeriesData::from_owned_xy(
+                SeriesTopology::MonotonicX,
+                vec![0.0, 10.0],
+                vec![0.0, 0.0],
+            )
+            .expect("data");
+            let mut transaction = scene.transaction();
+            transaction.add_series(data).expect("series");
+            transaction.commit().expect("commit");
+        }
+        fn kinds(frame: &lumenplot_engine::bridge::LineFrame) -> (bool, bool, bool, bool) {
+            let mut text = false;
+            let mut rectangle = false;
+            let mut line = false;
+            let mut arrow = false;
+            for annotation in frame.plot_layout().annotations() {
+                match annotation.shape() {
+                    AnnotationShape::Text { .. } => text = true,
+                    AnnotationShape::Rectangle { .. } => rectangle = true,
+                    AnnotationShape::Line { .. } => line = true,
+                    AnnotationShape::Arrow { .. } => arrow = true,
+                }
+            }
+            (text, rectangle, line, arrow)
+        }
+        let pinned = scene.snapshot();
+        let frame_before = pinned.resolve_line_frame(&frame_spec).expect("frame");
+        assert_eq!(frame_before.plot_layout().annotations().len(), 4);
+        assert_eq!(kinds(&frame_before), (true, true, true, true));
+        let plan_before = RasterPlan::new(&frame_before, &spec).expect("plan");
+        let mask_before = rasterize_annotations(&frame_before, &plan_before).expect("mask");
+        assert!(mask_before.data().iter().any(|coverage| *coverage != 0));
+        // Fixture probes from the inclusion test: text-box interior, line
+        // and arrow shaft crossings, and the rectangle top edge.
+        for probe in [
+            20usize * 160 + 10,
+            4usize * 160 + 8,
+            16usize * 160 + 24,
+            100usize * 160 + 120,
+        ] {
+            assert_ne!(mask_before.data()[probe], 0);
+        }
+        let (font_before, layout_before) = {
+            let layout = frame_before.plot_layout();
+            (layout.font_revision(), layout.layout_revision())
+        };
+        // A diagonal second series advances the scene without touching the
+        // stored annotations.
+        {
+            let data = SeriesData::from_owned_xy(
+                SeriesTopology::MonotonicX,
+                vec![0.0, 10.0],
+                vec![0.0, 10.0],
+            )
+            .expect("data");
+            let mut transaction = scene.transaction();
+            transaction.add_series(data).expect("series");
+            transaction.commit().expect("commit");
+        }
+        let frame_after = scene
+            .snapshot()
+            .resolve_line_frame(&frame_spec)
+            .expect("frame");
+        assert!(frame_after.revision() > frame_before.revision());
+        assert_eq!(frame_after.plot_layout().annotations().len(), 4);
+        assert_eq!(kinds(&frame_after), (true, true, true, true));
+        let plan_after = RasterPlan::new(&frame_after, &spec).expect("plan");
+        let mask_after = rasterize_annotations(&frame_after, &plan_after).expect("mask");
+        // Retained, not transient: the annotation mask is byte-identical
+        // across the scene change.
+        assert_eq!(mask_before.data(), mask_after.data());
+        // The retained generation advanced, so the pinned annotation layout
+        // is stale under the sink predicate.
+        let (font_after, layout_after) = {
+            let layout = frame_after.plot_layout();
+            (layout.font_revision(), layout.layout_revision())
+        };
+        assert!((font_after, layout_after) != (font_before, layout_before));
+        assert!(
+            !frame_before
+                .plot_layout()
+                .validate_for_generation(font_after, layout_after)
+        );
+        // The new export carries the new series ink plus the retained
+        // annotation ink, deterministically.
+        let bytes_before = crate::png::encode_line_frame_png(&frame_before, &spec).expect("PNG");
+        let bytes_after = crate::png::encode_line_frame_png(&frame_after, &spec).expect("PNG");
+        assert_ne!(bytes_before, bytes_after);
+        assert_eq!(
+            bytes_after,
+            crate::png::encode_line_frame_png(&frame_after, &spec).expect("PNG")
+        );
     }
 }

@@ -626,4 +626,135 @@ mod tests {
         );
         assert_eq!(error.message(), "stroke geometry exceeds rasterizer limits");
     }
+
+    #[test]
+    fn revision_pinned_frame_exports_selected_revision() {
+        // LP-EXPORT-004 private evidence: one retained frame per selected
+        // revision. Resolving before and after a scene change exports the
+        // selected bytes each time; the stale snapshot stays pinned to its
+        // own revision while its generation fails the sink predicate.
+        let canvas = LogicalSize::new(160.0, 140.0).expect("canvas");
+        let plot = LogicalRect::new(8.0, 8.0, 56.0, 56.0).expect("plot");
+        let style = LineStyle::new(SrgbRgba8::new(255, 0, 0, 255), 1.0).expect("style");
+        let frame_spec =
+            LineFrameSpec::new(canvas, plot, 1.0, style, SrgbRgba8::new(255, 255, 255, 255))
+                .expect("spec");
+        let view = Viewport::from_bounds(0.0, 10.0, 0.0, 10.0).expect("view");
+        let mut scene = PlotScene::new(view, AxisScales::new(AxisScale::Linear, AxisScale::Linear))
+            .expect("scene");
+        let png_spec = PngSpec::new(1.0).expect("png spec");
+        {
+            let data = SeriesData::from_owned_xy(
+                SeriesTopology::MonotonicX,
+                vec![0.0, 10.0],
+                vec![0.0, 0.0],
+            )
+            .expect("data");
+            let mut transaction = scene.transaction();
+            transaction.add_series(data).expect("series");
+            transaction.commit().expect("commit");
+        }
+        let pinned = scene.snapshot();
+        let frame_before = pinned.resolve_line_frame(&frame_spec).expect("frame");
+        let bytes_before = encode_line_frame_png(&frame_before, &png_spec).expect("PNG");
+        let revision_before = frame_before.revision();
+        assert_eq!(revision_before, scene.revision());
+        let (font_before, layout_before) = {
+            let layout = frame_before.plot_layout();
+            (layout.font_revision(), layout.layout_revision())
+        };
+        // A diagonal second series lands new ink at the next revision.
+        {
+            let data = SeriesData::from_owned_xy(
+                SeriesTopology::MonotonicX,
+                vec![0.0, 10.0],
+                vec![0.0, 10.0],
+            )
+            .expect("data");
+            let mut transaction = scene.transaction();
+            transaction.add_series(data).expect("series");
+            transaction.commit().expect("commit");
+        }
+        let frame_after = scene
+            .snapshot()
+            .resolve_line_frame(&frame_spec)
+            .expect("frame");
+        assert!(frame_after.revision() > revision_before);
+        assert_eq!(frame_after.revision(), scene.revision());
+        let bytes_after = encode_line_frame_png(&frame_after, &png_spec).expect("PNG");
+        // Non-vacuous: the new series changes the selected export bytes,
+        // and each selection is deterministic.
+        assert_ne!(bytes_before, bytes_after);
+        assert_eq!(
+            bytes_after,
+            encode_line_frame_png(&frame_after, &png_spec).expect("PNG")
+        );
+        // The retained generation advanced with the data change, so the
+        // pinned generation is stale under the sink predicate.
+        let (font_after, layout_after) = {
+            let layout = frame_after.plot_layout();
+            (layout.font_revision(), layout.layout_revision())
+        };
+        assert!((font_after, layout_after) != (font_before, layout_before));
+        assert!(
+            frame_after
+                .plot_layout()
+                .validate_for_generation(font_after, layout_after)
+        );
+        assert!(
+            !frame_before
+                .plot_layout()
+                .validate_for_generation(font_after, layout_after)
+        );
+        // The stale snapshot still resolves and exports its own selected
+        // revision, never the newer bytes.
+        let stale_frame = pinned.resolve_line_frame(&frame_spec).expect("stale frame");
+        assert_eq!(stale_frame.revision(), revision_before);
+        assert_eq!(
+            encode_line_frame_png(&stale_frame, &png_spec).expect("PNG"),
+            bytes_before
+        );
+    }
+
+    #[test]
+    fn cursor_and_crosshair_have_no_export_projection() {
+        // LP-EXPORT-010 dedicated negative: the PNG seam takes only
+        // (&LineFrame, &PngSpec) — no cursor coordinate, hover, or
+        // crosshair input exists — so no full-span cursor crosshair can be
+        // positioned, and none is baked in at a default spot either. The
+        // plot-center row and column stay background where retained ink
+        // never reaches, and repeated encodes are byte-identical.
+        let (_, frame, spec) = make_frame(
+            (160.0, 140.0),
+            (8.0, 8.0, 56.0, 56.0),
+            1.0,
+            (vec![0.0, 10.0], vec![0.0, 0.0]),
+            (SrgbRgba8::new(255, 0, 0, 255), 1.0),
+            SrgbRgba8::new(255, 255, 255, 255),
+        );
+        let first = encode_line_frame_png(&frame, &spec).expect("PNG");
+        let second = encode_line_frame_png(&frame, &spec).expect("PNG");
+        assert_eq!(first, second);
+        let (width, height, data) = decode_rgba(&first);
+        assert_eq!((width, height), (160, 140));
+        let pixel = |x: u32, y: u32| -> [u8; 4] {
+            let offset = (y * 160 + x) as usize * 4;
+            data[offset..offset + 4]
+                .try_into()
+                .expect("pixel inside the canvas")
+        };
+        // Retained ink near the probes: the series row is y=64, shafts stay
+        // at y<=32, glyph cells sit at x 16..21/32..37/48..53 with y 16..23
+        // plus (64..69, 32..39) and (64..69, 48..55), the text box covers
+        // x -2..22 with y 16..24, and the arrow shaft spans x 8..40 with
+        // y 8..24. A center crosshair would ink row y=36 across the plot
+        // and column x=36 down the plot; both strips avoid every retained
+        // mark above, so any crosshair ink would stand out here.
+        for x in 40..64u32 {
+            assert_eq!(pixel(x, 36), [255, 255, 255, 255], "row probe at x={x}");
+        }
+        for y in 30..52u32 {
+            assert_eq!(pixel(36, y), [255, 255, 255, 255], "column probe at y={y}");
+        }
+    }
 }
