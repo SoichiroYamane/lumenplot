@@ -804,12 +804,17 @@ fn contour_capacity_bound(points: &[SubpixelPoint]) -> Option<usize> {
 /// Rasterizes an open rectilinear chain as one JOINED miter outline.
 ///
 /// Vertices are snapped with the existing rectilinear rule before stroking
-/// (Agg `PathSnapper` behavior for rectilinear paths). The outline traces
-/// the left side forward and the right side backward with butt caps as the
-/// closing edges, so 90-degree joins form exact miter tips and inner
-/// concave corners. The single contour is fed to the shared cell
-/// accumulator; per-segment quads are never used (overlaps would
-/// double-darken the joins under nonzero winding).
+/// (Agg `PathSnapper` behavior for rectilinear paths). The outline follows
+/// Agg `vcgen_stroke` emission order for open paths (cap1, outline1, cap2,
+/// outline2): start cap L0->R0, right side forward, end cap Rn->Ln, left
+/// side backward, close L1->L0. This counter-clockwise (device-space)
+/// winding must be preserved exactly: the shared cell integrator floors
+/// `(cover << 9) - area`, so the opposite winding rounds fractional joint
+/// cells one LSB lower (pinned Agg steps oracle: CW leaves 42 fringe
+/// mismatches, CCW converges to 0 with byte-identical runs and caps).
+/// The single contour is fed to the shared cell accumulator;
+/// per-segment quads are never used (overlaps would double-darken the
+/// joins under nonzero winding).
 fn rasterize_rectilinear_chain(
     chain: Vec<Point>,
     command: &PathCommand,
@@ -917,10 +922,11 @@ fn rasterize_rectilinear_chain(
     contour
         .try_reserve_exact(left.len() + right.len())
         .map_err(|_| FrameError::OutOfMemory)?;
-    for point in &left {
+    contour.push(to_subpixel(left[0]));
+    for point in &right {
         contour.push(to_subpixel(*point));
     }
-    for point in right.iter().rev() {
+    for point in left[1..].iter().rev() {
         contour.push(to_subpixel(*point));
     }
     let Some(cell_capacity) = contour_capacity_bound(&contour) else {
@@ -1367,6 +1373,46 @@ mod tests {
             .expect("route")
             .expect("rectilinear chain eligible");
         assert!(mask.data().iter().any(|alpha| *alpha != 0));
+    }
+
+    #[test]
+    fn rectilinear_chain_winding_matches_agg_vcgen_order() {
+        // Winding pin for the joined rectilinear outline: Agg `vcgen_stroke`
+        // emits open paths counter-clockwise (cap1, outline1, cap2,
+        // outline2). The shared cell integrator floors
+        // `(cover << 9) - area`, so the two fractional joint cells below
+        // read one LSB lower under the opposite winding while every run
+        // and cap byte stays identical.
+        let command = PathCommand::new(
+            vec![[1.0, 6.0], [1.0, 4.0], [5.0, 4.0]],
+            None,
+            IDENTITY,
+            Some([255, 0, 0, 255]),
+            None,
+            2.0,
+            CapSelector::Butt,
+            JoinSelector::Miter,
+            0.0,
+            None,
+            super::super::FillRuleSelector::NonZero,
+            true,
+            None,
+        )
+        .expect("chain command");
+        let mask = try_rasterize(&command, 8, 8, 64, 100.0 / 72.0)
+            .expect("route")
+            .expect("rectilinear chain eligible");
+        const EXPECTED: [u8; 64] = [
+            0, 0, 0, 0, 0, 0, 0, 0, //
+            0, 0, 0, 0, 0, 0, 0, 0, //
+            114, 128, 114, 0, 0, 0, 0, 0, //
+            228, 255, 253, 228, 228, 114, 0, 0, //
+            228, 255, 255, 255, 255, 128, 0, 0, //
+            204, 228, 228, 228, 228, 114, 0, 0, //
+            0, 0, 0, 0, 0, 0, 0, 0, //
+            0, 0, 0, 0, 0, 0, 0, 0, //
+        ];
+        assert_eq!(mask.data(), EXPECTED.as_slice());
     }
 
     #[test]
