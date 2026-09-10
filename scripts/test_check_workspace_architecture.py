@@ -1445,6 +1445,47 @@ fn body_macro_is_below_root_scope() {
 
         self.assert_mutation_rejected(mutate, "bridge public type is not allowed RawChunk")
 
+    def test_engine_bridge_frozen_const_extension_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            path.write_text(path.read_text(encoding="utf-8") + "\npub const EXTRA: u8 = 1;\n", encoding="utf-8")
+
+        self.assert_mutation_rejected(mutate, "bridge public const 'EXTRA' is not allowlisted")
+
+    def test_engine_bridge_frozen_const_removal_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace("    pub const DEFAULT_FOCUS_RING", "    const DEFAULT_FOCUS_RING", 1),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "bridge const inventory mismatch (missing DEFAULT_FOCUS_RING)")
+
+    def test_engine_bridge_line_cue_trait_expansion_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(
+                source.replace(
+                    "#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]\n#[non_exhaustive]\npub enum LineCue {",
+                    "#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd)]\n#[non_exhaustive]\npub enum LineCue {",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+        self.assert_mutation_rejected(mutate, "bridge trait inventory mismatch for 'LineCue'")
+
+    def test_engine_bridge_line_cue_removal_is_rejected(self) -> None:
+        def mutate(root: Path) -> None:
+            path = root / "crates/lumenplot-engine/src/bridge.rs"
+            source = path.read_text(encoding="utf-8")
+            path.write_text(source.replace("pub enum LineCue {", "enum LineCue {", 1), encoding="utf-8")
+
+        self.assert_mutation_rejected(mutate, "bridge type inventory mismatch (missing LineCue)")
+
     def test_engine_bridge_raw_method_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-engine/src/bridge.rs"
