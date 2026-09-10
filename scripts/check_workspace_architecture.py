@@ -424,6 +424,16 @@ BRIDGE_TYPES = {
     "LineSeries",
     "LineSegment",
     "LinePoint",
+    "LineCue",
+}
+# M5-C frozen contrast-palette constants: exactly these five `pub const`
+# items are admitted on the engine bridge surface.
+BRIDGE_CONSTS = {
+    "DEFAULT_BACKGROUND",
+    "DEFAULT_TEXT_INK",
+    "DEFAULT_FOCUS_RING",
+    "DEFAULT_SERIES_PALETTE",
+    "DEFAULT_SERIES_CUES",
 }
 BRIDGE_METHODS = {
     "kind",
@@ -604,6 +614,7 @@ BRIDGE_DERIVES = {
     "LogicalRect": {"Clone", "Copy", "PartialEq"},
     "SrgbRgba8": {"Clone", "Copy", "Eq", "PartialEq"},
     "LineStyle": {"Clone", "Copy", "PartialEq"},
+    "LineCue": {"Clone", "Copy", "Debug", "Eq", "Hash", "PartialEq"},
     "LineFrameSpec": set(),
     "LineFrame": set(),
     "LineSeries": set(),
@@ -2552,6 +2563,18 @@ def _check_engine_bridge(code: str, errors: list[str]) -> None:
             + ")"
         )
 
+    declared_consts = set(re.findall(r"^\s*pub\s+const\s+(\w+)\b", code, re.MULTILINE))
+    unexpected_consts = sorted(declared_consts - BRIDGE_CONSTS)
+    for name in unexpected_consts:
+        errors.append(f"package lumenplot-engine: bridge public const {name!r} is not allowlisted")
+    missing_consts = sorted(BRIDGE_CONSTS - declared_consts)
+    if missing_consts:
+        errors.append(
+            "package lumenplot-engine: bridge const inventory mismatch (missing "
+            + ",".join(missing_consts)
+            + ")"
+        )
+
     declarations = re.compile(
         r"(?P<attributes>(?:^\s*#\[[^\n]*\]\s*\n)*)"
         r"^\s*pub\s+(?P<kind>struct|enum)\s+(?P<name>\w+)\b",
@@ -2602,6 +2625,9 @@ def _check_engine_bridge(code: str, errors: list[str]) -> None:
         if not re.match(r"^\s*pub\s+", line):
             continue
         if re.match(r"^\s*pub\s+(?:struct|enum|fn)\b", line):
+            continue
+        const_match = re.match(r"^\s*pub\s+const\s+(\w+)\b", line)
+        if const_match is not None and const_match.group(1) in BRIDGE_CONSTS:
             continue
         errors.append("package lumenplot-engine: bridge public item is not allowlisted")
         break
