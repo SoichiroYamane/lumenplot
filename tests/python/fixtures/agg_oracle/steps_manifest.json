@@ -1,0 +1,370 @@
+{
+  "schema_version": "agg-oracle-manifest-v1",
+  "fixture_id": "line2d-steps-pre-post-mid-exact-vertices",
+  "oracle": {
+    "backend": "FigureCanvasAgg",
+    "matplotlib_version": "3.11.1",
+    "api_version": "1.1",
+    "canvas_construction": "matplotlib.backends.backend_agg.FigureCanvasAgg(figure)",
+    "render_call": "canvas.print_png(buffer, metadata={})"
+  },
+  "python_version": ">=3.11,<3.15",
+  "figure": {
+    "construction": "matplotlib.figure.Figure(figsize=(2.0, 1.0), dpi=100.0, facecolor='white', edgecolor='white')",
+    "options": {
+      "figsize_inches": [
+        2.0,
+        1.0
+      ],
+      "dpi": 100.0,
+      "facecolor": "white",
+      "edgecolor": "white",
+      "axes_construction": "figure.add_axes((0.1, 0.1, 0.8, 0.8))",
+      "axes_rect": [
+        0.1,
+        0.1,
+        0.8,
+        0.8
+      ],
+      "axes_facecolor": "none",
+      "axis_on": false,
+      "xlim": [
+        0.0,
+        10.0
+      ],
+      "ylim": [
+        0.0,
+        6.0
+      ],
+      "savefig_format": "png",
+      "print_png_metadata": {}
+    }
+  },
+  "effective_dpi": 100.0,
+  "dimensions": {
+    "width": 200,
+    "height": 100
+  },
+  "orientation": "top-to-bottom",
+  "channels": "RGBA8",
+  "rcparams": {
+    "agg.path.chunksize": 0,
+    "axes.facecolor": "none",
+    "figure.dpi": 100.0,
+    "figure.edgecolor": "white",
+    "figure.facecolor": "white",
+    "font.family": [
+      "DejaVu Sans"
+    ],
+    "font.size": 10.0,
+    "lines.antialiased": true,
+    "lines.color": "red",
+    "lines.dash_capstyle": "butt",
+    "lines.dash_joinstyle": "miter",
+    "lines.linestyle": "-",
+    "lines.linewidth": 2.0,
+    "lines.solid_capstyle": "butt",
+    "lines.solid_joinstyle": "miter",
+    "path.simplify": false,
+    "path.simplify_threshold": 0.0,
+    "savefig.dpi": 100.0,
+    "savefig.edgecolor": "white",
+    "savefig.facecolor": "white",
+    "savefig.format": "png",
+    "savefig.transparent": false,
+    "text.antialiased": true
+  },
+  "font": {
+    "family": "DejaVu Sans",
+    "properties": {
+      "style": "normal",
+      "variant": "normal",
+      "weight": "normal",
+      "stretch": "normal",
+      "size": 10.0
+    },
+    "file": "DejaVuSans.ttf",
+    "bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22"
+  },
+  "font_bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22",
+  "artist_class": "matplotlib.lines.Line2D",
+  "primitive": {
+    "class": "matplotlib.lines.Line2D",
+    "count": 3,
+    "style": {
+      "linewidth": 2.0,
+      "linestyle": "-",
+      "marker": "None",
+      "solid_capstyle": "butt",
+      "solid_joinstyle": "miter",
+      "antialiased": true
+    },
+    "lines": [
+      {
+        "drawstyle": "steps-pre",
+        "color": "red",
+        "input_x": [
+          0.0,
+          2.5,
+          5.0,
+          7.5,
+          10.0
+        ],
+        "input_y": [
+          1.0,
+          2.0,
+          1.5,
+          2.0,
+          1.0
+        ]
+      },
+      {
+        "drawstyle": "steps-post",
+        "color": "blue",
+        "input_x": [
+          0.0,
+          2.5,
+          5.0,
+          7.5,
+          10.0
+        ],
+        "input_y": [
+          3.0,
+          4.0,
+          3.5,
+          4.0,
+          3.0
+        ]
+      },
+      {
+        "drawstyle": "steps-mid",
+        "color": "green",
+        "input_x": [
+          0.0,
+          2.5,
+          5.0,
+          7.5,
+          10.0
+        ],
+        "input_y": [
+          4.6,
+          5.4,
+          4.9,
+          5.4,
+          4.7
+        ]
+      }
+    ]
+  },
+  "input_data": {
+    "x": [
+      0.0,
+      2.5,
+      5.0,
+      7.5,
+      10.0
+    ],
+    "lines": {
+      "steps-pre": {
+        "y": [
+          1.0,
+          2.0,
+          1.5,
+          2.0,
+          1.0
+        ],
+        "color": "red"
+      },
+      "steps-post": {
+        "y": [
+          3.0,
+          4.0,
+          3.5,
+          4.0,
+          3.0
+        ],
+        "color": "blue"
+      },
+      "steps-mid": {
+        "y": [
+          4.6,
+          5.4,
+          4.9,
+          5.4,
+          4.7
+        ],
+        "color": "green"
+      }
+    },
+    "cases": {
+      "steps-pre": {
+        "artist": "matplotlib.lines.Line2D",
+        "drawstyle": "steps-pre",
+        "color": "red"
+      },
+      "steps-post": {
+        "artist": "matplotlib.lines.Line2D",
+        "drawstyle": "steps-post",
+        "color": "blue"
+      },
+      "steps-mid": {
+        "artist": "matplotlib.lines.Line2D",
+        "drawstyle": "steps-mid",
+        "color": "green"
+      }
+    }
+  },
+  "topology": {
+    "api": "matplotlib.cbook.STEP_LOOKUP_MAP[drawstyle](x, y)",
+    "per_drawstyle": {
+      "steps-pre": {
+        "api": "matplotlib.cbook.STEP_LOOKUP_MAP[drawstyle](x, y)",
+        "drawstyle": "steps-pre",
+        "color": "red",
+        "input_x": [
+          0.0,
+          2.5,
+          5.0,
+          7.5,
+          10.0
+        ],
+        "input_y": [
+          1.0,
+          2.0,
+          1.5,
+          2.0,
+          1.0
+        ],
+        "expanded_x": [
+          0.0,
+          0.0,
+          2.5,
+          2.5,
+          5.0,
+          5.0,
+          7.5,
+          7.5,
+          10.0
+        ],
+        "expanded_y": [
+          1.0,
+          2.0,
+          2.0,
+          1.5,
+          1.5,
+          2.0,
+          2.0,
+          1.0,
+          1.0
+        ],
+        "expanded_count": 9
+      },
+      "steps-post": {
+        "api": "matplotlib.cbook.STEP_LOOKUP_MAP[drawstyle](x, y)",
+        "drawstyle": "steps-post",
+        "color": "blue",
+        "input_x": [
+          0.0,
+          2.5,
+          5.0,
+          7.5,
+          10.0
+        ],
+        "input_y": [
+          3.0,
+          4.0,
+          3.5,
+          4.0,
+          3.0
+        ],
+        "expanded_x": [
+          0.0,
+          2.5,
+          2.5,
+          5.0,
+          5.0,
+          7.5,
+          7.5,
+          10.0,
+          10.0
+        ],
+        "expanded_y": [
+          3.0,
+          3.0,
+          4.0,
+          4.0,
+          3.5,
+          3.5,
+          4.0,
+          4.0,
+          3.0
+        ],
+        "expanded_count": 9
+      },
+      "steps-mid": {
+        "api": "matplotlib.cbook.STEP_LOOKUP_MAP[drawstyle](x, y)",
+        "drawstyle": "steps-mid",
+        "color": "green",
+        "input_x": [
+          0.0,
+          2.5,
+          5.0,
+          7.5,
+          10.0
+        ],
+        "input_y": [
+          4.6,
+          5.4,
+          4.9,
+          5.4,
+          4.7
+        ],
+        "expanded_x": [
+          0.0,
+          1.25,
+          1.25,
+          3.75,
+          3.75,
+          6.25,
+          6.25,
+          8.75,
+          8.75,
+          10.0
+        ],
+        "expanded_y": [
+          4.6,
+          4.6,
+          5.4,
+          5.4,
+          4.9,
+          4.9,
+          5.4,
+          5.4,
+          4.7,
+          4.7
+        ],
+        "expanded_count": 10
+      }
+    }
+  },
+  "mask_generation": "reference-only: figure facecolor and resolved Line2D stroke colors (steps-pre red, steps-post blue, steps-mid green); candidate/native pixels are not observed",
+  "reference_png_file": "steps_reference.png",
+  "reference_png_sha256": "ba07bb46a285177659a2b319f09e8e97ba736d24846284ab429b31369355603d",
+  "mask_file": "steps_mask.json",
+  "mask_sha256": "c93037c9d2cd18deb1abb766466ead1ae5055507df180062ac135b179dc29713",
+  "pixel_classes": [
+    "background",
+    "fully-covered",
+    "antialias-fringe",
+    "text-or-outline"
+  ],
+  "contract": {
+    "orientation": "top-to-bottom",
+    "channels": "RGBA8",
+    "background": "byte-equal",
+    "fully-covered": "byte-equal",
+    "fringe_max_channel_delta": 1,
+    "fringe_mismatch_rate_denominator": "total-pixels",
+    "fringe_mismatch_rate_max": 0.001
+  }
+}
