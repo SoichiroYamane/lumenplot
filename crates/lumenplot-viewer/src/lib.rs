@@ -465,6 +465,17 @@ impl Viewer {
         next
     }
 
+    // Slice-F private focus-read observation seam.
+    //
+    // Revision-neutral, render-free read of the transient viewer focus. The
+    // viewer keeps the accepted 2-variant Plot/Legend order and delegates
+    // movement to the runtime headless order; this seam only observes the
+    // current single target and never enters the scene, session, or any
+    // rendering path.
+    const fn observed_focus(&self) -> Option<ViewerFocus> {
+        self.focus
+    }
+
     fn buffer_pan(&mut self, axis: ViewerAxis) {
         let base = self.pending.unwrap_or_else(|| self.current_bounds());
         self.pending = Some(pan_bounds(base, axis));
@@ -1118,5 +1129,126 @@ mod tests {
             assert_eq!(plot_viewer.revision(), revision);
             assert_eq!(plot_viewer.focus, focus);
         }
+    }
+
+    // Slice-F (M5-F) private focus-read observation seam: Plot -> Legend ->
+    // Plot through the runtime-delegated order, with the previous order
+    // included. The seam is a revision-neutral, render-free read of the
+    // single transient target; focus moves never enter the scene.
+    #[test]
+    fn slice_f_private_focus_observation_is_deterministic_and_revision_neutral() {
+        fn observed(viewer: &Viewer) -> Option<ViewerFocus> {
+            let first = viewer.observed_focus();
+            let second = viewer.observed_focus();
+            assert_eq!(
+                first, second,
+                "focus observation is deterministic across repeated reads"
+            );
+            first
+        }
+
+        fn assert_neutral(viewer: &Viewer, revision: SceneRevision, bounds: [f64; 4]) {
+            assert_eq!(
+                viewer.revision(),
+                revision,
+                "focus movement does not advance SceneRevision"
+            );
+            assert_eq!(viewer.snapshot().revision(), revision);
+            assert_eq!(
+                viewer.current_bounds(),
+                bounds,
+                "focus movement leaves plot state alone"
+            );
+        }
+
+        // Direct move order from no focus: None -> Plot -> Legend -> Plot.
+        let mut viewer = Viewer::new(scene(), LoopMode::HostPumped);
+        assert_eq!(observed(&viewer), None);
+        assert_eq!(viewer.observed_focus(), viewer.focus);
+        let base = viewer.revision();
+        let bounds = viewer.current_bounds();
+        assert_ne!(bounds, [0.0; 4], "test viewport is non-degenerate");
+
+        assert_eq!(viewer.move_focus_next(), Some(ViewerFocus::Plot));
+        assert_eq!(observed(&viewer), Some(ViewerFocus::Plot));
+        assert_ne!(observed(&viewer), Some(ViewerFocus::Legend));
+        assert_neutral(&viewer, base, bounds);
+
+        assert_eq!(viewer.move_focus_next(), Some(ViewerFocus::Legend));
+        assert_eq!(observed(&viewer), Some(ViewerFocus::Legend));
+        assert_neutral(&viewer, base, bounds);
+
+        assert_eq!(viewer.move_focus_next(), Some(ViewerFocus::Plot));
+        assert_eq!(observed(&viewer), Some(ViewerFocus::Plot));
+        assert_neutral(&viewer, base, bounds);
+
+        // Previous order from Plot: Plot -> Legend -> Plot.
+        assert_eq!(viewer.move_focus_previous(), Some(ViewerFocus::Legend));
+        assert_eq!(observed(&viewer), Some(ViewerFocus::Legend));
+        assert_neutral(&viewer, base, bounds);
+        assert_eq!(viewer.move_focus_previous(), Some(ViewerFocus::Plot));
+        assert_eq!(observed(&viewer), Some(ViewerFocus::Plot));
+        assert_neutral(&viewer, base, bounds);
+
+        // Previous order from no focus starts at Legend, then alternates.
+        let mut fresh = Viewer::new(scene(), LoopMode::HostPumped);
+        let fresh_base = fresh.revision();
+        let fresh_bounds = fresh.current_bounds();
+        assert_eq!(observed(&fresh), None);
+        assert_eq!(fresh.move_focus_previous(), Some(ViewerFocus::Legend));
+        assert_eq!(observed(&fresh), Some(ViewerFocus::Legend));
+        assert_neutral(&fresh, fresh_base, fresh_bounds);
+        assert_eq!(fresh.move_focus_previous(), Some(ViewerFocus::Plot));
+        assert_eq!(observed(&fresh), Some(ViewerFocus::Plot));
+        assert_neutral(&fresh, fresh_base, fresh_bounds);
+
+        // Exactly one target is ever represented: None before any move, then
+        // exactly one of the two variants after each move.
+        for target in [
+            Some(ViewerFocus::Plot),
+            Some(ViewerFocus::Legend),
+            Some(ViewerFocus::Plot),
+        ] {
+            assert!(matches!(
+                target,
+                Some(ViewerFocus::Plot) | Some(ViewerFocus::Legend)
+            ));
+        }
+        assert!(matches!(
+            observed(&viewer),
+            Some(ViewerFocus::Plot) | Some(ViewerFocus::Legend)
+        ));
+
+        // Keyboard Tab path observes the same runtime-delegated order and
+        // stays revision-neutral with plot state untouched.
+        let mut keyed = Viewer::new(scene(), LoopMode::HostPumped);
+        let keyed_base = keyed.revision();
+        let keyed_bounds = keyed.current_bounds();
+        assert_eq!(observed(&keyed), None);
+        keyed
+            .apply_keyboard(KeyboardKey::Tab, ModifierKeys::NONE)
+            .expect("tab to Plot");
+        assert_eq!(observed(&keyed), Some(ViewerFocus::Plot));
+        assert_neutral(&keyed, keyed_base, keyed_bounds);
+        keyed
+            .apply_keyboard(KeyboardKey::Tab, ModifierKeys::NONE)
+            .expect("tab to Legend");
+        assert_eq!(observed(&keyed), Some(ViewerFocus::Legend));
+        assert_neutral(&keyed, keyed_base, keyed_bounds);
+        keyed
+            .apply_keyboard(KeyboardKey::Tab, ModifierKeys::NONE)
+            .expect("tab wraps to Plot");
+        assert_eq!(observed(&keyed), Some(ViewerFocus::Plot));
+        assert_neutral(&keyed, keyed_base, keyed_bounds);
+        keyed
+            .apply_keyboard(KeyboardKey::Tab, ModifierKeys::SHIFT)
+            .expect("shift+tab to Legend");
+        assert_eq!(observed(&keyed), Some(ViewerFocus::Legend));
+        assert_neutral(&keyed, keyed_base, keyed_bounds);
+        keyed
+            .apply_keyboard(KeyboardKey::Tab, ModifierKeys::SHIFT)
+            .expect("shift+tab wraps to Plot");
+        assert_eq!(observed(&keyed), Some(ViewerFocus::Plot));
+        assert_neutral(&keyed, keyed_base, keyed_bounds);
     }
 }
