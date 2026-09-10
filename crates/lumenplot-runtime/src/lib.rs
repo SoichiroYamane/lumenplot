@@ -30,7 +30,10 @@ use lumenplot_render_api::__internal::{
 use lumenplot_render_api::FramePacket;
 use lumenplot_render_wgpu::{RenderError, RenderErrorKind, Renderer};
 
-mod input;
+/// Workspace-internal semantic input routing consumed headlessly by the
+/// viewer edge. The facade must not re-export this module; host key
+/// normalization stays outside it.
+pub mod input;
 
 const MAX_SURFACES: usize = 64;
 const MAX_SURFACE_DIMENSION: u32 = 16_384;
