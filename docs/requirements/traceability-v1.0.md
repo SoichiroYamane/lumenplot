@@ -214,7 +214,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-SEC-004` | `MUST` | malformed-input tests | 0-1 | v1 | `AT-SEC-SIZES` | Not implemented |
 | `LP-SEC-005` | `MUST` | artifact verification | 1 | v1 | `AT-SEC-SHADER` | Implemented (bounded M3 Phase-B local contract evidence: PR #118; `verify_line_shader_artifact` checks manifest linkage plus SHA-256 digest plus WGSL parse/validation before any GPU use, exercised by `manifest_metadata_is_authoritative_and_fail_closed` in the CI Rust gate; additional artifact classes remain open) |
 | `LP-SEC-006` | `MUST` | supply-chain review | 0-3 | v1 | `AT-SEC-SBOM` | Not implemented |
-| `LP-SEC-007` | `MUST` | font license manifest | 2 | v1 | `AT-SEC-FONTS` | Not implemented |
+| `LP-SEC-007` | `MUST` | font license manifest | 2 | v1 | `AT-SEC-FONTS` | Implemented (bounded M5-P3i fixture-font evidence: PR #141; 9/9 AT-SEC-FONTS tests pass in `crates/lumenplot-export/tests/fixture_font.rs` — vendored `FiraSans-Regular.ttf` bytes pinned (456996 bytes, sha256 `c29556a2719bf613ef3d5e070e40d903a8965d9c081beca1375dc1e6e0f93c23`), fsType=0 installable embedding, OFL-1.1 markers with vendored `OFL.txt`, `at-sec-fonts-manifest.toml` fields, and fixture-scoped `deny.toml` OFL-1.1 amendment; production distribution, shaping/subsetting/searchable-PDF, SBOM/O-17, and release closure remain open) |
 | `LP-SEC-008` | `MUST` | publication safety scan | 0 | bundle publication | `AT-SEC-PUBLIC-DOCS` | Not implemented |
 | `LP-TEXT-001` | `MUST` | shared-layout fixtures | 2 | v1 | `AT-SEM-LAYOUT` | Not implemented |
 | `LP-TEXT-002` | `MUST NOT` | no-remeasurement review | 2 | v1 | `AT-SEM-LAYOUT` | Not implemented |
@@ -419,7 +419,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-SEC-004` | `MUST` | `AT-SEC-SIZES` | Not implemented |
 | `LP-SEC-005` | `MUST` | `AT-SEC-SHADER` | Implemented (bounded M3 Phase-B local contract evidence: PR #118; manifest linkage plus SHA-256 plus parse/validation before GPU use, passing in the CI Rust gate; additional artifact classes remain open) |
 | `LP-SEC-006` | `MUST` | `AT-SEC-SBOM` | Not implemented |
-| `LP-SEC-007` | `MUST` | `AT-SEC-FONTS` | Not implemented |
+| `LP-SEC-007` | `MUST` | `AT-SEC-FONTS` | Implemented (bounded M5-P3i fixture-font evidence: PR #141; 9/9 AT-SEC-FONTS tests pass; vendored bytes, sha256, fsType=0, OFL markers, manifest, and fixture-scoped deny evidence verified; production distribution, shaping/subsetting/searchable-PDF, SBOM/O-17, and release closure remain open) |
 | `LP-SEC-008` | `MUST` | `AT-SEC-PUBLIC-DOCS` | Not implemented |
 | `LP-TEXT-001` | `MUST` | `AT-SEM-LAYOUT` | Not implemented |
 | `LP-TEXT-002` | `MUST NOT` | `AT-SEM-LAYOUT` | Not implemented |
