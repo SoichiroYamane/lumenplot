@@ -50,24 +50,24 @@ pub(crate) enum ModifierKey {
 /// checked [`Self::from_bits`] constructor prevents an unknown host bit from
 /// being silently treated as no modifier.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub(crate) struct ModifierKeys(u8);
+pub struct ModifierKeys(u8);
 
 impl ModifierKeys {
     /// No modifiers are held.
-    pub(crate) const NONE: Self = Self(0);
+    pub const NONE: Self = Self(0);
     /// Shift is held.
-    pub(crate) const SHIFT: Self = Self(1 << 0);
+    pub const SHIFT: Self = Self(1 << 0);
     /// Control is held.
-    pub(crate) const CONTROL: Self = Self(1 << 1);
+    pub const CONTROL: Self = Self(1 << 1);
     /// Alt/Option is held.
-    pub(crate) const ALT: Self = Self(1 << 2);
+    pub const ALT: Self = Self(1 << 2);
     /// Super/Command/Windows is held.
-    pub(crate) const SUPER: Self = Self(1 << 3);
+    pub const SUPER: Self = Self(1 << 3);
 
     const KNOWN_BITS: u8 = Self::SHIFT.0 | Self::CONTROL.0 | Self::ALT.0 | Self::SUPER.0;
 
     /// Returns an empty modifier set.
-    pub(crate) const fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self::NONE
     }
 
@@ -82,7 +82,7 @@ impl ModifierKeys {
     }
 
     /// Creates a set from raw bits, rejecting unknown bits.
-    pub(crate) const fn from_bits(bits: u8) -> Option<Self> {
+    pub const fn from_bits(bits: u8) -> Option<Self> {
         if bits & !Self::KNOWN_BITS == 0 {
             Some(Self(bits))
         } else {
@@ -91,7 +91,7 @@ impl ModifierKeys {
     }
 
     /// Returns the checked bit representation.
-    pub(crate) const fn bits(self) -> u8 {
+    pub const fn bits(self) -> u8 {
         self.0
     }
 
@@ -101,7 +101,7 @@ impl ModifierKeys {
     }
 
     /// Returns whether no modifier is present.
-    pub(crate) const fn is_empty(self) -> bool {
+    pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
 
@@ -111,7 +111,7 @@ impl ModifierKeys {
     }
 
     /// Combines two checked modifier sets.
-    pub(crate) const fn union(self, other: Self) -> Self {
+    pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 }
@@ -121,7 +121,7 @@ pub(crate) type Modifiers = ModifierKeys;
 
 /// Axis scope attached to a pan, zoom, or box-zoom action.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum AxisRestriction {
+pub enum AxisRestriction {
     /// Both x and y dimensions are affected.
     Both,
     /// Only the x dimension is affected.
@@ -166,7 +166,7 @@ pub(crate) enum PointerPhase {
 
 /// A semantic target under a pointer.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum PointerTarget {
+pub enum PointerTarget {
     /// The plot background, with no series geometry under the pointer.
     PlotBackground,
     /// A selectable line/series identified by a runtime-local key.
@@ -207,7 +207,7 @@ impl PointerTarget {
 
 /// A keyboard key after host key normalization.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum KeyboardKey {
+pub enum KeyboardKey {
     /// Left navigation key.
     ArrowLeft,
     /// Right navigation key.
@@ -298,31 +298,31 @@ impl PointerEvent {
 
 /// A keyboard input supplied to the semantic router.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct KeyboardEvent {
+pub struct KeyboardEvent {
     key: KeyboardKey,
     modifiers: ModifierKeys,
 }
 
 impl KeyboardEvent {
     /// Constructs a normalized key-press event.
-    pub(crate) const fn new(key: KeyboardKey, modifiers: ModifierKeys) -> Self {
+    pub const fn new(key: KeyboardKey, modifiers: ModifierKeys) -> Self {
         Self { key, modifiers }
     }
 
     /// Returns the normalized key.
-    pub(crate) const fn key(self) -> KeyboardKey {
+    pub const fn key(self) -> KeyboardKey {
         self.key
     }
 
     /// Returns the modifier set.
-    pub(crate) const fn modifiers(self) -> ModifierKeys {
+    pub const fn modifiers(self) -> ModifierKeys {
         self.modifiers
     }
 }
 
 /// A focusable transient UI target.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum FocusTarget {
+pub enum FocusTarget {
     /// The plot surface.
     Plot,
     /// The Legend as a whole.
@@ -342,7 +342,7 @@ pub(crate) enum FocusTarget {
 /// of them. Routing currently reads only `focus`, while the other fields make
 /// the ownership boundary explicit for hover/cursor/context consumers.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct TransientUiState {
+pub struct TransientUiState {
     cursor: Option<PointerTarget>,
     hover: Option<PointerTarget>,
     context: Option<PointerTarget>,
@@ -351,7 +351,7 @@ pub(crate) struct TransientUiState {
 
 impl TransientUiState {
     /// Creates an empty transient UI state.
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             cursor: None,
             hover: None,
@@ -361,7 +361,7 @@ impl TransientUiState {
     }
 
     /// Returns a state with the supplied focus target.
-    pub(crate) const fn with_focus(focus: Option<FocusTarget>) -> Self {
+    pub const fn with_focus(focus: Option<FocusTarget>) -> Self {
         Self {
             cursor: None,
             hover: None,
@@ -406,14 +406,14 @@ impl TransientUiState {
     }
 
     /// Returns the focused target.
-    pub(crate) const fn focus(self) -> Option<FocusTarget> {
+    pub const fn focus(self) -> Option<FocusTarget> {
         self.focus
     }
 }
 
 /// The two ways focus can move through the semantic control order.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum FocusDirection {
+pub enum FocusDirection {
     /// Move to the next focusable target.
     Next,
     /// Move to the previous focusable target.
@@ -422,7 +422,7 @@ pub(crate) enum FocusDirection {
 
 /// Direction for keyboard view navigation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum NavigationDirection {
+pub enum NavigationDirection {
     /// Move toward the lower x range.
     Left,
     /// Move toward the higher x range.
@@ -435,7 +435,7 @@ pub(crate) enum NavigationDirection {
 
 /// Direction for view-history traversal.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum HistoryDirection {
+pub enum HistoryDirection {
     /// Restore the prior view entry.
     Previous,
     /// Restore the next view entry.
@@ -444,7 +444,7 @@ pub(crate) enum HistoryDirection {
 
 /// An operation on the formal publication Legend.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum LegendAction {
+pub enum LegendAction {
     /// Toggle one series' visibility while retaining Legend geometry.
     ToggleVisibility { series: u64 },
     /// Solo one series, retaining the prior visibility snapshot in UI state.
@@ -456,7 +456,7 @@ pub(crate) enum LegendAction {
 /// An annotation operation. Annotation state itself belongs to Plot State;
 /// focus and editing chrome around it do not.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum AnnotationAction {
+pub enum AnnotationAction {
     /// Begin creation of an annotation.
     Create,
     /// Begin editing an existing annotation.
@@ -467,7 +467,7 @@ pub(crate) enum AnnotationAction {
 
 /// A selectable target for a transient selection highlight.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum SelectionTarget {
+pub enum SelectionTarget {
     /// A line/series target.
     Series(u64),
     /// An annotation target.
@@ -476,7 +476,7 @@ pub(crate) enum SelectionTarget {
 
 /// The required anchor semantics for pointer zoom.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum ZoomAnchor {
+pub enum ZoomAnchor {
     /// Preserve the scientific point under the pointer.
     Pointer,
 }
@@ -498,7 +498,7 @@ pub(crate) enum ActionStateScope {
 /// pointer gestures select their operation from phase, button, modifiers, and
 /// target; keyboard commands select the same semantic operation directly.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum SemanticAction {
+pub enum SemanticAction {
     /// Pan the current viewport.
     Pan { axis: AxisRestriction },
     /// Zoom around the pointer, with optional axis restriction.
@@ -591,7 +591,7 @@ pub(crate) enum MotionPreference {
 
 /// Machine-readable input-routing failure.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum InputRouteErrorKind {
+pub enum InputRouteErrorKind {
     /// The host supplied an unnormalized press/move/release phase.
     UnsupportedPointerPhase,
     /// A button-bearing phase omitted its button.
@@ -620,7 +620,7 @@ pub(crate) enum InputRouteErrorKind {
 
 /// Sanitized error returned when no unique semantic action can be selected.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct InputRouteError {
+pub struct InputRouteError {
     kind: InputRouteErrorKind,
     message: &'static str,
 }
@@ -631,12 +631,12 @@ impl InputRouteError {
     }
 
     /// Returns the machine-readable failure kind.
-    pub(crate) const fn kind(self) -> InputRouteErrorKind {
+    pub const fn kind(self) -> InputRouteErrorKind {
         self.kind
     }
 
     /// Returns sanitized human-readable detail.
-    pub(crate) const fn message(self) -> &'static str {
+    pub const fn message(self) -> &'static str {
         self.message
     }
 }
@@ -828,7 +828,7 @@ fn require_no_modifiers(modifiers: ModifierKeys) -> Result<(), InputRouteError> 
 }
 
 /// Routes a normalized keyboard event using transient focus state.
-pub(crate) fn route_keyboard(
+pub fn route_keyboard(
     event: KeyboardEvent,
     state: TransientUiState,
 ) -> Result<SemanticAction, InputRouteError> {
@@ -1353,7 +1353,7 @@ pub(crate) const fn home_viewport(canonical: [f64; 4]) -> [f64; 4] {
 }
 
 /// Advances focus through the B1 headless order (plot then Legend).
-pub(crate) const fn next_focus(current: Option<FocusTarget>) -> Option<FocusTarget> {
+pub const fn next_focus(current: Option<FocusTarget>) -> Option<FocusTarget> {
     match current {
         None => Some(FocusTarget::Plot),
         Some(FocusTarget::Plot) => Some(FocusTarget::Legend),
@@ -1363,7 +1363,7 @@ pub(crate) const fn next_focus(current: Option<FocusTarget>) -> Option<FocusTarg
 }
 
 /// Moves focus backward through the B1 headless order.
-pub(crate) const fn previous_focus(current: Option<FocusTarget>) -> Option<FocusTarget> {
+pub const fn previous_focus(current: Option<FocusTarget>) -> Option<FocusTarget> {
     match current {
         None => Some(FocusTarget::Legend),
         Some(FocusTarget::Plot) => Some(FocusTarget::Legend),
@@ -2229,6 +2229,899 @@ mod tests {
             assert_eq!(normal, reduced);
             assert_eq!(normal, route(event, state));
         }
+    }
+
+    // AT-REVIEW-A11Y (LP-UX-032 preference fixture): reduced motion must
+    // preserve every accepted route. Both preferences delegate to `route`,
+    // so Normal and Reduced agree on each action outcome and each error
+    // kind/message, and both agree with the bare `route` result.
+    #[test]
+    fn at_review_a11y_reduced_motion_preserves_every_accepted_route() {
+        assert_ne!(
+            MotionPreference::Normal,
+            MotionPreference::Reduced,
+            "fixture must exercise two distinct preference values"
+        );
+        let legend_entry_9 = TransientUiState::with_focus(Some(FocusTarget::LegendEntry(9)));
+        let legend_entry_6 = TransientUiState::with_focus(Some(FocusTarget::LegendEntry(6)));
+        let annotation_3 = TransientUiState::with_focus(Some(FocusTarget::Annotation(3)));
+        let plot = TransientUiState::with_focus(Some(FocusTarget::Plot));
+        let series_9 = TransientUiState::with_focus(Some(FocusTarget::Series(9)));
+        let legend_focus = TransientUiState::with_focus(Some(FocusTarget::Legend));
+        let ok_cases = [
+            (
+                "plot pan",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Pan {
+                    axis: AxisRestriction::Both,
+                },
+            ),
+            (
+                "series pan",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::Series(4),
+                ),
+                TransientUiState::new(),
+                SemanticAction::Pan {
+                    axis: AxisRestriction::Both,
+                },
+            ),
+            (
+                "x-axis pan",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::XAxis,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Pan {
+                    axis: AxisRestriction::X,
+                },
+            ),
+            (
+                "y-axis pan",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::YAxis,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Pan {
+                    axis: AxisRestriction::Y,
+                },
+            ),
+            (
+                "plot box zoom",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Left),
+                    ModifierKeys::SHIFT,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                SemanticAction::BoxZoom {
+                    axis: AxisRestriction::Both,
+                },
+            ),
+            (
+                "series box zoom",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Left),
+                    ModifierKeys::SHIFT,
+                    PointerTarget::Series(4),
+                ),
+                TransientUiState::new(),
+                SemanticAction::BoxZoom {
+                    axis: AxisRestriction::Both,
+                },
+            ),
+            (
+                "x-axis box zoom",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Left),
+                    ModifierKeys::SHIFT,
+                    PointerTarget::XAxis,
+                ),
+                TransientUiState::new(),
+                SemanticAction::BoxZoom {
+                    axis: AxisRestriction::X,
+                },
+            ),
+            (
+                "y-axis box zoom",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Left),
+                    ModifierKeys::SHIFT,
+                    PointerTarget::YAxis,
+                ),
+                TransientUiState::new(),
+                SemanticAction::BoxZoom {
+                    axis: AxisRestriction::Y,
+                },
+            ),
+            (
+                "wheel zoom plot",
+                pointer(
+                    PointerPhase::Wheel,
+                    None,
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Zoom {
+                    axis: AxisRestriction::Both,
+                    anchor: ZoomAnchor::Pointer,
+                },
+            ),
+            (
+                "wheel zoom series",
+                pointer(
+                    PointerPhase::Wheel,
+                    None,
+                    ModifierKeys::NONE,
+                    PointerTarget::Series(4),
+                ),
+                TransientUiState::new(),
+                SemanticAction::Zoom {
+                    axis: AxisRestriction::Both,
+                    anchor: ZoomAnchor::Pointer,
+                },
+            ),
+            (
+                "wheel zoom x-axis",
+                pointer(
+                    PointerPhase::Wheel,
+                    None,
+                    ModifierKeys::NONE,
+                    PointerTarget::XAxis,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Zoom {
+                    axis: AxisRestriction::X,
+                    anchor: ZoomAnchor::Pointer,
+                },
+            ),
+            (
+                "wheel zoom y-axis",
+                pointer(
+                    PointerPhase::Wheel,
+                    None,
+                    ModifierKeys::NONE,
+                    PointerTarget::YAxis,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Zoom {
+                    axis: AxisRestriction::Y,
+                    anchor: ZoomAnchor::Pointer,
+                },
+            ),
+            (
+                "trackpad zoom plot",
+                pointer(
+                    PointerPhase::Trackpad,
+                    None,
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Zoom {
+                    axis: AxisRestriction::Both,
+                    anchor: ZoomAnchor::Pointer,
+                },
+            ),
+            (
+                "trackpad zoom x-axis",
+                pointer(
+                    PointerPhase::Trackpad,
+                    None,
+                    ModifierKeys::NONE,
+                    PointerTarget::XAxis,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Zoom {
+                    axis: AxisRestriction::X,
+                    anchor: ZoomAnchor::Pointer,
+                },
+            ),
+            (
+                "line selection",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::Series(4),
+                ),
+                TransientUiState::new(),
+                SemanticAction::Select {
+                    target: SelectionTarget::Series(4),
+                },
+            ),
+            (
+                "background clear",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                SemanticAction::ClearSelection,
+            ),
+            (
+                "legend entry click",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::LegendEntry(4),
+                ),
+                TransientUiState::new(),
+                SemanticAction::Legend {
+                    action: LegendAction::ToggleVisibility { series: 4 },
+                },
+            ),
+            (
+                "annotation select",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::Annotation(7),
+                ),
+                TransientUiState::new(),
+                SemanticAction::Select {
+                    target: SelectionTarget::Annotation(7),
+                },
+            ),
+            (
+                "context series",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Right),
+                    ModifierKeys::NONE,
+                    PointerTarget::Series(4),
+                ),
+                TransientUiState::new(),
+                SemanticAction::Context {
+                    target: PointerTarget::Series(4),
+                },
+            ),
+            (
+                "context background",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Right),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Context {
+                    target: PointerTarget::PlotBackground,
+                },
+            ),
+            (
+                "context x-axis",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Right),
+                    ModifierKeys::NONE,
+                    PointerTarget::XAxis,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Context {
+                    target: PointerTarget::XAxis,
+                },
+            ),
+            (
+                "context legend entry",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Right),
+                    ModifierKeys::NONE,
+                    PointerTarget::LegendEntry(4),
+                ),
+                TransientUiState::new(),
+                SemanticAction::Context {
+                    target: PointerTarget::LegendEntry(4),
+                },
+            ),
+            (
+                "context annotation",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Right),
+                    ModifierKeys::NONE,
+                    PointerTarget::Annotation(7),
+                ),
+                TransientUiState::new(),
+                SemanticAction::Context {
+                    target: PointerTarget::Annotation(7),
+                },
+            ),
+            (
+                "double-click home background",
+                pointer(
+                    PointerPhase::DoubleClick,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Home,
+            ),
+            (
+                "double-click home series",
+                pointer(
+                    PointerPhase::DoubleClick,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::Series(4),
+                ),
+                TransientUiState::new(),
+                SemanticAction::Home,
+            ),
+            (
+                "double-click home x-axis",
+                pointer(
+                    PointerPhase::DoubleClick,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::XAxis,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Home,
+            ),
+            (
+                "double-click home y-axis",
+                pointer(
+                    PointerPhase::DoubleClick,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::YAxis,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Home,
+            ),
+            (
+                "legend entry double-click solo",
+                pointer(
+                    PointerPhase::DoubleClick,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::LegendEntry(4),
+                ),
+                TransientUiState::new(),
+                SemanticAction::Legend {
+                    action: LegendAction::Solo { series: 4 },
+                },
+            ),
+            (
+                "hover series",
+                pointer(
+                    PointerPhase::Hover,
+                    None,
+                    ModifierKeys::NONE,
+                    PointerTarget::Series(4),
+                ),
+                TransientUiState::new(),
+                SemanticAction::Hover {
+                    target: PointerTarget::Series(4),
+                },
+            ),
+            (
+                "hover background",
+                pointer(
+                    PointerPhase::Hover,
+                    None,
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Hover {
+                    target: PointerTarget::PlotBackground,
+                },
+            ),
+            (
+                "pointer cancellation",
+                pointer(
+                    PointerPhase::Cancel,
+                    None,
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                SemanticAction::Cancel,
+            ),
+            (
+                "left navigation",
+                keyboard(KeyboardKey::ArrowLeft, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Navigate {
+                    direction: NavigationDirection::Left,
+                },
+            ),
+            (
+                "right navigation",
+                keyboard(KeyboardKey::ArrowRight, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Navigate {
+                    direction: NavigationDirection::Right,
+                },
+            ),
+            (
+                "up navigation",
+                keyboard(KeyboardKey::ArrowUp, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Navigate {
+                    direction: NavigationDirection::Up,
+                },
+            ),
+            (
+                "down navigation",
+                keyboard(KeyboardKey::ArrowDown, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Navigate {
+                    direction: NavigationDirection::Down,
+                },
+            ),
+            (
+                "history previous",
+                keyboard(KeyboardKey::PageUp, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::History {
+                    direction: HistoryDirection::Previous,
+                },
+            ),
+            (
+                "history next",
+                keyboard(KeyboardKey::PageDown, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::History {
+                    direction: HistoryDirection::Next,
+                },
+            ),
+            (
+                "keyboard home",
+                keyboard(KeyboardKey::Home, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Home,
+            ),
+            (
+                "focus next",
+                keyboard(KeyboardKey::Tab, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::MoveFocus {
+                    direction: FocusDirection::Next,
+                },
+            ),
+            (
+                "focus previous",
+                keyboard(KeyboardKey::Tab, ModifierKeys::SHIFT),
+                TransientUiState::new(),
+                SemanticAction::MoveFocus {
+                    direction: FocusDirection::Previous,
+                },
+            ),
+            (
+                "keyboard cancel",
+                keyboard(KeyboardKey::Escape, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::Cancel,
+            ),
+            (
+                "grid",
+                keyboard(KeyboardKey::G, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::ToggleGrid,
+            ),
+            (
+                "cursor",
+                keyboard(KeyboardKey::C, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::ToggleCursor,
+            ),
+            (
+                "export",
+                keyboard(KeyboardKey::E, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Export,
+            ),
+            (
+                "series visibility via series focus",
+                keyboard(KeyboardKey::V, ModifierKeys::NONE),
+                series_9,
+                SemanticAction::ToggleSeriesVisibility { series: 9 },
+            ),
+            (
+                "series visibility via legend entry focus",
+                keyboard(KeyboardKey::V, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::ToggleSeriesVisibility { series: 9 },
+            ),
+            (
+                "legend keyboard operation",
+                keyboard(KeyboardKey::L, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::Legend {
+                    action: LegendAction::ToggleVisibility { series: 9 },
+                },
+            ),
+            (
+                "legend restore",
+                keyboard(KeyboardKey::R, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::Legend {
+                    action: LegendAction::Restore { series: 9 },
+                },
+            ),
+            (
+                "annotation create",
+                keyboard(KeyboardKey::A, ModifierKeys::NONE),
+                plot,
+                SemanticAction::Annotation {
+                    action: AnnotationAction::Create,
+                },
+            ),
+            (
+                "annotation edit via A",
+                keyboard(KeyboardKey::A, ModifierKeys::NONE),
+                annotation_3,
+                SemanticAction::Annotation {
+                    action: AnnotationAction::Edit { annotation: 3 },
+                },
+            ),
+            (
+                "legend enter",
+                keyboard(KeyboardKey::Enter, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::Legend {
+                    action: LegendAction::ToggleVisibility { series: 9 },
+                },
+            ),
+            (
+                "annotation enter",
+                keyboard(KeyboardKey::Enter, ModifierKeys::NONE),
+                annotation_3,
+                SemanticAction::Annotation {
+                    action: AnnotationAction::Edit { annotation: 3 },
+                },
+            ),
+            (
+                "legend space",
+                keyboard(KeyboardKey::Space, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::Legend {
+                    action: LegendAction::ToggleVisibility { series: 9 },
+                },
+            ),
+            (
+                "annotation delete",
+                keyboard(KeyboardKey::Delete, ModifierKeys::NONE),
+                annotation_3,
+                SemanticAction::Annotation {
+                    action: AnnotationAction::Delete { annotation: 3 },
+                },
+            ),
+        ];
+        let err_cases = [
+            (
+                "raw press",
+                pointer(
+                    PointerPhase::Press,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedPointerPhase,
+            ),
+            (
+                "raw move",
+                pointer(
+                    PointerPhase::Move,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedPointerPhase,
+            ),
+            (
+                "raw release",
+                pointer(
+                    PointerPhase::Release,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedPointerPhase,
+            ),
+            (
+                "drag without button",
+                pointer(
+                    PointerPhase::Drag,
+                    None,
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::MissingPointerButton,
+            ),
+            (
+                "scroll with button",
+                pointer(
+                    PointerPhase::Wheel,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnexpectedPointerButton,
+            ),
+            (
+                "middle drag",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Middle),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedPointerButton,
+            ),
+            (
+                "right drag",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Right),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedPointerButton,
+            ),
+            (
+                "control drag",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Left),
+                    ModifierKeys::CONTROL,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedModifierCombination,
+            ),
+            (
+                "shift-control drag",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Left),
+                    ModifierKeys::SHIFT.union(ModifierKeys::CONTROL),
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedModifierCombination,
+            ),
+            (
+                "shift wheel",
+                pointer(
+                    PointerPhase::Wheel,
+                    None,
+                    ModifierKeys::SHIFT,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedModifierCombination,
+            ),
+            (
+                "drag legend",
+                pointer(
+                    PointerPhase::Drag,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::Legend,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedPointerTarget,
+            ),
+            (
+                "scroll legend entry",
+                pointer(
+                    PointerPhase::Trackpad,
+                    None,
+                    ModifierKeys::NONE,
+                    PointerTarget::LegendEntry(4),
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedPointerTarget,
+            ),
+            (
+                "axis click",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::XAxis,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedPointerTarget,
+            ),
+            (
+                "ambiguous annotation double-click",
+                pointer(
+                    PointerPhase::DoubleClick,
+                    Some(PointerButton::Left),
+                    ModifierKeys::NONE,
+                    PointerTarget::Annotation(7),
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::AmbiguousPointerCombination,
+            ),
+            (
+                "unknown target context",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Right),
+                    ModifierKeys::NONE,
+                    PointerTarget::Other,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedPointerTarget,
+            ),
+            (
+                "right double-click",
+                pointer(
+                    PointerPhase::DoubleClick,
+                    Some(PointerButton::Right),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedPointerButton,
+            ),
+            (
+                "other button click",
+                pointer(
+                    PointerPhase::Click,
+                    Some(PointerButton::Other(8)),
+                    ModifierKeys::NONE,
+                    PointerTarget::PlotBackground,
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedPointerButton,
+            ),
+            (
+                "unknown key",
+                keyboard(KeyboardKey::Other(0xdead), ModifierKeys::NONE),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedKeyboardKey,
+            ),
+            (
+                "control navigation",
+                keyboard(KeyboardKey::ArrowLeft, ModifierKeys::CONTROL),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedModifierCombination,
+            ),
+            (
+                "alt grid",
+                keyboard(KeyboardKey::G, ModifierKeys::ALT),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedModifierCombination,
+            ),
+            (
+                "control shift tab",
+                keyboard(
+                    KeyboardKey::Tab,
+                    ModifierKeys::SHIFT.union(ModifierKeys::CONTROL),
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedKeyboardModifiers,
+            ),
+            (
+                "legend without focus",
+                keyboard(KeyboardKey::L, ModifierKeys::NONE),
+                TransientUiState::new(),
+                InputRouteErrorKind::FocusRequired,
+            ),
+            (
+                "legend with plot focus",
+                keyboard(KeyboardKey::L, ModifierKeys::NONE),
+                plot,
+                InputRouteErrorKind::UnsupportedFocusTarget,
+            ),
+            (
+                "visibility without focus",
+                keyboard(KeyboardKey::V, ModifierKeys::NONE),
+                TransientUiState::new(),
+                InputRouteErrorKind::FocusRequired,
+            ),
+            (
+                "annotation delete on legend",
+                keyboard(KeyboardKey::Delete, ModifierKeys::NONE),
+                legend_entry_9,
+                InputRouteErrorKind::UnsupportedFocusTarget,
+            ),
+            (
+                "annotation create on legend",
+                keyboard(KeyboardKey::A, ModifierKeys::NONE),
+                legend_focus,
+                InputRouteErrorKind::UnsupportedFocusTarget,
+            ),
+            (
+                "enter on plot",
+                keyboard(KeyboardKey::Enter, ModifierKeys::NONE),
+                plot,
+                InputRouteErrorKind::AmbiguousKeyboardCombination,
+            ),
+            (
+                "space on annotation",
+                keyboard(KeyboardKey::Space, ModifierKeys::NONE),
+                annotation_3,
+                InputRouteErrorKind::UnsupportedFocusTarget,
+            ),
+        ];
+        assert_eq!(
+            ok_cases.len(),
+            54,
+            "fixture must pin its accepted-route count"
+        );
+        assert_eq!(err_cases.len(), 28, "fixture must pin its rejection count");
+        let mut ok_seen = 0usize;
+        for (name, event, state, expected) in ok_cases {
+            let normal = route_with_motion(event, state, MotionPreference::Normal);
+            let reduced = route_with_motion(event, state, MotionPreference::Reduced);
+            assert_eq!(normal, reduced, "{name}");
+            assert_eq!(normal, route(event, state), "{name}");
+            assert_eq!(normal, Ok(expected), "{name}");
+            ok_seen += 1;
+        }
+        let mut err_seen = 0usize;
+        for (name, event, state, expected) in err_cases {
+            let normal = route_with_motion(event, state, MotionPreference::Normal);
+            let reduced = route_with_motion(event, state, MotionPreference::Reduced);
+            assert_eq!(normal, reduced, "{name}");
+            assert_eq!(normal, route(event, state), "{name}");
+            let normal_err = normal.expect_err("route should reject the input");
+            let reduced_err = reduced.expect_err("route should reject the input");
+            assert_eq!(normal_err.kind(), expected, "{name}");
+            assert_eq!(reduced_err.kind(), expected, "{name}");
+            assert_eq!(normal_err.message(), reduced_err.message(), "{name}");
+            assert!(!normal_err.message().is_empty(), "{name}");
+            err_seen += 1;
+        }
+        assert_eq!(
+            ok_seen, 54,
+            "every accepted route must run under both motions"
+        );
+        assert_eq!(err_seen, 28, "every rejection must run under both motions");
+        // The legend-entry focus used below keeps the fixture honest about the
+        // second accepted focus source for the preference path.
+        let focused = route_with_motion(
+            keyboard(KeyboardKey::L, ModifierKeys::NONE),
+            legend_entry_6,
+            MotionPreference::Reduced,
+        );
+        assert_eq!(
+            focused,
+            Ok(SemanticAction::Legend {
+                action: LegendAction::ToggleVisibility { series: 6 },
+            })
+        );
     }
 
     #[test]
