@@ -648,6 +648,25 @@ EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES = {
         "version": "=0.18.1",
         "default-features": False,
     },
+    # M5-P3ii shaping/subset pin (slice ii): exact reviewed versions, no code
+    # use yet. Parley/Fontique disable `system` so the export sink stays
+    # hermetic (no system font enumeration or link-time fontconfig).
+    "parley": {
+        "version": "=0.11.1",
+        "default-features": False,
+        "features": ["std"],
+    },
+    "fontique": {
+        "version": "=0.11.1",
+        "default-features": False,
+        "features": ["std"],
+    },
+    "harfrust": {
+        "version": "=0.12.0",
+    },
+    "subsetter": {
+        "version": "=0.2.6",
+    },
 }
 INHERITED_PACKAGE_FIELDS = ("edition", "version", "license", "repository", "readme")
 DEPENDENCY_TABLE_NAMES = {"dependencies", "dev-dependencies", "build-dependencies"}
