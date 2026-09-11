@@ -29,9 +29,14 @@ the whitelisted eligible trace and raises
 Since the PRAC-A-D amendment of ADR 0015 §4, the eligible trace includes
 one standard ``Axes`` with decorations enabled: solid major gridlines,
 major tick strokes, and spine edges are rendered natively as explicit
-path commands ahead of the axes' content lines. Visible minor tick
+path commands ahead of the axes' content lines. Since the T-lane
+(PRAC-A-W) wire-up, visible non-empty major tick labels are eligible as
+well: each label renders natively as one filled glyph-outline path
+command built by the public ``lumenplot_mpl.textpath`` module from the
+label's own ``FontProperties`` and resolved size. Visible minor tick
 content, non-solid grid styles, an opaque axes facecolor, titles, axis
-labels, and tick labels remain outside the slice and raise.
+labels, offset text, multi-line labels, labels with leading/trailing
+whitespace, and math/TeX text remain outside the slice and raise.
 Since the PRAC-A-L amendment of ADR 0015 §4a a standard Axes legend
 (``matplotlib.legend.Legend``, single-column, line entries) is eligible
 as well: its frame, handle strokes, and entry labels render as explicit
