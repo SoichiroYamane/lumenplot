@@ -29,6 +29,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from matplotlib.font_manager import FontProperties
 from matplotlib.path import Path
 from matplotlib.textpath import TextPath
 
@@ -74,6 +75,7 @@ def glyph_outline_commands(
     shear_x: float,
     *,
     font_size_pt: float = 10.0,
+    prop: FontProperties | None = None,
 ) -> list[dict[str, Any]]:
     """Return one frozen-seam ``kind: "path"`` command for ``text``.
 
@@ -87,6 +89,13 @@ def glyph_outline_commands(
     y grows downward from it. Glyph interiors keep TextPath's y-up sign,
     which is negated here once per vertex so ink extends upward on screen.
 
+    ``prop`` carries the label's public ``FontProperties`` (family, style,
+    variant, weight, stretch); ``font_size_pt`` carries its resolved size.
+    Both are forwarded to ``TextPath`` so the outline honors exactly the
+    face Agg resolves for the same artist (T-lane style contract, §15.1
+    part 3). When ``prop`` is None the previous default-face behavior is
+    kept. A non-``FontProperties`` ``prop`` is refused explicitly.
+
     Raises ValueError with the ``unsupported-text-path`` token for empty
     or whitespace-only text, non-finite arguments, or any outline shape
     the frozen seam cannot represent.
@@ -98,6 +107,8 @@ def glyph_outline_commands(
         # 3.11.x: the empty outline reaches Path.__init__ as a plain
         # list), so this lane rejects it explicitly before construction.
         raise _unsupported("text must contain visible glyphs")
+    if prop is not None and not isinstance(prop, FontProperties):
+        raise _unsupported("font properties must be a FontProperties")
     origin_x = _as_float(origin_px[0] if len(origin_px) > 0 else None)
     origin_y = _as_float(origin_px[1] if len(origin_px) > 1 else None)
     scale_x = _as_float(scale_x)
@@ -108,7 +119,7 @@ def glyph_outline_commands(
         (0.0, 0.0),
         text,
         size=float(font_size_pt),
-        prop=None,
+        prop=prop,
     )
     vertices = text_path.vertices
     raw_codes = text_path.codes
