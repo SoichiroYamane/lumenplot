@@ -375,10 +375,12 @@ class _EligibilityPreflight:
         """Whitelist-check one visible major tick label (PRAC-A-W).
 
         The label is rendered as explicit filled glyph path commands built
-        by the public ``lumenplot_mpl.textpath`` module; only its string,
-        font size, color, alpha, rotation, alignment, and position are
-        honored. Anything outside the supported surface is refused here so
-        stage two never observes an unexpected ``draw_text``.
+        by the public ``lumenplot_mpl.textpath`` module from the label's
+        own public ``FontProperties`` (family/style/weight) and resolved
+        font size; only its string, font face, font size, color, alpha,
+        rotation, alignment, and position are honored. Anything outside
+        the supported surface is refused here so stage two never observes
+        an unexpected ``draw_text``.
         """
         name = type(label).__name__
         if label.get_text() != label.get_text().strip():
@@ -401,6 +403,20 @@ class _EligibilityPreflight:
         # interpret them, which must never diverge silently.
         if label.get_usetex() or "$" in label.get_text():
             self.unsupported("math/TeX text is unsupported", name)
+        # T-lane style contract: the glyph route resolves the label's own
+        # public font face and size, so a non-positive size, sketch, snap
+        # override, or custom clip has no representable outline and refuses
+        # here (same surface the legend entry labels already enforce
+        # downstream; recording it here keeps tick labels self-sufficient).
+        size = float(label.get_fontsize())
+        if not math.isfinite(size) or size <= 0.0:
+            self.unsupported("non-positive font size", name)
+        if label.get_sketch_params() is not None:
+            self.unsupported("sketch parameters are unsupported", name)
+        if label.get_snap() is not None:
+            self.unsupported("explicit snap is unsupported", name)
+        if label.get_clip_box() is not None or label.get_clip_path() is not None:
+            self.unsupported("custom clipping is unsupported", name)
 
     def _check_legend_static(self, legend: Any) -> None:
         """Whitelist-check one Axes legend (PRAC-A-L, LP-MPL-020).
@@ -1035,12 +1051,16 @@ class _EligibilityPreflight:
                             text = label.get_text()
                             if not label.get_visible() or text == "":
                                 continue
+                            label_prop = label.get_fontproperties()
                             entries.append(
                                 {
                                     "artist": label,
                                     "text": str(text),
                                     "size": float(label.get_fontsize()),
                                     "angle": float(label.get_rotation()),
+                                    "weight": label_prop.get_weight(),
+                                    "style": label_prop.get_style(),
+                                    "family": tuple(label_prop.get_family()),
                                 }
                             )
             legend = ax.get_legend()
@@ -1049,6 +1069,7 @@ class _EligibilityPreflight:
                     text = label.get_text()
                     if not label.get_visible() or text == "":
                         continue
+                    legend_prop = label.get_fontproperties()
                     entries.append(
                         {
                             "kind": "legend_label",
@@ -1056,6 +1077,9 @@ class _EligibilityPreflight:
                             "text": str(text),
                             "size": float(label.get_fontsize()),
                             "angle": float(label.get_rotation()),
+                            "weight": legend_prop.get_weight(),
+                            "style": legend_prop.get_style(),
+                            "family": tuple(legend_prop.get_family()),
                         }
                     )
         return entries
@@ -1132,8 +1156,18 @@ class _EligibilityPreflight:
                 angle_ok = (
                     abs(float(payload["angle"]) - entry["angle"]) <= 1.0e-9
                 )
+                # T-lane style contract: the draw-time face must be the
+                # statically enumerated one (same FontProperties weight /
+                # style / family); a substituted face would outline
+                # different glyphs than the enumerated label.
+                draw_prop = payload["prop"]
+                font_ok = (
+                    draw_prop.get_weight() == entry["weight"]
+                    and draw_prop.get_style() == entry["style"]
+                    and tuple(draw_prop.get_family()) == entry["family"]
+                )
             except (AttributeError, TypeError, ValueError):
-                size_ok = angle_ok = False
+                size_ok = angle_ok = font_ok = False
             if payload.get("ismath") or "$" in entry["text"]:
                 self.unsupported("math/TeX text is unsupported", "Text")
                 return False
@@ -1141,6 +1175,7 @@ class _EligibilityPreflight:
                 payload.get("text") != entry["text"]
                 or not size_ok
                 or not angle_ok
+                or not font_ok
             ):
                 self.unsupported(
                     "the draw_text callback for a public label changed "
@@ -2860,6 +2895,7 @@ class _EligibilityPreflight:
                     1.0,
                     0.0,
                     font_size_pt=float(label.get_fontsize()),
+                    prop=label.get_fontproperties(),
                 )[0]
             except ValueError as error:
                 raise LumenPlotUnsupportedError(
