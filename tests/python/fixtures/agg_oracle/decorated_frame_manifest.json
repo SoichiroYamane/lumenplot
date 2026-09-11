@@ -1,0 +1,507 @@
+{
+  "schema_version": "agg-oracle-manifest-v1",
+  "fixture_id": "decorated-frame-ticklabels-grid-spines",
+  "oracle": {
+    "backend": "FigureCanvasAgg",
+    "matplotlib_version": "3.11.1",
+    "api_version": "1.1",
+    "canvas_construction": "matplotlib.backends.backend_agg.FigureCanvasAgg(figure)",
+    "render_call": "canvas.print_png(buffer, metadata={})"
+  },
+  "python_version": ">=3.11,<3.15",
+  "figure": {
+    "construction": "matplotlib.figure.Figure(figsize=(2.0, 1.0), dpi=100.0, facecolor='white', edgecolor='white')",
+    "options": {
+      "figsize_inches": [
+        2.0,
+        1.0
+      ],
+      "dpi": 100.0,
+      "facecolor": "white",
+      "edgecolor": "white",
+      "axes_construction": "figure.add_axes((0.1, 0.1, 0.8, 0.8))",
+      "axes_rect": [
+        0.1,
+        0.1,
+        0.8,
+        0.8
+      ],
+      "axes_facecolor": "none",
+      "axis_on": true,
+      "xlim": [
+        0.0,
+        10.0
+      ],
+      "ylim": [
+        0.0,
+        5.0
+      ],
+      "xticks": [
+        0.0,
+        5.0,
+        10.0
+      ],
+      "yticks": [
+        0.0,
+        2.5,
+        5.0
+      ],
+      "grid": {
+        "visible": true,
+        "which": "major",
+        "axis": "both",
+        "color": "#808080",
+        "linewidth": 0.8,
+        "linestyle": "-",
+        "alpha": 1.0
+      },
+      "spines": {
+        "sides": [
+          "left",
+          "right",
+          "top",
+          "bottom"
+        ],
+        "edgecolor": "black",
+        "linewidth": 1.0
+      },
+      "tick_params": {
+        "direction": "out",
+        "length": 3.5,
+        "width": 0.8,
+        "color": "black",
+        "labelsize": 10.0
+      },
+      "savefig_format": "png",
+      "print_png_metadata": {}
+    }
+  },
+  "effective_dpi": 100.0,
+  "dimensions": {
+    "width": 200,
+    "height": 100
+  },
+  "orientation": "top-to-bottom",
+  "channels": "RGBA8",
+  "rcparams": {
+    "agg.path.chunksize": 0,
+    "axes.axisbelow": "line",
+    "axes.edgecolor": "black",
+    "axes.facecolor": "none",
+    "axes.grid": false,
+    "axes.linewidth": 1.0,
+    "figure.dpi": 100.0,
+    "figure.edgecolor": "white",
+    "figure.facecolor": "white",
+    "font.family": [
+      "DejaVu Sans"
+    ],
+    "font.size": 10.0,
+    "grid.alpha": 1.0,
+    "grid.color": "#808080",
+    "grid.linestyle": "-",
+    "grid.linewidth": 0.8,
+    "lines.antialiased": true,
+    "lines.color": "red",
+    "lines.dash_capstyle": "butt",
+    "lines.dash_joinstyle": "miter",
+    "lines.linestyle": "-",
+    "lines.linewidth": 0.8,
+    "lines.marker": "None",
+    "lines.solid_capstyle": "butt",
+    "lines.solid_joinstyle": "miter",
+    "path.simplify": false,
+    "path.simplify_threshold": 0.0,
+    "savefig.dpi": 100.0,
+    "savefig.edgecolor": "white",
+    "savefig.facecolor": "white",
+    "savefig.format": "png",
+    "savefig.transparent": false,
+    "text.antialiased": true,
+    "xtick.color": "black",
+    "xtick.direction": "out",
+    "xtick.labelsize": 10.0,
+    "xtick.major.size": 3.5,
+    "xtick.major.width": 0.8,
+    "ytick.color": "black",
+    "ytick.direction": "out",
+    "ytick.labelsize": 10.0,
+    "ytick.major.size": 3.5,
+    "ytick.major.width": 0.8
+  },
+  "font": {
+    "family": "DejaVu Sans",
+    "properties": {
+      "style": "normal",
+      "variant": "normal",
+      "weight": "normal",
+      "stretch": "normal",
+      "size": 10.0
+    },
+    "file": "DejaVuSans.ttf",
+    "bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22"
+  },
+  "font_bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22",
+  "artist_class": "matplotlib.axes.Axes",
+  "primitive": {
+    "family": [
+      "matplotlib.axes.Axes",
+      "matplotlib.lines.Line2D",
+      "matplotlib.text.Text",
+      "matplotlib.spines.Spine"
+    ],
+    "constructions": [
+      "figure.add_axes((0.1, 0.1, 0.8, 0.8))",
+      "axes.add_line(Line2D(x, y, ...))",
+      "axes.set_xticks/set_yticks",
+      "axes.grid(True, which='major', axis='both', ...)"
+    ],
+    "style": {
+      "line": {
+        "color": "red",
+        "linewidth": 2.0,
+        "linestyle": "-",
+        "marker": "None",
+        "drawstyle": "default",
+        "solid_capstyle": "butt",
+        "solid_joinstyle": "miter",
+        "antialiased": true
+      },
+      "grid": {
+        "color": "#808080",
+        "linewidth": 0.8,
+        "linestyle": "-",
+        "alpha": 1.0
+      },
+      "spine": {
+        "edgecolor": "black",
+        "linewidth": 1.0
+      },
+      "tick": {
+        "color": "black",
+        "length": 3.5,
+        "width": 0.8,
+        "labelsize": 10.0
+      }
+    },
+    "input_data": {
+      "line": {
+        "x": [
+          0.0,
+          10.0
+        ],
+        "y": [
+          0.0,
+          5.0
+        ],
+        "color": "red",
+        "linewidth": 2.0
+      },
+      "xticks": [
+        0.0,
+        5.0,
+        10.0
+      ],
+      "yticks": [
+        0.0,
+        2.5,
+        5.0
+      ],
+      "grid": {
+        "color": "#808080",
+        "linewidth": 0.8,
+        "linestyle": "-",
+        "which": "major"
+      },
+      "spines": {
+        "sides": [
+          "left",
+          "right",
+          "top",
+          "bottom"
+        ],
+        "edgecolor": "black",
+        "linewidth": 1.0
+      },
+      "cases": {
+        "content_line": {
+          "artist": "matplotlib.lines.Line2D",
+          "color": "red"
+        },
+        "tick_labels": {
+          "artist": "matplotlib.text.Text",
+          "count": 6
+        },
+        "grid": {
+          "artist": "matplotlib.lines.Line2D",
+          "which": "major"
+        },
+        "spines": {
+          "artist": "matplotlib.spines.Spine",
+          "sides": [
+            "left",
+            "right",
+            "top",
+            "bottom"
+          ]
+        }
+      }
+    }
+  },
+  "input_data": {
+    "line": {
+      "x": [
+        0.0,
+        10.0
+      ],
+      "y": [
+        0.0,
+        5.0
+      ],
+      "color": "red",
+      "linewidth": 2.0
+    },
+    "xticks": [
+      0.0,
+      5.0,
+      10.0
+    ],
+    "yticks": [
+      0.0,
+      2.5,
+      5.0
+    ],
+    "grid": {
+      "color": "#808080",
+      "linewidth": 0.8,
+      "linestyle": "-",
+      "which": "major"
+    },
+    "spines": {
+      "sides": [
+        "left",
+        "right",
+        "top",
+        "bottom"
+      ],
+      "edgecolor": "black",
+      "linewidth": 1.0
+    },
+    "cases": {
+      "content_line": {
+        "artist": "matplotlib.lines.Line2D",
+        "color": "red"
+      },
+      "tick_labels": {
+        "artist": "matplotlib.text.Text",
+        "count": 6
+      },
+      "grid": {
+        "artist": "matplotlib.lines.Line2D",
+        "which": "major"
+      },
+      "spines": {
+        "artist": "matplotlib.spines.Spine",
+        "sides": [
+          "left",
+          "right",
+          "top",
+          "bottom"
+        ]
+      }
+    }
+  },
+  "topology": {
+    "axes": {
+      "construction": "figure.add_axes((0.1, 0.1, 0.8, 0.8))",
+      "rect": [
+        0.1,
+        0.1,
+        0.8,
+        0.8
+      ],
+      "xlim": [
+        0.0,
+        10.0
+      ],
+      "ylim": [
+        0.0,
+        5.0
+      ],
+      "facecolor": "(0.0, 0.0, 0.0, 0.0)",
+      "axis_on": true
+    },
+    "line": {
+      "api": "line.get_path().iter_segments(remove_nans=True)",
+      "class": "matplotlib.lines.Line2D",
+      "xdata": [
+        0.0,
+        10.0
+      ],
+      "ydata": [
+        0.0,
+        5.0
+      ],
+      "color": "red",
+      "linewidth": 2.0,
+      "linestyle": "-",
+      "marker": "None",
+      "drawstyle": "default",
+      "solid_capstyle": "butt",
+      "solid_joinstyle": "miter",
+      "segment_codes": [
+        1,
+        2
+      ],
+      "vertices": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          10.0,
+          5.0
+        ]
+      ],
+      "moveto_count": 1,
+      "lineto_count": 1
+    },
+    "ticks": {
+      "construction": "axes.set_xticks/set_yticks plus tick_params",
+      "x_ticklocs": [
+        0.0,
+        5.0,
+        10.0
+      ],
+      "y_ticklocs": [
+        0.0,
+        2.5,
+        5.0
+      ],
+      "x_labels": [
+        "0",
+        "5",
+        "10"
+      ],
+      "y_labels": [
+        "0.0",
+        "2.5",
+        "5.0"
+      ],
+      "x_label_visible": [
+        true,
+        true,
+        true
+      ],
+      "y_label_visible": [
+        true,
+        true,
+        true
+      ],
+      "tick_params": {
+        "direction": "out",
+        "length": 3.5,
+        "width": 0.8,
+        "color": "black",
+        "labelsize": 10.0
+      }
+    },
+    "grid": {
+      "construction": "axes.grid(True, which='major', axis='both', ...)",
+      "which": "major",
+      "entries": [
+        {
+          "axis": "x",
+          "visible": true,
+          "color": "#808080",
+          "linewidth": 0.8,
+          "linestyle": "-"
+        },
+        {
+          "axis": "x",
+          "visible": true,
+          "color": "#808080",
+          "linewidth": 0.8,
+          "linestyle": "-"
+        },
+        {
+          "axis": "x",
+          "visible": true,
+          "color": "#808080",
+          "linewidth": 0.8,
+          "linestyle": "-"
+        },
+        {
+          "axis": "y",
+          "visible": true,
+          "color": "#808080",
+          "linewidth": 0.8,
+          "linestyle": "-"
+        },
+        {
+          "axis": "y",
+          "visible": true,
+          "color": "#808080",
+          "linewidth": 0.8,
+          "linestyle": "-"
+        },
+        {
+          "axis": "y",
+          "visible": true,
+          "color": "#808080",
+          "linewidth": 0.8,
+          "linestyle": "-"
+        }
+      ]
+    },
+    "spines": {
+      "construction": "axes.spines[side].set_edgecolor/set_linewidth",
+      "sides": {
+        "left": {
+          "class": "Spine",
+          "visible": true,
+          "edgecolor": "(0.0, 0.0, 0.0, 1.0)",
+          "linewidth": 1.0
+        },
+        "right": {
+          "class": "Spine",
+          "visible": true,
+          "edgecolor": "(0.0, 0.0, 0.0, 1.0)",
+          "linewidth": 1.0
+        },
+        "top": {
+          "class": "Spine",
+          "visible": true,
+          "edgecolor": "(0.0, 0.0, 0.0, 1.0)",
+          "linewidth": 1.0
+        },
+        "bottom": {
+          "class": "Spine",
+          "visible": true,
+          "edgecolor": "(0.0, 0.0, 0.0, 1.0)",
+          "linewidth": 1.0
+        }
+      }
+    }
+  },
+  "mask_generation": "reference-only: figure facecolor and resolved content/grid/ink colors; candidate/native pixels are not observed",
+  "reference_png_file": "decorated_frame_reference.png",
+  "reference_png_sha256": "17c1406264fab91f160fa00b4644dcee25ba4605c4432c0da886ed765eb5148d",
+  "mask_file": "decorated_frame_mask.json",
+  "mask_sha256": "891dc7d9c155dcf99a3ff0f5b39d6adfc0f9e9f8b77ea8a0926b321911931837",
+  "pixel_classes": [
+    "background",
+    "fully-covered",
+    "antialias-fringe",
+    "text-or-outline"
+  ],
+  "contract": {
+    "orientation": "top-to-bottom",
+    "channels": "RGBA8",
+    "background": "byte-equal",
+    "fully-covered": "byte-equal",
+    "fringe_max_channel_delta": 1,
+    "fringe_mismatch_rate_denominator": "total-pixels",
+    "fringe_mismatch_rate_max": 0.001
+  }
+}
