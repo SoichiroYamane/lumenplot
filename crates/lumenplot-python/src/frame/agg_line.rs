@@ -23,6 +23,12 @@ const COVERAGE_SHIFT: u32 = SUBPIXEL_SHIFT * 2 + 1 - 8;
 const MAX_CELLS: usize = 1_000_000;
 const AUTO_SNAP_VERTEX_LIMIT: usize = 1_024;
 const AXIS_ALIGNMENT_EPSILON: f64 = 1.0e-4;
+/// Agg's default miter limit (`agg::line_miter_join`). Interior joins whose
+/// miter would extend past this revert to a bevel in Agg; the joined-oblique
+/// route keeps the explicit tiny-skia fallback there instead of emitting a
+/// spike. `PathCommand` carries no miter-limit field, so the Agg default is
+/// the only contract-faithful threshold.
+const MITER_LIMIT: f64 = 4.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Point {
@@ -367,6 +373,9 @@ pub(super) fn try_rasterize(
     }
     if let Some(chain) = extract_rectilinear_chain(command, height)? {
         return rasterize_rectilinear_chain(chain, command, width, height, pixel_count, scale);
+    }
+    if let Some(chain) = extract_oblique_chain(command, height)? {
+        return rasterize_oblique_chain(chain, command, width, height, pixel_count, scale);
     }
     if command.fill_rgba.is_some() {
         return Ok(None);
@@ -939,6 +948,209 @@ fn rasterize_rectilinear_chain(
     Ok(Some(mask))
 }
 
+/// Open joined-oblique stroke chain in device space.
+///
+/// Detects stroke-only open polylines with three or more finite vertices, a
+/// single `MOVETO`-then-`LINETO` subpath (implicit `codes=None` or explicit
+/// codes), every segment finite and non-degenerate, at least one oblique
+/// segment, and every interior turn inside Agg's default miter limit.
+/// Anything else (shorter chains, all-axis-aligned chains, curves, close or
+/// stop codes, gaps, fills, degenerate turns, over-limit miters) returns
+/// `Ok(None)` so the caller falls through to the existing rectilinear,
+/// single-segment, or tiny-skia paths.
+fn extract_oblique_chain(
+    command: &PathCommand,
+    height: u32,
+) -> Result<Option<Vec<Point>>, FrameError> {
+    if command.fill_rgba.is_some() {
+        return Ok(None);
+    }
+    if command.vertices.len() < 3 || command.vertices.len() > AUTO_SNAP_VERTEX_LIMIT {
+        return Ok(None);
+    }
+    if let Some(codes) = command.codes.as_ref() {
+        if codes.len() != command.vertices.len() || codes[0] != CODE_MOVETO {
+            return Ok(None);
+        }
+        for code in codes.iter().skip(1) {
+            if *code != CODE_LINETO {
+                return Ok(None);
+            }
+        }
+    }
+    let mut points = Vec::new();
+    points
+        .try_reserve_exact(command.vertices.len())
+        .map_err(|_| FrameError::OutOfMemory)?;
+    for vertex in &command.vertices {
+        let Some(point) = map_device_point(command.transform, *vertex, height) else {
+            return Ok(None);
+        };
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return Ok(None);
+        }
+        points.push(point);
+    }
+    // The miter ratio at an interior turn is `1 / cos(theta / 2)` where
+    // `theta` is the tangent turn angle; Agg's default limit reverts past
+    // `MITER_LIMIT`, i.e. `cos(theta) <= 2 / MITER_LIMIT^2 - 1`. Gate the
+    // tangent turn there so `1 + dot` in the rasterizer stays above 0.125
+    // and no spike is ever emitted.
+    let miter_dot_floor = 2.0 / (MITER_LIMIT * MITER_LIMIT) - 1.0;
+    let mut has_oblique = false;
+    let mut previous: Option<(f64, f64)> = None;
+    for window in points.windows(2) {
+        let dx = window[1].x - window[0].x;
+        let dy = window[1].y - window[0].y;
+        if !dx.is_finite() || !dy.is_finite() {
+            return Ok(None);
+        }
+        let length = dx.hypot(dy);
+        if !length.is_finite() || length <= AXIS_ALIGNMENT_EPSILON {
+            return Ok(None);
+        }
+        has_oblique = has_oblique
+            || (dx.abs() >= AXIS_ALIGNMENT_EPSILON && dy.abs() >= AXIS_ALIGNMENT_EPSILON);
+        let direction = (dx / length, dy / length);
+        if let Some(previous) = previous {
+            let dot = previous.0 * direction.0 + previous.1 * direction.1;
+            if !dot.is_finite() || dot <= miter_dot_floor {
+                return Ok(None);
+            }
+        }
+        previous = Some(direction);
+    }
+    if !has_oblique {
+        return Ok(None);
+    }
+    Ok(Some(points))
+}
+
+/// Rasterizes an open oblique chain as one JOINED miter outline.
+///
+/// Agg never snaps oblique paths, so vertices are stroked unsnapped (unlike
+/// the rectilinear route). Each interior join uses the exact offset-line
+/// intersection `half * (n1 + n2) / (1 + dot)` where `n1`, `n2` are the unit
+/// side normals (Agg `line_miter_join` geometry): it reduces to `in + out`
+/// for 90-degree turns and to the segment normal for straight runs, so it
+/// coincides with the rectilinear precedent on that precedent's domain. The
+/// contour follows the same Agg `vcgen_stroke` emission order (start cap,
+/// right side forward, end cap, left side backward), and the single contour
+/// is fed to the shared cell accumulator so joins never double-darken.
+fn rasterize_oblique_chain(
+    chain: Vec<Point>,
+    command: &PathCommand,
+    width: u32,
+    height: u32,
+    pixel_count: usize,
+    scale: f64,
+) -> Result<Option<Mask>, FrameError> {
+    let stroke_width = command.line_width_pt * scale;
+    if !stroke_width.is_finite() || stroke_width <= 0.0 {
+        return Ok(None);
+    }
+    if chain.len() < 3 || chain.len() > AUTO_SNAP_VERTEX_LIMIT {
+        return Ok(None);
+    }
+    let half = stroke_width * 0.5;
+    if !half.is_finite() || half <= 0.0 {
+        return Ok(None);
+    }
+    let one_plus_dot_floor = 2.0 / (MITER_LIMIT * MITER_LIMIT);
+    let segments = chain.len() - 1;
+    let mut normals: Vec<(f64, f64)> = Vec::new();
+    normals
+        .try_reserve_exact(segments)
+        .map_err(|_| FrameError::OutOfMemory)?;
+    for window in chain.windows(2) {
+        let dx = window[1].x - window[0].x;
+        let dy = window[1].y - window[0].y;
+        let length = dx.hypot(dy);
+        if !length.is_finite() || length <= AXIS_ALIGNMENT_EPSILON {
+            return Ok(None);
+        }
+        let ux = dx / length;
+        let uy = dy / length;
+        normals.push((-uy * half, ux * half));
+    }
+    let mut left: Vec<Point> = Vec::new();
+    let mut right: Vec<Point> = Vec::new();
+    left.try_reserve_exact(chain.len())
+        .map_err(|_| FrameError::OutOfMemory)?;
+    right
+        .try_reserve_exact(chain.len())
+        .map_err(|_| FrameError::OutOfMemory)?;
+    left.push(Point {
+        x: chain[0].x + normals[0].0,
+        y: chain[0].y + normals[0].1,
+    });
+    right.push(Point {
+        x: chain[0].x - normals[0].0,
+        y: chain[0].y - normals[0].1,
+    });
+    for index in 1..chain.len() - 1 {
+        let (in_x, in_y) = normals[index - 1];
+        let (out_x, out_y) = normals[index];
+        // Exact miter on both sides: the outer intersection and the inner
+        // corner are `p +/- half * (n1 + n2) / (1 + dot)`. The extractor
+        // gates `1 + dot` above `one_plus_dot_floor`; re-check before the
+        // division so a spike can never reach the accumulator.
+        let dot = (in_x * out_x + in_y * out_y) / (half * half);
+        let one_plus_dot = 1.0 + dot;
+        if !one_plus_dot.is_finite() || one_plus_dot < one_plus_dot_floor {
+            return Ok(None);
+        }
+        let miter_x = (in_x + out_x) / one_plus_dot;
+        let miter_y = (in_y + out_y) / one_plus_dot;
+        if !miter_x.is_finite() || !miter_y.is_finite() {
+            return Ok(None);
+        }
+        left.push(Point {
+            x: chain[index].x + miter_x,
+            y: chain[index].y + miter_y,
+        });
+        right.push(Point {
+            x: chain[index].x - miter_x,
+            y: chain[index].y - miter_y,
+        });
+    }
+    let last = chain.len() - 1;
+    left.push(Point {
+        x: chain[last].x + normals[segments - 1].0,
+        y: chain[last].y + normals[segments - 1].1,
+    });
+    right.push(Point {
+        x: chain[last].x - normals[segments - 1].0,
+        y: chain[last].y - normals[segments - 1].1,
+    });
+    if left
+        .iter()
+        .chain(right.iter())
+        .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
+        return Ok(None);
+    }
+    let mut contour: Vec<SubpixelPoint> = Vec::new();
+    contour
+        .try_reserve_exact(left.len() + right.len())
+        .map_err(|_| FrameError::OutOfMemory)?;
+    contour.push(to_subpixel(left[0]));
+    for point in &right {
+        contour.push(to_subpixel(*point));
+    }
+    for point in left[1..].iter().rev() {
+        contour.push(to_subpixel(*point));
+    }
+    let Some(cell_capacity) = contour_capacity_bound(&contour) else {
+        return Ok(None);
+    };
+    let mut rasterizer = CellRasterizer::new(cell_capacity)?;
+    rasterizer.add_contour(&contour)?;
+    let mut mask = coverage_mask(width, height, pixel_count)?;
+    rasterizer.write_mask(&mut mask, width, height)?;
+    Ok(Some(mask))
+}
+
 fn rect_snap_value(stroke_width: f64) -> f64 {
     // Mirrors the frame-seam PathSnapper offset: odd rounded device widths
     // center on half pixels, even widths on integer pixels. `rem_euclid`
@@ -1348,13 +1560,84 @@ mod tests {
     }
 
     #[test]
-    fn multi_segment_runs_use_existing_rasterizer() {
-        // Oblique multi-segment chains stay ineligible and fall through to
-        // the existing tiny-skia rasterizer (no behavior change).
+    fn straight_oblique_chain_uses_joined_miter_outline() {
+        // Behavior update for the log-frame convergence: straight oblique
+        // chains (and gentle oblique joins generally) are now eligible for
+        // the 24.8 cell integrator with a JOINED miter outline, not the grid
+        // fallback. For a straight run the miter reduces to the segment
+        // normal, so the outline is the exact stroked parallelogram; the
+        // committed log oracle carries the durable Agg-parity gate.
         let mut command = gap_command();
         command.vertices = vec![[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]];
+        let mask = try_rasterize(&command, 8, 8, 64, 1.0)
+            .expect("route")
+            .expect("oblique chain eligible");
+        assert!(mask.data().iter().any(|alpha| *alpha != 0));
+    }
+
+    #[test]
+    fn oblique_chain_keeps_explicit_fallback_for_unsafe_geometry() {
+        // Reversals, over-limit miters, fills, gaps, degenerate runs, and
+        // close codes all stay on the existing tiny-skia path; two-vertex
+        // pairs stay on the single-segment route.
+        let mut reversal = gap_command();
+        reversal.vertices = vec![[1.0, 4.0], [5.0, 4.0], [1.0, 4.0]];
         assert!(
-            try_rasterize(&command, 8, 8, 64, 1.0)
+            try_rasterize(&reversal, 8, 8, 64, 1.0)
+                .expect("route")
+                .is_none()
+        );
+
+        // ~169-degree turn: tangent dot below 2/16 - 1, past Agg's default
+        // miter limit of 4.
+        let mut acute = gap_command();
+        acute.vertices = vec![[1.0, 4.0], [5.0, 4.0], [1.0, 4.5]];
+        assert!(
+            try_rasterize(&acute, 8, 8, 64, 1.0)
+                .expect("route")
+                .is_none()
+        );
+
+        let mut filled = gap_command();
+        filled.vertices = vec![[1.0, 1.0], [4.0, 2.0], [6.0, 5.0]];
+        filled.fill_rgba = Some([0, 0, 255, 255]);
+        assert!(
+            try_rasterize(&filled, 8, 8, 64, 1.0)
+                .expect("route")
+                .is_none()
+        );
+
+        let mut gapped = gap_command();
+        gapped.vertices = vec![[1.0, 1.0], [f64::NAN, f64::NAN], [3.0, 3.0]];
+        assert!(
+            try_rasterize(&gapped, 8, 8, 64, 1.0)
+                .expect("route")
+                .is_none()
+        );
+
+        let mut degenerate = gap_command();
+        degenerate.vertices = vec![[1.0, 1.0], [1.0, 1.0], [3.0, 3.0]];
+        assert!(
+            try_rasterize(&degenerate, 8, 8, 64, 1.0)
+                .expect("route")
+                .is_none()
+        );
+
+        // Two-vertex pairs stay on the pre-existing single-segment route
+        // (the joined-oblique route requires a genuine join).
+        let mut pair = gap_command();
+        pair.vertices = vec![[1.0, 2.0], [6.0, 5.0]];
+        pair.clip_rect = None;
+        let pair_mask = try_rasterize(&pair, 8, 8, 64, 1.0)
+            .expect("route")
+            .expect("single-segment pair eligible");
+        assert!(pair_mask.data().iter().any(|alpha| *alpha != 0));
+
+        let mut closed = gap_command();
+        closed.vertices = vec![[1.0, 1.0], [4.0, 2.0], [1.0, 5.0], [0.0, 0.0]];
+        closed.codes = Some(vec![CODE_MOVETO, CODE_LINETO, CODE_LINETO, CODE_CLOSEPOLY]);
+        assert!(
+            try_rasterize(&closed, 8, 8, 64, 1.0)
                 .expect("route")
                 .is_none()
         );
