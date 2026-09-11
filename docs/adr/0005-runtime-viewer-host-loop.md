@@ -7,6 +7,7 @@
 - Scope: O-06 EngineSession/Viewer ownership, native and hosted loops, notebook transport, main-thread lifecycle, multi-surface behavior, close, recovery, and OOM
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Open-decision record: [O-06 — Window, viewer, host loop, and lifecycle semantics](../architecture/open-decisions.md#o-06-window-viewer-host-loop-and-lifecycle-semantics)
+- Proposed amendment: interactive window application as a v1 requirement (2026-09-11, pending maintainer acceptance; not accepted — see the proposal section below)
 
 This ADR records lifecycle semantics before the complete runtime implementation. The repository now has a bounded backend-neutral lifecycle/input state model with local tests, but this record does not claim support for an operating system, window system, notebook transport, or GPU device.
 
@@ -84,6 +85,49 @@ Required evidence is a lifecycle matrix covering launch, repeated create/destroy
 - Host frameworks differ in loop and callback ownership; unsupported transports must remain explicit.
 - Device recovery can fail for reasons that need a stable `RecoveryFailed` result rather than an implicit fallback.
 - A multi-surface implementation may expose synchronization or fairness issues that require benchmark and lifecycle evidence.
+
+## Proposed amendment — interactive window application as a v1 requirement (pending maintainer acceptance)
+
+Status: PROPOSAL. This section drafts the scope-change envelope for scope card `t_53261829` and does not amend the accepted contract above. It takes effect only if the maintainer accepts it.
+
+Maintainer product decision (2026-09-11, quoted): 対話windowアプリ自体をv1.0までの要件とする — the interactive window application (native event loop, window/present, close) is a v1.0 requirement.
+
+### Proposed requirement
+
+`LP-FUNC-042` (`MUST`, Phase 3, Release v1; evidence `AT-FUNC-VIEWER`, `AT-LIFE-VIEWER`, `AT-LIFE-RUNTIME`) in the [requirements](../requirements/lumenplot-v1.0.md#12-window-and-event-layer): provide an interactive window application for native LumenPlot scenes with a native-owned event loop, window/surface present, and observable close. It complements `LP-FUNC-016` (standalone viewer product edge, Phase 1-2) and the `LP-PLAT-009`/`LP-PLAT-010` lifecycle matrix; it does not replace any of them.
+
+### Rationale
+
+The roadmap still records a real window/surface present loop and standalone viewer integration as absent: the merged runtime/viewer/input surface is a backend-neutral lifecycle and input state model, and the M4-B1 seams are explicitly headless with no present claim. Without a release-blocking window-app row, v1 could close every other gate while shipping no interactive product. The promotion makes launch, present, and close on declared cells a release decision instead of an implicit deferral.
+
+### Affected interfaces
+
+- The standalone-loop row of the loop-mode table above becomes v1-blocking: a native-owned blocking main-thread loop until an observable close, over the facade and runtime ownership recorded here (`EngineSession` main-thread confinement, `0..N` surfaces, idempotent close, no resurrection after close).
+- Host-pumped embedding, the generic external `pump` (still private), and notebook transport (still a separate capability) are unchanged by this note; none is silently promoted into the native latency claim.
+- `PlotScene`/snapshot authority, generation/cancellation rules, and the [API 0002](../architecture/api-0002-errors-capabilities-fallback.md) error boundary are unchanged; close, loss, and OOM outcomes stay observable state transitions.
+- No public API is added or changed by this note; exact signatures remain follow-up work.
+
+### Compatibility impact
+
+- `LP-REL-010` functional release evidence gains one more blocking row; no existing row changes class, phase, or gate.
+- Qt, WebAgg, ipympl, and other host transports remain excluded from native latency claims until explicit evidence; the initial headless Matplotlib PNG profile still has no GUI `show` behavior.
+- Platform cells stay `environment required` until the declared-cell matrix passes; this note makes no support claim.
+
+### Transport/host scope proposal
+
+Declared-cell-first: close `LP-FUNC-042` first on ONE declared host cell with the full lifecycle matrix (launch, repeated create/draw/resize/close cycles, suspend/resume, occlusion/timeout, surface loss, device loss/rebuild, OOM, reentrancy), then expand cell by cell. The full multi-OS/compositor matrix stays `environment required` and is not closed by the first cell.
+
+### Verification
+
+`AT-FUNC-VIEWER` launch/present/close tests, `AT-LIFE-VIEWER` viewer lifecycle and packaging tests, and the `AT-LIFE-RUNTIME` lifecycle matrix from the verification section above, each naming its declared cell; headless seams and witness notes alone cannot close the row.
+
+### Open questions (undecided; need architecture-authority or maintainer decision)
+
+- Q1 — Phase placement: proposed Phase 3 (lifecycle-matrix and release-evidence phase); is Phase 1-3 (mirroring `LP-PLAT-010`) more accurate?
+- Q2 — Transport scope: standalone native-owned loop only for v1, or also host-pumped embedding?
+- Q3 — Declared-cell-first vs full matrix: is closing on one declared cell first acceptable, and which host/compositor/GPU cell is first? No host smoke or matrix-cell evidence was found in-repo at drafting time, so the cited partial evidence is headless-only.
+- Q4 — Notebook transport: in or out of the v1 window-app scope? Proposed: out (separate transport, unchanged).
+- Q5 — `accelerated-native` interplay: does the first declared cell require the accelerated path (M6), or does the portable path suffice? Proposed: portable path suffices; accelerated delivery stays on the M6 track.
 
 ## Related records
 
