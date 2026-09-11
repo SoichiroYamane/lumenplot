@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
-WGPU_LOCK_SHA256 = "bb9d70f6282dffc9c3c2ce9499754e88de218d67a369bc74042732715b73e196"
+WGPU_LOCK_SHA256 = "1a64ff0870c402dff09b6e67bf8e0f34e699d24c4e02f0ee4b8bde0ac78b7a2a"
 WGPU_PACKAGE_VERSION = "29.0.4"
 WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
 WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
@@ -332,6 +332,446 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
         "dependencies": set(),
     },
+    # M5-P3ii shaping/subset pin (slice ii): transitive closure of the
+    # parley/fontique/harfrust/skrifa/read-fonts stack plus the typst
+    # subsetter, generated from `cargo metadata` output for this exact lock
+    # and reviewed against the deny.toml allow-list (all MIT, Apache-2.0,
+    # or Unicode-3.0). Three semver-disjoint older lineages necessarily
+    # coexist in the lock (skrifa 0.42.1, read-fonts 0.39.2, font-types
+    # 0.11.3, required by subsetter/write-fonts caret ranges); this table
+    # is name-keyed, so only the newest lineage per name is recorded here
+    # (same convention as rustc-hash/syn). The older lineages stay pinned
+    # in Cargo.lock and are covered by the cargo-deny gate.
+    "displaydoc": {
+        "version": "0.2.7",
+        "checksum": "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "proc-macro2",
+            "quote",
+            "syn 3.0.4"
+        },
+    },
+    "euclid": {
+        "version": "0.22.14",
+        "checksum": "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "num-traits"
+        },
+    },
+    "font-types": {
+        "version": "0.12.5",
+        "checksum": "b8eb065f3251655b3c90e22e5e363f310fc5332fb3402e37bbc94752283248f6",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "bytemuck"
+        },
+    },
+    "fontique": {
+        "version": "0.11.1",
+        "checksum": "6688bc1294fe7117d788937b6c53480169b29c566954af490830d4c09da9516a",
+        "license": "Apache-2.0 OR MIT",
+        "dependencies": {
+            "hashbrown 0.17.1",
+            "linebender_resource_handle",
+            "memmap2",
+            "parlance",
+            "read-fonts 0.41.0",
+            "smallvec"
+        },
+    },
+    "harfrust": {
+        "version": "0.12.0",
+        "checksum": "c03d949a14aa089bbb282f7dd76a498a7f684428e4257202efc119ec010376f9",
+        "license": "MIT",
+        "dependencies": {
+            "bitflags",
+            "bytemuck",
+            "read-fonts 0.41.0",
+            "smallvec"
+        },
+    },
+    "icu_collections": {
+        "version": "2.3.0",
+        "checksum": "fa68d21081c4a05d5a901a1c62add574c77048b6a1c67be3b50ce0b60d4ca513",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "displaydoc",
+            "potential_utf",
+            "utf8_iter",
+            "yoke",
+            "zerofrom",
+            "zerovec"
+        },
+    },
+    "icu_locale_core": {
+        "version": "2.3.0",
+        "checksum": "d56e28588da92eee5c3201a6eff33fabdd49b62269c8938d4ff050ce4d900deb",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "displaydoc",
+            "litemap",
+            "serde",
+            "tinystr",
+            "writeable",
+            "zerovec"
+        },
+    },
+    "icu_locale_fallback": {
+        "version": "2.3.0",
+        "checksum": "251af8e57c9400e3eb58242fe5b8b1152b2a64fdf4cf632f923c38ccee6f2fa9",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "icu_locale_core",
+            "icu_locale_fallback_data",
+            "icu_provider",
+            "potential_utf",
+            "tinystr",
+            "zerovec"
+        },
+    },
+    "icu_locale_fallback_data": {
+        "version": "2.3.0",
+        "checksum": "decf2a22ec8fa68f1a0c1129a3f8583f8f8bc24e8b9ccbe98ead99f62a4dc3a8",
+        "license": "Unicode-3.0",
+        "dependencies": set(),
+    },
+    "icu_normalizer": {
+        "version": "2.3.0",
+        "checksum": "12f9cf5f235641ed274641dd81c3f28d870e276763d0797aeeab72317b1c646f",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "icu_collections",
+            "icu_normalizer_data",
+            "icu_properties",
+            "icu_provider",
+            "smallvec",
+            "zerovec"
+        },
+    },
+    "icu_normalizer_data": {
+        "version": "2.3.0",
+        "checksum": "1563da1ed3e0b3bf3d74c9b85917ac9c56464d2f57242270c09c9e752f8021a0",
+        "license": "Unicode-3.0",
+        "dependencies": set(),
+    },
+    "icu_properties": {
+        "version": "2.3.0",
+        "checksum": "7e7ca276ad3145661a65914e6daf131ca5120cd3dcee8f8f3214b8875184a148",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "displaydoc",
+            "icu_collections",
+            "icu_locale_core",
+            "icu_properties_data",
+            "icu_provider",
+            "zerotrie",
+            "zerovec"
+        },
+    },
+    "icu_properties_data": {
+        "version": "2.3.0",
+        "checksum": "e590f038c1464a96894fd6d10127e90a8be4509f56ff7ecef851b15cee0b7caa",
+        "license": "Unicode-3.0",
+        "dependencies": set(),
+    },
+    "icu_provider": {
+        "version": "2.3.1",
+        "checksum": "d27bbb9d3abbefac45d55f647c9de1d44aafcd1186eb91879afef17c396c3e73",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "displaydoc",
+            "icu_locale_core",
+            "serde",
+            "stable_deref_trait",
+            "writeable",
+            "yoke",
+            "zerofrom",
+            "zerotrie",
+            "zerovec"
+        },
+    },
+    "icu_segmenter": {
+        "version": "2.3.0",
+        "checksum": "82d07aafccd67af15d02512a6adf5896fbc5ed00f2e99b471d2efa14016db3db",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "icu_collections",
+            "icu_locale_fallback",
+            "icu_provider",
+            "icu_segmenter_data",
+            "potential_utf",
+            "smallvec",
+            "utf8_iter",
+            "zerovec"
+        },
+    },
+    "icu_segmenter_data": {
+        "version": "2.3.0",
+        "checksum": "ae293c039020f9ec10710af98d29ce6aa2051486638b49c9a6409f3b4a9e98ad",
+        "license": "Unicode-3.0",
+        "dependencies": set(),
+    },
+    "kurbo": {
+        "version": "0.13.1",
+        "checksum": "4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2",
+        "license": "Apache-2.0 OR MIT",
+        "dependencies": {
+            "arrayvec",
+            "euclid",
+            "polycool",
+            "smallvec"
+        },
+    },
+    "linebender_resource_handle": {
+        "version": "0.1.1",
+        "checksum": "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4",
+        "license": "Apache-2.0 OR MIT",
+        "dependencies": set(),
+    },
+    "litemap": {
+        "version": "0.8.3",
+        "checksum": "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae",
+        "license": "Unicode-3.0",
+        "dependencies": set(),
+    },
+    "memmap2": {
+        "version": "0.9.11",
+        "checksum": "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "libc"
+        },
+    },
+    "parlance": {
+        "version": "0.1.0",
+        "checksum": "4b6937eda350acc1a5d05872c3cbf99fe78619c269096e2be3d4a350058639d5",
+        "license": "Apache-2.0 OR MIT",
+        "dependencies": set(),
+    },
+    "parley": {
+        "version": "0.11.1",
+        "checksum": "22d2ff88bd3f7d68d1d9b09c7e6209f9a8e8c05088295140a2bcf2e9b17038c5",
+        "license": "Apache-2.0 OR MIT",
+        "dependencies": {
+            "fontique",
+            "harfrust",
+            "hashbrown 0.17.1",
+            "icu_normalizer",
+            "icu_properties",
+            "icu_segmenter",
+            "linebender_resource_handle",
+            "parlance",
+            "parley_data",
+            "skrifa 0.44.0"
+        },
+    },
+    "parley_data": {
+        "version": "0.11.1",
+        "checksum": "1567535334d6ba2d3cde19221ba9a7bd0fabb3cbd99046ddfb10ae061cfcc889",
+        "license": "Apache-2.0 OR MIT",
+        "dependencies": {
+            "icu_properties"
+        },
+    },
+    "polycool": {
+        "version": "0.4.0",
+        "checksum": "50596ddc09eb5ad5f75cacd40209568e66df71baf86e1499a0e99c4cff12a5a6",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "arrayvec"
+        },
+    },
+    "potential_utf": {
+        "version": "0.1.6",
+        "checksum": "d83eb9bc6d8e5cf568e7a1101d60ee05e81ed50ea106026f3d18deeb046d7661",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "serde_core",
+            "writeable",
+            "zerovec"
+        },
+    },
+    "read-fonts": {
+        "version": "0.41.0",
+        "checksum": "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "bytemuck",
+            "font-types 0.12.5",
+            "once_cell"
+        },
+    },
+    "serde": {
+        "version": "1.0.229",
+        "checksum": "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "serde_core",
+            "serde_derive"
+        },
+    },
+    "serde_core": {
+        "version": "1.0.229",
+        "checksum": "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "serde_derive"
+        },
+    },
+    "serde_derive": {
+        "version": "1.0.229",
+        "checksum": "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "proc-macro2",
+            "quote",
+            "syn 3.0.4"
+        },
+    },
+    "skrifa": {
+        "version": "0.44.0",
+        "checksum": "819ab7d62b1d3e72d9d9dea5650bac30424f9111364bb94928dbf5ecad1baa68",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "bytemuck",
+            "read-fonts 0.41.0"
+        },
+    },
+    "stable_deref_trait": {
+        "version": "1.2.1",
+        "checksum": "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": set(),
+    },
+    "subsetter": {
+        "version": "0.2.6",
+        "checksum": "38803281d1c23166c5ebcb455439a5d2afe711cc909cf88af72448c297756ad6",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "kurbo",
+            "rustc-hash 2.1.3",
+            "skrifa 0.42.1",
+            "write-fonts"
+        },
+    },
+    "synstructure": {
+        "version": "0.13.2",
+        "checksum": "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2",
+        "license": "MIT",
+        "dependencies": {
+            "proc-macro2",
+            "quote",
+            "syn 2.0.119"
+        },
+    },
+    "tinystr": {
+        "version": "0.8.4",
+        "checksum": "b1e27c91459209c2986af3dcf603a5a74a4368754ce37414f59acc971167f643",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "displaydoc",
+            "serde_core",
+            "zerovec"
+        },
+    },
+    "utf8_iter": {
+        "version": "1.0.4",
+        "checksum": "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be",
+        "license": "Apache-2.0 OR MIT",
+        "dependencies": set(),
+    },
+    "write-fonts": {
+        "version": "0.48.1",
+        "checksum": "cb731d4c4d93eacc69a1ad2f270f905788a98e4a3438267bcafbe08d3431c8d8",
+        "license": "MIT OR Apache-2.0",
+        "dependencies": {
+            "font-types 0.11.3",
+            "indexmap",
+            "kurbo",
+            "log",
+            "read-fonts 0.39.2"
+        },
+    },
+    "writeable": {
+        "version": "0.6.4",
+        "checksum": "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc",
+        "license": "Unicode-3.0",
+        "dependencies": set(),
+    },
+    "yoke": {
+        "version": "0.8.3",
+        "checksum": "709fe23a0424b6a435d82152b1bd3fdfb0833487d5fa90d05d42762a9891fef5",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "stable_deref_trait",
+            "yoke-derive",
+            "zerofrom"
+        },
+    },
+    "yoke-derive": {
+        "version": "0.8.2",
+        "checksum": "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "proc-macro2",
+            "quote",
+            "syn 2.0.119",
+            "synstructure"
+        },
+    },
+    "zerofrom": {
+        "version": "0.1.8",
+        "checksum": "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "zerofrom-derive"
+        },
+    },
+    "zerofrom-derive": {
+        "version": "0.1.7",
+        "checksum": "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "proc-macro2",
+            "quote",
+            "syn 2.0.119",
+            "synstructure"
+        },
+    },
+    "zerotrie": {
+        "version": "0.2.5",
+        "checksum": "4ea269c3bd32f0a32c321907a2ae912ba6f4649bb0fc764a15627e99a7095a3f",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "displaydoc",
+            "yoke",
+            "zerofrom",
+            "zerovec"
+        },
+    },
+    "zerovec": {
+        "version": "0.11.8",
+        "checksum": "bb0464e17806c1d976d5cba29399c7f08e516e279e2ba493f63123b5fca67dd8",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "serde",
+            "yoke",
+            "zerofrom",
+            "zerovec-derive"
+        },
+    },
+    "zerovec-derive": {
+        "version": "0.11.6",
+        "checksum": "34df6fc39dbd26ddc9c10e6a2984476e13acce22e64e4487636ef494369225da",
+        "license": "Unicode-3.0",
+        "dependencies": {
+            "proc-macro2",
+            "quote",
+            "syn 3.0.4"
+        },
+    },
 }
 
 EXPECTED_WORKSPACE_DEPENDENCIES = {
@@ -343,7 +783,7 @@ EXPECTED_WORKSPACE_DEPENDENCIES = {
         "lumenplot-render-wgpu",
     },
     "lumenplot-engine": set(),
-    "lumenplot-export": {"lumenplot-engine", "png", "tiny-skia"},
+    "lumenplot-export": {"lumenplot-engine", "png", "tiny-skia", "parley", "fontique", "harfrust", "subsetter"},
     "lumenplot-python": {"lumenplot", "numpy", "png", "pyo3", "tiny-skia"},
     "lumenplot-render-api": {"lumenplot-engine"},
     "lumenplot-render-metal": {"lumenplot-render-api", "objc2", "objc2-foundation", "objc2-metal"},
@@ -590,7 +1030,23 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
             if dependencies != expected_dependencies:
                 errors.append(f"metadata dependency graph drift for {name}")
 
-    direct_features = {"png": [], "tiny-skia": ["std"], "wgpu": ["std", "vulkan", "wgsl"]}
+    direct_features = {
+        "png": [],
+        "tiny-skia": ["std"],
+        "wgpu": ["std", "vulkan", "wgsl"],
+        # M5-P3ii: hermetic shaping/subset pins. Parley/Fontique run without
+        # the `system` feature (no system font enumeration or fontconfig
+        # linkage). Skrifa/read-fonts resolve transitively (see the export
+        # manifest comment for why they are not direct pins); their sets
+        # below are the resolved values for this exact graph, so any
+        # feature change re-gates review.
+        "parley": ["std"],
+        "fontique": ["std"],
+        "harfrust": ["default", "std"],
+        "skrifa": ["std"],
+        "read-fonts": ["experimental_font_api", "std"],
+        "subsetter": ["default", "variable-fonts"],
+    }
     for name, expected_features in direct_features.items():
         node = nodes_by_name.get(name)
         if node is None:
@@ -613,6 +1069,10 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         "crc32fast",
         "crunchy",
         "generic-array",
+        "icu_locale_fallback_data",
+        "icu_normalizer_data",
+        "icu_properties_data",
+        "icu_segmenter_data",
         "libc",
         "libm",
         "matrixmultiply",
@@ -628,6 +1088,8 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         "pyo3-ffi",
         "quote",
         "rustversion",
+        "serde",
+        "serde_core",
         "target-lexicon",
         "thiserror",
         "wasm-bindgen",

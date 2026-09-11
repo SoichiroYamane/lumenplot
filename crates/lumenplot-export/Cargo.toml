@@ -11,3 +11,18 @@ readme.workspace = true
 lumenplot-engine = { path = "../lumenplot-engine", version = "0.1.0" }
 tiny-skia = { version = "=0.12.0", default-features = false, features = ["std"] }
 png = { version = "=0.18.1", default-features = false }
+# M5-P3ii shaping/subset pin (no code use yet; writer integration is slice iii).
+# Parley/Fontique run without the `system` feature so the export sink stays
+# hermetic: no system font enumeration or link-time fontconfig dependency.
+# Harfrust is the newest patch compatible with parley 0.11.1 (`^0.12.0`).
+# Skrifa/read-fonts stay transitive-exact (0.44.0/0.41.0 in Cargo.lock):
+# subsetter 0.2.6 forces the disjoint older lineages (skrifa 0.42.1,
+# read-fonts 0.39.2), and direct pins would make lumenplot-export depend on
+# dual versions, which the fail-closed dependency checkers compare both by
+# exact lock string and by resolve name and therefore cannot admit without
+# a gate-logic change. The `multiple-versions = "warn"` policy tolerates
+# the co-installation and deny reviews every lineage.
+parley = { version = "=0.11.1", default-features = false, features = ["std"] }
+fontique = { version = "=0.11.1", default-features = false, features = ["std"] }
+harfrust = { version = "=0.12.0" }
+subsetter = { version = "=0.2.6" }
