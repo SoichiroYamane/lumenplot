@@ -708,11 +708,16 @@ class TestDecoratedAxesSpec(unittest.TestCase):
         for c in spines:
             v = c["vertices"]
             self.assertEqual(len(v), 2)
-            self.assertEqual(c["cap"], "butt")
+            # Default spines carry the artist's projecting caps (Matplotlib
+            # Spine default; pinned Agg draw_path reports cap=projecting
+            # for every 0.8pt spine stroke), not butt.
+            self.assertEqual(c["cap"], "projecting")
             self.assertEqual(c["join"], "miter")
+            # Spine strokes sit exactly on the axes boundary and Agg draws
+            # them unclipped (pinned draw_path reports clip=None), so they
+            # carry the full-canvas clip, not the axes rectangle.
             self.assertEqual(c["clip_rect"], [
-                bbox.x0, height_px - bbox.y1,
-                bbox.width, bbox.height,
+                0.0, 0.0, fig.bbox.width, fig.bbox.height,
             ])
             (x0, y0), (x1, y1) = v
             edges.add((round(x0, 6), round(y0, 6),
@@ -755,17 +760,26 @@ class TestDecoratedAxesSpec(unittest.TestCase):
         assert spec is not None and spec["commands"] is not None
 
         clips = []
+        spine_clips = []
         for c in spec["commands"]:
             clip = c["clip_rect"]
             self.assertIsNotNone(clip)
-            # Tick strokes carry the canvas clip; everything else carries
-            # its own axes rectangle.
+            # Tick strokes carry the canvas clip; spine strokes sit on the
+            # axes boundary and Agg draws them unclipped (pinned draw_path
+            # reports clip=None), so they carry the canvas clip too.
+            # Everything else carries its own axes rectangle.
             if c.get("decoration") == "tick":
+                continue
+            if c.get("decoration") == "spine":
+                spine_clips.append((clip[0], clip[1]))
                 continue
             clips.append((clip[0], clip[1]))
         # Each axes' commands share its own clip origin; the two origins differ.
         unique = sorted(set(clips))
         self.assertEqual(len(unique), 2)
+        # All spine edges share the full-canvas clip origin.
+        self.assertTrue(spine_clips)
+        self.assertEqual(sorted(set(spine_clips)), [(0.0, 0.0)])
         # LP-FUNC-035 (D1): each axes' Axis-unit decorations (gridline,
         # tick) still precede its default content lines, while spine
         # edges (zorder 2.5) paint above them per Agg's z-order.
@@ -867,6 +881,140 @@ class TestStrictUnsupported(unittest.TestCase):
         ax.set_ylim(0, 5)
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
             fig.savefig(io.BytesIO(), format="png")
+
+
+# ---------------------------------------------------------------------------
+# Errorbar + secondary-axis refusal regressions (LP-FUNC-019/020 SHOULD,
+# v1 non-blocking Phase-5; this lane pins fail-closed only and claims no
+# product support or traceability closure)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, 'matplotlib not in this offline cell')
+class TestErrorbarSecondaryAxisRefusal(unittest.TestCase):
+    """Dedicated fail-closed regressions for the two audit-missing classes.
+
+    PARITY-MATRIX audit t_055fc3d3 comment 1509 marks errorbar
+    (LP-FUNC-019) and secondary-axis (LP-FUNC-020) as MISSING both oracle
+    and refusal coverage. Both rows are v1 non-blocking SHOULD Phase-5, so
+    these tests pin the existing strict refusal / whole-frame hybrid
+    fallback only; they claim no product support and close no
+    traceability.
+    """
+
+    def setUp(self):
+        self._patcher = _install_stub_native()
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+        # The stub records specs on a CLASS attribute shared by every test
+        # case in the process; reset it so "the seam never ran" is checkable
+        # for the hybrid fallback assertions below.
+        _StubNativeModule.last_spec = None
+
+    def test_errorbar_strict_refuses(self):
+        """Representative yerr errorbar refuses in strict mode.
+
+        ``Axes.errorbar`` with ``fmt="none"`` emits no data line and one
+        ``LineCollection`` for the error bars, which is outside the
+        supported static whitelist, so strict mode raises the explicit
+        ``unsupported-capability`` failure before any seam call.
+        """
+        fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.axison = False
+        ax.errorbar([0.0, 1.0, 2.0], [0.0, 1.0, 0.0],
+                    yerr=[0.1, 0.2, 0.1], fmt="none", ecolor="red")
+        ax.set_xlim(0.0, 2.0)
+        ax.set_ylim(-0.5, 1.5)
+        with self.assertRaises(
+            backend_mod.LumenPlotUnsupportedError
+        ) as ctx:
+            canvas.render_png()
+        self.assertEqual(ctx.exception.code, "unsupported-capability")
+        self.assertIn("LineCollection", str(ctx.exception))
+        del fig
+
+    def test_errorbar_hybrid_falls_back_whole_frame(self):
+        """Same errorbar input succeeds in hybrid via whole-frame Agg."""
+        def build(ax):
+            ax.axison = False
+            ax.errorbar([0.0, 1.0, 2.0], [0.0, 1.0, 0.0],
+                        yerr=[0.1, 0.2, 0.1], fmt="none", ecolor="red")
+            ax.set_xlim(0.0, 2.0)
+            ax.set_ylim(-0.5, 1.5)
+
+        fig, canvas = _hybrid_canvas_with(build)
+        result = canvas.render_png()
+        self.assertTrue(result.png_bytes[:8] == b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        self.assertEqual(len(result.diagnostics), 1)
+        diagnostic = result.diagnostics[0]
+        self.assertEqual(diagnostic.kind, "unsupported-capability")
+        self.assertEqual(diagnostic.scope, "whole-frame")
+        self.assertEqual(diagnostic.representation, "raster")
+        self.assertEqual(diagnostic.output_format, "png")
+        self.assertEqual(diagnostic.fallback_type, "matplotlib-agg")
+        self.assertEqual(diagnostic.type, "LineCollection")
+        # Whole-frame boundary (ADR-0015 §8): the native seam never ran.
+        self.assertIsNone(_StubNativeModule.last_spec)
+        self.assertEqual(canvas.last_diagnostics, result.diagnostics)
+        del fig
+
+    def test_secondary_axis_strict_refuses(self):
+        """Representative secondary-x axis refuses in strict mode.
+
+        The secondary axis currently refuses via the generic collector
+        trace grammar (no dedicated secondary-axis reason exists), so this
+        test pins only the fail-closed outcome -- explicit
+        ``unsupported-capability`` -- and deliberately asserts no
+        incidental diagnostic text.
+        """
+        fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.axison = False
+        ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
+                           solid_capstyle="butt", solid_joinstyle="miter"))
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(0.0, 5.0)
+        ax.secondary_xaxis("top")
+        with self.assertRaises(
+            backend_mod.LumenPlotUnsupportedError
+        ) as ctx:
+            canvas.render_png()
+        self.assertEqual(ctx.exception.code, "unsupported-capability")
+        del fig
+
+    def test_secondary_axis_hybrid_falls_back_whole_frame(self):
+        """Same secondary-axis input succeeds in hybrid via whole-frame Agg."""
+        def build(ax):
+            ax.axison = False
+            ax.add_line(Line2D([0, 10], [0, 5], color="red", linewidth=2.0,
+                               solid_capstyle="butt",
+                               solid_joinstyle="miter"))
+            ax.set_xlim(0.0, 10.0)
+            ax.set_ylim(0.0, 5.0)
+            ax.secondary_xaxis("top")
+
+        fig, canvas = _hybrid_canvas_with(build)
+        result = canvas.render_png()
+        self.assertTrue(result.png_bytes[:8] == b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(_ihdr_dimensions(result.png_bytes), (200, 100))
+        self.assertEqual(len(result.diagnostics), 1)
+        diagnostic = result.diagnostics[0]
+        self.assertEqual(diagnostic.kind, "unsupported-capability")
+        self.assertEqual(diagnostic.scope, "whole-frame")
+        self.assertEqual(diagnostic.representation, "raster")
+        self.assertEqual(diagnostic.output_format, "png")
+        self.assertEqual(diagnostic.fallback_type, "matplotlib-agg")
+        # Whole-frame boundary (ADR-0015 §8): the native seam never ran.
+        # The diagnostic ``type`` is intentionally unasserted: the
+        # secondary axis currently surfaces through the generic trace
+        # grammar, so its type context is incidental.
+        self.assertIsNone(_StubNativeModule.last_spec)
+        self.assertEqual(canvas.last_diagnostics, result.diagnostics)
+        del fig
 
 
 # ---------------------------------------------------------------------------

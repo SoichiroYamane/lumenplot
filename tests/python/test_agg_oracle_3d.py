@@ -75,6 +75,40 @@ class TestCommitted3DOracleFixtures(unittest.TestCase):
         self.assertEqual(topology["finite_segments"][-1], [[0, 2], [5, 7]])
         self.assertEqual(topology["nonfinite_tokens"], ["NaN", "+Inf", "-Inf"])
 
+    def test_orthographic_line_fixture_records_manifest_input_and_topology(self):
+        manifest = load_reference_fixture(
+            FIXTURE_DIR / CASES["line3d_orthographic"]["manifest"]
+        ).manifest
+        self.assertEqual(manifest["fixture_id"], "line3d_orthographic")
+        self.assertEqual(manifest["three_d"]["projection"], "orthographic")
+        self.assertIsNone(manifest["figure"]["options"]["focal_length"])
+        self.assertIsNone(manifest["three_d"]["view"]["focal_length"])
+        self.assertEqual(
+            manifest["artist_class"], "matplotlib.axes3d.Axes3D+Line3D"
+        )
+        self.assertEqual(
+            manifest["primitive"]["input_data"],
+            {
+                "x": [0.15, 0.9, "NaN", 1.45, "+Inf", 2.15, 2.8],
+                "y": [0.15, 1.4, "NaN", 0.35, "-Inf", 1.55, 0.25],
+                "z": [0.15, 1.8, "NaN", 1.7, "+Inf", 0.35, 1.8],
+            },
+        )
+        topology = manifest["topology"]
+        self.assertEqual(topology["line_data_api"], "Line3D.get_data_3d()")
+        self.assertEqual(topology["finite_segments"][-1], [[0, 2], [5, 7]])
+        self.assertEqual(topology["nonfinite_tokens"], ["NaN", "+Inf", "-Inf"])
+        self.assertEqual(topology["triangle_count"], 0)
+        self.assertEqual(topology["painter_order"], [])
+        self.assertEqual(manifest["three_d"]["painter_order"], [])
+        self.assertEqual(
+            manifest["reference_png_file"],
+            "line3d_orthographic_reference.png",
+        )
+        self.assertEqual(
+            manifest["mask_file"], "line3d_orthographic_mask.json"
+        )
+
     def test_poly_fixture_records_triangle_order_and_element_styles(self):
         manifest = load_reference_fixture(
             FIXTURE_DIR / CASES["poly3d_perspective"]["manifest"]
@@ -146,6 +180,19 @@ class Test3DAdapterNativeSpec(unittest.TestCase):
         result, spec = self._capture_spec("line3d_perspective")
         self.assertEqual(result.diagnostics, ())
         self.assertEqual(spec["semantic_3d"]["projection"], "perspective")
+        self.assertEqual(spec["semantic_3d"]["bounds"], [[0.0, 3.0], [0.0, 2.0], [0.0, 2.0]])
+        self.assertEqual(spec["semantic_3d"]["scene_origin"], [1.5, 1.0, 1.0])
+        self.assertEqual(spec["semantic_3d"]["line_segments"][-1], [[0, 2], [5, 7]])
+        self.assertEqual(
+            sum(command["artist_class"] == "Line3D" for command in spec["commands"]),
+            4,
+        )
+
+    def test_line3d_orthographic_spec_keeps_f64_source_and_gap_semantics(self):
+        result, spec = self._capture_spec("line3d_orthographic")
+        self.assertEqual(result.diagnostics, ())
+        self.assertEqual(spec["semantic_3d"]["projection"], "orthographic")
+        self.assertIsNone(spec["semantic_3d"]["focal_length"])
         self.assertEqual(spec["semantic_3d"]["bounds"], [[0.0, 3.0], [0.0, 2.0], [0.0, 2.0]])
         self.assertEqual(spec["semantic_3d"]["scene_origin"], [1.5, 1.0, 1.0])
         self.assertEqual(spec["semantic_3d"]["line_segments"][-1], [[0, 2], [5, 7]])

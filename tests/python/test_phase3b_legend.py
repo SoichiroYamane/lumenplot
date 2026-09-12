@@ -305,10 +305,12 @@ class TestLegendEligibility(unittest.TestCase):
             if command.get("decoration") == "legend_handle"
         ]
         self.assertEqual(len(handles), 2)
-        # Entry strokes arrive top-of-legend first (column-major draw).
+        # Entry strokes arrive top-of-legend first (column-major draw), so
+        # in bottom-left display space the first handle sits above the
+        # second (Agg: alpha y=161.36 > beta y=140.08 at dpi=100).
         first_y = min(point[1] for point in handles[0]["vertices"])
         second_y = min(point[1] for point in handles[1]["vertices"])
-        self.assertLess(first_y, second_y)
+        self.assertGreater(first_y, second_y)
         # Widths mirror each proxy handle (entry order: alpha then beta).
         self.assertEqual(handles[0]["line_width_pt"], 2.0)
         self.assertEqual(handles[1]["line_width_pt"], 1.0)

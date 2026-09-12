@@ -118,9 +118,11 @@ class TraceabilityCoverageMutationTests(unittest.TestCase):
 
     def test_gate_name_typo_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
+            # The LP-MPL-022 registry row now carries a bounded-evidence note
+            # after `Not implemented` (PR #85); match that canonical text.
             self.replace_once(root,
-                              "`AT-MPL-UNIT-DATA` | Not implemented |",
-                              "`AT-MPL-UNIT-DATAX` | Not implemented |")
+                              "`AT-MPL-UNIT-DATA` | Not implemented (bounded",
+                              "`AT-MPL-UNIT-DATAX` | Not implemented (bounded")
 
         self.assert_rejected(mutate,
                              "[FAIL] GAP-R1 gate defined in registry: AT-MPL-UNIT-DATA")

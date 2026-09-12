@@ -360,25 +360,33 @@ class _EligibilityPreflight:
     def _check_spine_static(self, spine: Any) -> None:
         """Collect visible spine edges into the fixed-style surface.
 
-        Spines are rendered as explicit path commands with the §5 stroke
-        surface (Butt cap, Miter join), not approximated through the
-        artist's own cap/join style; only their width, color, and
-        visibility are honored from public getters.
+        Spines ride the seam with Miter join and the artist's own cap
+        style (Matplotlib's Spine default is projecting caps, which Agg
+        honors at the axes corners); only their width, color, cap, and
+        visibility are honored from public getters. Cap styles outside
+        the seam's Butt/Round/Projecting set are refused here.
         """
         name = type(spine).__name__
         if spine.get_linewidth() < 0:
             self.unsupported("negative line width", name)
         if spine.get_path_effects():
             self.unsupported("path effects are unsupported", name)
+        if str(spine.get_capstyle()) not in ("butt", "round", "projecting"):
+            self.unsupported(
+                f"spine cap style {str(spine.get_capstyle())!r} is unsupported",
+                name,
+            )
 
     def _check_tick_label_static(self, label: Any) -> None:
         """Whitelist-check one visible major tick label (PRAC-A-W).
 
         The label is rendered as explicit filled glyph path commands built
-        by the public ``lumenplot_mpl.textpath`` module; only its string,
-        font size, color, alpha, rotation, alignment, and position are
-        honored. Anything outside the supported surface is refused here so
-        stage two never observes an unexpected ``draw_text``.
+        by the public ``lumenplot_mpl.textpath`` module from the label's
+        own public ``FontProperties`` (family/style/weight) and resolved
+        font size; only its string, font face, font size, color, alpha,
+        rotation, alignment, and position are honored. Anything outside
+        the supported surface is refused here so stage two never observes
+        an unexpected ``draw_text``.
         """
         name = type(label).__name__
         if label.get_text() != label.get_text().strip():
@@ -401,6 +409,20 @@ class _EligibilityPreflight:
         # interpret them, which must never diverge silently.
         if label.get_usetex() or "$" in label.get_text():
             self.unsupported("math/TeX text is unsupported", name)
+        # T-lane style contract: the glyph route resolves the label's own
+        # public font face and size, so a non-positive size, sketch, snap
+        # override, or custom clip has no representable outline and refuses
+        # here (same surface the legend entry labels already enforce
+        # downstream; recording it here keeps tick labels self-sufficient).
+        size = float(label.get_fontsize())
+        if not math.isfinite(size) or size <= 0.0:
+            self.unsupported("non-positive font size", name)
+        if label.get_sketch_params() is not None:
+            self.unsupported("sketch parameters are unsupported", name)
+        if label.get_snap() is not None:
+            self.unsupported("explicit snap is unsupported", name)
+        if label.get_clip_box() is not None or label.get_clip_path() is not None:
+            self.unsupported("custom clipping is unsupported", name)
 
     def _check_legend_static(self, legend: Any) -> None:
         """Whitelist-check one Axes legend (PRAC-A-L, LP-MPL-020).
@@ -964,6 +986,12 @@ class _EligibilityPreflight:
             def flipy(self):  # noqa: N802
                 return True
 
+            def points_to_pixels(self, points):  # noqa: N802
+                # Match RendererAgg (points * dpi / 72): legend layout
+                # consumes fontsize-point metrics, so the collection draw
+                # must lay out at output_dpi, not the base identity scale.
+                return points * float(output_dpi) / 72.0
+
             def get_text_width_height_descent(  # noqa: N802
                 self, s, prop, ismath
             ):
@@ -1035,12 +1063,16 @@ class _EligibilityPreflight:
                             text = label.get_text()
                             if not label.get_visible() or text == "":
                                 continue
+                            label_prop = label.get_fontproperties()
                             entries.append(
                                 {
                                     "artist": label,
                                     "text": str(text),
                                     "size": float(label.get_fontsize()),
                                     "angle": float(label.get_rotation()),
+                                    "weight": label_prop.get_weight(),
+                                    "style": label_prop.get_style(),
+                                    "family": tuple(label_prop.get_family()),
                                 }
                             )
             legend = ax.get_legend()
@@ -1049,6 +1081,7 @@ class _EligibilityPreflight:
                     text = label.get_text()
                     if not label.get_visible() or text == "":
                         continue
+                    legend_prop = label.get_fontproperties()
                     entries.append(
                         {
                             "kind": "legend_label",
@@ -1056,6 +1089,9 @@ class _EligibilityPreflight:
                             "text": str(text),
                             "size": float(label.get_fontsize()),
                             "angle": float(label.get_rotation()),
+                            "weight": legend_prop.get_weight(),
+                            "style": legend_prop.get_style(),
+                            "family": tuple(legend_prop.get_family()),
                         }
                     )
         return entries
@@ -1132,8 +1168,18 @@ class _EligibilityPreflight:
                 angle_ok = (
                     abs(float(payload["angle"]) - entry["angle"]) <= 1.0e-9
                 )
+                # T-lane style contract: the draw-time face must be the
+                # statically enumerated one (same FontProperties weight /
+                # style / family); a substituted face would outline
+                # different glyphs than the enumerated label.
+                draw_prop = payload["prop"]
+                font_ok = (
+                    draw_prop.get_weight() == entry["weight"]
+                    and draw_prop.get_style() == entry["style"]
+                    and tuple(draw_prop.get_family()) == entry["family"]
+                )
             except (AttributeError, TypeError, ValueError):
-                size_ok = angle_ok = False
+                size_ok = angle_ok = font_ok = False
             if payload.get("ismath") or "$" in entry["text"]:
                 self.unsupported("math/TeX text is unsupported", "Text")
                 return False
@@ -1141,6 +1187,7 @@ class _EligibilityPreflight:
                 payload.get("text") != entry["text"]
                 or not size_ok
                 or not angle_ok
+                or not font_ok
             ):
                 self.unsupported(
                     "the draw_text callback for a public label changed "
@@ -2170,16 +2217,43 @@ class _EligibilityPreflight:
             tuple(float(c) for c in edge_rgb)[3] != 0.0 and width > 0.0
         )
         face_color = tuple(float(c) for c in rgb_face)
+        # Agg snaps the legend frame path at draw time: the legend patch
+        # is created with snap=True, so every vertex (anchors and curve
+        # controls alike) rounds to the odd/even linewidth offset in
+        # device space before stroking. Reproduce that snap here so the
+        # seam rasterizes the same geometry Agg does; when the artist
+        # does not request snapping the vertices ride through verbatim.
+        snap = gc.get_snap() if hasattr(gc, "get_snap") else None
+        snap_offset: float | None = None
+        if snap is True:
+            width_dev = width * float(self._effective_dpi) / 72.0
+            snap_offset = (
+                0.5 if math.floor(width_dev + 0.5) % 2 == 1 else 0.0
+            )
+        height_px = float(self._height_px)
+        if snap_offset is None:
+            frame_vertices = [
+                # Collected display space is bottom-left-origin display
+                # pixels, matching the established adapter-to-seam
+                # convention (the seam applies the display-to-device
+                # y-flip itself); emit verbatim without an extra flip.
+                [float(vx), float(vy)]
+                for vx, vy in path.vertices
+            ]
+        else:
+            # Snap every vertex by default; Agg evidence decides whether
+            # curve controls ride along (see corner residuals).
+            frame_vertices = []
+            for vx, vy in path.vertices:
+                device_x = float(vx)
+                device_y = height_px - float(vy)
+                snapped_x = math.floor(device_x + 0.5) + snap_offset
+                snapped_y = math.floor(device_y + 0.5) + snap_offset
+                frame_vertices.append([snapped_x, height_px - snapped_y])
         command: dict[str, Any] = {
             "kind": "path",
             "decoration": "legend_frame",
-            "vertices": [
-                # Collected display space is bottom-left-origin; the
-                # frozen seam wants top-left pixels, so y flips once,
-                # linearly (curve control points included).
-                [float(vx), float(self._height_px) - float(vy)]
-                for vx, vy in path.vertices
-            ],
+            "vertices": frame_vertices,
             "codes": [int(code) for code in path.codes],
             "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
             "stroke_rgba": list(edge_rgba8) if explicit_edge else None,
@@ -2231,17 +2305,17 @@ class _EligibilityPreflight:
         if alpha is not None:
             color = color[:3] + (float(alpha),)
         # Handle strokes arrive in handlebox-local coordinates under the
-        # legend layout affine (bottom-left-origin display space); the
-        # seam wants top-left pixels, so the flip composes after the
-        # affine, once, linearly.
-        flipped_vertices = [
-            [float(vx), float(self._height_px) - float(vy)]
+        # legend layout affine (bottom-left-origin display space, matching
+        # the content-line geometry); the seam folds the display-to-device
+        # y-flip in itself, so emit the affine result verbatim.
+        display_vertices = [
+            [float(vx), float(vy)]
             for vx, vy in vertices
         ]
         return {
             "kind": "path",
             "decoration": "legend_handle",
-            "vertices": flipped_vertices,
+            "vertices": display_vertices,
             "codes": None,
             "transform": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
             "stroke_rgba": list(_rgba8(color)),
@@ -2854,12 +2928,14 @@ class _EligibilityPreflight:
                 else "tick_label"
             )
             try:
-                outline = textpath.glyph_outline_commands(
+                outline = textpath._writer_glyph_outline_commands(
                     str(label.get_text()),
                     (0.0, 0.0),
                     1.0,
                     0.0,
                     font_size_pt=float(label.get_fontsize()),
+                    prop=label.get_fontproperties(),
+                    dpi=self._effective_dpi,
                 )[0]
             except ValueError as error:
                 raise LumenPlotUnsupportedError(
@@ -2930,13 +3006,15 @@ class _EligibilityPreflight:
         locations from ``Axis.get_ticklocs`` filtered into view, tick
         stroke style from the edge ``Line2D`` markers, and spine edges
         from the axes rectangle with the fixed §5 stroke surface.
-        Gridlines and spines clip to their own axes rectangle; tick
+        Gridlines clip to their own axes rectangle; spine edges and tick
         strokes protrude outside it, so they clip to the full canvas
-        like Agg (which does not clip tick marks).
+        like Agg (which draws spine strokes and tick marks unclipped:
+        pinned Agg draw_path reports clip_rect=None for every spine).
         """
         # The frozen seam clip is bottom-left-origin (x, y, w, h). Gridlines
-        # and spines stay inside the axes rectangle; tick strokes protrude
-        # outside it, so they carry a full-canvas clip like Agg.
+        # stay inside the axes rectangle; spine edges sit exactly on its
+        # boundary (half the stroke width spills outside) and tick strokes
+        # protrude outside it, so both carry a full-canvas clip like Agg.
         axes_clip = [float(x0), float(y0), float(w), float(h)]
         canvas_clip = [
             0.0,
@@ -2950,7 +3028,7 @@ class _EligibilityPreflight:
 
         def seg(p0: tuple[float, float], p1: tuple[float, float],
                 line: matplotlib.lines.Line2D, deco: str,
-                clip: list[float]) -> dict:
+                clip: list[float], cap: str = "butt") -> dict:
             return {
                 "kind": "path",
                 "decoration": deco,
@@ -2961,7 +3039,7 @@ class _EligibilityPreflight:
                 "stroke_rgba": list(_rgba8(line.get_color(),
                                            line.get_alpha())),
                 "line_width_pt": float(line.get_linewidth()),
-                "cap": "butt",
+                "cap": cap,
                 "join": "miter",
                 "dash_offset_pt": 0.0,
                 "dashes": None,
@@ -3052,6 +3130,9 @@ class _EligibilityPreflight:
         # -- spine edges -----------------------------------------------------
         # Visible spines draw the axes rectangle edges with the fixed §5
         # stroke surface; width and color come from the spine getters.
+        # Agg draws spine strokes unclipped (clip_rect=None), so spines
+        # carry the full-canvas clip: an axes clip would shave the half
+        # stroke width that legitimately spills over the boundary.
         if "spine" in kinds:
             for side, p0, p1 in (
                 ("bottom", (x0, y0), (x0 + w, y0)),
@@ -3067,7 +3148,8 @@ class _EligibilityPreflight:
                     (float(p1[0]), float(p1[1])),
                     _SpineStroke(spine),
                     "spine",
-                    axes_clip,
+                    canvas_clip,
+                    cap=str(spine.get_capstyle()),
                 )
                 commands.append(command)
 
