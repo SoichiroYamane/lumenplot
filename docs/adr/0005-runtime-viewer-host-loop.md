@@ -7,7 +7,7 @@
 - Scope: O-06 EngineSession/Viewer ownership, native and hosted loops, notebook transport, main-thread lifecycle, multi-surface behavior, close, recovery, and OOM
 - Governing architecture: [ADR 0002 — GPU-native engine and first-class Matplotlib adapter](0002-gpu-native-engine-and-matplotlib-adapter.md)
 - Open-decision record: [O-06 — Window, viewer, host loop, and lifecycle semantics](../architecture/open-decisions.md#o-06-window-viewer-host-loop-and-lifecycle-semantics)
-- Proposed amendment: interactive window application as a v1 requirement (2026-09-11, pending maintainer acceptance; not accepted — see the proposal section below)
+- Accepted amendment: interactive window application as a v1 requirement (proposed 2026-09-11, accepted 2026-09-13; maintainer approval recorded — see the amendment section below)
 
 This ADR records lifecycle semantics before the complete runtime implementation. The repository now has a bounded backend-neutral lifecycle/input state model with local tests, but this record does not claim support for an operating system, window system, notebook transport, or GPU device.
 
@@ -86,13 +86,13 @@ Required evidence is a lifecycle matrix covering launch, repeated create/destroy
 - Device recovery can fail for reasons that need a stable `RecoveryFailed` result rather than an implicit fallback.
 - A multi-surface implementation may expose synchronization or fairness issues that require benchmark and lifecycle evidence.
 
-## Proposed amendment — interactive window application as a v1 requirement (pending maintainer acceptance)
+## Accepted amendment — interactive window application as a v1 requirement (accepted 2026-09-13)
 
-Status: PROPOSAL. This section drafts the scope-change envelope for scope card `t_53261829` and does not amend the accepted contract above. It takes effect only if the maintainer accepts it.
+Status: ACCEPTED 2026-09-13. This section records the accepted scope-change envelope (scope proposal `t_53261829`, acceptance `t_2db160d8`; maintainer approval recorded 2026-09-13) and amends the accepted contract above.
 
 Maintainer product decision (2026-09-11, quoted): 対話windowアプリ自体をv1.0までの要件とする — the interactive window application (native event loop, window/present, close) is a v1.0 requirement.
 
-### Proposed requirement
+### Accepted requirement
 
 `LP-FUNC-042` (`MUST`, Phase 3, Release v1; evidence `AT-FUNC-VIEWER`, `AT-LIFE-VIEWER`, `AT-LIFE-RUNTIME`) in the [requirements](../requirements/lumenplot-v1.0.md#12-window-and-event-layer): provide an interactive window application for native LumenPlot scenes with a native-owned event loop, window/surface present, and observable close. It complements `LP-FUNC-016` (standalone viewer product edge, Phase 1-2) and the `LP-PLAT-009`/`LP-PLAT-010` lifecycle matrix; it does not replace any of them.
 
@@ -113,7 +113,7 @@ The roadmap still records a real window/surface present loop and standalone view
 - Qt, WebAgg, ipympl, and other host transports remain excluded from native latency claims until explicit evidence; the initial headless Matplotlib PNG profile still has no GUI `show` behavior.
 - Platform cells stay `environment required` until the declared-cell matrix passes; this note makes no support claim.
 
-### Transport/host scope proposal
+### Transport/host scope (declared-cell-first; first cell open per Q3)
 
 Declared-cell-first: close `LP-FUNC-042` first on ONE declared host cell with the full lifecycle matrix (launch, repeated create/draw/resize/close cycles, suspend/resume, occlusion/timeout, surface loss, device loss/rebuild, OOM, reentrancy), then expand cell by cell. The full multi-OS/compositor matrix stays `environment required` and is not closed by the first cell.
 

@@ -2,11 +2,11 @@
 
 - Status: **Accepted — Pre-alpha Product Requirements**
 - Date: 2026-08-20
-- Amended: 2026-09-05
-- Proposed: 2026-09-11 interactive window-app scope proposal (`LP-FUNC-042`, pending maintainer acceptance; not accepted by this document)
+- Amended: 2026-09-05, 2026-09-13 (LP-FUNC-042 window-app scope acceptance)
+- Accepted: 2026-09-13 interactive window-app scope acceptance (`LP-FUNC-042`; proposed 2026-09-11, scope card `t_53261829`, acceptance `t_2db160d8`, maintainer approval recorded 2026-09-13)
 - Product: LumenPlot
 - Publication status: This document records an accepted contract before implementation. It does not report a completed implementation, a supported-platform result, or a measured performance result.
-- Revision note: This requirements revision canonicalizes the fourteen Matplotlib/Agg gap rows (`LP-FUNC-032`–`LP-FUNC-041` and `LP-MPL-020`–`LP-MPL-023`), promotes `LP-FUNC-025` to a v1 3D `MUST`, and defines their shared Agg-oracle acceptance meaning. Their implementation and evidence status remains in `docs/requirements/traceability-v1.0.md`. A 2026-09-11 proposal (pending maintainer acceptance, recorded in Appendix B §12) adds `LP-FUNC-042` for the interactive window application (native event loop, window/present, close) as a v1 `MUST`; it is not accepted until the maintainer accepts the scope-change envelope.
+- Revision note: This requirements revision canonicalizes the fourteen Matplotlib/Agg gap rows (`LP-FUNC-032`–`LP-FUNC-041` and `LP-MPL-020`–`LP-MPL-023`), promotes `LP-FUNC-025` to a v1 3D `MUST`, and defines their shared Agg-oracle acceptance meaning. Their implementation and evidence status remains in `docs/requirements/traceability-v1.0.md`. The 2026-09-13 accepted scope-change (proposed 2026-09-11, recorded in Appendix B §12) adds `LP-FUNC-042` for the interactive window application (native event loop, window/present, close) as a v1 `MUST`.
 
 ## How to read this document
 
@@ -602,7 +602,7 @@ The source intent is retained by section. The last column records only the accep
 | ---: | --- | --- | --- |
 | 1 | Purpose | independent scientific plotting engine, large-data exploration, low-latency native interaction, shared export | first-class one-way Matplotlib adapter added without reversing independence |
 | 2 | Requirement levels | MUST, MUST NOT, SHOULD, MAY vocabulary | `NON-GOAL`, `REFERENCE`, and `PHASE` labels make scope and evidence explicit |
-| 3 | Scope | 2D line plotting and v1 interaction/export list | annotations, standalone viewer, and 3D line/triangulated-surface plotting are included in v1 traceability |
+| 3 | Scope | 2D line plotting and v1 interaction/export list | annotations, standalone viewer, 3D line/triangulated-surface plotting, and the interactive window application (LP-FUNC-042; native event loop, window/present, close) are included in v1 traceability |
 | 4 | Non-goals | no full Matplotlib parity, browser-first, 3D, GUI toolkit, fitting, analysis framework | public/common adapter retained; the 2026-09-05 amendment removes 3D from the non-goal set without changing the other exclusions |
 | 5 | Basic architecture | core, semantic frame, renderer boundary, portable/native paths | concrete GPU/window/frontend types excluded from core; RenderPacket is internal |
 | 6 | Data model | f64 canonical data and chunks | Rust-owned immutable sealed chunks for long-lived state |
@@ -650,7 +650,7 @@ The source intent is retained by section. The last column records only the accep
 9. Shared shaping/layout and vector-aware PNG/PDF/SVG semantics are required; PNG/PDF are v1 MUST, SVG is SHOULD and non-blocking, and raster-only PDF is prohibited.
 10. Annotations, standalone viewer, keyboard/focus/contrast/reduced-motion accessibility, safety policy, explicit persistence non-goal, and benchmark protocol are part of v1 traceability.
 11. `LP-FUNC-025` is a Phase 3 v1 `MUST` for 3D line and triangulated-surface plots after the shared semantic frame. Its `AT-FUNC-3D` gate uses the pinned §15.1 four-part mplot3d oracle, including reference projection-order artifacts; it does not make RenderPacket public or persistent.
-12. PROPOSED 2026-09-11, pending maintainer acceptance (scope card `t_53261829`; not accepted): `LP-FUNC-042` is a Phase 3 v1 `MUST` for the interactive window application — native-owned event loop, window/surface present, and observable close over native LumenPlot scenes, with `AT-FUNC-VIEWER`, `AT-LIFE-VIEWER`, and `AT-LIFE-RUNTIME` as its evidence gates (all reused vocabulary; no new gate). It complements (does not replace) `LP-FUNC-016` (standalone viewer product edge, Phase 1-2) and the `LP-PLAT-009`/`LP-PLAT-010` lifecycle matrix: the viewer row keeps the product edge, the lifecycle rows keep the matrix, and the new row makes real window/present/close release-blocking for v1. Rationale, affected interfaces, compatibility impact, transport/host scope, and open questions are recorded in the proposed amendment note in ADR 0005; roadmap placement is proposed under M4. On acceptance, Appendix A §3 and the traceability counts conform to the new row; until then the row stays `environment required — Not implemented` with no support, performance, or release claim.
+12. ACCEPTED 2026-09-13 (scope proposal `t_53261829`; acceptance `t_2db160d8`; maintainer approval recorded 2026-09-13): `LP-FUNC-042` is a Phase 3 v1 `MUST` for the interactive window application — native-owned event loop, window/surface present, and observable close over native LumenPlot scenes, with `AT-FUNC-VIEWER`, `AT-LIFE-VIEWER`, and `AT-LIFE-RUNTIME` as its evidence gates (all reused vocabulary; no new gate). It complements (does not replace) `LP-FUNC-016` (standalone viewer product edge, Phase 1-2) and the `LP-PLAT-009`/`LP-PLAT-010` lifecycle matrix: the viewer row keeps the product edge, the lifecycle rows keep the matrix, and the new row makes real window/present/close release-blocking for v1. Rationale, affected interfaces, compatibility impact, transport/host scope, and open questions are recorded in the accepted amendment note in ADR 0005; roadmap placement is under M4. Appendix A §3 and the traceability counts conform to the new row; the row stays `environment required — Not implemented` with no support, performance, or release claim.
 
 ## Appendix C — Public-safe provenance
 

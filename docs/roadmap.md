@@ -1,7 +1,7 @@
 # LumenPlot implementation roadmap
 
 - Status: pre-alpha planning document
-- Updated: 2026-09-05; proposed M4 window-app placement 2026-09-11 (pending maintainer acceptance, see M4)
+- Updated: 2026-09-05; M4 window-app placement accepted 2026-09-13 (see M4)
 - Planning unit: ordered milestones, not release dates
 - Source of truth for requirement status: [v1 traceability](requirements/traceability-v1.0.md)
 
@@ -288,18 +288,17 @@ Exit criteria:
 - close, stale work, surface loss, device loss, and OOM have observable,
   bounded outcomes.
 
-#### M4 window-app scope proposal (pending maintainer acceptance, 2026-09-11)
+#### M4 window-app scope (accepted 2026-09-13)
 
 The maintainer product decision 対話windowアプリ自体をv1.0までの要件とする promotes the
 interactive window application (native event loop, window/present, close) to a v1.0
-requirement. This subsection drafts its M4 placement; it is not accepted scope until the
-scope-change envelope (scope card `t_53261829`) is accepted.
+requirement. This subsection records its accepted M4 placement (scope proposal `t_53261829`, acceptance `t_2db160d8`; maintainer approval recorded 2026-09-13).
 
-Proposed requirement: `LP-FUNC-042` (`MUST`, Phase 3, Release v1; evidence
+Accepted requirement: `LP-FUNC-042` (`MUST`, Phase 3, Release v1; evidence
 `AT-FUNC-VIEWER`, `AT-LIFE-VIEWER`, `AT-LIFE-RUNTIME`) in the [canonical v1
 requirements](requirements/lumenplot-v1.0.md), with status `environment required — Not
 implemented` in the [requirement traceability](requirements/traceability-v1.0.md) and
-rationale, interfaces, and impact in the proposed [ADR
+rationale, interfaces, and impact in the accepted [ADR
 0005](adr/0005-runtime-viewer-host-loop.md) amendment note. It complements `LP-FUNC-016`
 (standalone viewer, Phase 1-2), `LP-MPL-018` (standalone use without Matplotlib), the
 `LP-PLAT-009`/`LP-PLAT-010` lifecycle matrix, `LP-QUAL-017` through `LP-QUAL-020`
@@ -321,7 +320,7 @@ Existing partial evidence (bounded; none of it closes the row):
 - Packaged public-backend runtime smoke (PR #89) covers the adapter path only and is not
   window/present evidence.
 
-Transport/host scope proposal: declared-cell-first. Close the row first on ONE declared
+Transport/host scope: declared-cell-first. Close the row first on ONE declared
 host cell with the full lifecycle matrix, then expand cell by cell; the full
 multi-OS/compositor matrix stays `environment required`. No host smoke or matrix-cell
 evidence was found in-repo at drafting time, so the first-cell selection is open question
@@ -333,7 +332,7 @@ mirroring `LP-PLAT-010`); Q2 transport scope (proposed: standalone native-owned 
 only; host-pumped embedding stays a non-blocking boundary); Q3 first declared cell and
 declared-cell-first vs full-matrix acceptance; Q4 notebook transport (proposed: out of
 scope, separate transport); Q5 whether the first cell requires the accelerated (M6) path
-(proposed: portable path suffices). See the proposed ADR 0005 note for the full list.
+(proposed: portable path suffices). See the accepted ADR 0005 note for the full list.
 
 ### M5 — Close v1 semantic output and UX requirements
 
