@@ -708,11 +708,16 @@ class TestDecoratedAxesSpec(unittest.TestCase):
         for c in spines:
             v = c["vertices"]
             self.assertEqual(len(v), 2)
-            self.assertEqual(c["cap"], "butt")
+            # Default spines carry the artist's projecting caps (Matplotlib
+            # Spine default; pinned Agg draw_path reports cap=projecting
+            # for every 0.8pt spine stroke), not butt.
+            self.assertEqual(c["cap"], "projecting")
             self.assertEqual(c["join"], "miter")
+            # Spine strokes sit exactly on the axes boundary and Agg draws
+            # them unclipped (pinned draw_path reports clip=None), so they
+            # carry the full-canvas clip, not the axes rectangle.
             self.assertEqual(c["clip_rect"], [
-                bbox.x0, height_px - bbox.y1,
-                bbox.width, bbox.height,
+                0.0, 0.0, fig.bbox.width, fig.bbox.height,
             ])
             (x0, y0), (x1, y1) = v
             edges.add((round(x0, 6), round(y0, 6),
@@ -755,17 +760,26 @@ class TestDecoratedAxesSpec(unittest.TestCase):
         assert spec is not None and spec["commands"] is not None
 
         clips = []
+        spine_clips = []
         for c in spec["commands"]:
             clip = c["clip_rect"]
             self.assertIsNotNone(clip)
-            # Tick strokes carry the canvas clip; everything else carries
-            # its own axes rectangle.
+            # Tick strokes carry the canvas clip; spine strokes sit on the
+            # axes boundary and Agg draws them unclipped (pinned draw_path
+            # reports clip=None), so they carry the canvas clip too.
+            # Everything else carries its own axes rectangle.
             if c.get("decoration") == "tick":
+                continue
+            if c.get("decoration") == "spine":
+                spine_clips.append((clip[0], clip[1]))
                 continue
             clips.append((clip[0], clip[1]))
         # Each axes' commands share its own clip origin; the two origins differ.
         unique = sorted(set(clips))
         self.assertEqual(len(unique), 2)
+        # All spine edges share the full-canvas clip origin.
+        self.assertTrue(spine_clips)
+        self.assertEqual(sorted(set(spine_clips)), [(0.0, 0.0)])
         # LP-FUNC-035 (D1): each axes' Axis-unit decorations (gridline,
         # tick) still precede its default content lines, while spine
         # edges (zorder 2.5) paint above them per Agg's z-order.

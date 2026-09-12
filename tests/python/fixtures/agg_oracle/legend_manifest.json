@@ -1,0 +1,390 @@
+{
+  "schema_version": "agg-oracle-manifest-v1",
+  "fixture_id": "legend-line-handles-framed-single-column",
+  "oracle": {
+    "backend": "FigureCanvasAgg",
+    "matplotlib_version": "3.11.1",
+    "api_version": "1.1",
+    "canvas_construction": "matplotlib.backends.backend_agg.FigureCanvasAgg(figure)",
+    "render_call": "canvas.print_png(buffer, metadata={})"
+  },
+  "python_version": ">=3.11,<3.15",
+  "figure": {
+    "construction": "matplotlib.figure.Figure(figsize=(2.0, 1.0), dpi=100.0, facecolor='white', edgecolor='white')",
+    "options": {
+      "figsize_inches": [
+        2.0,
+        1.0
+      ],
+      "dpi": 100.0,
+      "facecolor": "white",
+      "edgecolor": "white",
+      "axes_construction": "figure.add_axes((0.1, 0.1, 0.8, 0.8))",
+      "axes_rect": [
+        0.1,
+        0.1,
+        0.8,
+        0.8
+      ],
+      "axes_facecolor": "none",
+      "axis_on": true,
+      "xlim": [
+        0.0,
+        10.0
+      ],
+      "ylim": [
+        0.0,
+        5.0
+      ],
+      "xticks": [],
+      "yticks": [],
+      "legend_loc": "upper right",
+      "legend_frameon": true,
+      "content_lines": [
+        {
+          "label": "alpha",
+          "color": "red",
+          "linewidth": 2.0
+        },
+        {
+          "label": "beta",
+          "color": "blue",
+          "linewidth": 2.0
+        }
+      ],
+      "savefig_format": "png",
+      "print_png_metadata": {}
+    }
+  },
+  "effective_dpi": 100.0,
+  "dimensions": {
+    "width": 200,
+    "height": 100
+  },
+  "orientation": "top-to-bottom",
+  "channels": "RGBA8",
+  "rcparams": {
+    "agg.path.chunksize": 0,
+    "axes.edgecolor": "black",
+    "axes.facecolor": "none",
+    "axes.linewidth": 0.8,
+    "figure.dpi": 100.0,
+    "figure.edgecolor": "white",
+    "figure.facecolor": "white",
+    "font.family": [
+      "DejaVu Sans"
+    ],
+    "font.size": 10.0,
+    "legend.edgecolor": "black",
+    "legend.facecolor": "white",
+    "legend.framealpha": 1.0,
+    "legend.fontsize": 10.0,
+    "lines.antialiased": true,
+    "lines.dash_capstyle": "butt",
+    "lines.dash_joinstyle": "miter",
+    "lines.linestyle": "-",
+    "lines.linewidth": 2.0,
+    "lines.solid_capstyle": "butt",
+    "lines.solid_joinstyle": "miter",
+    "patch.antialiased": true,
+    "path.simplify": false,
+    "path.simplify_threshold": 0.0,
+    "savefig.dpi": 100.0,
+    "savefig.edgecolor": "white",
+    "savefig.facecolor": "white",
+    "savefig.format": "png",
+    "savefig.transparent": false,
+    "text.antialiased": true
+  },
+  "font": {
+    "family": "DejaVu Sans",
+    "properties": {
+      "style": "normal",
+      "variant": "normal",
+      "weight": "normal",
+      "stretch": "normal",
+      "size": 10.0
+    },
+    "file": "DejaVuSans.ttf",
+    "bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22"
+  },
+  "font_bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22",
+  "artist_class": "matplotlib.legend.Legend",
+  "secondary_classes": [
+    "matplotlib.lines.Line2D",
+    "matplotlib.patches.FancyBboxPatch",
+    "matplotlib.text.Text",
+    "matplotlib.spines.Spine"
+  ],
+  "primitive": {
+    "class": "matplotlib.legend.Legend",
+    "legend": {
+      "loc": "upper right",
+      "frameon": true,
+      "labels": [
+        "alpha",
+        "beta"
+      ]
+    },
+    "handles": [
+      {
+        "class": "matplotlib.lines.Line2D",
+        "color": "red",
+        "linewidth": 2.0
+      },
+      {
+        "class": "matplotlib.lines.Line2D",
+        "color": "blue",
+        "linewidth": 2.0
+      }
+    ]
+  },
+  "input_data": {
+    "alpha": {
+      "x": [
+        0.0,
+        10.0
+      ],
+      "y": [
+        0.0,
+        5.0
+      ],
+      "color": "red",
+      "label": "alpha"
+    },
+    "beta": {
+      "x": [
+        0.0,
+        10.0
+      ],
+      "y": [
+        5.0,
+        0.0
+      ],
+      "color": "blue",
+      "label": "beta"
+    },
+    "xlim": [
+      0.0,
+      10.0
+    ],
+    "ylim": [
+      0.0,
+      5.0
+    ],
+    "cases": {
+      "alpha": {
+        "artist": "matplotlib.lines.Line2D",
+        "color": "red",
+        "label": "alpha"
+      },
+      "beta": {
+        "artist": "matplotlib.lines.Line2D",
+        "color": "blue",
+        "label": "beta"
+      }
+    }
+  },
+  "topology": {
+    "api": "line.get_path().iter_segments(remove_nans=True), axes.transData.transform(data), legend.get_texts/get_lines/get_frame, Spine.get_visible/get_linewidth/get_edgecolor",
+    "scales": {
+      "x": "linear",
+      "y": "linear"
+    },
+    "limits": {
+      "xlim": [
+        0.0,
+        10.0
+      ],
+      "ylim": [
+        0.0,
+        5.0
+      ]
+    },
+    "axis_on": true,
+    "xticks": [],
+    "yticks": [],
+    "content_lines": [
+      {
+        "label": "alpha",
+        "color": "red",
+        "linewidth": 2.0,
+        "linestyle": "-",
+        "drawstyle": "default",
+        "marker": "None",
+        "segment_count": 2,
+        "moveto_count": 1,
+        "lineto_count": 1,
+        "segment_codes": [
+          1,
+          2
+        ],
+        "vertices": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            10.0,
+            5.0
+          ]
+        ],
+        "display_vertices": [
+          [
+            20.0,
+            10.0
+          ],
+          [
+            180.0,
+            90.0
+          ]
+        ]
+      },
+      {
+        "label": "beta",
+        "color": "blue",
+        "linewidth": 2.0,
+        "linestyle": "-",
+        "drawstyle": "default",
+        "marker": "None",
+        "segment_count": 2,
+        "moveto_count": 1,
+        "lineto_count": 1,
+        "segment_codes": [
+          1,
+          2
+        ],
+        "vertices": [
+          [
+            0.0,
+            5.0
+          ],
+          [
+            10.0,
+            0.0
+          ]
+        ],
+        "display_vertices": [
+          [
+            20.0,
+            90.0
+          ],
+          [
+            180.0,
+            10.0
+          ]
+        ]
+      }
+    ],
+    "legend": {
+      "class": "matplotlib.legend.Legend",
+      "loc": "upper right",
+      "frameon": true,
+      "entry_count": 2,
+      "handle_count": 2,
+      "frame": {
+        "class": "matplotlib.patches.FancyBboxPatch",
+        "boxstyle": "matplotlib.patches.Round",
+        "facecolor": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "edgecolor": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "linewidth": 1.0,
+        "fill": true
+      },
+      "entries": [
+        {
+          "label": "alpha",
+          "label_fontsize": 10.0,
+          "handle_color": "red",
+          "handle_linewidth": 2.0,
+          "handle_linestyle": "-",
+          "handle_drawstyle": "default"
+        },
+        {
+          "label": "beta",
+          "label_fontsize": 10.0,
+          "handle_color": "blue",
+          "handle_linewidth": 2.0,
+          "handle_linestyle": "-",
+          "handle_drawstyle": "default"
+        }
+      ],
+      "label_texts": [
+        "alpha",
+        "beta"
+      ]
+    },
+    "spines": {
+      "bottom": {
+        "visible": true,
+        "linewidth": 0.8,
+        "edgecolor": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "top": {
+        "visible": true,
+        "linewidth": 0.8,
+        "edgecolor": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "left": {
+        "visible": true,
+        "linewidth": 0.8,
+        "edgecolor": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "right": {
+        "visible": true,
+        "linewidth": 0.8,
+        "edgecolor": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      }
+    },
+    "display_api": "axes.transData.transform(data)"
+  },
+  "mask_generation": "reference-only: figure facecolor plus resolved red/blue/black ink; candidate/native pixels are not observed",
+  "reference_png_file": "legend_reference.png",
+  "reference_png_sha256": "26b59eca6f48597974c1c4a05768f1293f43880cd3283e9385e886381d9cf4ef",
+  "mask_file": "legend_mask.json",
+  "mask_sha256": "7b9161bdbc547a448b8d80e073131a9b29afcdaf58569657465386bf4fdb7f08",
+  "pixel_classes": [
+    "background",
+    "fully-covered",
+    "antialias-fringe",
+    "text-or-outline"
+  ],
+  "contract": {
+    "orientation": "top-to-bottom",
+    "channels": "RGBA8",
+    "background": "byte-equal",
+    "fully-covered": "byte-equal",
+    "fringe_max_channel_delta": 1,
+    "fringe_mismatch_rate_denominator": "total-pixels",
+    "fringe_mismatch_rate_max": 0.001
+  }
+}

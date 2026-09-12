@@ -4,16 +4,16 @@
 //! fixed-point coordinates and integrates signed edge area per pixel. Tiny-skia
 //! uses a 4x4 coverage grid, which is intentionally faster but leaves visible
 //! 1/16 coverage steps on oblique stroke fringes. This module implements the
-//! same fixed-point area model for isolated, undashed butt-capped segments in
-//! the adapter-only `agg_srgb` path. Unsupported geometry falls through to the
-//! existing tiny-skia rasterizer; native/export linear-light rendering is never
-//! routed here.
+//! same fixed-point area model for isolated, undashed butt- or
+//! projecting-capped segments in the adapter-only `agg_srgb` path.
+//! Unsupported geometry falls through to the existing tiny-skia rasterizer;
+//! native/export linear-light rendering is never routed here.
 
 use tiny_skia::Mask;
 
 use super::{
-    CODE_CLOSEPOLY, CODE_LINETO, CODE_MOVETO, CODE_STOP, CapSelector, FrameError, JoinSelector,
-    PathCommand, coverage_mask,
+    CODE_CLOSEPOLY, CODE_CURVE3, CODE_CURVE4, CODE_LINETO, CODE_MOVETO, CODE_STOP, CapSelector,
+    FrameError, JoinSelector, PathCommand, coverage_mask,
 };
 
 const SUBPIXEL_SHIFT: u32 = 8;
@@ -29,6 +29,9 @@ const AXIS_ALIGNMENT_EPSILON: f64 = 1.0e-4;
 /// spike. `PathCommand` carries no miter-limit field, so the Agg default is
 /// the only contract-faithful threshold.
 const MITER_LIMIT: f64 = 4.0;
+/// Largest stroke-quad coordinate magnitude (device px) admitted to the
+/// exact single-segment route (see `stroke_polygon`).
+const MAX_STROKE_COORD: f64 = 1e9;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Point {
@@ -349,7 +352,7 @@ pub(super) fn try_rasterize(
     scale: f64,
 ) -> Result<Option<Mask>, FrameError> {
     if !command.antialias
-        || !matches!(command.cap, CapSelector::Butt)
+        || !matches!(command.cap, CapSelector::Butt | CapSelector::Projecting)
         || !matches!(command.join, JoinSelector::Miter)
         || command
             .dashes
@@ -376,6 +379,16 @@ pub(super) fn try_rasterize(
     }
     if let Some(chain) = extract_oblique_chain(command, height)? {
         return rasterize_oblique_chain(chain, command, width, height, pixel_count, scale);
+    }
+    if let Some(loop_points) = extract_closed_curve_loop(command, height)? {
+        return rasterize_closed_curve_loop(
+            loop_points,
+            command,
+            width,
+            height,
+            pixel_count,
+            scale,
+        );
     }
     if command.fill_rgba.is_some() {
         return Ok(None);
@@ -404,13 +417,35 @@ pub(super) fn try_rasterize(
         }
     }
 
-    let bounds = raster_bounds(command, width, height);
+    if matches!(command.cap, CapSelector::Projecting) {
+        // Agg generates projecting caps during stroking, after snapping:
+        // extend each snapped segment by half the stroke width along its
+        // direction so the quad covers the cap rectangles (axes spines
+        // meet the axes corners exactly this way).
+        let extension = stroke_width * 0.5;
+        if !extension.is_finite() || extension < 0.0 {
+            return Ok(None);
+        }
+        for segment in &mut segments {
+            let dx = segment.end.x - segment.start.x;
+            let dy = segment.end.y - segment.start.y;
+            let length = dx.hypot(dy);
+            if !length.is_finite() || length <= 0.0 {
+                return Ok(None);
+            }
+            segment.start.x -= dx / length * extension;
+            segment.start.y -= dy / length * extension;
+            segment.end.x += dx / length * extension;
+            segment.end.y += dy / length * extension;
+        }
+    }
+
     let mut polygons = Vec::new();
     polygons
         .try_reserve_exact(segments.len())
         .map_err(|_| FrameError::OutOfMemory)?;
     for segment in segments {
-        let Some(polygon) = stroke_polygon(segment, stroke_width, bounds) else {
+        let Some(polygon) = stroke_polygon(segment, stroke_width) else {
             return Ok(None);
         };
         polygons.push(polygon);
@@ -722,6 +757,12 @@ fn extract_rectilinear_chain(
     if command.fill_rgba.is_some() {
         return Ok(None);
     }
+    // The joined outline below emits butt caps implicitly; projecting
+    // chains stay on the single-segment route, which extends caps
+    // explicitly.
+    if !matches!(command.cap, CapSelector::Butt) {
+        return Ok(None);
+    }
     if command.vertices.len() < 3 || command.vertices.len() > AUTO_SNAP_VERTEX_LIMIT {
         return Ok(None);
     }
@@ -965,6 +1006,11 @@ fn extract_oblique_chain(
     if command.fill_rgba.is_some() {
         return Ok(None);
     }
+    // Same butt-only scope as the rectilinear chain: projecting caps are
+    // extended explicitly on the single-segment route below.
+    if !matches!(command.cap, CapSelector::Butt) {
+        return Ok(None);
+    }
     if command.vertices.len() < 3 || command.vertices.len() > AUTO_SNAP_VERTEX_LIMIT {
         return Ok(None);
     }
@@ -1146,6 +1192,534 @@ fn rasterize_oblique_chain(
     };
     let mut rasterizer = CellRasterizer::new(cell_capacity)?;
     rasterizer.add_contour(&contour)?;
+    let mut mask = coverage_mask(width, height, pixel_count)?;
+    rasterizer.write_mask(&mut mask, width, height)?;
+    Ok(Some(mask))
+}
+
+/// Squared distance tolerance of the Agg recursive curve subdivision
+/// replicated by the closed-curve stroke route: Matplotlib strokes curves
+/// through `agg::conv_curve` with default settings (`curve3_div` /
+/// `curve4_div`, approximation scale 1.0, angle tolerance 0.0), so the
+/// distance test is `d^2 <= (0.5/1.0)^2 * chord^2` with a pure
+/// distance stop (the angle/cusp branches are dead at zero tolerance).
+/// Subdividing any finer (e.g. a fixed 1/4096 px flatness) converges to
+/// the true parallel curve, which Agg's coarse polygon visibly leaves by
+/// up to ~0.15 px at small corner radii (legend frame: 3 segments per
+/// corner instead of hundreds).
+const AGG_DIV_DISTANCE_TOL_SQ: f64 = 0.25;
+/// Collinearity epsilon of `agg_curves.cpp` (`curve_collinearity_epsilon`).
+const AGG_DIV_COLLINEARITY_EPS: f64 = 1e-30;
+/// Recursion cap of `agg_curves.cpp` (`curve_recursion_limit = 32`); a
+/// path that is still not flat falls back to the tiny-skia path instead
+/// of subdividing without bound.
+const AGG_DIV_MAX_DEPTH: u32 = 32;
+/// Maximum flattened loop vertices admitted to the closed-curve route.
+const CLOSED_CURVE_POINT_LIMIT: usize = 65_536;
+
+fn midpoint(first: Point, second: Point) -> Point {
+    Point {
+        x: (first.x + second.x) * 0.5,
+        y: (first.y + second.y) * 0.5,
+    }
+}
+
+/// Squared distance matching Agg's `calc_sq_distance` (`agg_math.h`).
+fn agg_sq_distance(first: Point, second: Point) -> f64 {
+    let dx = second.x - first.x;
+    let dy = second.y - first.y;
+    dx * dx + dy * dy
+}
+
+/// Fail-closed finiteness gate: Agg propagates non-finite coordinates
+/// into its subdivision comparisons (which then never terminate flat),
+/// while this route refuses them and falls through to tiny-skia.
+fn agg_curve_inputs_finite(points: &[Point]) -> bool {
+    points
+        .iter()
+        .all(|point| point.x.is_finite() && point.y.is_finite())
+}
+
+/// Appends the Agg-subdivided quadratic `start -> control -> end` to
+/// `out` (which already ends at `start`), replicating
+/// `curve3_div::recursive_bezier` at approximation scale 1.0 with the
+/// angle test disabled: the chord midpoint replaces the curve once the
+/// control deviation is within a quarter pixel of the chord, and a
+/// collinear control that projects onto the chord contributes no vertex
+/// at all. The wrapper pushes `end` (Agg's `bezier()` endpoint) after
+/// the interior points. Returns false (fall back) on non-finite input,
+/// depth exhaustion past Agg's own recursion cap, or the vertex cap.
+fn push_agg_quad(
+    start: Point,
+    control: Point,
+    end: Point,
+    out: &mut Vec<Point>,
+    depth: u32,
+) -> bool {
+    if !agg_curve_inputs_finite(&[start, control, end]) {
+        return false;
+    }
+    if !agg_quad_recursive(start, control, end, out, depth) {
+        return false;
+    }
+    if out.len() >= CLOSED_CURVE_POINT_LIMIT {
+        return false;
+    }
+    out.push(end);
+    true
+}
+
+fn agg_quad_recursive(
+    start: Point,
+    control: Point,
+    end: Point,
+    out: &mut Vec<Point>,
+    depth: u32,
+) -> bool {
+    if depth > AGG_DIV_MAX_DEPTH || out.len() >= CLOSED_CURVE_POINT_LIMIT {
+        // Past Agg's recursion cap Agg silently drops the remaining
+        // interior points; this route refuses instead so an adversarial
+        // curve can never hang or over-allocate the cell rasterizer.
+        return depth <= AGG_DIV_MAX_DEPTH;
+    }
+    let middle_start = midpoint(start, control);
+    let middle_end = midpoint(control, end);
+    let middle = midpoint(middle_start, middle_end);
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    let deviation = ((control.x - end.x) * dy - (control.y - end.y) * dx).abs();
+    if deviation > AGG_DIV_COLLINEARITY_EPS {
+        if deviation * deviation <= AGG_DIV_DISTANCE_TOL_SQ * (dx * dx + dy * dy) {
+            if out.len() >= CLOSED_CURVE_POINT_LIMIT {
+                return false;
+            }
+            out.push(middle);
+            return true;
+        }
+    } else {
+        let chord_squared = dx * dx + dy * dy;
+        if chord_squared == 0.0 {
+            if agg_sq_distance(start, control) < AGG_DIV_DISTANCE_TOL_SQ {
+                if out.len() >= CLOSED_CURVE_POINT_LIMIT {
+                    return false;
+                }
+                out.push(control);
+                return true;
+            }
+        } else {
+            let projection =
+                ((control.x - start.x) * dx + (control.y - start.y) * dy) / chord_squared;
+            if projection > 0.0 && projection < 1.0 {
+                return true;
+            }
+            let off_chord = if projection <= 0.0 {
+                agg_sq_distance(control, start)
+            } else if projection >= 1.0 {
+                agg_sq_distance(control, end)
+            } else {
+                agg_sq_distance(
+                    control,
+                    Point {
+                        x: start.x + projection * dx,
+                        y: start.y + projection * dy,
+                    },
+                )
+            };
+            if off_chord < AGG_DIV_DISTANCE_TOL_SQ {
+                if out.len() >= CLOSED_CURVE_POINT_LIMIT {
+                    return false;
+                }
+                out.push(control);
+                return true;
+            }
+        }
+    }
+    agg_quad_recursive(start, middle_start, middle, out, depth + 1)
+        && agg_quad_recursive(middle, middle_end, end, out, depth + 1)
+}
+
+/// Appends the Agg-subdivided cubic to `out` with the same contract as
+/// [`push_agg_quad`], replicating `curve4_div::recursive_bezier` with
+/// the angle/cusp tests disabled (both tolerances are zero in the
+/// Matplotlib stroke pipeline).
+fn push_agg_cubic(
+    start: Point,
+    control1: Point,
+    control2: Point,
+    end: Point,
+    out: &mut Vec<Point>,
+    depth: u32,
+) -> bool {
+    if !agg_curve_inputs_finite(&[start, control1, control2, end]) {
+        return false;
+    }
+    if !agg_cubic_recursive(start, control1, control2, end, out, depth) {
+        return false;
+    }
+    if out.len() >= CLOSED_CURVE_POINT_LIMIT {
+        return false;
+    }
+    out.push(end);
+    true
+}
+
+fn agg_cubic_recursive(
+    start: Point,
+    control1: Point,
+    control2: Point,
+    end: Point,
+    out: &mut Vec<Point>,
+    depth: u32,
+) -> bool {
+    if depth > AGG_DIV_MAX_DEPTH || out.len() >= CLOSED_CURVE_POINT_LIMIT {
+        return depth <= AGG_DIV_MAX_DEPTH;
+    }
+    let m01 = midpoint(start, control1);
+    let m12 = midpoint(control1, control2);
+    let m23 = midpoint(control2, end);
+    let m012 = midpoint(m01, m12);
+    let m123 = midpoint(m12, m23);
+    let middle = midpoint(m012, m123);
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    let chord_squared = dx * dx + dy * dy;
+    let d2 = ((control1.x - end.x) * dy - (control1.y - end.y) * dx).abs();
+    let d3 = ((control2.x - end.x) * dy - (control2.y - end.y) * dx).abs();
+    let significant2 = d2 > AGG_DIV_COLLINEARITY_EPS;
+    let significant3 = d3 > AGG_DIV_COLLINEARITY_EPS;
+    // Stopping points match `curve4_div` case-for-case: the worse
+    // control point for the fully collinear case 0, the control
+    // midpoint `m12` (Agg's `x23`) for cases 1-3.
+    let stop_point = match (significant2, significant3) {
+        (false, false) => {
+            if chord_squared == 0.0 {
+                let off2 = agg_sq_distance(start, control1);
+                let off3 = agg_sq_distance(end, control2);
+                if off2 > off3 {
+                    if off2 < AGG_DIV_DISTANCE_TOL_SQ {
+                        Some(control1)
+                    } else {
+                        None
+                    }
+                } else if off3 < AGG_DIV_DISTANCE_TOL_SQ {
+                    Some(control2)
+                } else {
+                    None
+                }
+            } else {
+                let reciprocal = 1.0 / chord_squared;
+                let projected2 =
+                    ((control1.x - start.x) * dx + (control1.y - start.y) * dy) * reciprocal;
+                let projected3 =
+                    ((control2.x - start.x) * dx + (control2.y - start.y) * dy) * reciprocal;
+                if projected2 > 0.0 && projected2 < 1.0 && projected3 > 0.0 && projected3 < 1.0 {
+                    return true;
+                }
+                let off2 = if projected2 <= 0.0 {
+                    agg_sq_distance(control1, start)
+                } else if projected2 >= 1.0 {
+                    agg_sq_distance(control1, end)
+                } else {
+                    agg_sq_distance(
+                        control1,
+                        Point {
+                            x: start.x + projected2 * dx,
+                            y: start.y + projected2 * dy,
+                        },
+                    )
+                };
+                let off3 = if projected3 <= 0.0 {
+                    agg_sq_distance(control2, start)
+                } else if projected3 >= 1.0 {
+                    agg_sq_distance(control2, end)
+                } else {
+                    agg_sq_distance(
+                        control2,
+                        Point {
+                            x: start.x + projected3 * dx,
+                            y: start.y + projected3 * dy,
+                        },
+                    )
+                };
+                if off2 > off3 {
+                    if off2 < AGG_DIV_DISTANCE_TOL_SQ {
+                        Some(control1)
+                    } else {
+                        None
+                    }
+                } else if off3 < AGG_DIV_DISTANCE_TOL_SQ {
+                    Some(control2)
+                } else {
+                    None
+                }
+            }
+        }
+        (false, true) => {
+            if d3 * d3 <= AGG_DIV_DISTANCE_TOL_SQ * chord_squared {
+                Some(m12)
+            } else {
+                None
+            }
+        }
+        (true, false) => {
+            if d2 * d2 <= AGG_DIV_DISTANCE_TOL_SQ * chord_squared {
+                Some(m12)
+            } else {
+                None
+            }
+        }
+        (true, true) => {
+            if (d2 + d3) * (d2 + d3) <= AGG_DIV_DISTANCE_TOL_SQ * chord_squared {
+                Some(m12)
+            } else {
+                None
+            }
+        }
+    };
+    if let Some(point) = stop_point {
+        if out.len() >= CLOSED_CURVE_POINT_LIMIT {
+            return false;
+        }
+        out.push(point);
+        return true;
+    }
+    // Cases 1/2 subdivide unless stopped above; the regular case 3 and
+    // the collinear case fall through here when the curve is too bent.
+    // (The distance test above already covers cases 1-3: with a single
+    // significant control the other deviation is ~0, so `d2 + d3` is
+    // that control's deviation.)
+    agg_cubic_recursive(start, m01, m012, middle, out, depth + 1)
+        && agg_cubic_recursive(middle, m123, m23, end, out, depth + 1)
+}
+
+/// Closed curve-bearing stroke loop in device space.
+///
+/// Detects closed loops with at least one CURVE3/CURVE4 group: a single
+/// `MOVETO`-led subpath ending in `CLOSEPOLY` (no `STOP`), every group
+/// complete with finite vertices, miter join, butt or projecting caps
+/// (caps are moot on closed loops), no dashes, opaque, antialiased.
+/// Straight-only closed loops keep their existing rect-ring and
+/// single-segment routes, so a curve group is required; anything else
+/// returns `Ok(None)` and the caller falls through to tiny-skia.
+fn extract_closed_curve_loop(
+    command: &PathCommand,
+    height: u32,
+) -> Result<Option<Vec<Point>>, FrameError> {
+    let Some(codes) = command.codes.as_ref() else {
+        return Ok(None);
+    };
+    if codes.len() != command.vertices.len() || codes.len() < 2 {
+        return Ok(None);
+    }
+    if codes[0] != CODE_MOVETO || codes[codes.len() - 1] != CODE_CLOSEPOLY {
+        return Ok(None);
+    }
+    let Some(start) = map_device_point(command.transform, command.vertices[0], height) else {
+        return Ok(None);
+    };
+    let mut loop_points = Vec::new();
+    loop_points
+        .try_reserve_exact(codes.len())
+        .map_err(|_| FrameError::OutOfMemory)?;
+    loop_points.push(start);
+    let mut pen = start;
+    let mut saw_curve = false;
+    let mut index = 1usize;
+    while index < codes.len() - 1 {
+        if codes[index] == CODE_LINETO {
+            let Some(point) = map_device_point(command.transform, command.vertices[index], height)
+            else {
+                return Ok(None);
+            };
+            loop_points.push(point);
+            pen = point;
+            index += 1;
+        } else if codes[index] == CODE_CURVE3 {
+            if index + 1 >= codes.len() - 1 {
+                return Ok(None);
+            }
+            let (Some(control), Some(end)) = (
+                map_device_point(command.transform, command.vertices[index], height),
+                map_device_point(command.transform, command.vertices[index + 1], height),
+            ) else {
+                return Ok(None);
+            };
+            if !push_agg_quad(pen, control, end, &mut loop_points, 0) {
+                return Ok(None);
+            }
+            pen = end;
+            saw_curve = true;
+            index += 2;
+        } else if codes[index] == CODE_CURVE4 {
+            if index + 2 >= codes.len() - 1 {
+                return Ok(None);
+            }
+            let (Some(control1), Some(control2), Some(end)) = (
+                map_device_point(command.transform, command.vertices[index], height),
+                map_device_point(command.transform, command.vertices[index + 1], height),
+                map_device_point(command.transform, command.vertices[index + 2], height),
+            ) else {
+                return Ok(None);
+            };
+            if !push_agg_cubic(pen, control1, control2, end, &mut loop_points, 0) {
+                return Ok(None);
+            }
+            pen = end;
+            saw_curve = true;
+            index += 3;
+        } else {
+            return Ok(None);
+        }
+        if loop_points.len() > CLOSED_CURVE_POINT_LIMIT {
+            return Ok(None);
+        }
+    }
+    if !saw_curve {
+        return Ok(None);
+    }
+    // The CLOSEPOLY vertex is a positional dummy; drop exact-duplicate
+    // consecutive points (shared group boundaries are already exact), and
+    // a trailing point that repeats the loop start (closed paths end
+    // where they begin) so the cyclic miter never sees a zero-length
+    // edge.
+    loop_points.dedup();
+    if loop_points.len() >= 2 && loop_points[0] == loop_points[loop_points.len() - 1] {
+        loop_points.pop();
+    }
+    if loop_points.len() < 3 {
+        return Ok(None);
+    }
+    Ok(Some(loop_points))
+}
+
+/// Rasterizes a closed curve loop as one JOINED miter outline.
+///
+/// Both the outer and the inner offset contours use the exact offset-line
+/// intersection `half * (n1 + n2) / (1 + dot)` at every vertex, cyclically
+/// (Agg `line_miter_join` geometry, same formula as the oblique route;
+/// turns past Agg's default miter limit fall back instead of spiking).
+/// The contours are fed to the shared cell accumulator with opposite
+/// winding so the interior hole cancels under the nonzero rule, exactly
+/// like Agg's closed-stroke outline fill.
+fn rasterize_closed_curve_loop(
+    loop_points: Vec<Point>,
+    command: &PathCommand,
+    width: u32,
+    height: u32,
+    pixel_count: usize,
+    scale: f64,
+) -> Result<Option<Mask>, FrameError> {
+    let stroke_width = command.line_width_pt * scale;
+    if !stroke_width.is_finite() || stroke_width <= 0.0 {
+        return Ok(None);
+    }
+    if loop_points.len() < 3 || loop_points.len() > CLOSED_CURVE_POINT_LIMIT {
+        return Ok(None);
+    }
+    let half = stroke_width * 0.5;
+    if !half.is_finite() || half <= 0.0 {
+        return Ok(None);
+    }
+    let one_plus_dot_floor = 2.0 / (MITER_LIMIT * MITER_LIMIT);
+    // Signed area orients the loop: device space is y-down, so a negative
+    // area is clockwise with the interior on the right of travel.
+    let mut area2 = 0.0f64;
+    for index in 0..loop_points.len() {
+        let current = loop_points[index];
+        let next = loop_points[(index + 1) % loop_points.len()];
+        area2 += current.x * next.y - next.x * current.y;
+    }
+    if !area2.is_finite() || area2 == 0.0 {
+        return Ok(None);
+    }
+    // `side` selects the exterior: left of travel for CCW loops, right
+    // for CW loops.
+    let side = if area2 < 0.0 { -1.0 } else { 1.0 };
+    let count = loop_points.len();
+    let mut outer: Vec<Point> = Vec::new();
+    let mut inner: Vec<Point> = Vec::new();
+    outer
+        .try_reserve_exact(count)
+        .map_err(|_| FrameError::OutOfMemory)?;
+    inner
+        .try_reserve_exact(count)
+        .map_err(|_| FrameError::OutOfMemory)?;
+    for index in 0..count {
+        let previous = loop_points[(index + count - 1) % count];
+        let current = loop_points[index];
+        let next = loop_points[(index + 1) % count];
+        let in_dx = current.x - previous.x;
+        let in_dy = current.y - previous.y;
+        let out_dx = next.x - current.x;
+        let out_dy = next.y - current.y;
+        let in_length = in_dx.hypot(in_dy);
+        let out_length = out_dx.hypot(out_dy);
+        if !in_length.is_finite()
+            || !out_length.is_finite()
+            || in_length <= AXIS_ALIGNMENT_EPSILON
+            || out_length <= AXIS_ALIGNMENT_EPSILON
+        {
+            return Ok(None);
+        }
+        let in_normal = (-in_dy / in_length * half, in_dx / in_length * half);
+        let out_normal = (-out_dy / out_length * half, out_dx / out_length * half);
+        let dot = (in_normal.0 * out_normal.0 + in_normal.1 * out_normal.1) / (half * half);
+        let one_plus_dot = 1.0 + dot;
+        if !one_plus_dot.is_finite() || one_plus_dot < one_plus_dot_floor {
+            return Ok(None);
+        }
+        let miter_x = (in_normal.0 + out_normal.0) / one_plus_dot;
+        let miter_y = (in_normal.1 + out_normal.1) / one_plus_dot;
+        if !miter_x.is_finite() || !miter_y.is_finite() {
+            return Ok(None);
+        }
+        outer.push(Point {
+            x: current.x + side * miter_x,
+            y: current.y + side * miter_y,
+        });
+        inner.push(Point {
+            x: current.x - side * miter_x,
+            y: current.y - side * miter_y,
+        });
+    }
+    let mut outer_cells: Vec<SubpixelPoint> = Vec::new();
+    let mut inner_cells: Vec<SubpixelPoint> = Vec::new();
+    outer_cells
+        .try_reserve_exact(count)
+        .map_err(|_| FrameError::OutOfMemory)?;
+    inner_cells
+        .try_reserve_exact(count)
+        .map_err(|_| FrameError::OutOfMemory)?;
+    for point in &outer {
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return Ok(None);
+        }
+        outer_cells.push(to_subpixel(*point));
+    }
+    for point in &inner {
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return Ok(None);
+        }
+        inner_cells.push(to_subpixel(*point));
+    }
+    // The interior hole cancels under the nonzero rule: traverse the
+    // inner contour in the opposite direction to the outer one.
+    inner_cells.reverse();
+    let Some(outer_capacity) = contour_capacity_bound(&outer_cells) else {
+        return Ok(None);
+    };
+    let Some(inner_capacity) = contour_capacity_bound(&inner_cells) else {
+        return Ok(None);
+    };
+    let Some(cell_capacity) = outer_capacity.checked_add(inner_capacity) else {
+        return Ok(None);
+    };
+    if cell_capacity > MAX_CELLS {
+        return Ok(None);
+    }
+    let mut rasterizer = CellRasterizer::new(cell_capacity)?;
+    rasterizer.add_contour(&outer_cells)?;
+    rasterizer.add_contour(&inner_cells)?;
     let mut mask = coverage_mask(width, height, pixel_count)?;
     rasterizer.write_mask(&mut mask, width, height)?;
     Ok(Some(mask))
@@ -1371,33 +1945,7 @@ fn map_device_point(transform: [f64; 6], vertex: [f64; 2], height: u32) -> Optio
     (x.is_finite() && y.is_finite()).then_some(Point { x, y })
 }
 
-#[derive(Clone, Copy)]
-struct RasterBounds {
-    left: f64,
-    top: f64,
-    right: f64,
-    bottom: f64,
-}
-
-fn raster_bounds(command: &PathCommand, width: u32, height: u32) -> RasterBounds {
-    let canvas = RasterBounds {
-        left: 0.0,
-        top: 0.0,
-        right: f64::from(width),
-        bottom: f64::from(height),
-    };
-    let Some([x, y, clip_width, clip_height]) = command.clip_rect else {
-        return canvas;
-    };
-    RasterBounds {
-        left: canvas.left.max(x),
-        top: canvas.top.max(f64::from(height) - (y + clip_height)),
-        right: canvas.right.min(x + clip_width),
-        bottom: canvas.bottom.min(f64::from(height) - y),
-    }
-}
-
-fn stroke_polygon(segment: Segment, stroke_width: f64, bounds: RasterBounds) -> Option<Polygon> {
+fn stroke_polygon(segment: Segment, stroke_width: f64) -> Option<Polygon> {
     let dx = segment.end.x - segment.start.x;
     let dy = segment.end.y - segment.start.y;
     let length = dx.hypot(dy);
@@ -1425,13 +1973,22 @@ fn stroke_polygon(segment: Segment, stroke_width: f64, bounds: RasterBounds) -> 
             y: segment.end.y + offset_y,
         },
     ];
+    // Corners may lie outside the command clip or the canvas: strokes
+    // centered on a clip boundary (axes spines) or ending exactly on a
+    // clip corner (axes-clipped diagonals) legitimately spill over by up
+    // to half the stroke width. Agg strokes first and clips coverage
+    // after, so the quad is always emitted here; the cell writer only
+    // stores in-canvas cells and the caller applies the device clip to
+    // the finished mask. Rejecting here silently dropped every such
+    // stroke to the tiny-skia fallback (legend spines + content fringe).
+    // Only non-finite or absurd magnitudes fall through: the scanline
+    // edge arithmetic runs in fixed-point subpixels, and the cell
+    // capacity gate below already bounds allocation, not overflow.
     if corners.iter().any(|point| {
         !point.x.is_finite()
             || !point.y.is_finite()
-            || point.x < bounds.left
-            || point.x > bounds.right
-            || point.y < bounds.top
-            || point.y > bounds.bottom
+            || point.x.abs() > MAX_STROKE_COORD
+            || point.y.abs() > MAX_STROKE_COORD
     }) {
         return None;
     }
