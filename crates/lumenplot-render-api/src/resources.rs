@@ -897,4 +897,183 @@ mod tests {
         );
         assert_eq!(cache.resource_count(), 0);
     }
+
+    #[test]
+    fn premature_completion_before_submission_retires_nothing_and_preserves_later_work() {
+        let cache = ResourceCache::new(FIRST_DEVICE);
+        // Observing completion with no submitted work retires nothing and
+        // leaves the cache usable: premature observations are harmless.
+        assert_eq!(
+            cache
+                .complete(CompletionFence::new(FIRST_DEVICE, 3))
+                .expect("premature completion"),
+            0
+        );
+        assert_eq!(cache.resource_count(), 0);
+        assert_eq!(cache.pending_submission_count(), 0);
+
+        // Later work with a strictly newer fence still submits and retires
+        // end to end.
+        let lease = cache.acquire(&packet(FIRST_DEVICE)).expect("lease");
+        cache
+            .submit(lease, CompletionFence::new(FIRST_DEVICE, 4))
+            .expect("later submission");
+        assert_eq!(
+            cache
+                .complete(CompletionFence::new(FIRST_DEVICE, 4))
+                .expect("later completion"),
+            1
+        );
+        assert_eq!(cache.resource_count(), 0);
+        assert_eq!(cache.pending_submission_count(), 0);
+    }
+
+    #[test]
+    fn fence_device_mismatch_rejects_submit_without_mutation() {
+        let cache = ResourceCache::new(FIRST_DEVICE);
+        // A lease and a fence belong to different concerns: a valid
+        // first-generation lease paired with a second-generation fence must
+        // fail without taking ownership on the target cache.
+        let lease = cache.acquire(&packet(FIRST_DEVICE)).expect("lease");
+        assert_eq!(cache.resource_count(), 2);
+        assert_eq!(
+            cache
+                .submit(lease, CompletionFence::new(SECOND_DEVICE, 1))
+                .expect_err("cross-generation fence")
+                .kind(),
+            ResourceLifecycleErrorKind::DeviceGenerationMismatch
+        );
+        assert_eq!(cache.resource_count(), 0);
+        assert_eq!(cache.pending_submission_count(), 0);
+
+        // The cache still works end to end with a matching fence.
+        let lease = cache.acquire(&packet(FIRST_DEVICE)).expect("lease");
+        let fence = CompletionFence::new(FIRST_DEVICE, 1);
+        assert_eq!(fence.device_generation(), FIRST_DEVICE);
+        assert_eq!(fence.sequence(), 1);
+        cache.submit(lease, fence).expect("matching submission");
+        assert_eq!(cache.complete(fence).expect("completion"), 1);
+        assert_eq!(cache.resource_count(), 0);
+    }
+
+    #[test]
+    fn stale_lease_drop_after_invalidate_preserves_replacement_work() {
+        let cache = ResourceCache::new(FIRST_DEVICE);
+        let stale = cache.acquire(&packet(FIRST_DEVICE)).expect("stale lease");
+        cache.invalidate_device_generation(SECOND_DEVICE);
+        let replacement = cache.acquire(&packet(SECOND_DEVICE)).expect("replacement");
+        assert_eq!(replacement.device_generation(), SECOND_DEVICE);
+        assert_eq!(replacement.resource_count(), 2);
+        assert_eq!(cache.resource_count(), 2);
+        // Dropping the pre-loss lease must not retire the replacement
+        // generation's entries: the stale drop is a no-op on new state.
+        drop(stale);
+        assert_eq!(cache.resource_count(), 2);
+        cache
+            .submit(replacement, CompletionFence::new(SECOND_DEVICE, 1))
+            .expect("replacement submission");
+        assert_eq!(
+            cache
+                .complete(CompletionFence::new(SECOND_DEVICE, 1))
+                .expect("replacement completion"),
+            1
+        );
+        assert_eq!(cache.resource_count(), 0);
+    }
+
+    #[test]
+    fn device_replacement_aliases_agree_and_empty_invalidate_is_harmless() {
+        let first = ResourceCache::new(FIRST_DEVICE);
+        let second = ResourceCache::new(FIRST_DEVICE);
+        let held_first = first.acquire(&packet(FIRST_DEVICE)).expect("lease");
+        let held_second = second.acquire(&packet(FIRST_DEVICE)).expect("lease");
+        // Both spellings invalidate the same two entries and switch the
+        // generation.
+        assert_eq!(first.invalidate_device_generation(SECOND_DEVICE), 2);
+        assert_eq!(second.replace_device_generation(SECOND_DEVICE), 2);
+        assert_eq!(first.device_generation(), SECOND_DEVICE);
+        assert_eq!(second.device_generation(), SECOND_DEVICE);
+        drop((held_first, held_second));
+        assert_eq!(first.resource_count(), 0);
+        assert_eq!(second.resource_count(), 0);
+
+        // Invalidating an empty cache reports zero and stays usable.
+        assert_eq!(first.invalidate_device_generation(SECOND_DEVICE), 0);
+        let lease = first.acquire(&packet(SECOND_DEVICE)).expect("lease");
+        first
+            .submit(lease, CompletionFence::new(SECOND_DEVICE, 1))
+            .expect("submission");
+        assert_eq!(
+            first
+                .complete(CompletionFence::new(SECOND_DEVICE, 1))
+                .expect("completion"),
+            1
+        );
+        assert_eq!(first.resource_count(), 0);
+    }
+
+    #[test]
+    fn lifecycle_error_messages_are_stable_and_sanitized() {
+        let cache = ResourceCache::new(FIRST_DEVICE);
+        let foreign = packet(SECOND_DEVICE);
+        let mismatch = match cache.acquire(&foreign) {
+            Ok(_) => panic!("foreign acquire must not take ownership"),
+            Err(error) => error,
+        }
+        .kind();
+        assert_eq!(
+            mismatch,
+            ResourceLifecycleErrorKind::DeviceGenerationMismatch
+        );
+
+        let stale_scene = packet_for_scene(FIRST_DEVICE, SceneRevision::new(9));
+        let invalid =
+            match cache.acquire_for_owner(&stale_scene, SceneRevision::new(8), WORK_GENERATION) {
+                Ok(_) => panic!("stale owner acquire must not take ownership"),
+                Err(error) => error,
+            };
+        assert_eq!(invalid.kind(), ResourceLifecycleErrorKind::InvalidPacket);
+
+        let other = ResourceCache::new(FIRST_DEVICE);
+        let foreign_lease = cache.acquire(&packet(FIRST_DEVICE)).expect("lease");
+        let invalid_lease = other
+            .submit(foreign_lease, CompletionFence::new(FIRST_DEVICE, 1))
+            .expect_err("cross-cache submit");
+        assert_eq!(
+            invalid_lease.kind(),
+            ResourceLifecycleErrorKind::InvalidLease
+        );
+
+        // Every observed failure carries a stable, non-empty sanitized
+        // message; repeated observations report the identical text.
+        for error in [invalid, invalid_lease] {
+            assert!(!error.message().is_empty());
+            assert_eq!(error.to_string(), error.message());
+        }
+        let repeat =
+            match cache.acquire_for_owner(&stale_scene, SceneRevision::new(8), WORK_GENERATION) {
+                Ok(_) => panic!("repeated stale owner acquire must not take ownership"),
+                Err(error) => error,
+            };
+        assert_eq!(repeat.message(), invalid.message());
+
+        // A bad fence on an otherwise valid submission is equally explicit
+        // and takes no ownership.
+        let fence_cache = ResourceCache::new(FIRST_DEVICE);
+        fence_cache
+            .submit(
+                fence_cache.acquire(&packet(FIRST_DEVICE)).expect("lease"),
+                CompletionFence::new(FIRST_DEVICE, 5),
+            )
+            .expect("submit 5");
+        let bad_fence = fence_cache
+            .submit(
+                fence_cache.acquire(&packet(FIRST_DEVICE)).expect("lease"),
+                CompletionFence::new(FIRST_DEVICE, 5),
+            )
+            .expect_err("duplicate fence");
+        assert_eq!(bad_fence.kind(), ResourceLifecycleErrorKind::InvalidFence);
+        assert!(!bad_fence.message().is_empty());
+        assert_eq!(bad_fence.to_string(), bad_fence.message());
+    }
 }

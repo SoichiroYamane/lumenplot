@@ -1465,6 +1465,235 @@ mod tests {
         );
     }
 
+    #[test]
+    fn empty_scene_frames_publish_empty_but_complete_packets() {
+        let handle = crate::frame::SceneHandle::new(
+            Viewport::from_bounds(0.0, 1.0, 0.0, 1.0).expect("view"),
+        )
+        .expect("handle");
+        let frame = handle.resolve_frame(&fixture_spec()).expect("empty frame");
+        assert!(
+            frame.series.is_empty(),
+            "empty scene must resolve to zero series"
+        );
+        let packet = RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(frame, WORK, DEVICE_GENERATION)
+            .expect("packet");
+        // Non-vacuous: zero draws is the complete projection here, while the
+        // clip/style resources are still published and validated.
+        assert_eq!(packet.draw_count(), 0);
+        assert_eq!(packet.resource_count(), 2);
+        assert_eq!(packet.resource_ids().count(), 2);
+        packet
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("empty packet validates");
+    }
+
+    #[test]
+    fn frame_revision_drift_is_incomplete_not_silent() {
+        let mut handle = crate::frame::SceneHandle::new(
+            Viewport::from_bounds(0.0, 1.0, 0.0, 1.0).expect("view"),
+        )
+        .expect("handle");
+        handle
+            .add_series(vec![0.0, 0.5, 1.0], vec![0.0, 0.5, 1.0])
+            .expect("first series");
+        let frame_a = handle.resolve_frame(&fixture_spec()).expect("frame a");
+        handle
+            .add_series(vec![0.0, 0.5, 1.0], vec![0.25, 0.5, 0.75])
+            .expect("second series");
+        let frame_b = handle.resolve_frame(&fixture_spec()).expect("frame b");
+        assert_ne!(
+            frame_a.revision, frame_b.revision,
+            "scene mutation must advance the frame revision"
+        );
+
+        let mut packet = RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(frame_a, WORK, DEVICE_GENERATION)
+            .expect("packet");
+        packet
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("undrifted packet");
+        packet.semantic.frame_mut().revision = frame_b.revision;
+        let error = packet
+            .validate(WORK, DEVICE_GENERATION)
+            .expect_err("revision drift must fail");
+        assert_eq!(error.kind(), PacketValidationErrorKind::IncompletePacket);
+    }
+
+    #[test]
+    fn published_style_snapshot_rejects_source_drift() {
+        let mut packet = packet(4);
+        packet
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("undrifted packet");
+        // The packet retains an immutable projection: mutating the source
+        // frame after publication must fail revalidation, never silently
+        // follow the drift.
+        packet.semantic.frame_mut().line_width_px = 3.0;
+        let error = packet
+            .validate(WORK, DEVICE_GENERATION)
+            .expect_err("style drift must fail");
+        assert_eq!(
+            error.kind(),
+            PacketValidationErrorKind::InvalidResourceReference
+        );
+    }
+
+    #[test]
+    fn partial_segment_ranges_validate_while_degenerate_ranges_fail() {
+        let point_len = packet(4).frame().series[0].segments[0].points.len();
+        assert_eq!(point_len, 4);
+        // A strict sub-range of a segment is a meaningful partial draw and
+        // must validate.
+        let mut partial = packet(4);
+        partial.draws[0].range = 1..3;
+        partial
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("partial range");
+        // Degenerate ranges carry no drawable points.
+        for range in [3..3, 4..4] {
+            let mut degenerate = packet(4);
+            degenerate.draws[0].range = range;
+            assert_eq!(
+                degenerate
+                    .validate(WORK, DEVICE_GENERATION)
+                    .expect_err("degenerate range")
+                    .kind(),
+                PacketValidationErrorKind::InvalidDrawRange
+            );
+        }
+    }
+
+    #[test]
+    fn dangling_style_references_and_same_table_duplicates_are_rejected() {
+        // PR164 pins the dangling-clip case; a dangling style reference must
+        // fail the same way.
+        let mut dangling_style = packet(4);
+        dangling_style.draws[0].style = LogicalResourceId::from_parts(9, RESOURCE_GENERATION);
+        assert_eq!(
+            dangling_style
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("dangling style")
+                .kind(),
+            PacketValidationErrorKind::InvalidResourceReference
+        );
+
+        // Same-table duplicates are rejected however the collision arises,
+        // not only across the clip/style boundary.
+        let mut duplicate_clip = packet(4);
+        duplicate_clip.resources.clips.push(ClipResource {
+            id: duplicate_clip.resources.clips[0].id,
+            bounds: duplicate_clip.frame().layout.plot_rect,
+        });
+        assert_eq!(
+            duplicate_clip
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("duplicate clip id")
+                .kind(),
+            PacketValidationErrorKind::InvalidResourceId
+        );
+        let mut duplicate_style = packet(4);
+        let style_id = duplicate_style.resources.styles[0].id;
+        duplicate_style.resources.styles.push(StyleResource {
+            id: style_id,
+            color: duplicate_style.frame().line_color,
+            width: duplicate_style.frame().line_width_px,
+        });
+        assert_eq!(
+            duplicate_style
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("duplicate style id")
+                .kind(),
+            PacketValidationErrorKind::InvalidResourceId
+        );
+    }
+
+    #[test]
+    fn error_kind_mappings_and_messages_are_total_and_sanitized() {
+        use crate::frame::{FrameSeamError, FrameSeamErrorKind};
+
+        // Every internal packet kind maps to exactly one seam kind, and every
+        // failure carries a non-empty sanitized message.
+        let cases = [
+            (
+                PacketValidationErrorKind::FrameInvalid,
+                FrameSeamErrorKind::InvalidInput,
+            ),
+            (
+                PacketValidationErrorKind::CapacityExceeded,
+                FrameSeamErrorKind::CapacityExceeded,
+            ),
+            (
+                PacketValidationErrorKind::InvalidResourceId,
+                FrameSeamErrorKind::EngineRejected,
+            ),
+            (
+                PacketValidationErrorKind::InvalidResourceReference,
+                FrameSeamErrorKind::EngineRejected,
+            ),
+            (
+                PacketValidationErrorKind::InvalidDrawRange,
+                FrameSeamErrorKind::EngineRejected,
+            ),
+            (
+                PacketValidationErrorKind::InvalidDrawOrder,
+                FrameSeamErrorKind::EngineRejected,
+            ),
+            (
+                PacketValidationErrorKind::IncompletePacket,
+                FrameSeamErrorKind::EngineRejected,
+            ),
+            (
+                PacketValidationErrorKind::AllocationFailed,
+                FrameSeamErrorKind::EngineRejected,
+            ),
+            (
+                PacketValidationErrorKind::StaleSceneRevision,
+                FrameSeamErrorKind::EngineRejected,
+            ),
+            (
+                PacketValidationErrorKind::StaleWorkGeneration,
+                FrameSeamErrorKind::EngineRejected,
+            ),
+            (
+                PacketValidationErrorKind::StaleDeviceGeneration,
+                FrameSeamErrorKind::EngineRejected,
+            ),
+        ];
+        assert_eq!(cases.len(), 11, "one row per packet error kind");
+        for (kind, expected) in cases {
+            let error = PacketValidationError::new(kind, "probe message");
+            assert_eq!(error.kind(), kind);
+            assert_eq!(error.into_frame_error().kind(), expected);
+            assert_eq!(error.to_string(), "probe message");
+        }
+
+        // The reverse direction is total over the three seam kinds.
+        let reverse = [
+            (
+                FrameSeamErrorKind::CapacityExceeded,
+                PacketValidationErrorKind::CapacityExceeded,
+            ),
+            (
+                FrameSeamErrorKind::InvalidInput,
+                PacketValidationErrorKind::FrameInvalid,
+            ),
+            (
+                FrameSeamErrorKind::EngineRejected,
+                PacketValidationErrorKind::FrameInvalid,
+            ),
+        ];
+        for (kind, expected) in reverse {
+            let seam = FrameSeamError::from_packet_error(kind, "seam probe");
+            assert_eq!(seam.kind(), kind);
+            assert_eq!(
+                PacketValidationError::from_frame_error(seam).kind(),
+                expected
+            );
+        }
+    }
+
     fn screen_layout_consumer(packet: &RenderPacket) -> &PlotLayout {
         packet.semantic_frame().plot_layout()
     }
