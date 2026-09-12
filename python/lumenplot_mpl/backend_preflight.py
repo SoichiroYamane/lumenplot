@@ -2928,13 +2928,14 @@ class _EligibilityPreflight:
                 else "tick_label"
             )
             try:
-                outline = textpath.glyph_outline_commands(
+                outline = textpath._writer_glyph_outline_commands(
                     str(label.get_text()),
                     (0.0, 0.0),
                     1.0,
                     0.0,
                     font_size_pt=float(label.get_fontsize()),
                     prop=label.get_fontproperties(),
+                    dpi=self._effective_dpi,
                 )[0]
             except ValueError as error:
                 raise LumenPlotUnsupportedError(
