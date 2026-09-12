@@ -699,4 +699,202 @@ mod tests {
         assert_eq!(cache.complete(fence).expect("repeated observation"), 0);
         assert_eq!(cache.resource_count(), 0);
     }
+
+    #[test]
+    fn wrong_device_acquisitions_take_no_ownership() {
+        let cache = ResourceCache::new(FIRST_DEVICE);
+        let foreign = packet(SECOND_DEVICE);
+        let error = match cache.acquire(&foreign) {
+            Ok(_) => panic!("foreign acquire must not take ownership"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.kind(),
+            ResourceLifecycleErrorKind::DeviceGenerationMismatch
+        );
+        let error =
+            match cache.acquire_for_owner(&foreign, SceneRevision::initial(), WORK_GENERATION) {
+                Ok(_) => panic!("foreign owner acquire must not take ownership"),
+                Err(error) => error,
+            };
+        assert_eq!(
+            error.kind(),
+            ResourceLifecycleErrorKind::DeviceGenerationMismatch
+        );
+        assert_eq!(cache.resource_count(), 0);
+        assert_eq!(cache.pending_submission_count(), 0);
+        let lease = cache.acquire(&packet(FIRST_DEVICE)).expect("local acquire");
+        assert_eq!(lease.resource_count(), 2);
+        drop(lease);
+        assert_eq!(cache.resource_count(), 0);
+    }
+
+    #[test]
+    fn multiple_pending_submissions_retire_selectively() {
+        let cache = ResourceCache::new(FIRST_DEVICE);
+        let first = cache.acquire(&packet(FIRST_DEVICE)).expect("first");
+        let second = cache.acquire(&packet(FIRST_DEVICE)).expect("second");
+        cache
+            .submit(first, CompletionFence::new(FIRST_DEVICE, 1))
+            .expect("submit 1");
+        cache
+            .submit(second, CompletionFence::new(FIRST_DEVICE, 2))
+            .expect("submit 2");
+        assert_eq!(cache.pending_submission_count(), 2);
+        // An early observation below both fences retires nothing.
+        assert_eq!(
+            cache
+                .complete(CompletionFence::new(FIRST_DEVICE, 0))
+                .expect("early"),
+            0
+        );
+        assert_eq!(cache.pending_submission_count(), 2);
+        assert_eq!(cache.resource_count(), 2);
+        // Completing the first fence retires exactly one submission; the
+        // shared keys stay alive for the second owner.
+        assert_eq!(
+            cache
+                .complete(CompletionFence::new(FIRST_DEVICE, 1))
+                .expect("first completion"),
+            1
+        );
+        assert_eq!(cache.pending_submission_count(), 1);
+        assert_eq!(cache.resource_count(), 2);
+        assert_eq!(
+            cache
+                .complete(CompletionFence::new(FIRST_DEVICE, 2))
+                .expect("second completion"),
+            1
+        );
+        assert_eq!(cache.pending_submission_count(), 0);
+        assert_eq!(cache.resource_count(), 0);
+    }
+
+    #[test]
+    fn unsubmitted_drop_does_not_retire_submitted_work() {
+        let cache = ResourceCache::new(FIRST_DEVICE);
+        let submitted = cache.acquire(&packet(FIRST_DEVICE)).expect("submitted");
+        let unsubmitted = cache.acquire(&packet(FIRST_DEVICE)).expect("unsubmitted");
+        cache
+            .submit(submitted, CompletionFence::new(FIRST_DEVICE, 7))
+            .expect("submit");
+        assert_eq!(cache.resource_count(), 2);
+        drop(unsubmitted);
+        // The pending submission still owns every key after the sibling
+        // lease is dropped: lease drop is not fence retirement.
+        assert_eq!(cache.resource_count(), 2);
+        assert_eq!(cache.pending_submission_count(), 1);
+        assert_eq!(
+            cache
+                .complete(CompletionFence::new(FIRST_DEVICE, 7))
+                .expect("complete"),
+            1
+        );
+        assert_eq!(cache.resource_count(), 0);
+        assert_eq!(cache.pending_submission_count(), 0);
+    }
+
+    #[test]
+    fn fence_ordering_is_strictly_increasing() {
+        let cache = ResourceCache::new(FIRST_DEVICE);
+        cache
+            .submit(
+                cache.acquire(&packet(FIRST_DEVICE)).expect("lease"),
+                CompletionFence::new(FIRST_DEVICE, 5),
+            )
+            .expect("submit 5");
+        // Duplicate and regressive fences are rejected without mutation.
+        for sequence in [5u64, 4] {
+            let lease = cache.acquire(&packet(FIRST_DEVICE)).expect("lease");
+            let pending_before = cache.pending_submission_count();
+            let resources_before = cache.resource_count();
+            assert_eq!(
+                cache
+                    .submit(lease, CompletionFence::new(FIRST_DEVICE, sequence))
+                    .expect_err("bad fence")
+                    .kind(),
+                ResourceLifecycleErrorKind::InvalidFence
+            );
+            assert_eq!(cache.pending_submission_count(), pending_before);
+            assert_eq!(cache.resource_count(), resources_before);
+        }
+        // Completing beyond submitted work is rejected; the exact fence retires.
+        assert_eq!(
+            cache
+                .complete(CompletionFence::new(FIRST_DEVICE, 6))
+                .expect_err("beyond")
+                .kind(),
+            ResourceLifecycleErrorKind::InvalidFence
+        );
+        assert_eq!(
+            cache
+                .complete(CompletionFence::new(FIRST_DEVICE, 5))
+                .expect("complete 5"),
+            1
+        );
+        // A fence at or below the last completion cannot be resubmitted.
+        let lease = cache.acquire(&packet(FIRST_DEVICE)).expect("lease");
+        assert_eq!(
+            cache
+                .submit(lease, CompletionFence::new(FIRST_DEVICE, 5))
+                .expect_err("resubmit")
+                .kind(),
+            ResourceLifecycleErrorKind::InvalidFence
+        );
+        let lease = cache.acquire(&packet(FIRST_DEVICE)).expect("lease");
+        cache
+            .submit(lease, CompletionFence::new(FIRST_DEVICE, 6))
+            .expect("submit 6");
+        assert_eq!(
+            cache
+                .complete(CompletionFence::new(FIRST_DEVICE, 6))
+                .expect("complete 6"),
+            1
+        );
+        assert_eq!(cache.resource_count(), 0);
+    }
+
+    #[test]
+    fn cross_cache_and_stale_device_submits_retire_nothing_on_target() {
+        let first = ResourceCache::new(FIRST_DEVICE);
+        let second = ResourceCache::new(FIRST_DEVICE);
+        let foreign = first.acquire(&packet(FIRST_DEVICE)).expect("foreign lease");
+        assert_eq!(
+            second
+                .submit(foreign, CompletionFence::new(FIRST_DEVICE, 1))
+                .expect_err("foreign lease")
+                .kind(),
+            ResourceLifecycleErrorKind::InvalidLease
+        );
+        assert_eq!(second.resource_count(), 0);
+        assert_eq!(second.pending_submission_count(), 0);
+        // The rejected lease is released rather than leaked.
+        assert_eq!(first.resource_count(), 0);
+
+        // A lease from before device loss cannot be submitted afterwards.
+        let cache = ResourceCache::new(FIRST_DEVICE);
+        let stale = cache.acquire(&packet(FIRST_DEVICE)).expect("stale lease");
+        cache.invalidate_device_generation(SECOND_DEVICE);
+        assert_eq!(
+            cache
+                .submit(stale, CompletionFence::new(FIRST_DEVICE, 2))
+                .expect_err("stale submit")
+                .kind(),
+            ResourceLifecycleErrorKind::DeviceGenerationMismatch
+        );
+        assert_eq!(cache.resource_count(), 0);
+        assert_eq!(cache.pending_submission_count(), 0);
+        // The replacement generation still works end to end.
+        let lease = cache.acquire(&packet(SECOND_DEVICE)).expect("replacement");
+        cache
+            .submit(lease, CompletionFence::new(SECOND_DEVICE, 1))
+            .expect("replacement submit");
+        assert_eq!(
+            cache
+                .complete(CompletionFence::new(SECOND_DEVICE, 1))
+                .expect("replacement complete"),
+            1
+        );
+        assert_eq!(cache.resource_count(), 0);
+    }
 }

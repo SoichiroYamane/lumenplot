@@ -1140,6 +1140,331 @@ mod tests {
         assert_eq!(renderer.published().len(), 1);
     }
 
+    #[test]
+    fn finite_multi_series_frames_publish_complete_draw_lists() {
+        let mut handle = crate::frame::SceneHandle::new(
+            Viewport::from_bounds(0.0, 1.0, 0.0, 1.0).expect("view"),
+        )
+        .expect("handle");
+        for (offset, point_count) in [(0.0, 2usize), (0.2, 5), (0.1, 9)] {
+            let mut xs = Vec::with_capacity(point_count);
+            let mut ys = Vec::with_capacity(point_count);
+            for index in 0..point_count {
+                let fraction = index as f64 / (point_count - 1) as f64;
+                xs.push(fraction);
+                ys.push(offset + 0.5 * fraction);
+            }
+            handle.add_series(xs, ys).expect("series");
+        }
+        let frame = handle.resolve_frame(&fixture_spec()).expect("frame");
+        assert_eq!(frame.series.len(), 3);
+        let expected_draws: usize = frame
+            .series
+            .iter()
+            .map(|series| series.segments.len())
+            .sum();
+        assert_eq!(expected_draws, 3);
+        let packet = RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(frame, WORK, DEVICE_GENERATION)
+            .expect("packet");
+        assert_eq!(packet.draw_count(), expected_draws);
+        assert_eq!(packet.resource_count(), 2);
+        packet
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("valid packet");
+        for draw in &packet.draws {
+            let segment = &packet.frame().series[draw.series_index].segments[draw.segment_index];
+            assert_eq!(draw.range, 0..segment.points.len());
+        }
+    }
+
+    #[test]
+    fn packet_resource_capacity_and_line_width_boundaries_are_explicit() {
+        let base = packet(4);
+        assert_eq!(base.resource_count(), 2);
+        assert!(base.resource_count() <= MAX_PACKET_RESOURCES);
+
+        // Draw-count capacity is enforced before any allocation.
+        let frame = fixture_frame(4);
+        let error = build_draws(&frame, MAX_PACKET_DRAWS + 1).expect_err("draw overflow must fail");
+        assert_eq!(error.kind(), PacketValidationErrorKind::CapacityExceeded);
+
+        // Resource-count capacity: three extra valid resources push the
+        // table from 2 to 5, past the bound of 4.
+        let mut crowded = packet(4);
+        let bounds = crowded.frame().layout.plot_rect;
+        for slot in [3u32, 4, 5] {
+            crowded.resources.clips.push(ClipResource {
+                id: LogicalResourceId::from_parts(slot, RESOURCE_GENERATION),
+                bounds,
+            });
+        }
+        assert_eq!(crowded.resource_count(), 5);
+        let error = crowded
+            .validate(WORK, DEVICE_GENERATION)
+            .expect_err("resource overflow must fail");
+        assert_eq!(error.kind(), PacketValidationErrorKind::CapacityExceeded);
+
+        // Style width is inclusive at the bound and rejected just above it.
+        // The packet cross-checks the style against its frame, so the bound
+        // case moves both together.
+        let mut at_bound = packet(4);
+        at_bound.semantic.frame_mut().line_width_px = MAX_PACKET_LINE_WIDTH;
+        at_bound.resources.styles[0].width = MAX_PACKET_LINE_WIDTH;
+        at_bound
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("inclusive bound");
+        for width in [MAX_PACKET_LINE_WIDTH + 1.0, 0.0, -1.0, f64::NAN] {
+            let mut invalid = packet(4);
+            invalid.resources.styles[0].width = width;
+            let error = invalid
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("bad style width must fail");
+            assert_eq!(
+                error.kind(),
+                PacketValidationErrorKind::InvalidResourceReference
+            );
+        }
+
+        // The same overflow at the frame seam is a frame rejection before
+        // packet construction.
+        let mut wide_frame = fixture_frame(4);
+        wide_frame.line_width_px = MAX_PACKET_LINE_WIDTH + 1.0;
+        let error = RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(wide_frame, WORK, DEVICE_GENERATION)
+            .err()
+            .expect("wide frame must fail");
+        assert_eq!(error.kind(), PacketValidationErrorKind::FrameInvalid);
+    }
+
+    #[test]
+    fn malformed_logical_ids_ranges_and_order_are_rejected() {
+        // Slot-zero, generation-zero, and duplicated identifiers.
+        for id in [
+            LogicalResourceId::from_parts(0, RESOURCE_GENERATION),
+            LogicalResourceId::from_parts(CLIP_RESOURCE_SLOT, 0),
+            LogicalResourceId::from_parts(0, 0),
+        ] {
+            let mut malformed = packet(4);
+            malformed.resources.clips[0].id = id;
+            let error = malformed
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("bad clip id must fail");
+            assert_eq!(error.kind(), PacketValidationErrorKind::InvalidResourceId);
+        }
+        let mut bad_style = packet(4);
+        bad_style.resources.styles[0].id = LogicalResourceId::from_parts(STYLE_RESOURCE_SLOT, 0);
+        assert_eq!(
+            bad_style
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("bad style id")
+                .kind(),
+            PacketValidationErrorKind::InvalidResourceId
+        );
+        let mut duplicate = packet(4);
+        duplicate.resources.styles[0].id = duplicate.resources.clips[0].id;
+        assert_eq!(
+            duplicate
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("duplicate id")
+                .kind(),
+            PacketValidationErrorKind::InvalidResourceId
+        );
+
+        // Draw references to unknown generations never resolve.
+        for clip in [
+            LogicalResourceId::from_parts(9, RESOURCE_GENERATION),
+            LogicalResourceId::from_parts(CLIP_RESOURCE_SLOT, 0),
+        ] {
+            let mut dangling = packet(4);
+            dangling.draws[0].clip = clip;
+            assert_eq!(
+                dangling
+                    .validate(WORK, DEVICE_GENERATION)
+                    .expect_err("dangling clip")
+                    .kind(),
+                PacketValidationErrorKind::InvalidResourceReference
+            );
+        }
+
+        // Ranges: empty, inverted, zero-length, and over-long are invalid.
+        // The inverted range is built from variables so the rejection under
+        // test is constructed at runtime rather than as a literal.
+        let point_len = packet(4).frame().series[0].segments[0].points.len();
+        assert_eq!(point_len, 4);
+        let inverted = {
+            let start = 3usize;
+            let end = 1usize;
+            start..end
+        };
+        for range in [2..2, inverted, 0..0, 0..point_len + 1] {
+            let mut bad_range = packet(4);
+            bad_range.draws[0].range = range;
+            assert_eq!(
+                bad_range
+                    .validate(WORK, DEVICE_GENERATION)
+                    .expect_err("bad range")
+                    .kind(),
+                PacketValidationErrorKind::InvalidDrawRange
+            );
+        }
+        let mut valid_range = packet(4);
+        valid_range.draws[0].range = 0..point_len;
+        valid_range
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("full range");
+
+        // Order: out-of-bounds indices and a duplicated first draw.
+        let mut bad_series = packet(4);
+        bad_series.draws[0].series_index = 99;
+        assert_eq!(
+            bad_series
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("bad series")
+                .kind(),
+            PacketValidationErrorKind::InvalidDrawOrder
+        );
+        let mut bad_segment = packet(4);
+        bad_segment.draws[0].segment_index = 99;
+        assert_eq!(
+            bad_segment
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("bad segment")
+                .kind(),
+            PacketValidationErrorKind::InvalidDrawOrder
+        );
+        let mut two_frame = fixture_frame(4);
+        let duplicate_points = two_frame.series[0].segments[0].points.clone();
+        two_frame.series[0].segments.push(PacketSegment {
+            points: duplicate_points,
+        });
+        let mut duplicated = RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(two_frame, WORK, DEVICE_GENERATION)
+            .expect("two-segment packet");
+        duplicated.draws[1] = duplicated.draws[0].clone();
+        assert_eq!(
+            duplicated
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("duplicate draw")
+                .kind(),
+            PacketValidationErrorKind::InvalidDrawOrder
+        );
+    }
+
+    #[test]
+    fn truncated_or_extended_draw_lists_are_incomplete() {
+        let mut truncated = packet(4);
+        truncated.draws.pop();
+        assert_eq!(
+            truncated
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("truncated")
+                .kind(),
+            PacketValidationErrorKind::IncompletePacket
+        );
+        let mut extended = packet(4);
+        let first = extended.draws[0].clone();
+        extended.draws.push(first);
+        assert_eq!(
+            extended
+                .validate(WORK, DEVICE_GENERATION)
+                .expect_err("extended")
+                .kind(),
+            PacketValidationErrorKind::IncompletePacket
+        );
+    }
+
+    #[test]
+    fn failed_builds_publish_nothing_and_later_success_recovers() {
+        let mut renderer = RecordingRenderer::new(WORK, DEVICE_GENERATION);
+        renderer
+            .submit(fixture_frame(4), WORK, DEVICE_GENERATION)
+            .expect("first");
+        assert_eq!(renderer.published().len(), 1);
+
+        // Stale work, stale device, invalid geometry, and canvas mismatch
+        // each fail with their own kind and publish nothing.
+        assert_eq!(
+            renderer
+                .submit(fixture_frame(4), WorkGeneration::new(6), DEVICE_GENERATION)
+                .expect_err("stale work")
+                .kind(),
+            PacketValidationErrorKind::StaleWorkGeneration
+        );
+        assert_eq!(
+            renderer
+                .submit(fixture_frame(4), WORK, DeviceGeneration::new(10))
+                .expect_err("stale device")
+                .kind(),
+            PacketValidationErrorKind::StaleDeviceGeneration
+        );
+        let mut bad_point = fixture_frame(4);
+        bad_point.series[0].segments[0].points[0] = PacketPoint::new(-1.0, 0.0);
+        assert_eq!(
+            renderer
+                .submit(bad_point, WORK, DEVICE_GENERATION)
+                .expect_err("bad point")
+                .kind(),
+            PacketValidationErrorKind::FrameInvalid
+        );
+        let mut bad_canvas = fixture_frame(4);
+        bad_canvas.canvas_px = [801, 600];
+        assert_eq!(
+            renderer
+                .submit(bad_canvas, WORK, DEVICE_GENERATION)
+                .expect_err("bad canvas")
+                .kind(),
+            PacketValidationErrorKind::FrameInvalid
+        );
+        assert_eq!(renderer.published().len(), 1);
+
+        // A later valid submission still publishes and validates.
+        renderer
+            .submit(fixture_frame(4), WORK, DEVICE_GENERATION)
+            .expect("recovery");
+        assert_eq!(renderer.published().len(), 2);
+        renderer.published()[1]
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("recovered packet");
+
+        // Owner-scene staleness is likewise a whole-packet rejection.
+        let scene = SceneRevision::new(41);
+        let owner_builder = RenderPacketBuilder::for_scene(scene, WORK, DEVICE_GENERATION);
+        let owner_packet = owner_builder
+            .build(fixture_frame(4), WORK, DEVICE_GENERATION)
+            .expect("owner packet");
+        assert_eq!(
+            owner_packet
+                .validate_for_owner(SceneRevision::new(42), WORK, DEVICE_GENERATION)
+                .expect_err("stale scene")
+                .kind(),
+            PacketValidationErrorKind::StaleSceneRevision
+        );
+    }
+
+    #[test]
+    fn generic_validate_ignores_scene_while_owner_validate_enforces_it() {
+        let scene = SceneRevision::new(41);
+        let packet = RenderPacketBuilder::for_scene(scene, WORK, DEVICE_GENERATION)
+            .build(fixture_frame(4), WORK, DEVICE_GENERATION)
+            .expect("packet");
+        // Distinct owner tokens stay distinct values.
+        assert_ne!(scene, SceneRevision::initial());
+        packet
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("scene-agnostic revalidation");
+        packet
+            .validate_for_owner(scene, WORK, DEVICE_GENERATION)
+            .expect("current owner");
+        assert_eq!(
+            packet
+                .validate_for_owner(SceneRevision::new(42), WORK, DEVICE_GENERATION)
+                .expect_err("moved scene")
+                .kind(),
+            PacketValidationErrorKind::StaleSceneRevision
+        );
+    }
+
     fn screen_layout_consumer(packet: &RenderPacket) -> &PlotLayout {
         packet.semantic_frame().plot_layout()
     }
