@@ -31,7 +31,8 @@ use std::io::Write;
 
 use png::{BitDepth, ColorType, Compression, Encoder, Filter, SrgbRenderingIntent};
 use tiny_skia::{
-    FillRule, IntSize, LineCap, LineJoin, Mask, Path, PathBuilder, Stroke, StrokeDash, Transform,
+    FillRule, IntSize, LineCap, LineJoin, Mask, Path, PathBuilder, PathSegment, Stroke, StrokeDash,
+    Transform,
 };
 
 /// Upper bounds mirrored from `lumenplot-export/src/raster.rs` so both native
@@ -797,8 +798,8 @@ fn clamp_to_u32(value: f64) -> u32 {
     }
 }
 
-fn apply_clip_to_mask(mask: &mut Mask, clip: &DeviceClip, width: u32, height: u32) {
-    let data = mask.data_mut();
+fn apply_clip_to_coverage(coverage: &mut [u8], clip: &DeviceClip, width: u32, height: u32) {
+    let data = coverage;
     for y in 0..height {
         let row_visible = y >= clip.top && y < clip.bottom;
         let row_start = usize::try_from(y)
@@ -1042,6 +1043,41 @@ fn agg_rectilinear_snap_value(stroke_width: f64) -> f64 {
     }
 }
 
+/// Supersample factor of the high-precision antialiased fill route: each
+/// device pixel is covered by a 16x16 block of binary subpixels, yielding
+/// 256 distinct coverage levels that match FreeType/AGG grayscale
+/// precision. The pinned tiny-skia 0.12 AA fill supersamples only 4x4 (17
+/// levels), which left single-pixel edge-shade diffs against the Agg oracle
+/// on identical outlines (legend glyph quarantine: 372 oversized,
+/// max_delta 28).
+const FILL_SUPERSAMPLE: u32 = 16;
+
+/// Transient-memory ceiling (bytes) for one supersampled fill mask; frames
+/// the ceiling cannot bound fall back to the legacy tiny-skia AA fill. The
+/// 64 MiB budget admits every pinned oracle frame (200x100 needs 5 MiB at
+/// 16x) with wide headroom.
+const FILL_SUPERSAMPLE_MAX_MASK_BYTES: u64 = 67_108_864;
+
+/// Largest supersampled mask dimension (pixels) admitted to the
+/// high-precision route. This matches the pinned tiny-skia AA fill's own
+/// 32767-pixel clip discipline, so the reused edge fixed-point math cannot
+/// overflow on frames the ceiling alone would admit (e.g. very wide and
+/// short frames).
+const FILL_SUPERSAMPLE_MAX_DIMENSION: u64 = 32_767;
+
+/// Maximum deviation (device pixels) when flattening quadratic/cubic
+/// segments to polylines before coverage rasterization. The pinned
+/// tiny-skia walker integrates curves with per-row fixed-point updates
+/// whose apex error reads as multi-unit edge-shade diffs against Agg's
+/// subdivided curves; pre-flattening in f64 keeps line-only edges (which
+/// already match Agg to d1) exact while bounding curve error to a fraction
+/// of one coverage unit.
+const FILL_FLATTEN_TOLERANCE_PX: f64 = 0.125;
+
+/// Recursion cap for adaptive flattening; hitting it emits the chord, so
+/// degenerate curves terminate with bounded error instead of recursing.
+const FILL_FLATTEN_MAX_DEPTH: u32 = 16;
+
 fn coverage_mask(width: u32, height: u32, pixel_count: usize) -> Result<Mask, FrameError> {
     let size = IntSize::from_wh(width, height).ok_or(FrameError::Internal("mask size rejected"))?;
     let mut data = Vec::new();
@@ -1052,13 +1088,236 @@ fn coverage_mask(width: u32, height: u32, pixel_count: usize) -> Result<Mask, Fr
     Mask::from_vec(data, size).ok_or(FrameError::OutOfMemory)
 }
 
-fn composite_coverage(canvas: &mut Canvas, mask: &Mask, color: [u8; 4], fixed_agg: bool) {
+/// Coverage bytes (one u8 per device pixel) for one fill command.
+///
+/// Antialiased fills take the high-precision route: the device-space path is
+/// rasterized without antialiasing into a 16x supersampled binary mask by
+/// the same pinned tiny-skia edge walker, then box-downsampled to 256-level
+/// coverage. Non-antialiased fills, and frames the supersampled mask cannot
+/// bound, keep the exact legacy tiny-skia route byte-for-byte.
+fn fill_coverage(
+    geometry: &Path,
+    fill_rule: FillRule,
+    antialias: bool,
+    width: u32,
+    height: u32,
+    pixel_count: usize,
+) -> Result<Vec<u8>, FrameError> {
+    if antialias
+        && let Some(bytes) = try_fill_coverage_supersampled(geometry, fill_rule, width, height)?
+    {
+        return Ok(bytes);
+    }
+    let mut mask = coverage_mask(width, height, pixel_count)?;
+    mask.fill_path(geometry, fill_rule, antialias, Transform::identity());
+    Ok(mask.data().to_vec())
+}
+
+/// Flattens quadratic/cubic segments to polylines in f64 device space.
+/// Returns `None` for line-only paths so they reuse the original geometry
+/// untouched (zero behavior change where the walker is already exact).
+fn flatten_path_for_fill(geometry: &Path) -> Option<Path> {
+    let mut has_curves = false;
+    for segment in geometry.segments() {
+        if matches!(segment, PathSegment::QuadTo(..) | PathSegment::CubicTo(..)) {
+            has_curves = true;
+            break;
+        }
+    }
+    if !has_curves {
+        return None;
+    }
+    let point = |x: f32, y: f32| [f64::from(x), f64::from(y)];
+    let mut builder = PathBuilder::new();
+    let mut current = [0.0f64, 0.0f64];
+    for segment in geometry.segments() {
+        match segment {
+            PathSegment::MoveTo(p) => {
+                current = point(p.x, p.y);
+                builder.move_to(p.x, p.y);
+            }
+            PathSegment::LineTo(p) => {
+                current = point(p.x, p.y);
+                builder.line_to(p.x, p.y);
+            }
+            PathSegment::QuadTo(control, end) => {
+                let end = point(end.x, end.y);
+                flatten_quad(&mut builder, current, point(control.x, control.y), end, 0);
+                current = end;
+            }
+            PathSegment::CubicTo(control1, control2, end) => {
+                let end = point(end.x, end.y);
+                flatten_cubic(
+                    &mut builder,
+                    current,
+                    point(control1.x, control1.y),
+                    point(control2.x, control2.y),
+                    end,
+                    0,
+                );
+                current = end;
+            }
+            PathSegment::Close => builder.close(),
+        }
+    }
+    builder.finish()
+}
+
+fn midpoint(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+}
+
+fn flatten_quad(
+    builder: &mut PathBuilder,
+    start: [f64; 2],
+    control: [f64; 2],
+    end: [f64; 2],
+    depth: u32,
+) {
+    // For quadratics the curve midpoint's deviation from the chord midpoint
+    // IS the maximum deviation, so this test is exact, not an estimate.
+    let mid_curve = [
+        (start[0] + 2.0 * control[0] + end[0]) * 0.25,
+        (start[1] + 2.0 * control[1] + end[1]) * 0.25,
+    ];
+    let mid_chord = midpoint(start, end);
+    let dx = mid_curve[0] - mid_chord[0];
+    let dy = mid_curve[1] - mid_chord[1];
+    if depth >= FILL_FLATTEN_MAX_DEPTH
+        || dx * dx + dy * dy <= FILL_FLATTEN_TOLERANCE_PX * FILL_FLATTEN_TOLERANCE_PX
+    {
+        builder.line_to(end[0] as f32, end[1] as f32);
+        return;
+    }
+    let start_control = midpoint(start, control);
+    let control_end = midpoint(control, end);
+    let middle = midpoint(start_control, control_end);
+    flatten_quad(builder, start, start_control, middle, depth + 1);
+    flatten_quad(builder, middle, control_end, end, depth + 1);
+}
+
+fn flatten_cubic(
+    builder: &mut PathBuilder,
+    start: [f64; 2],
+    control1: [f64; 2],
+    control2: [f64; 2],
+    end: [f64; 2],
+    depth: u32,
+) {
+    // Squared distance of both controls from the baseline; the true maximum
+    // deviation is bounded by 0.75x this distance, so the test is
+    // conservative. A degenerate baseline falls back to point distances.
+    let bx = end[0] - start[0];
+    let by = end[1] - start[1];
+    let baseline_len_sq = bx * bx + by * by;
+    let control_dev_sq = |control: [f64; 2]| {
+        if baseline_len_sq == 0.0 {
+            let dx = control[0] - start[0];
+            let dy = control[1] - start[1];
+            dx * dx + dy * dy
+        } else {
+            let cross = bx * (control[1] - start[1]) - by * (control[0] - start[0]);
+            cross * cross / baseline_len_sq
+        }
+    };
+    let tolerance_sq = FILL_FLATTEN_TOLERANCE_PX * FILL_FLATTEN_TOLERANCE_PX;
+    if depth >= FILL_FLATTEN_MAX_DEPTH
+        || (control_dev_sq(control1) <= tolerance_sq && control_dev_sq(control2) <= tolerance_sq)
+    {
+        builder.line_to(end[0] as f32, end[1] as f32);
+        return;
+    }
+    let middle = |a: [f64; 2], b: [f64; 2]| midpoint(a, b);
+    let p01 = middle(start, control1);
+    let p12 = middle(control1, control2);
+    let p23 = middle(control2, end);
+    let p012 = middle(p01, p12);
+    let p123 = middle(p12, p23);
+    let p0123 = middle(p012, p123);
+    flatten_cubic(builder, start, p01, p012, p0123, depth + 1);
+    flatten_cubic(builder, p0123, p123, p23, end, depth + 1);
+}
+
+/// Runs the high-precision route, or returns `None` when the frame exceeds
+/// the supersampled mask budget (the caller then keeps the legacy route).
+fn try_fill_coverage_supersampled(
+    geometry: &Path,
+    fill_rule: FillRule,
+    width: u32,
+    height: u32,
+) -> Result<Option<Vec<u8>>, FrameError> {
+    let factor = u64::from(FILL_SUPERSAMPLE);
+    let super_width = u64::from(width) * factor;
+    let super_height = u64::from(height) * factor;
+    let super_pixels = super_width.saturating_mul(super_height);
+    if super_pixels == 0
+        || super_pixels > FILL_SUPERSAMPLE_MAX_MASK_BYTES
+        || super_width > FILL_SUPERSAMPLE_MAX_DIMENSION
+        || super_height > FILL_SUPERSAMPLE_MAX_DIMENSION
+    {
+        return Ok(None);
+    }
+    let super_width_u32 = u32::try_from(super_width).map_err(|_| FrameError::OutOfMemory)?;
+    let super_height_u32 = u32::try_from(super_height).map_err(|_| FrameError::OutOfMemory)?;
+    let super_len = usize::try_from(super_pixels).map_err(|_| FrameError::OutOfMemory)?;
+    let size = IntSize::from_wh(super_width_u32, super_height_u32)
+        .ok_or(FrameError::Internal("supersampled mask size rejected"))?;
+    let mut data = Vec::new();
+    if data.try_reserve_exact(super_len).is_err() {
+        return Err(FrameError::OutOfMemory);
+    }
+    data.resize(super_len, 0u8);
+    let mut big = Mask::from_vec(data, size).ok_or(FrameError::OutOfMemory)?;
+    // Curves are pre-flattened to polylines in f64: the pinned walker's
+    // per-row fixed-point curve integration diverges from Agg's subdivided
+    // curves at apex pixels, while its line integration already matches Agg
+    // to d1. Line-only paths bypass flattening with identical geometry.
+    let flattened = flatten_path_for_fill(geometry);
+    let raster_geometry = flattened.as_ref().unwrap_or(geometry);
+    big.fill_path(
+        raster_geometry,
+        fill_rule,
+        false,
+        Transform::from_scale(FILL_SUPERSAMPLE as f32, FILL_SUPERSAMPLE as f32),
+    );
+    let big_data = big.data();
+    let super_stride = usize::try_from(super_width).map_err(|_| FrameError::OutOfMemory)?;
+    let step = FILL_SUPERSAMPLE as usize;
+    let out_len = super_len / (step * step);
+    let mut out = Vec::new();
+    if out.try_reserve_exact(out_len).is_err() {
+        return Err(FrameError::OutOfMemory);
+    }
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let mut sum: u32 = 0;
+            for sub_y in 0..step {
+                let row_start = (y * step + sub_y) * super_stride + x * step;
+                sum += big_data[row_start..row_start + step]
+                    .iter()
+                    .map(|covered| u32::from(*covered))
+                    .sum::<u32>();
+            }
+            // Block pixels are binary (0/255), so the block sum over 256 is
+            // the exact fractional coverage scaled to 8 bits, truncated
+            // like Agg's integer cover computation (a single covered
+            // subpixel truncates to 0, as Agg emits for the same outline);
+            // fully covered and empty pixels stay exactly 255 and 0.
+            out.push(
+                u8::try_from(sum / 256).map_err(|_| FrameError::Internal("coverage overflow"))?,
+            );
+        }
+    }
+    Ok(Some(out))
+}
+
+fn composite_coverage(canvas: &mut Canvas, coverage: &[u8], color: [u8; 4], fixed_agg: bool) {
     let style_alpha = f64::from(color[3]) / 255.0;
     if style_alpha == 0.0 {
         return;
     }
-    for index in 0..mask.data().len() {
-        let coverage = f64::from(mask.data()[index]) / 255.0;
+    for index in 0..coverage.len() {
+        let coverage = f64::from(coverage[index]) / 255.0;
         if coverage == 0.0 {
             continue;
         }
@@ -1143,12 +1402,17 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
                     .clip_rect
                     .map(|rect| DeviceClip::from_display(rect, width, height));
                 if let Some(fill_rgba) = path.fill_rgba {
-                    let mut mask = if path.triangle_agg {
+                    let fill_rule = match path.fill_rule {
+                        FillRuleSelector::NonZero => FillRule::Winding,
+                        FillRuleSelector::EvenOdd => FillRule::EvenOdd,
+                    };
+                    let mut coverage: Option<Vec<u8>> = if path.triangle_agg {
                         agg_line::try_rasterize_triangle_fill(path, width, height, pixel_count)?
+                            .map(|mask| mask.data().to_vec())
                     } else {
                         None
                     };
-                    if mask.is_none() {
+                    if coverage.is_none() {
                         let fill_geometry = if path.rectilinear_snap && path.stroke_rgba.is_some() {
                             let snap_value = agg_rectilinear_snap_value(path.line_width_pt * scale);
                             build_device_path(path, height, Some(snap_value))
@@ -1156,26 +1420,22 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
                         } else {
                             path_geometry.clone()
                         };
-                        let fill_rule = match path.fill_rule {
-                            FillRuleSelector::NonZero => FillRule::Winding,
-                            FillRuleSelector::EvenOdd => FillRule::EvenOdd,
-                        };
-                        let mut fallback_mask = coverage_mask(width, height, pixel_count)?;
-                        fallback_mask.fill_path(
+                        coverage = Some(fill_coverage(
                             &fill_geometry,
                             fill_rule,
                             path.antialias,
-                            Transform::identity(),
-                        );
-                        mask = Some(fallback_mask);
+                            width,
+                            height,
+                            pixel_count,
+                        )?);
                     }
-                    let mut mask = mask.expect("fill coverage route selected");
+                    let mut coverage = coverage.expect("fill coverage route selected");
                     if let Some(clip) = &clip {
-                        apply_clip_to_mask(&mut mask, clip, width, height);
+                        apply_clip_to_coverage(&mut coverage, clip, width, height);
                     }
                     composite_coverage(
                         &mut pixels,
-                        &mask,
+                        &coverage,
                         fill_rgba,
                         path.rectilinear_snap && path.stroke_rgba.is_some(),
                     );
@@ -1230,12 +1490,12 @@ pub(crate) fn rasterize(spec: &FrameSpec) -> Result<Vec<u8>, FrameError> {
                     }
                     let mut mask = mask.expect("coverage route selected");
                     if let Some(clip) = &clip {
-                        apply_clip_to_mask(&mut mask, clip, width, height);
+                        apply_clip_to_coverage(mask.data_mut(), clip, width, height);
                     }
                     let stroke_rgba = path.stroke_rgba.unwrap_or([0, 0, 0, 255]);
                     composite_coverage(
                         &mut pixels,
-                        &mask,
+                        mask.data(),
                         stroke_rgba,
                         path.rectilinear_snap || fixed_agg_stroke,
                     );
@@ -1704,6 +1964,103 @@ mod tests {
         spec.set_background_rgba([9, 8, 7, 0]);
         let rgba = rasterize(&spec).expect("rasterize");
         assert_eq!(rgba, vec![0, 0, 0, 0]);
+    }
+
+    fn device_rect(x0: f32, y0: f32, x1: f32, y1: f32) -> Path {
+        let mut builder = PathBuilder::new();
+        builder.move_to(x0, y0);
+        builder.line_to(x1, y0);
+        builder.line_to(x1, y1);
+        builder.line_to(x0, y1);
+        builder.close();
+        builder.finish().expect("rect path")
+    }
+
+    #[test]
+    fn supersampled_fill_keeps_full_and_empty_coverage_exact() {
+        // An integer-aligned rect exercises the high-precision route (4x4
+        // frame is far below the supersample budget) and must stay exactly
+        // 255 inside and 0 outside, like the legacy route.
+        let geometry = device_rect(1.0, 1.0, 3.0, 3.0);
+        let coverage =
+            fill_coverage(&geometry, FillRule::Winding, true, 4, 4, 16).expect("coverage");
+        assert_eq!(coverage.len(), 16);
+        for y in 0..4usize {
+            for x in 0..4usize {
+                let expected = if (1..3).contains(&x) && (1..3).contains(&y) {
+                    255
+                } else {
+                    0
+                };
+                assert_eq!(coverage[y * 4 + x], expected, "coverage drift at ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn supersampled_fill_resolves_beyond_legacy_sixteen_levels() {
+        // A fractional-offset rect must produce a coverage level the legacy
+        // 4x4 tiny-skia AA fill cannot emit (multiples of 16, plus 255).
+        let geometry = device_rect(0.37, 0.37, 2.0, 2.0);
+        let coverage =
+            fill_coverage(&geometry, FillRule::Winding, true, 4, 4, 16).expect("coverage");
+        assert!(
+            coverage
+                .iter()
+                .any(|value| *value != 255 && *value % 16 != 0),
+            "no sub-16-level coverage in {coverage:?}"
+        );
+    }
+
+    #[test]
+    fn supersampled_fill_declines_frames_beyond_its_budget() {
+        // A frame the 16x mask cannot bound (bytes and dimensions) falls
+        // back to the legacy route instead of erroring or over-allocating.
+        let geometry = device_rect(0.0, 0.0, 8.0, 8.0);
+        assert_eq!(
+            try_fill_coverage_supersampled(&geometry, FillRule::Winding, 16_384, 16_384)
+                .expect("budget check"),
+            None
+        );
+    }
+
+    #[test]
+    fn flatten_skips_line_only_paths() {
+        assert_eq!(
+            flatten_path_for_fill(&device_rect(0.0, 0.0, 2.0, 2.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn flatten_converts_curves_to_line_only_polylines() {
+        let mut builder = PathBuilder::new();
+        builder.move_to(0.0, 0.0);
+        builder.quad_to(10.0, 20.0, 20.0, 0.0);
+        builder.cubic_to(25.0, 5.0, 30.0, 5.0, 34.0, 0.0);
+        builder.close();
+        let geometry = builder.finish().expect("curve path");
+        let flattened = flatten_path_for_fill(&geometry).expect("must flatten");
+        let mut saw_line = false;
+        let mut near_quad_apex = false;
+        for segment in flattened.segments() {
+            match segment {
+                PathSegment::MoveTo(_) | PathSegment::LineTo(_) | PathSegment::Close => {}
+                PathSegment::QuadTo(..) | PathSegment::CubicTo(..) => {
+                    panic!("curve survived flattening: {segment:?}")
+                }
+            }
+            if let PathSegment::LineTo(p) = segment {
+                saw_line = true;
+                // The analytic quad apex is (10,10); tolerance 0.125 keeps a
+                // polyline vertex within half a pixel of it.
+                if (f64::from(p.x) - 10.0).abs() <= 0.5 && (f64::from(p.y) - 10.0).abs() <= 0.5 {
+                    near_quad_apex = true;
+                }
+            }
+        }
+        assert!(saw_line, "flattened path lost its edges");
+        assert!(near_quad_apex, "flattened apex drifted from (10,10)");
     }
 
     #[test]
