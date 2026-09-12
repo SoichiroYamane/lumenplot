@@ -38,6 +38,7 @@
           default = pkgs.mkShellNoCC {
             packages = [
               pkgs.cargo
+              pkgs.cargo-deny
               pkgs.clippy
               pythonWithPip
               pkgs.rustc
