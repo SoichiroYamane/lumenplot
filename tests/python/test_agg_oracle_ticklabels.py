@@ -263,7 +263,10 @@ class TestTickLabelAdapterSemantics(unittest.TestCase):
             },
         )
         for command in spines:
-            self.assertEqual(command["cap"], "butt")
+            # Default spines carry the artist's projecting caps (Matplotlib
+            # Spine default; pinned Agg draw_path reports cap=projecting
+            # for every 0.8pt spine stroke), not butt.
+            self.assertEqual(command["cap"], "projecting")
             self.assertEqual(command["join"], "miter")
 
     def test_strict_spec_carries_the_axis_aligned_fill(self):

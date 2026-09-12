@@ -89,3 +89,6 @@ class _SpineStroke:
 
     def get_linewidth(self) -> float:
         return float(self._spine.get_linewidth())
+
+    def get_capstyle(self) -> str:
+        return str(self._spine.get_capstyle())
