@@ -102,6 +102,13 @@ CASES = {
         "projection": "perspective",
         "include_poly": False,
     },
+    "line3d_orthographic": {
+        "manifest": "line3d_orthographic_manifest.json",
+        "reference": "line3d_orthographic_reference.png",
+        "mask": "line3d_orthographic_mask.json",
+        "projection": "orthographic",
+        "include_poly": False,
+    },
     "poly3d_perspective": {
         "manifest": "poly3d_perspective_manifest.json",
         "reference": "poly3d_perspective_reference.png",

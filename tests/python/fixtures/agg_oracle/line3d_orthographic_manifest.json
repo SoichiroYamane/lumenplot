@@ -1,0 +1,364 @@
+{
+  "schema_version": "agg-oracle-manifest-v1",
+  "fixture_id": "line3d_orthographic",
+  "oracle": {
+    "backend": "FigureCanvasAgg",
+    "matplotlib_version": "3.11.1",
+    "api_version": "1.1",
+    "canvas_construction": "matplotlib.backends.backend_agg.FigureCanvasAgg(figure)",
+    "render_call": "canvas.print_png(buffer, metadata={})"
+  },
+  "python_version": ">=3.11,<3.15",
+  "figure": {
+    "construction": "Figure + add_axes(projection='3d') + explicit axis-off mplot3d fixture",
+    "options": {
+      "figsize_inches": [
+        20.0,
+        15.0
+      ],
+      "dpi": 100.0,
+      "axes_rect": [
+        0.08,
+        0.08,
+        0.84,
+        0.84
+      ],
+      "axis_on": false,
+      "xlim": [
+        0.0,
+        3.0
+      ],
+      "ylim": [
+        0.0,
+        2.0
+      ],
+      "zlim": [
+        0.0,
+        2.0
+      ],
+      "view_init": {
+        "elev": 30.0,
+        "azim": -60.0,
+        "roll": 0.0
+      },
+      "projection": "orthographic",
+      "focal_length": null,
+      "savefig_format": "png",
+      "print_png_metadata": {}
+    }
+  },
+  "effective_dpi": 100.0,
+  "dimensions": {
+    "width": 2000,
+    "height": 1500
+  },
+  "orientation": "top-to-bottom",
+  "channels": "RGBA8",
+  "rcparams": {
+    "agg.path.chunksize": 0,
+    "figure.dpi": 100.0,
+    "figure.facecolor": "white",
+    "figure.edgecolor": "white",
+    "savefig.dpi": 100.0,
+    "savefig.format": "png",
+    "savefig.transparent": false,
+    "path.simplify": false,
+    "path.simplify_threshold": 0.0,
+    "lines.antialiased": true,
+    "patch.antialiased": true,
+    "font.family": [
+      "DejaVu Sans"
+    ]
+  },
+  "font": {
+    "status": "not-applicable-axis-off-3d"
+  },
+  "font_bytes_sha256": "not-applicable-axis-off-3d",
+  "artist_class": "matplotlib.axes3d.Axes3D+Line3D",
+  "primitive": {
+    "line_class": "mpl_toolkits.mplot3d.art3d.Line3D",
+    "line_style": {
+      "color": "#d62728",
+      "linewidth": 1.5,
+      "solid_capstyle": "butt",
+      "solid_joinstyle": "miter"
+    },
+    "guide_style": {
+      "color": "#202020",
+      "linewidth": 0.75,
+      "solid_capstyle": "butt",
+      "solid_joinstyle": "miter"
+    },
+    "input_data": {
+      "x": [
+        0.15,
+        0.9,
+        "NaN",
+        1.45,
+        "+Inf",
+        2.15,
+        2.8
+      ],
+      "y": [
+        0.15,
+        1.4,
+        "NaN",
+        0.35,
+        "-Inf",
+        1.55,
+        0.25
+      ],
+      "z": [
+        0.15,
+        1.8,
+        "NaN",
+        1.7,
+        "+Inf",
+        0.35,
+        1.8
+      ]
+    },
+    "triangles": [
+      [
+        [
+          1.9462413996339696,
+          0.5635202626536799,
+          0.6800290114527852
+        ],
+        [
+          2.9986592114414528,
+          0.7789715956602681,
+          0.7570817291582299
+        ],
+        [
+          1.0339646885664155,
+          1.5133342966352288,
+          0.6178321464214471
+        ]
+      ],
+      [
+        [
+          1.4867528592939339,
+          1.6663640674204725,
+          0.7307355559405604
+        ],
+        [
+          0.9593691931999709,
+          1.989203597220872,
+          1.2536711880084646
+        ],
+        [
+          2.8309755466401376,
+          1.367248471419042,
+          1.620664317660658
+        ]
+      ]
+    ],
+    "facecolors": [
+      [
+        0.12,
+        0.55,
+        0.95,
+        1.0
+      ],
+      [
+        0.95,
+        0.55,
+        0.12,
+        1.0
+      ]
+    ],
+    "edgecolors": [
+      [
+        0.02,
+        0.02,
+        0.02,
+        0.0
+      ],
+      [
+        0.55,
+        0.02,
+        0.02,
+        0.0
+      ]
+    ],
+    "linewidths": [
+      1.0,
+      1.75
+    ],
+    "antialiaseds": [
+      false,
+      false
+    ]
+  },
+  "three_d": {
+    "projection": "orthographic",
+    "view": {
+      "elevation_deg": 30.0,
+      "azimuth_deg": -60.0,
+      "roll_deg": 0.0,
+      "focal_length": null
+    },
+    "bounds_f64": {
+      "x": [
+        0.0,
+        3.0
+      ],
+      "y": [
+        0.0,
+        2.0
+      ],
+      "z": [
+        0.0,
+        2.0
+      ]
+    },
+    "scene_origin_rule": "per-frame midpoint of each canonical f64 bound pair",
+    "scene_origin_f64": [
+      1.5,
+      1.0,
+      1.0
+    ],
+    "error_budget_px": 0.25,
+    "worst_error_px": 0.0,
+    "painter_order": [],
+    "line_nonfinite_semantics": "NaN/+Inf/-Inf terminate runs; next finite sample starts a subpath",
+    "triangle_style_semantics": "per-element face/edge/linewidth arrays are preserved in painter order"
+  },
+  "topology": {
+    "line_data_api": "Line3D.get_data_3d()",
+    "source_lines_f64": [
+      [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          3.0,
+          0.0,
+          0.0
+        ]
+      ],
+      [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          2.0,
+          0.0
+        ]
+      ],
+      [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          2.0
+        ]
+      ],
+      [
+        [
+          0.15,
+          0.15,
+          0.15
+        ],
+        [
+          0.9,
+          1.4,
+          1.8
+        ],
+        [
+          "NaN",
+          "NaN",
+          "NaN"
+        ],
+        [
+          1.45,
+          0.35,
+          1.7
+        ],
+        [
+          "+Inf",
+          "-Inf",
+          "+Inf"
+        ],
+        [
+          2.15,
+          1.55,
+          0.35
+        ],
+        [
+          2.8,
+          0.25,
+          1.8
+        ]
+      ]
+    ],
+    "finite_segments": [
+      [
+        [
+          0,
+          2
+        ]
+      ],
+      [
+        [
+          0,
+          2
+        ]
+      ],
+      [
+        [
+          0,
+          2
+        ]
+      ],
+      [
+        [
+          0,
+          2
+        ],
+        [
+          5,
+          7
+        ]
+      ]
+    ],
+    "nonfinite_tokens": [
+      "NaN",
+      "+Inf",
+      "-Inf"
+    ],
+    "triangle_source_api": "Poly3DCollection constructor input",
+    "triangle_count": 0,
+    "painter_order": []
+  },
+  "mask_generation": "reference-only dominant interiors plus fixed white background; candidate/native pixels are not observed",
+  "reference_png_file": "line3d_orthographic_reference.png",
+  "reference_png_sha256": "c428dcb89287c88a6e59597e3569b50bcae75fbc6117c28eadf71c715ec581b6",
+  "mask_file": "line3d_orthographic_mask.json",
+  "mask_sha256": "f4ea3c88c6026138b17bb28f9231be395407d574d3dc364146a37ced35f0c950",
+  "pixel_classes": [
+    "background",
+    "fully-covered",
+    "antialias-fringe",
+    "text-or-outline"
+  ],
+  "contract": {
+    "orientation": "top-to-bottom",
+    "channels": "RGBA8",
+    "background": "byte-equal",
+    "fully-covered": "byte-equal",
+    "fringe_max_channel_delta": 1,
+    "fringe_mismatch_rate_denominator": "total-pixels",
+    "fringe_mismatch_rate_max": 0.001
+  }
+}
