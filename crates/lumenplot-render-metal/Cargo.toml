@@ -16,6 +16,6 @@ lumenplot-render-api = { path = "../lumenplot-render-api", version = "0.1.0" }
 # and the static allowance for this table is activation-gated in
 # scripts/check_workspace_architecture.py (fail-closed both directions).
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = { version = "=0.6.2", default-features = false, features = ["std"] }
+objc2 = { version = "=0.6.4", default-features = false, features = ["std"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["objc2-core-foundation"] }
 objc2-metal = { version = "=0.3.2", default-features = false, features = ["std"] }
