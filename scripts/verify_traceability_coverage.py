@@ -195,7 +195,15 @@ def main() -> int:
           "the controlled totals change from 156 to 157\n"
           "normative entries and from 106 to 107 distinct gates." in text)
     check("2026-09-05 amendment arithmetic (no entries, +1 normative, +1 gate)",
-          237 + 0 == pub_entries and 156 + 1 == pub_norm and 106 + 1 == pub_gates,
+          237 + 0 == 237 and 156 + 1 == 157 and 106 + 1 == 107,
+          "post-3D totals 237/157/107")
+    # The 2026-09-11 window-app scope proposal adds one MUST row reusing
+    # existing gates; it is the newest amendment, so it alone is checked
+    # against the published totals.
+    check("2026-09-11 window-app proposal note present",
+          "2026-09-11 window-app scope proposal" in text)
+    check("2026-09-11 window-app proposal arithmetic (+1 entry, +1 normative, +0 gates)",
+          237 + 1 == pub_entries and 157 + 1 == pub_norm and 107 + 0 == pub_gates,
           f"{pub_entries}/{pub_norm}/{pub_gates}")
     check("adoption note says three normative, two advisory",
           "three normative, two advisory" in text and "two normative, three advisory" not in text)

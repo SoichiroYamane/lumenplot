@@ -61,13 +61,13 @@ class TraceabilityCoverageMutationTests(unittest.TestCase):
             returncode, output = self.run_checker(Path(temporary))
             self.assertEqual(returncode, 0, output)
             self.assertIn("OK: traceability coverage bookkeeping verified", output)
-            self.assertIn("237 entries, 157 normative, 107 gates", output)
+            self.assertIn("238 entries, 158 normative, 107 gates", output)
 
     def test_published_entry_total_drift_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             self.replace_once(root,
-                              "Requirement entries: **237**.",
-                              "Requirement entries: **238**.")
+                              "Requirement entries: **238**.",
+                              "Requirement entries: **239**.")
 
         self.assert_rejected(mutate, "[FAIL] published entries == recomputed")
 

@@ -17,14 +17,14 @@ import sys
 from typing import Sequence
 
 
-EXPECTED_TOTAL = 237
-EXPECTED_NORMATIVE = 157
+EXPECTED_TOTAL = 238
+EXPECTED_NORMATIVE = 158
 EXPECTED_EVIDENCE_GATES = 107
 EXPECTED_STATUS_COUNTS = {
     "Implemented (bounded)": 29,
     "Not implemented": 137,
     "Not measured": 43,
-    "environment required": 4,
+    "environment required": 5,
     "Reference only": 13,
     "Not applicable": 5,
     "Planning only": 6,
