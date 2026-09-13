@@ -34,6 +34,12 @@ EXPECTED_PACKAGE_PATHS = {
     "lumenplot-render-metal": "crates/lumenplot-render-metal",
     "lumenplot-render-wgpu": "crates/lumenplot-render-wgpu",
     "lumenplot-runtime": "crates/lumenplot-runtime",
+    # WINAPP contract lane (commander ruling 2026-09-13 on the M1 Q1/Q2
+    # escalation; ADR 0003 amendment): window/event host crate identity.
+    # The pinned winit 0.30.x allowance and the active-source inventory stay
+    # ADR text until the M1 Q3 seam design fixes them, so the skeletal stub
+    # keeps an empty external inventory here.
+    "lumenplot-window": "crates/lumenplot-window",
     "lumenplot-viewer": "crates/lumenplot-viewer",
     "lumenplot-python": "crates/lumenplot-python",
     "lumenplot-bench": "crates/lumenplot-bench",
@@ -629,6 +635,10 @@ EXPECTED_EDGES = {
     "lumenplot-render-metal": {"lumenplot-render-api"},
     "lumenplot-render-wgpu": {"lumenplot-render-api"},
     "lumenplot-runtime": {"lumenplot-render-api", "lumenplot-render-wgpu"},
+    # WINAPP contract lane: window/event host over runtime + render-wgpu.
+    # The only permitted external edge is pinned winit 0.30.x (ADR 0003
+    # amendment; no other deps).
+    "lumenplot-window": {"lumenplot-runtime", "lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
     "lumenplot-python": {"lumenplot"},
     "lumenplot-bench": {
