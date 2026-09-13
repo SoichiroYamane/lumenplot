@@ -112,6 +112,21 @@ jobs:
           components: ${{ steps.rust-toolchain.outputs.components }}
           targets: ${{ steps.rust-toolchain.outputs.targets }}
 
+      - name: Restore Cargo caches
+        # Lockfile plus toolchain key the cache and every build below stays
+        # --locked, so a stale or partial entry only costs time, never
+        # correctness. Scoped to this workflow only; the offline containerized
+        # evidence lane is untouched.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ steps.rust-toolchain.outputs.channel }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
       - name: Fetch locked Rust dependencies
         run: cargo fetch --locked
 
@@ -186,6 +201,18 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Restore pip download cache
+        # Workflow pins plus packaging metadata key the cache and the installs
+        # below stay version-pinned, so a stale entry only costs time, never
+        # correctness. Scoped to this workflow only; the offline containerized
+        # evidence lane is untouched.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('.github/workflows/ci.yml', 'pyproject.toml') }}
+          restore-keys: |
+            pip-${{ runner.os }}-py${{ matrix.python-version }}-
+
       - name: Install pinned evidence stack
         # Versions match the Phase-3A2/3B evidence pins: numpy is the
         # pyproject.toml runtime dependency; matplotlib matches the reviewed
@@ -203,13 +230,13 @@ jobs:
         run: |
           python3 -m pip install --no-deps --disable-pip-version-check .
 
+      # Checker mutation suites are not repeated here: they run canonically
+      # once per CI run in the Rust gates job above (same test files, same
+      # assertions), so both Python legs reference that lane instead of
+      # re-executing it.
       - name: Run tests/python contract suites
         run: |
           python3 -m unittest discover -s tests/python -v
-
-      - name: Run checker mutation suites
-        run: |
-          python3 -m unittest scripts.test_check_workspace_architecture scripts.test_check_phase2b_dependencies scripts.test_check_requirements_traceability -v
 
       - name: Verify offline skip-legitimacy (matplotlib absent)
         # The matplotlib-absent cells must pass via their existing skipUnless

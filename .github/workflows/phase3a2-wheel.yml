@@ -11,6 +11,13 @@ on:
 permissions:
   contents: read
 
+# Superseded runs cancel so a fast-following push does not pay for another
+# full evidence run; mirrors the concurrency stanza in the other push/PR
+# workflows.
+concurrency:
+  group: phase3a2-wheel-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   # Hash-pinned rustup-init bootstrap binary for x86_64-unknown-linux-gnu.
   # Digest probed from
