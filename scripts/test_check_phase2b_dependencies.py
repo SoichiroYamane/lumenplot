@@ -218,19 +218,38 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
         self.assert_rejected(mutate, "Cargo.lock checksum drift for tiny-skia")
 
     def test_transitive_package_is_rejected(self) -> None:
-        def mutate(root: Path) -> None:
+        # WINAPP M1 admission (commit 6cac7ce): the winit 0.30.13 tree adds a
+        # second tiny-skia-path 0.11.4 lineage (via sctk-adwaita, listed in
+        # WINIT_TARGET_REGISTRY) alongside the pinned 0.12.0. A bare name-only
+        # replace hits whichever sorts first (0.11.4), so pin each lineage by
+        # version and assert both are enforced.
+        def mutate_pinned(root: Path) -> None:
             path = root / "Cargo.lock"
             source = path.read_text(encoding="utf-8")
-            path.write_text(
-                source.replace(
-                    'name = "tiny-skia-path"',
-                    'name = "unexpected-package"',
-                    1,
-                ),
-                encoding="utf-8",
-            )
+            blocks = source.split("[[package]]")
+            for i, block in enumerate(blocks):
+                if 'name = "tiny-skia-path"' in block and 'version = "0.12.0"' in block:
+                    blocks[i] = block.replace('name = "tiny-skia-path"', 'name = "unexpected-package"', 1)
+                    break
+            else:
+                self.fail("pinned tiny-skia-path 0.12.0 block not found")
+            path.write_text("[[package]]".join(blocks), encoding="utf-8")
 
-        self.assert_rejected(mutate, "Cargo.lock missing packages: tiny-skia-path@0.12.0")
+        self.assert_rejected(mutate_pinned, "Cargo.lock missing packages: tiny-skia-path@0.12.0")
+
+        def mutate_winit_lineage(root: Path) -> None:
+            path = root / "Cargo.lock"
+            source = path.read_text(encoding="utf-8")
+            blocks = source.split("[[package]]")
+            for i, block in enumerate(blocks):
+                if 'name = "tiny-skia-path"' in block and 'version = "0.11.4"' in block:
+                    blocks[i] = block.replace('name = "tiny-skia-path"', 'name = "unexpected-package"', 1)
+                    break
+            else:
+                self.fail("winit tiny-skia-path 0.11.4 block not found")
+            path.write_text("[[package]]".join(blocks), encoding="utf-8")
+
+        self.assert_rejected(mutate_winit_lineage, "Cargo.lock missing packages: tiny-skia-path@0.11.4")
 
     # ------------------------------------------------------------------
     # B2-P Metal prototype lane (workstream-manager decision on task
@@ -267,6 +286,9 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
 
     def test_metal_workspace_edges_are_enforced_in_lockfile(self) -> None:
         def mutate(root: Path) -> None:
+            # WINAPP M1 admission (commit 6cac7ce): the winit tree adds the
+            # objc2 0.5.2 second lineage, so cargo renders the render-metal
+            # refs version-qualified per WINIT_WORKSPACE_EDGE_OVERRIDES.
             # Strip the pinned gate from the manifest *and* its lock entry.
             # The now-orphaned objc packages keep the lock stale for
             # `--locked`, so the exact workspace-edge expectation surfaces
@@ -282,7 +304,7 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
             start = source.index('name = "lumenplot-render-metal"')
             end = source.index("[[package]]", start)
             block = source[start:end]
-            for dependency in (' "objc2",\n', ' "objc2-foundation",\n', ' "objc2-metal",\n'):
+            for dependency in (' "objc2 0.6.2",\n', ' "objc2-foundation 0.3.2",\n', ' "objc2-metal 0.3.2",\n'):
                 self.assertIn(dependency, block)
                 block = block.replace(dependency, "")
             lock.write_text(source[:start] + block + source[end:], encoding="utf-8")
@@ -294,6 +316,8 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
 
     def test_metal_workspace_edge_is_enforced_in_metadata(self) -> None:
         def mutate(root: Path) -> None:
+            # WINAPP M1 admission (commit 6cac7ce): same version-qualified
+            # render-metal refs as above (objc2 0.5.2 second lineage).
             # Strip the pinned gate everywhere so `cargo metadata --locked`
             # stays resolvable; the missing objc edges must then be caught by
             # the exact metadata resolution expectation.
@@ -308,7 +332,7 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
             start = source.index('name = "lumenplot-render-metal"')
             end = source.index("[[package]]", start)
             block = source[start:end]
-            for dependency in (' "objc2",\n', ' "objc2-foundation",\n', ' "objc2-metal",\n'):
+            for dependency in (' "objc2 0.6.2",\n', ' "objc2-foundation 0.3.2",\n', ' "objc2-metal 0.3.2",\n'):
                 self.assertIn(dependency, block)
                 block = block.replace(dependency, "")
             source = source[:start] + block + source[end:]
