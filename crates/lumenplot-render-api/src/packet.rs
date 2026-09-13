@@ -779,7 +779,7 @@ fn validate_draws(
 mod tests {
     use super::*;
     use crate::frame::{FrameSpec, PacketPoint, PacketSegment};
-    use lumenplot_engine::bridge::{PlotLayout, Viewport};
+    use lumenplot_engine::bridge::{LogicalRect, LogicalSize, PlotLayout, Viewport};
 
     const WORK: WorkGeneration = WorkGeneration::new(7);
     const DEVICE_GENERATION: DeviceGeneration = DeviceGeneration::new(11);
@@ -1349,6 +1349,234 @@ mod tests {
                 .kind(),
             PacketValidationErrorKind::InvalidDrawOrder
         );
+    }
+
+    #[test]
+    fn malformed_canvas_metadata_and_pixel_capacity_fail_before_allocation() {
+        let builder = RenderPacketBuilder::new(WORK, DEVICE_GENERATION);
+
+        // Zero canvas dimensions are rejected before any allocation.
+        for canvas_px in [[0, 600], [800, 0], [0, 0]] {
+            let mut frame = fixture_frame(4);
+            frame.canvas_px = canvas_px;
+            assert_eq!(
+                builder
+                    .build(frame, WORK, DEVICE_GENERATION)
+                    .err()
+                    .expect("zero canvas must fail")
+                    .kind(),
+                PacketValidationErrorKind::FrameInvalid
+            );
+        }
+
+        // A dimension past the per-axis bound fails before pixel accounting.
+        let mut wide = fixture_frame(4);
+        wide.canvas_px = [MAX_FRAME_DIMENSION + 1, 600];
+        assert_eq!(
+            builder
+                .build(wide, WORK, DEVICE_GENERATION)
+                .err()
+                .expect("over-dimension canvas must fail")
+                .kind(),
+            PacketValidationErrorKind::FrameInvalid
+        );
+
+        // A canvas inside the per-axis bound but past the pixel budget fails
+        // through the checked integer path before any draw allocation. The
+        // layout moves together so the mismatch arm cannot fire first. The
+        // u32-to-usize conversion itself cannot fail on 64-bit targets, so
+        // the pixel-budget comparison is the operative overflow guard.
+        let mut budgeted = fixture_frame(4);
+        budgeted.canvas_px = [MAX_FRAME_DIMENSION, 1_025];
+        budgeted.layout.canvas =
+            LogicalSize::new(f64::from(MAX_FRAME_DIMENSION), 1_025.0).expect("valid canvas");
+        assert_eq!(
+            builder
+                .build(budgeted, WORK, DEVICE_GENERATION)
+                .err()
+                .expect("over-budget canvas must fail")
+                .kind(),
+            PacketValidationErrorKind::CapacityExceeded
+        );
+
+        // Non-finite or non-positive frame metadata is rejected.
+        for dots_per_inch in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            let mut frame = fixture_frame(4);
+            frame.dots_per_inch = dots_per_inch;
+            assert_eq!(
+                builder
+                    .build(frame, WORK, DEVICE_GENERATION)
+                    .err()
+                    .expect("bad dots-per-inch must fail")
+                    .kind(),
+                PacketValidationErrorKind::FrameInvalid
+            );
+        }
+        for units_per_inch in [0.0, -1.0, f64::NAN] {
+            let mut frame = fixture_frame(4);
+            frame.layout.logical_units_per_inch = units_per_inch;
+            assert_eq!(
+                builder
+                    .build(frame, WORK, DEVICE_GENERATION)
+                    .err()
+                    .expect("bad logical units must fail")
+                    .kind(),
+                PacketValidationErrorKind::FrameInvalid
+            );
+        }
+        for width in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            let mut frame = fixture_frame(4);
+            frame.line_width_px = width;
+            assert_eq!(
+                builder
+                    .build(frame, WORK, DEVICE_GENERATION)
+                    .err()
+                    .expect("bad line width must fail")
+                    .kind(),
+                PacketValidationErrorKind::FrameInvalid
+            );
+        }
+
+        // A well-formed plot rectangle outside the canvas fails geometry.
+        let mut frame = fixture_frame(4);
+        frame.layout.plot_rect = LogicalRect::new(0.0, 0.0, 900.0, 700.0).expect("valid rectangle");
+        assert_eq!(
+            builder
+                .build(frame, WORK, DEVICE_GENERATION)
+                .err()
+                .expect("out-of-canvas plot must fail")
+                .kind(),
+            PacketValidationErrorKind::FrameInvalid
+        );
+    }
+
+    #[test]
+    fn series_and_point_capacity_bounds_are_exact() {
+        // Exactly MAX_FRAME_SERIES publishes; one more is a capacity failure.
+        // The seam admits at most MAX_FRAME_SERIES minus one series, so the
+        // inclusive packet bound is reachable only by construction here.
+        let mut full = fixture_frame(4);
+        let spare = full.series[0].clone();
+        while full.series.len() < MAX_FRAME_SERIES {
+            full.series.push(spare.clone());
+        }
+        assert_eq!(full.series.len(), MAX_FRAME_SERIES);
+        RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(full, WORK, DEVICE_GENERATION)
+            .expect("inclusive series bound publishes");
+
+        let mut crowded = fixture_frame(4);
+        let spare = crowded.series[0].clone();
+        while crowded.series.len() <= MAX_FRAME_SERIES {
+            crowded.series.push(spare.clone());
+        }
+        assert_eq!(
+            RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+                .build(crowded, WORK, DEVICE_GENERATION)
+                .err()
+                .expect("series overflow must fail")
+                .kind(),
+            PacketValidationErrorKind::CapacityExceeded
+        );
+
+        // Point overflow past MAX_PACKET_POINTS fails before draw construction.
+        // Duplicated points stay inside the canvas, so only the count trips.
+        let mut many_points = fixture_frame(4);
+        let points = many_points.series[0].segments[0].points.clone();
+        while many_points.series[0].segments[0].points.len() <= MAX_PACKET_POINTS {
+            let room = MAX_PACKET_POINTS + 1 - many_points.series[0].segments[0].points.len();
+            let take = room.min(points.len());
+            many_points.series[0].segments[0]
+                .points
+                .extend_from_slice(&points[..take]);
+        }
+        assert_eq!(
+            RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+                .build(many_points, WORK, DEVICE_GENERATION)
+                .err()
+                .expect("point overflow must fail")
+                .kind(),
+            PacketValidationErrorKind::CapacityExceeded
+        );
+    }
+
+    #[test]
+    fn generation_ordering_is_total_and_triple_matching_is_exact() {
+        // Overlapping numerics across dimensions prove the three tokens are
+        // never conflated: only the exact triple validates.
+        let scenes = [
+            SceneRevision::new(1),
+            SceneRevision::new(2),
+            SceneRevision::new(3),
+        ];
+        let works = [
+            WorkGeneration::new(1),
+            WorkGeneration::new(2),
+            WorkGeneration::new(3),
+        ];
+        let dev_gens = [
+            DeviceGeneration::new(1),
+            DeviceGeneration::new(2),
+            DeviceGeneration::new(3),
+        ];
+
+        // Each dimension orders numerically, transitively, and totally.
+        assert!(scenes[0] < scenes[1] && scenes[1] < scenes[2] && scenes[0] < scenes[2]);
+        assert!(works[0] < works[1] && works[1] < works[2] && works[0] < works[2]);
+        assert!(
+            dev_gens[0] < dev_gens[1] && dev_gens[1] < dev_gens[2] && dev_gens[0] < dev_gens[2]
+        );
+        assert_eq!(scenes[1], SceneRevision::new(2));
+        assert_eq!(works[1], WorkGeneration::new(2));
+        assert_eq!(dev_gens[1], DeviceGeneration::new(2));
+
+        // Owner revalidation over the full value grid: the exact triple
+        // passes and every other combination fails with its first stale
+        // dimension in scene, work, device check order.
+        let builder = RenderPacketBuilder::for_scene(scenes[1], works[1], dev_gens[1]);
+        let packet = builder
+            .build(fixture_frame(4), works[1], dev_gens[1])
+            .expect("exact triple builds");
+        for scene in scenes {
+            for work in works {
+                for dev_gen in dev_gens {
+                    let result = packet.validate_for_owner(scene, work, dev_gen);
+                    if scene == scenes[1] && work == works[1] && dev_gen == dev_gens[1] {
+                        result.expect("exact triple validates");
+                    } else {
+                        let expected = if scene != scenes[1] {
+                            PacketValidationErrorKind::StaleSceneRevision
+                        } else if work != works[1] {
+                            PacketValidationErrorKind::StaleWorkGeneration
+                        } else {
+                            PacketValidationErrorKind::StaleDeviceGeneration
+                        };
+                        assert_eq!(result.expect_err("stale triple must fail").kind(), expected);
+                    }
+                }
+            }
+        }
+
+        // Build-time admission honors the same generations: work is checked
+        // before device, and the scene token binds only at the owner point.
+        for work in works {
+            for dev_gen in dev_gens {
+                let result = builder.build(fixture_frame(4), work, dev_gen);
+                if work == works[1] && dev_gen == dev_gens[1] {
+                    result.expect("exact generations build");
+                } else if work != works[1] {
+                    assert_eq!(
+                        result.err().expect("stale work must fail").kind(),
+                        PacketValidationErrorKind::StaleWorkGeneration
+                    );
+                } else {
+                    assert_eq!(
+                        result.err().expect("stale device must fail").kind(),
+                        PacketValidationErrorKind::StaleDeviceGeneration
+                    );
+                }
+            }
+        }
     }
 
     #[test]

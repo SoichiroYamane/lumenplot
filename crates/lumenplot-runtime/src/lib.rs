@@ -2027,6 +2027,47 @@ mod tests {
     }
 
     #[test]
+    fn generation_scoped_cancellation_keeps_current_work_and_counts_drops() {
+        // LP-QUAL-018 session-layer pin: generation-scoped cancellation drops
+        // only older work, preserves the current generation as consumable,
+        // and accounts every drop. LOD/layout worker binding stays open.
+        let older = WorkGeneration::initial();
+        let current = older.next().expect("advanced generation");
+        let mut queue = WorkQueue::new(4);
+        queue
+            .enqueue(SceneRevision::new(1), older)
+            .expect("older ticket");
+        queue
+            .enqueue(SceneRevision::new(2), older)
+            .expect("older ticket");
+        queue
+            .enqueue(SceneRevision::new(3), current)
+            .expect("current ticket");
+        assert_eq!(queue.pending_len(), 3);
+
+        queue.cancel_except(current);
+        assert_eq!(queue.pending_len(), 1);
+        assert_eq!(queue.cancelled_count(), 2);
+
+        let live = WorkTicket {
+            scene_revision: SceneRevision::new(3),
+            generation: current,
+        };
+        assert_eq!(queue.outcome(live, current), WorkOutcome::Ready);
+        let evicted = WorkTicket {
+            scene_revision: SceneRevision::new(1),
+            generation: older,
+        };
+        assert_eq!(queue.outcome(evicted, current), WorkOutcome::StaleDropped);
+        assert_eq!(queue.stale_dropped_count(), 1);
+
+        queue.cancel_all();
+        assert_eq!(queue.pending_len(), 0);
+        assert_eq!(queue.cancelled_count(), 3);
+        assert_eq!(queue.outcome(live, current), WorkOutcome::StaleDropped);
+    }
+
+    #[test]
     fn issued_scene_revisions_reserve_a_stale_watermark() {
         let mut session = running(LoopMode::NativeOwned);
         let surface = session.create_surface([64, 64]).expect("surface");
