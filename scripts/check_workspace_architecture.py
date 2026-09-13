@@ -35,10 +35,11 @@ EXPECTED_PACKAGE_PATHS = {
     "lumenplot-render-wgpu": "crates/lumenplot-render-wgpu",
     "lumenplot-runtime": "crates/lumenplot-runtime",
     # WINAPP contract lane (commander ruling 2026-09-13 on the M1 Q1/Q2
-    # escalation; ADR 0003 amendment): window/event host crate identity.
-    # The pinned winit 0.30.x allowance and the active-source inventory stay
-    # ADR text until the M1 Q3 seam design fixes them, so the skeletal stub
-    # keeps an empty external inventory here.
+    # escalation; ADR 0003 amendment) plus the M1 admission lane: window/event
+    # host crate identity. The pinned winit 0.30.x allowance and the active
+    # single-file source inventory below stay dormant until the M1 activation
+    # sentinel fires, so the skeletal stub keeps an empty external inventory
+    # here until then.
     "lumenplot-window": "crates/lumenplot-window",
     "lumenplot-viewer": "crates/lumenplot-viewer",
     "lumenplot-python": "crates/lumenplot-python",
@@ -122,6 +123,18 @@ WGPU_BUILD_EXTERNAL_DEPENDENCIES = {
 WGPU_SOURCE_FILES = {"src/lib.rs", "src/shader.rs"}
 WGPU_SHADER_PATH = "shaders/line.wgsl"
 WGPU_SHADER_SHA256 = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3"
+# WINAPP M1 admission lane (commander ruling 2026-09-13 on the M1 follow-up:
+# Q1-clamp accepted, surface-from-rwh deferred to M2). The window/event host
+# admits exactly one external edge — pinned winit 0.30.13 with default
+# platform backends (baseline ADR 0008) — and exactly one active source file.
+# Both apply only while the window activation sentinel fires; the stub rules
+# below stay authoritative otherwise.
+WINDOW_EXTERNAL_DEPENDENCIES = {
+    "winit": {
+        "version": "=0.30.13",
+    },
+}
+WINDOW_SOURCE_FILES = {"src/lib.rs"}
 # M4 runtime/viewer lane. Runtime input routing is a private module admitted
 # alongside the lifecycle owner; viewer remains a single-source edge.
 RUNTIME_SOURCE_FILES = {"src/lib.rs", "src/input.rs"}
@@ -637,7 +650,9 @@ EXPECTED_EDGES = {
     "lumenplot-runtime": {"lumenplot-render-api", "lumenplot-render-wgpu"},
     # WINAPP contract lane: window/event host over runtime + render-wgpu.
     # The only permitted external edge is pinned winit 0.30.x (ADR 0003
-    # amendment; no other deps).
+    # amendment; no other deps). The M1 admission lane pins the exact
+    # declaration below; it applies only while the window activation
+    # sentinel fires.
     "lumenplot-window": {"lumenplot-runtime", "lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
     "lumenplot-python": {"lumenplot"},
@@ -1131,6 +1146,99 @@ def _check_runtime_viewer_source(
     for label, pattern in patterns:
         if pattern.search(code):
             errors.append(f"package {package_name}: {label} is not allowed")
+
+
+def _window_activation_reason(root: Path) -> str | None:
+    """Return why the WINAPP M1 window static contract activates, or None.
+
+    The sentinel mirrors the wgpu/metal precedents: the pinned winit
+    allowance and the active single-file source rule apply only while the
+    crate carries the accepted M1 artifact — the exact pinned winit
+    dependency declaration, or Rust implementation code beyond the
+    documentation-only Phase-0 stub — and stay fail-closed in both
+    directions. Removing the artifact reactivates the plain stub rules
+    unchanged.
+    """
+
+    manifest = _read_toml(root / "crates" / "lumenplot-window" / "Cargo.toml", root, [])
+    if isinstance(manifest, dict):
+        dependencies = manifest.get("dependencies")
+        if (
+            isinstance(dependencies, dict)
+            and dependencies.get("winit") == WINDOW_EXTERNAL_DEPENDENCIES["winit"]
+        ):
+            return "crates/lumenplot-window/Cargo.toml winit dependency"
+    source_path = root / "crates" / "lumenplot-window" / "src" / "lib.rs"
+    try:
+        source = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    if _strip_rust_comments_and_literals(source).strip():
+        return "crates/lumenplot-window/src/lib.rs implementation"
+    return None
+
+
+WINDOW_FORBIDDEN_CODE_PATTERNS = (
+    FORBIDDEN_CODE_PATTERNS[0],
+    FORBIDDEN_CODE_PATTERNS[1],
+    (
+        "concrete frontend/backend code",
+        # The M1 seam names its own window/winit/surface/device vocabulary
+        # (single winit shell over the backend-neutral cadence core); every
+        # other concrete frontend/backend name stays banned, including wgpu
+        # (surface-from-rwh lives in M2 per the accepted M1 clamp).
+        re.compile(r"\b(?:wgpu|python|matplotlib|numpy|pyo3)\b", re.I),
+    ),
+    FORBIDDEN_CODE_PATTERNS[3],
+)
+
+
+def _check_window_source(package_dir: Path, root: Path, errors: list[str]) -> None:
+    """Enforce the admitted M1 single-file window source boundary.
+
+    The accepted M1 seam (backend-neutral cadence core plus one winit shell,
+    review as gate) ships as exactly `src/lib.rs` with public items expected
+    (the seam surface itself); `#[no_mangle]`/`#[export_name]` stay banned so
+    the crate never grows an exported ABI. Unsafe code, serialization
+    vocabulary, non-winit frontend/bridge names, and Metal naming stay banned.
+    """
+
+    source_dir = package_dir / "src"
+    rust_files = (
+        {path.relative_to(package_dir).as_posix() for path in source_dir.rglob("*.rs")}
+        if source_dir.is_dir()
+        else set()
+    )
+    if rust_files != WINDOW_SOURCE_FILES:
+        missing = sorted(WINDOW_SOURCE_FILES - rust_files)
+        extra = sorted(rust_files - WINDOW_SOURCE_FILES)
+        details: list[str] = []
+        if missing:
+            details.append("missing " + ",".join(missing))
+        if extra:
+            details.append("extra " + ",".join(extra))
+        errors.append(
+            "package lumenplot-window: exact active source inventory mismatch"
+            + (" (" + "; ".join(details) + ")" if details else "")
+        )
+        return
+    lib_path = package_dir / "src" / "lib.rs"
+    try:
+        lib_source = lib_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        errors.append(
+            f"package lumenplot-window: cannot read {_logical_path(lib_path, root)}"
+        )
+        return
+    code = _strip_rust_comments_and_literals(lib_source)
+    if not code.strip():
+        errors.append("package lumenplot-window: active source must contain implementation code")
+        return
+    if NO_MANGLE_RE.search(code):
+        errors.append("package lumenplot-window: exported ABI is not allowed")
+    for label, pattern in WINDOW_FORBIDDEN_CODE_PATTERNS:
+        if pattern.search(code):
+            errors.append(f"package lumenplot-window: {label} is not allowed")
 
 
 def _find_matching_brace(code: str, opening: int) -> int:
@@ -4931,6 +5039,8 @@ def _check_package_source(
         and _runtime_viewer_activation_reason(root) is not None
     ):
         _check_runtime_viewer_source(package_name, package_dir / "src", root, errors)
+    elif package_name == "lumenplot-window" and _window_activation_reason(root) is not None:
+        _check_window_source(package_dir, root, errors)
     else:
         _check_stub_source(package_name, package_dir / "src", root, errors)
 
@@ -4958,6 +5068,9 @@ def _check_dependencies(
         and _wgpu_activation_reason(root) is not None
     ):
         expected_external = WGPU_EXTERNAL_DEPENDENCIES
+    elif package_name == "lumenplot-window" and _window_activation_reason(root) is not None:
+        # WINAPP M1 admission: exactly the pinned winit declaration above.
+        expected_external = WINDOW_EXTERNAL_DEPENDENCIES
     elif package_name == "lumenplot-python" and phase3a2_active:
         expected_external = PHASE3A2_PYTHON_DEPENDENCIES
         if phase3b_active:

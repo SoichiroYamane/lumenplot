@@ -17,6 +17,15 @@ REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 # Repinned 2026-09-13 for the WINAPP contract lane: the lockfile gains only
 # the skeletal lumenplot-window member entry (no registry change).
 WGPU_LOCK_SHA256 = "58d77cc67bdd45814b214c3bbd5681a94775811226d186899608e44efce1f832"
+# WINAPP M1 admission lane (commander ruling 2026-09-13 on the M1 follow-up:
+# Q1-clamp accepted, surface-from-rwh deferred to M2). Post-winit lockfile
+# digest: winit 0.30.13 with default platform backends pulls a
+# target-expanded tree (+136 packages, zero removals) that version-ambiguates
+# previously singleton names (bitflags, thiserror, objc2-*, tiny-skia-*,
+# windows-sys, ...), so tracked edge sets render with version suffixes below.
+# Expected only while the winit inventory is present; the base digest above
+# stays authoritative otherwise (fail-closed both ways).
+WINIT_WGPU_LOCK_SHA256 = "9b927b7fbe9786eb3df85f749f8e79f9563a0043553d1f447160619aee1a62e9"
 WGPU_PACKAGE_VERSION = "29.0.4"
 WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
 WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
@@ -776,6 +785,258 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
     },
 }
 
+# WINAPP M1 admission overlays (commander ruling 2026-09-13 on the M1
+# follow-up: Q1-clamp accepted, surface-from-rwh deferred to M2). While the
+# winit 0.30.13 inventory is present, tracked lockfile edge sets render with
+# Cargo.lock version suffixes wherever the winit tree version-ambiguates a
+# previously singleton name. These overlays replace the base sets above only
+# in that state (the naga entry serves the WGPU build-registry loop); the
+# base sets stay authoritative otherwise.
+WINIT_LOCK_EDGE_OVERRIDES: dict[str, set[str]] = {
+    "dispatch2": {
+        "bitflags 2.13.1",
+        "objc2 0.6.2",
+    },
+    "harfrust": {
+        "bitflags 2.13.1",
+        "bytemuck",
+        "read-fonts 0.41.0",
+        "smallvec",
+    },
+    "naga": {
+        "arrayvec",
+        "bit-set",
+        "bitflags 2.13.1",
+        "cfg-if",
+        "cfg_aliases",
+        "codespan-reporting",
+        "half",
+        "hashbrown 0.16.1",
+        "hexf-parse",
+        "indexmap",
+        "libm",
+        "log",
+        "num-traits",
+        "once_cell",
+        "rustc-hash 1.1.0",
+        "spirv",
+        "thiserror 2.0.20",
+        "unicode-ident",
+    },
+    "objc2-core-foundation": {
+        "bitflags 2.13.1",
+        "dispatch2",
+        "objc2 0.6.2",
+    },
+    "objc2-foundation": {
+        "bitflags 2.13.1",
+        "objc2 0.6.2",
+        "objc2-core-foundation",
+    },
+    "objc2-metal": {
+        "bitflags 2.13.1",
+        "objc2 0.6.2",
+        "objc2-foundation 0.3.2",
+    },
+    "png": {
+        "bitflags 2.13.1",
+        "crc32fast",
+        "fdeflate",
+        "flate2",
+        "miniz_oxide",
+    },
+    "tiny-skia": {
+        "arrayref",
+        "arrayvec",
+        "bytemuck",
+        "cfg-if",
+        "log",
+        "tiny-skia-path 0.12.0",
+    },
+}
+WINIT_WORKSPACE_EDGE_OVERRIDES: dict[str, set[str]] = {
+    "lumenplot-export": {
+        "fontique",
+        "harfrust",
+        "lumenplot-engine",
+        "parley",
+        "png",
+        "subsetter",
+        "tiny-skia 0.12.0",
+    },
+    "lumenplot-python": {
+        "lumenplot",
+        "numpy",
+        "png",
+        "pyo3",
+        "tiny-skia 0.12.0",
+    },
+    "lumenplot-render-metal": {
+        "lumenplot-render-api",
+        "objc2 0.6.2",
+        "objc2-foundation 0.3.2",
+        "objc2-metal 0.3.2",
+    },
+}
+# Version-keyed winit-tree pins, validated only while the winit inventory is
+# present. EXPECTED_REGISTRY above stays name-keyed (newest lineage only, per
+# the rustc-hash/syn convention), so the winit tree's second lineages live
+# here: the macOS-backend objc2 0.2.x/0.5.2 lineage (via winit's app-kit and
+# metal backends) and the sctk-adwaita tiny-skia 0.11.4 lineage, all
+# target-gated alongside the pinned winit root itself. Checksums, licenses,
+# and edge sets generated from `cargo metadata` output for the exact M1
+# lockfile and reviewed against the deny.toml allow-list.
+WINIT_TARGET_REGISTRY: dict[str, dict[str, Any]] = {
+    "winit@0.30.13": {
+        "version": "0.30.13",
+        "checksum": "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d",
+        "license": "Apache-2.0",
+        "dependencies": {
+            "ahash",
+            "android-activity",
+            "atomic-waker",
+            "bitflags 2.13.1",
+            "block2",
+            "bytemuck",
+            "calloop",
+            "cfg_aliases",
+            "concurrent-queue",
+            "core-foundation",
+            "core-graphics",
+            "cursor-icon",
+            "dpi",
+            "js-sys",
+            "libc",
+            "memmap2",
+            "ndk",
+            "objc2 0.5.2",
+            "objc2-app-kit",
+            "objc2-foundation 0.2.2",
+            "objc2-ui-kit",
+            "orbclient",
+            "percent-encoding",
+            "pin-project",
+            "raw-window-handle",
+            "redox_syscall 0.4.1",
+            "rustix 0.38.44",
+            "sctk-adwaita",
+            "smithay-client-toolkit",
+            "smol_str",
+            "tracing",
+            "unicode-segmentation",
+            "wasm-bindgen",
+            "wasm-bindgen-futures",
+            "wayland-backend",
+            "wayland-client",
+            "wayland-protocols",
+            "wayland-protocols-plasma",
+            "web-sys",
+            "web-time",
+            "windows-sys 0.52.0",
+            "x11-dl",
+            "x11rb",
+            "xkbcommon-dl",
+        },
+    },
+    "objc2@0.5.2": {
+        "version": "0.5.2",
+        "checksum": "46a785d4eeff09c14c487497c162e92766fbb3e4059a71840cecc03d9a50b804",
+        "license": "MIT",
+        "dependencies": {
+            "objc-sys",
+            "objc2-encode",
+        },
+    },
+    "objc2-foundation@0.2.2": {
+        "version": "0.2.2",
+        "checksum": "0ee638a5da3799329310ad4cfa62fbf045d5f56e3ef5ba4149e7452dcf89d5a8",
+        "license": "MIT",
+        "dependencies": {
+            "bitflags 2.13.1",
+            "block2",
+            "dispatch",
+            "libc",
+            "objc2 0.5.2",
+        },
+    },
+    "objc2-metal@0.2.2": {
+        "version": "0.2.2",
+        "checksum": "dd0cba1276f6023976a406a14ffa85e1fdd19df6b0f737b063b95f6c8c7aadd6",
+        "license": "MIT",
+        "dependencies": {
+            "bitflags 2.13.1",
+            "block2",
+            "objc2 0.5.2",
+            "objc2-foundation 0.2.2",
+        },
+    },
+    "objc2-quartz-core@0.2.2": {
+        "version": "0.2.2",
+        "checksum": "e42bee7bff906b14b167da2bac5efe6b6a07e6f7c0a21a7308d40c960242dc7a",
+        "license": "MIT",
+        "dependencies": {
+            "bitflags 2.13.1",
+            "block2",
+            "objc2 0.5.2",
+            "objc2-foundation 0.2.2",
+            "objc2-metal 0.2.2",
+        },
+    },
+    "tiny-skia@0.11.4": {
+        "version": "0.11.4",
+        "checksum": "83d13394d44dae3207b52a326c0c85a8bf87f1541f23b0d143811088497b09ab",
+        "license": "BSD-3-Clause",
+        "dependencies": {
+            "arrayref",
+            "arrayvec",
+            "bytemuck",
+            "cfg-if",
+            "log",
+            "tiny-skia-path 0.11.4",
+        },
+    },
+    "tiny-skia-path@0.11.4": {
+        "version": "0.11.4",
+        "checksum": "9c9e7fc0c2e86a30b117d0462aa261b72b7a99b7ebd7deb3a14ceda95c5bdc93",
+        "license": "BSD-3-Clause",
+        "dependencies": {
+            "arrayref",
+            "bytemuck",
+            "strict-num",
+        },
+    },
+}
+# Target-expanded build scripts pulled in by the winit default-feature tree
+# (Android/JNI shims, redox/rustix shims, smithay/wayland/x11 backends,
+# windows-targets 0.52.6 lineage, wit-bindgen, winit itself). Admitted only
+# while the winit inventory is present.
+WINIT_BUILD_SCRIPT_ADDITIONS = {
+    "ahash",
+    "android-activity",
+    "crossbeam-utils",
+    "getrandom",
+    "jni",
+    "jni-macros",
+    "jni-sys",
+    "objc-sys",
+    "orbclient",
+    "rustix",
+    "smithay-client-toolkit",
+    "wayland-backend",
+    "wayland-client",
+    "wayland-sys",
+    "windows_aarch64_gnullvm",
+    "windows_aarch64_msvc",
+    "windows_i686_gnu",
+    "windows_i686_gnullvm",
+    "windows_i686_msvc",
+    "windows_x86_64_gnu",
+    "windows_x86_64_gnullvm",
+    "windows_x86_64_msvc",
+    "winit",
+    "wit-bindgen",
+    "x11-dl",
+}
 EXPECTED_WORKSPACE_DEPENDENCIES = {
     "lumenplot": {"lumenplot-engine", "lumenplot-export"},
     "lumenplot-bench": {
@@ -823,15 +1084,22 @@ def check_lock(root: Path, errors: list[str]) -> None:
         actual[key] = package
 
     wgpu_active = f"wgpu@{WGPU_PACKAGE_VERSION}" in actual
+    # WINAPP M1 admission: the winit 0.30.13 default-feature tree is present
+    # exactly when its pinned root sits in the lockfile inventory.
+    winit_active = "winit@0.30.13" in actual
     expected_keys = {f"{name}@{data['version']}" for name, data in EXPECTED_REGISTRY.items()}
     expected_keys.update(f"{name}@0.1.0" for name in EXPECTED_WORKSPACE_DEPENDENCIES)
+    if winit_active:
+        expected_keys.update(WINIT_TARGET_REGISTRY)
     if wgpu_active:
         # The wgpu lane has a large target-expanded transitive closure.  Keep
         # its complete lockfile inventory fail-closed with a checked-in digest,
         # while retaining the package-level diagnostics for the pre-existing
-        # workspace entries below.
+        # workspace entries below. The M1 admission swaps in the post-winit
+        # digest while the winit inventory is present.
         lock_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
-        if lock_digest != WGPU_LOCK_SHA256:
+        expected_digest = WINIT_WGPU_LOCK_SHA256 if winit_active else WGPU_LOCK_SHA256
+        if lock_digest != expected_digest:
             errors.append("Cargo.lock wgpu inventory hash drift")
     if set(actual) != expected_keys:
         missing = sorted(expected_keys - set(actual))
@@ -856,8 +1124,27 @@ def check_lock(root: Path, errors: list[str]) -> None:
             for dependency in package.get("dependencies", [])
             if isinstance(dependency, str)
         }
-        if dependencies != expected["dependencies"]:
+        expected_dependencies = expected["dependencies"]
+        if winit_active and name in WINIT_LOCK_EDGE_OVERRIDES:
+            expected_dependencies = WINIT_LOCK_EDGE_OVERRIDES[name]
+        if dependencies != expected_dependencies:
             errors.append(f"Cargo.lock dependency graph drift for {name}")
+    if winit_active:
+        for key, expected in WINIT_TARGET_REGISTRY.items():
+            package = actual.get(key)
+            if package is None:
+                continue
+            if package.get("source") != REGISTRY_SOURCE:
+                errors.append(f"Cargo.lock source drift for {key}")
+            if package.get("checksum") != expected["checksum"]:
+                errors.append(f"Cargo.lock checksum drift for {key}")
+            dependencies = {
+                dependency
+                for dependency in package.get("dependencies", [])
+                if isinstance(dependency, str)
+            }
+            if dependencies != expected["dependencies"]:
+                errors.append(f"Cargo.lock dependency graph drift for {key}")
     if wgpu_active:
         package = actual.get(f"wgpu@{WGPU_PACKAGE_VERSION}")
         if package is not None:
@@ -879,7 +1166,10 @@ def check_lock(root: Path, errors: list[str]) -> None:
                 for dependency in package.get("dependencies", [])
                 if isinstance(dependency, str)
             }
-            if dependencies != expected["dependencies"]:
+            expected_dependencies = expected["dependencies"]
+            if winit_active and name in WINIT_LOCK_EDGE_OVERRIDES:
+                expected_dependencies = WINIT_LOCK_EDGE_OVERRIDES[name]
+            if dependencies != expected_dependencies:
                 errors.append(f"Cargo.lock dependency graph drift for {name}")
 
     for name, expected in EXPECTED_WORKSPACE_DEPENDENCIES.items():
@@ -893,6 +1183,8 @@ def check_lock(root: Path, errors: list[str]) -> None:
             for dependency in package.get("dependencies", [])
             if isinstance(dependency, str)
         }
+        if winit_active and name in WINIT_WORKSPACE_EDGE_OVERRIDES:
+            expected = WINIT_WORKSPACE_EDGE_OVERRIDES[name]
         if dependencies != expected:
             errors.append(f"Cargo.lock dependency graph drift for workspace package {name}")
 
@@ -932,6 +1224,14 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         (name, expected["version"]) for name, expected in EXPECTED_REGISTRY.items()
     }
     wgpu_active = ("wgpu", WGPU_PACKAGE_VERSION) in registry_packages
+    # WINAPP M1 admission: same lockfile-inventory sentinel as check_lock.
+    winit_active = ("winit", "0.30.13") in registry_packages
+    winit_keys = {
+        (key.rsplit("@", 1)[0], expected["version"])
+        for key, expected in WINIT_TARGET_REGISTRY.items()
+    }
+    if winit_active:
+        expected_keys |= winit_keys
     if wgpu_active:
         missing = sorted(expected_keys - set(registry_packages))
         if missing:
@@ -958,6 +1258,19 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
             errors.append(f"metadata license drift for {name}")
         if package.get("source") != REGISTRY_SOURCE:
             errors.append(f"metadata source drift for {name}")
+
+    if winit_active:
+        for key, expected in WINIT_TARGET_REGISTRY.items():
+            name = key.rsplit("@", 1)[0]
+            package = registry_packages.get((name, expected["version"]))
+            if package is None:
+                continue
+            if package.get("version") != expected["version"]:
+                errors.append(f"metadata version drift for {key}")
+            if package.get("license") != expected["license"]:
+                errors.append(f"metadata license drift for {key}")
+            if package.get("source") != REGISTRY_SOURCE:
+                errors.append(f"metadata source drift for {key}")
 
     if wgpu_active:
         wgpu_package = registry_packages["wgpu", WGPU_PACKAGE_VERSION]
@@ -1003,6 +1316,40 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         }
         if dependencies != expected_dependencies:
             errors.append(f"metadata dependency graph drift for {name}")
+    if winit_active:
+        # nodes_by_name above is name-keyed and cannot disambiguate the
+        # admitted second lineages, so match winit-tree nodes by exact
+        # (name, version) identity instead.
+        package_version_by_id = {
+            package["id"]: (package["name"], package["version"])
+            for package in packages
+            if isinstance(package, dict)
+            and isinstance(package.get("id"), str)
+            and isinstance(package.get("name"), str)
+            and isinstance(package.get("version"), str)
+        }
+        winit_nodes = {}
+        for node in nodes:
+            if not isinstance(node, dict) or not isinstance(node.get("id"), str):
+                continue
+            identity = package_version_by_id.get(node["id"])
+            if identity is not None and f"{identity[0]}@{identity[1]}" in WINIT_TARGET_REGISTRY:
+                winit_nodes[f"{identity[0]}@{identity[1]}"] = node
+        for key, expected in WINIT_TARGET_REGISTRY.items():
+            node = winit_nodes.get(key)
+            if node is None:
+                errors.append(f"metadata resolution is missing {key}")
+                continue
+            dependencies = {
+                package_names_by_id.get(dependency, dependency)
+                for dependency in node.get("dependencies", [])
+                if isinstance(dependency, str)
+            }
+            expected_dependencies = {
+                dependency.split(" ", 1)[0] for dependency in expected["dependencies"]
+            }
+            if dependencies != expected_dependencies:
+                errors.append(f"metadata dependency graph drift for {key}")
     for name, expected_dependencies in EXPECTED_WORKSPACE_DEPENDENCIES.items():
         node = nodes_by_name.get(name)
         if node is None:
@@ -1100,7 +1447,7 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         "wgpu-core",
         "wgpu-hal",
         "zerocopy",
-    }:
+    } | (WINIT_BUILD_SCRIPT_ADDITIONS if winit_active else set()):
         errors.append("dependency build-script inventory drift")
 
 
