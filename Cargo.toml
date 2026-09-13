@@ -8,6 +8,7 @@ members = [
     "crates/lumenplot-render-metal",
     "crates/lumenplot-render-wgpu",
     "crates/lumenplot-runtime",
+    "crates/lumenplot-window",
     "crates/lumenplot-viewer",
     "crates/lumenplot-python",
     "crates/lumenplot-bench",

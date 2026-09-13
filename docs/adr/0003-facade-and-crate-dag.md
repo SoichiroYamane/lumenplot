@@ -37,6 +37,7 @@ lumenplot-engine ── semantic frame ── lumenplot-render-api
 
 lumenplot-runtime ── main-thread session/surface/device lifecycle
 crates/lumenplot-viewer ── viewer product edge over facade + runtime
+crates/lumenplot-window ── window/event host over runtime + render-wgpu (winit 0.30.x only)
 crates/lumenplot-bench ── internal evidence tooling
 ```
 
@@ -51,6 +52,7 @@ The exact ownership and allowed edges are:
 | `crates/lumenplot-render-wgpu` | Concrete portable renderer consuming `lumenplot-render-api`; the dependency direction never points back from render-api to this crate. |
 | `crates/lumenplot-runtime` | Main-thread runtime, session, surface, device, and lifecycle ownership. There is no facade-to-runtime edge in this phase. |
 | `crates/lumenplot-viewer` | Standalone viewer product edge or binary/library over the facade and runtime. |
+| `crates/lumenplot-window` | Window/event host over `lumenplot-runtime` and `lumenplot-render-wgpu`. The only permitted external edge is pinned winit 0.30.x (baseline 0.30.13 per ADR 0008); no other external dependency. `publish = false`. Main-thread ownership per ADR 0005; the M1 seam surface is M1-lane owned with review as the gate. |
 | `crates/lumenplot-python` | PyO3 `cdylib` edge providing extension module `lumenplot_mpl._native`. |
 | `crates/lumenplot-bench` | Internal benchmark and evidence tooling; it is not a product facade. |
 | `python/lumenplot-mpl` | Python distribution `lumenplot-mpl`, package `lumenplot_mpl`, backend `lumenplot_mpl.backend`, loader `module://lumenplot_mpl.backend`, and backend entry-point name `lumenplot`. |
@@ -64,6 +66,15 @@ frontend or adapter → lumenplot facade → engine/export
 ```
 
 The engine has no Python feature. No speculative public backend trait is introduced. No public default-feature contract is introduced in Phase 0. The one-way adapter and the concrete package/module names remain as fixed by ADR 0002 and the product requirements ([LP-PROD-010](../requirements/lumenplot-v1.0.md#5-basic-architecture), [LP-PROD-014](../requirements/lumenplot-v1.0.md#5-basic-architecture), [LP-MPL-001](../requirements/lumenplot-v1.0.md#15-python-and-matplotlib-bridge), [LP-MPL-002](../requirements/lumenplot-v1.0.md#15-python-and-matplotlib-bridge), [LP-MPL-017](../requirements/lumenplot-v1.0.md#15-python-and-matplotlib-bridge)).
+
+### Window-crate amendment (2026-09-13)
+
+This amendment names `crates/lumenplot-window` for the accepted v1 window app ([LP-FUNC-042](../requirements/lumenplot-v1.0.md#31-v1-functional-scope), PR155) and fixes its crate-DAG position ahead of the M1 implementation lane. It decides crate identity and allowed edges only; the M1 seam surface stays M1-lane owned with review as the gate.
+
+- Allowed edges: `lumenplot-runtime` and `lumenplot-render-wgpu` (internal path edges), plus pinned winit 0.30.x as the only permitted external edge. The winit baseline is 0.30.13 per [ADR 0008](0008-portable-gpu-and-shaders.md); no other external dependency is admitted.
+- `publish = false`, with workspace-inherited package metadata, enforced by the static workspace checker like every other member.
+- Main-thread ownership (runtime, surface, GPU device) follows [ADR 0005](0005-runtime-viewer-host-loop.md): worker work never assumes ownership of those concrete objects, and lower layers never name concrete window types.
+- Static enforcement lives in `scripts/check_workspace_architecture.py` (members, package-path, and exact-edge rules). The skeletal stub keeps an empty external inventory; the winit allowance and the active-source inventory are admitted by a follow-up amendment once the M1 seam design fixes them, so M1 code never lands without static cover.
 
 ### Visibility and publication guards
 

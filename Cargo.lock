@@ -717,6 +717,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumenplot-window"
+version = "0.1.0"
+dependencies = [
+ "lumenplot-render-wgpu",
+ "lumenplot-runtime",
+]
+
+[[package]]
 name = "matrixmultiply"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

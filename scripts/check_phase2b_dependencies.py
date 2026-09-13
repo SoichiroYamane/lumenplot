@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
-WGPU_LOCK_SHA256 = "1a64ff0870c402dff09b6e67bf8e0f34e699d24c4e02f0ee4b8bde0ac78b7a2a"
+# Repinned 2026-09-13 for the WINAPP contract lane: the lockfile gains only
+# the skeletal lumenplot-window member entry (no registry change).
+WGPU_LOCK_SHA256 = "58d77cc67bdd45814b214c3bbd5681a94775811226d186899608e44efce1f832"
 WGPU_PACKAGE_VERSION = "29.0.4"
 WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
 WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
