@@ -160,8 +160,14 @@ Exit criteria:
 
 Current status: PR #91 records a bounded private logical-resource cache,
 packet lease transfer, completion-fence retirement, multiple-owner accounting,
-and device-generation invalidation model. The shared semantic/layout frame,
-concrete renderer-owner integration, device-loss rebuild, and full environment
+and device-generation invalidation model. PR #115 adds the shared
+semantic/layout frame, validated owner handoff, and retained CPU-frame
+device-loss rebuild. PR #181 (merged as 1f263b7) adds bounded
+malformed/capacity packet-bounds tests, exact generation-ordering properties,
+a session-layer generation-scoped cancellation pin, and the explicit EXIT-1
+not-to-wire record for export (export keeps consuming the engine-resolved
+`LineFrame`; a render-api edge is DAG-forbidden). Concrete renderer-owner
+integration, LOD/layout worker binding, and full environment
 evidence remain open.
 
 Implement:
@@ -184,7 +190,12 @@ Implement:
 Exit criteria:
 
 - the CPU export path and a second renderer test double consume the same
-  validated frame/packet meaning;
+  validated frame/packet meaning (EXIT-1, recorded in PR #181: export
+  explicitly does not wire to the packet type — it consumes the
+  engine-resolved `LineFrame`, and the shared meaning is already wired at
+  the engine seam with digest equality pinned across independent
+  consumers — so this criterion is met by documented decision, not by a
+  new export edge);
 - stale generations, incomplete packets, invalid resources, and premature
   retirement fail deterministically;
 - core/render-api remain free of Python, Matplotlib, wgpu, window, and native
