@@ -63,13 +63,13 @@ from __future__ import annotations
 import io
 import math
 import os
-import threading
 from typing import Any
 
 import matplotlib
 from matplotlib.backend_bases import FigureCanvasBase, FigureManagerBase
 
 from lumenplot_mpl.backend_preflight import _EligibilityPreflight
+from lumenplot_mpl.backend_state import _CanvasPublicationState
 from lumenplot_mpl.backend_types import (
     LumenPlotFallbackDiagnostic,
     LumenPlotPngResult,
@@ -181,12 +181,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
                 f"mode must be 'strict' or 'hybrid', got {mode!r}"
             )
         self._mode = mode
-        self._generation = 0
-        self._last_diagnostics: tuple = ()
-        # This lock covers only adapter-owned counters/publication state.
-        # It is never held while invoking a Matplotlib callback or a caller
-        # supplied writer, preserving the reentrancy boundary in ADR 0015.
-        self._publication_lock = threading.Lock()
+        self._publication = _CanvasPublicationState()
         super().__init__(figure)
 
     @property
@@ -197,8 +192,11 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
     @property
     def last_diagnostics(self) -> tuple:
         """Read-only observation of the last published diagnostics."""
-        with self._publication_lock:
-            return tuple(self._last_diagnostics)
+        return self._publication.last_diagnostics
+
+    @property
+    def _generation(self) -> int:
+        return self._publication.generation
 
     # -- helper API -------------------------------------------------------
 
@@ -220,13 +218,13 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         try:
             result, generation = self._render_attempt(dpi=dpi, **kwargs)
             if target is not None:
-                self._ensure_current_generation(generation)
+                self._publication.ensure_current(generation)
                 self._write_target(target, result.png_bytes)
-            self._publish_result(generation, result)
+            self._publication.publish(generation, result)
             return result
         except BaseException:
             if generation is not None:
-                self._clear_diagnostics_if_current(generation)
+                self._publication.clear_if_current(generation)
             raise
 
     # -- Matplotlib-compatible output methods -----------------------------
@@ -272,12 +270,12 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         try:
             result, generation = self._render_attempt(dpi=dpi)
             if filename_or_obj is not None:
-                self._ensure_current_generation(generation)
+                self._publication.ensure_current(generation)
                 self._write_target(filename_or_obj, result.png_bytes)
-            self._publish_result(generation, result)
+            self._publication.publish(generation, result)
         except BaseException:
             if generation is not None:
-                self._clear_diagnostics_if_current(generation)
+                self._publication.clear_if_current(generation)
             raise
 
     def print_figure(self, filename, dpi=None, facecolor=None, edgecolor=None,
@@ -329,7 +327,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         try:
             effective_dpi = self._resolve_dpi(dpi)
         except BaseException:
-            self._clear_published_diagnostics()
+            self._publication.clear()
             raise
         try:
             self.print_png(
@@ -389,7 +387,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         modes.
         """
         result, generation = self._render_attempt(dpi=dpi, **kwargs)
-        self._publish_result(generation, result)
+        self._publication.publish(generation, result)
         return result
 
     def _render_attempt(
@@ -405,7 +403,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         callers that only request owned bytes publish immediately after this
         method returns.
         """
-        generation = self._begin_attempt()
+        generation = self._publication.begin_attempt()
         try:
             return self._render_attempt_body(
                 generation=generation,
@@ -413,7 +411,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
                 **kwargs,
             ), generation
         except BaseException:
-            self._clear_diagnostics_if_current(generation)
+            self._publication.clear_if_current(generation)
             raise
 
     def _render_attempt_body(
@@ -442,49 +440,6 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
                 type_context=type_context,
             )
 
-    def _begin_attempt(self) -> int:
-        """Spend one generation and clear the previous observation."""
-        with self._publication_lock:
-            generation = self._generation + 1
-            self._generation = generation
-            self._last_diagnostics = ()
-            return generation
-
-    def _ensure_current_generation(self, generation: int) -> None:
-        """Reject a result superseded by a newer render attempt."""
-        with self._publication_lock:
-            current = self._generation
-        if current != generation:
-            raise LumenPlotUnsupportedError(
-                "render attempt became stale before publication",
-                code=_INTERNAL_TOKEN,
-                generation=generation,
-            )
-
-    def _publish_result(
-        self, generation: int, result: LumenPlotPngResult
-    ) -> None:
-        """Atomically publish diagnostics for the current generation."""
-        with self._publication_lock:
-            if self._generation != generation:
-                raise LumenPlotUnsupportedError(
-                    "render attempt became stale before publication",
-                    code=_INTERNAL_TOKEN,
-                    generation=generation,
-                )
-            self._last_diagnostics = tuple(result.diagnostics)
-
-    def _clear_diagnostics_if_current(self, generation: int) -> None:
-        """Clear failed-attempt state without clobbering newer output."""
-        with self._publication_lock:
-            if self._generation == generation:
-                self._last_diagnostics = ()
-
-    def _clear_published_diagnostics(self) -> None:
-        """Clear diagnostics for a rejected output request."""
-        with self._publication_lock:
-            self._last_diagnostics = ()
-
     def _raise_output_error(
         self,
         message: str,
@@ -492,7 +447,7 @@ class FigureCanvasLumenPlot(FigureCanvasBase):
         code: str = _UNSUPPORTED_TOKEN,
     ) -> None:
         """Raise a stable output guard error after clearing stale state."""
-        self._clear_published_diagnostics()
+        self._publication.clear()
         raise LumenPlotUnsupportedError(message, code=code)
 
     def _render_strict(self, *, generation: int,
