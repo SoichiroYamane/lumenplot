@@ -58,6 +58,7 @@ class TestBackendPrivateModuleBoundary(unittest.TestCase):
             for name in (
                 "backend.py",
                 "backend_preflight.py",
+                "backend_state.py",
                 "backend_support.py",
                 "backend_types.py",
             )
