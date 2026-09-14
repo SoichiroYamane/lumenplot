@@ -3507,6 +3507,7 @@ PHASE3A2_PHASE3B_PACKAGE_FILES = frozenset(
         "backend.py",
         "backend_preflight.py",
         "backend_state.py",
+        "backend_eligibility.py",
         "backend_support.py",
         "backend_types.py",
         "textpath.py",
