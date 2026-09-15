@@ -60,6 +60,7 @@ class TestBackendPrivateModuleBoundary(unittest.TestCase):
                 "backend_preflight.py",
                 "backend_state.py",
                 "backend_eligibility.py",
+                "backend_legend.py",
                 "backend_support.py",
                 "backend_types.py",
             )
