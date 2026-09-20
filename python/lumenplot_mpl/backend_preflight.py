@@ -235,17 +235,21 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         self,
         figure: matplotlib.figure.Figure,
     ) -> list[dict]:
-        """Enumerate accepted tick and legend labels in draw order.
+        """Enumerate accepted tick, axis, and legend labels in draw order.
 
         Matplotlib draws each decorated axes' major ticks through public
         ``Axis.get_major_ticks``/``get_ticklocs`` in the same order the
         collector observes their ``draw_text`` callbacks (x-axis first,
-        then y-axis; ``label1`` before ``label2`` per tick). Only visible
-        non-empty labels whose tick location lies inside
-        ``Axis.get_view_interval()`` enter the queue: ``Tick.draw`` skips
-        out-of-view ticks entirely, so an unfiltered enumeration would
-        accept labels the renderer never draws. A whitelisted legend then
-        contributes its entry labels after its axes' tick labels.
+        then y-axis; ``label1`` before ``label2`` per tick). The B-2a
+        (R2) axis labels interleave per axis: the x-axis ``xlabel``
+        draws after its x-tick labels and before the y-axis ticks, and
+        the y-axis ``ylabel`` draws after its y-tick labels. Only
+        visible non-empty labels whose tick location lies inside
+        ``Axis.get_view_interval()`` enter the queue: ``Tick.draw``
+        skips out-of-view ticks entirely, so an unfiltered enumeration
+        would accept labels the renderer never draws. A whitelisted
+        legend then contributes its entry labels after its axes' tick
+        and axis labels.
         """
         entries: list[dict] = []
         decorated_axes = self._decorated_axes or None
@@ -291,6 +295,27 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
                                     "family": tuple(label_prop.get_family()),
                                 }
                             )
+                    # B-2a (R2): the axis label draws immediately after
+                    # its own axis' tick labels (xlabel after x-ticks,
+                    # ylabel after y-ticks). Only visible non-empty
+                    # labels enter the queue: an empty or invisible
+                    # label draws nothing.
+                    axis_label = axis.get_label()
+                    axis_text = axis_label.get_text()
+                    if axis_label.get_visible() and axis_text != "":
+                        axis_prop = axis_label.get_fontproperties()
+                        entries.append(
+                            {
+                                "kind": "axis_label",
+                                "artist": axis_label,
+                                "text": str(axis_text),
+                                "size": float(axis_label.get_fontsize()),
+                                "angle": float(axis_label.get_rotation()),
+                                "weight": axis_prop.get_weight(),
+                                "style": axis_prop.get_style(),
+                                "family": tuple(axis_prop.get_family()),
+                            }
+                        )
             legend = ax.get_legend()
             if type(legend) is matplotlib.legend.Legend:
                 for label in legend.get_texts():
@@ -440,7 +465,10 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         line2d group structure and per-artist ``new_gc`` calls. Since the
         PRAC-A-W wire-up the trace also admits one ``draw_text`` callback
         per statically enumerated major tick label, cross-checked against
-        that label's public string/font size/rotation. Since PRAC-A-L it
+        that label's public string/font size/rotation. Since B-2a (R2)
+        it additionally admits one ``draw_text`` per visible non-empty
+        ``xlabel``/``ylabel``, in per-axis draw order (xlabel after its
+        x-ticks, ylabel after its y-ticks). Since PRAC-A-L it
         additionally admits, per whitelisted legend, the rounded frame
         patch stroke and one handle stroke per entry (validated and
         converted into seam-ready commands keyed by legend identity).
@@ -832,7 +860,10 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         Every leaf artist group has one ``new_gc`` immediately followed by
         its callback. ``FillBetweenPolyCollection`` is the one exception:
         one graphics context may service several polygon paths. Axis groups
-        contain only ``xtick``/``ytick`` groups, and a legend contains an
+        contain only ``xtick``/``ytick`` groups plus, since B-2a (R2), at
+        most one direct ``text`` group per axis carrying that axis'
+        ``xlabel``/``ylabel`` draw_text; tick-label texts stay nested
+        inside their ``xtick``/``ytick`` groups, and a legend contains an
         optional frame patch followed by line/text entry pairs. The axes
         body remains order-free under LP-FUNC-035 D2, but unknown groups,
         bare callbacks, missing graphics contexts, and unbalanced nesting
@@ -973,12 +1004,24 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
             index += 1
             while index < total and events[index][0] == "open":
                 child = events[index][1]
-                if child not in ("xtick", "ytick"):
+                if child in ("xtick", "ytick"):
+                    if not consume_axis_tick(child):
+                        return False
+                elif child == "text":
+                    # B-2a (R2): the direct text child of an axis group
+                    # is that axis' xlabel/ylabel draw_text (tick-label
+                    # texts nest inside xtick/ytick). The draw-order
+                    # cross-check already proved the text matches the
+                    # enumerated axis label; the grammar only proves the
+                    # group shape.
+                    if consume_leaf(
+                        "text", "draw_text", ("draw_text_unexpected",)
+                    ) is None:
+                        return False
+                else:
                     fail(
                         f"unexpected {child!r} group inside {tag!r}"
                     )
-                    return False
-                if not consume_axis_tick(child):
                     return False
             if index >= total or events[index] != ("close", tag):
                 fail(f"{tag} group is not balanced")
@@ -1505,9 +1548,10 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         the Axis-unit placement Agg actually draws: grid/tick strokes with
         their axis unit below default content, spines z2.5 above it),
         while inverted or negative zorders interleave exactly as Agg
-        paints them. Tick label glyphs stay appended after content: the
-        text wire-up owns their emission position and Agg itself always
-        paints labels last within the axes' decoration surface.
+        paints them. Tick and axis label glyphs stay appended after
+        content: the text wire-up owns their emission position and Agg
+        itself always paints labels last within the axes' decoration
+        surface.
         """
         if self._three_d_axes:
             return self._build_3d_frame_spec(
@@ -1734,7 +1778,9 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         public-getter route as every other command surface. Since the
         PRAC-A-L amendment the same route renders legend entry labels
         (payload kind ``legend_label``), tagged with a distinct
-        ``decoration`` marker.
+        ``decoration`` marker. Since B-2a (R2) it renders ``xlabel`` /
+        ``ylabel`` axis labels (payload kind ``axis_label``) with the
+        ``axis_label`` marker.
         """
         commands: list[dict] = []
         scale = self._effective_dpi / 72.0
@@ -1744,11 +1790,12 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
             anchor_y = float(payload["y"])
             angle_deg = float(payload["angle"])
             label_kind = str(payload.get("kind", "tick_label"))
-            decoration = (
-                "legend_label"
-                if label_kind == "legend_label"
-                else "tick_label"
-            )
+            if label_kind == "legend_label":
+                decoration = "legend_label"
+            elif label_kind == "axis_label":
+                decoration = "axis_label"
+            else:
+                decoration = "tick_label"
             try:
                 outline = textpath._writer_glyph_outline_commands(
                     str(label.get_text()),
