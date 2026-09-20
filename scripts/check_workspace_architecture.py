@@ -774,7 +774,7 @@ PHASE3A2_INTERPRETERS = {
     "3.14": "/opt/python/cp314-cp314/bin/python",
 }
 PHASE3A2_ACTION_PINS = {
-    "actions/checkout": ("11bd71901bbe5b1630ceea73d27597364c9af683", "v4.2.2"),
+    "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "v7.0.1"),
     "dtolnay/rust-toolchain": ("032958afbdc797a9164d3bc0b56325c1308924a5", "1.97.1"),
     "actions/upload-artifact": ("043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "v7.0.1"),
 }
