@@ -20,7 +20,7 @@ use std::thread::ThreadId;
 use std::time::Duration;
 
 use lumenplot_render_api::__internal::{
-    DeviceGeneration, RenderPacket, SceneRevision, WorkGeneration,
+    DeviceGeneration, FillFamily, RenderPacket, SceneRevision, SemanticFillBar, WorkGeneration,
 };
 use lumenplot_render_api::FramePacket;
 
@@ -464,7 +464,7 @@ impl Renderer {
                     "validated render packet is stale or invalid",
                 )
             })?;
-        self.render(packet.frame())
+        self.render_validated_with_fills(packet)
     }
 
     fn ensure_owner(&self) -> Result<(), RenderError> {
@@ -579,6 +579,344 @@ impl Renderer {
             },
         );
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        let map_end = u64::try_from(prepared.readback_bytes).map_err(|_| {
+            RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "readback map size is not representable",
+            )
+        })?;
+        let (sender, receiver) = mpsc::channel();
+        let readback_slice = readback.buffer.slice(0..map_end);
+        readback_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result.is_ok());
+        });
+        if self
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(READBACK_TIMEOUT),
+            })
+            .is_err()
+        {
+            return Err(RenderError::new(
+                RenderErrorKind::ReadbackFailed,
+                "portable GPU readback timed out",
+            ));
+        }
+        if self.device_lost.load(Ordering::Acquire) {
+            return Err(RenderError::new(
+                RenderErrorKind::DeviceLost,
+                "portable GPU device was lost during rendering",
+            ));
+        }
+        if receiver
+            .recv_timeout(READBACK_TIMEOUT)
+            .ok()
+            .filter(|completed| *completed)
+            .is_none()
+        {
+            return Err(RenderError::new(
+                RenderErrorKind::ReadbackFailed,
+                "portable GPU readback failed",
+            ));
+        }
+
+        let mut rgba8 = Vec::new();
+        rgba8.try_reserve_exact(prepared.tight_bytes).map_err(|_| {
+            RenderError::new(
+                RenderErrorKind::OutOfMemory,
+                "host readback allocation failed",
+            )
+        })?;
+        rgba8.resize(prepared.tight_bytes, 0);
+        {
+            let mapped = readback_slice.get_mapped_range();
+            for row in 0..prepared.height as usize {
+                let source_start = row * prepared.row_pitch as usize;
+                let source_end = source_start + prepared.tight_row_bytes;
+                let destination_start = row * prepared.tight_row_bytes;
+                rgba8[destination_start..destination_start + prepared.tight_row_bytes]
+                    .copy_from_slice(&mapped[source_start..source_end]);
+            }
+        }
+        readback.buffer.unmap();
+        Ok(OffscreenFrame {
+            width: prepared.width,
+            height: prepared.height,
+            rgba8,
+        })
+    }
+
+    /// Renders one validated packet, consuming additive fill/bar meaning.
+    ///
+    /// The fill/bar family is read ONLY through the existing
+    /// renderer-visible projection (`packet.semantic_frame().fill_bar()`).
+    /// Draws execute fills/bars in `paint_order` beneath the line family
+    /// (decision D4) with each edge stroked immediately after its own fill
+    /// (decision D5). Packets without fill/bar meaning render exactly as
+    /// the line-only path. No new pipeline, shader module, or
+    /// resource-table entry is introduced: every draw reuses the static
+    /// line artifact with per-draw uniforms.
+    fn render_validated_with_fills(
+        &mut self,
+        packet: &RenderPacket,
+    ) -> Result<OffscreenFrame, RenderError> {
+        if self.device_lost.load(Ordering::Acquire) {
+            return Err(RenderError::new(
+                RenderErrorKind::DeviceLost,
+                "portable GPU device is lost",
+            ));
+        }
+        let frame = packet.frame();
+        let prepared = prepare_frame(frame, self.max_texture_dimension_2d)?;
+        let draws = match packet.semantic_frame().fill_bar() {
+            Some(fill_bar) => prepare_fill_draws(frame, fill_bar)?,
+            None => Vec::new(),
+        };
+        let mut fill_bytes = 0usize;
+        for draw in &draws {
+            fill_bytes = fill_bytes.checked_add(draw.vertices.len()).ok_or_else(|| {
+                RenderError::new(
+                    RenderErrorKind::CapacityExceeded,
+                    "fill-bar vertex storage exceeds a supported capacity",
+                )
+            })?;
+        }
+        if fill_bytes > MAX_VERTEX_BYTES {
+            return Err(RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "fill-bar vertex storage exceeds a supported capacity",
+            ));
+        }
+        let combined_bytes = fill_bytes
+            .checked_add(prepared.vertices.len())
+            .ok_or_else(|| {
+                RenderError::new(
+                    RenderErrorKind::CapacityExceeded,
+                    "frame vertex storage exceeds a supported capacity",
+                )
+            })?;
+        if u64::try_from(combined_bytes).unwrap_or(u64::MAX) > self.max_buffer_size
+            || u64::try_from(prepared.readback_bytes).unwrap_or(u64::MAX) > self.max_buffer_size
+        {
+            return Err(RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "frame buffers exceed the device capacity",
+            ));
+        }
+
+        // Error scopes keep backend resource failures explicit, mirroring
+        // the line-only `render` entry above.
+        let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let oom_scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let result = if draws.iter().all(|draw| draw.vertices.is_empty()) {
+            self.render_prepared(prepared)
+        } else {
+            self.render_prepared_with_fills(prepared, &draws)
+        };
+        let oom_error = block_on(oom_scope.pop());
+        let validation_error = block_on(validation_scope.pop());
+        if is_out_of_memory(oom_error) {
+            return Err(RenderError::new(
+                RenderErrorKind::OutOfMemory,
+                "portable GPU operation ran out of memory",
+            ));
+        }
+        if validation_error.is_some() {
+            return Err(RenderError::new(
+                RenderErrorKind::Internal,
+                "portable GPU operation failed validation",
+            ));
+        }
+        result
+    }
+
+    /// Submits fill/bar draws beneath a prepared line frame.
+    ///
+    /// Each draw carries its own uniform color/width through the shared
+    /// line pipeline: one submit per draw in `paint_order` (fill then its
+    /// edge), the first pass clearing and the rest loading, with the line
+    /// family drawn last on top. The copy/readback tail mirrors
+    /// `render_prepared`, which stays untouched for the line-only path.
+    /// Per-draw submits favor correctness over batching; batching is a
+    /// follow-up with no performance claim here.
+    fn render_prepared_with_fills(
+        &mut self,
+        prepared: PreparedFrame,
+        draws: &[FillDraw],
+    ) -> Result<OffscreenFrame, RenderError> {
+        let viewport = [f64::from(prepared.width), f64::from(prepared.height)];
+        let mut combined = Vec::new();
+        let mut ranges = Vec::new();
+        for draw in draws {
+            if draw.vertices.is_empty() {
+                continue;
+            }
+            let start = combined.len() as u64;
+            combined.extend_from_slice(&draw.vertices);
+            let end = combined.len() as u64;
+            let count = u32::try_from((end - start) / BYTES_PER_VERTEX as u64).map_err(|_| {
+                RenderError::new(
+                    RenderErrorKind::CapacityExceeded,
+                    "frame vertex count is not representable",
+                )
+            })?;
+            ranges.push((start, end, draw.color, draw.half_width_px, count));
+        }
+        if ranges.is_empty() {
+            return self.render_prepared(prepared);
+        }
+        let line_start = combined.len() as u64;
+        combined.extend_from_slice(&prepared.vertices);
+        let line_end = combined.len() as u64;
+        let total_bytes = combined.len() as u64;
+        self.ensure_vertex_buffer(total_bytes)?;
+        self.ensure_readback_buffer(u64::try_from(prepared.readback_bytes).map_err(|_| {
+            RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "readback buffer size is not representable",
+            )
+        })?)?;
+        self.ensure_render_target(prepared.width, prepared.height)?;
+        let vertex_buffer = self.vertex_buffer.as_ref().map(|retained| &retained.buffer);
+        let vertex_buffer = vertex_buffer.ok_or_else(|| {
+            RenderError::new(
+                RenderErrorKind::Internal,
+                "retained line vertex buffer is unavailable",
+            )
+        })?;
+        self.queue.write_buffer(vertex_buffer, 0, &combined);
+        let target = self.render_target.as_ref().ok_or_else(|| {
+            RenderError::new(
+                RenderErrorKind::Internal,
+                "retained color target is unavailable",
+            )
+        })?;
+        let readback = self.readback_buffer.as_ref().ok_or_else(|| {
+            RenderError::new(
+                RenderErrorKind::Internal,
+                "retained readback buffer is unavailable",
+            )
+        })?;
+
+        let mut first_pass = true;
+        for (start, end, color, half_width, count) in ranges {
+            let uniform = uniform_bytes(viewport, half_width, color)?;
+            self.queue.write_buffer(&self.uniform_buffer, 0, &uniform);
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("lumenplot-offscreen-fill-pass"),
+                });
+            {
+                let load = if first_pass {
+                    wgpu::LoadOp::Clear(prepared.clear_color)
+                } else {
+                    wgpu::LoadOp::Load
+                };
+                let color_attachment = Some(wgpu::RenderPassColorAttachment {
+                    view: &target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                });
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("lumenplot-offscreen-fill-pass"),
+                    color_attachments: &[color_attachment],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_scissor_rect(
+                    prepared.scissor.x,
+                    prepared.scissor.y,
+                    prepared.scissor.width,
+                    prepared.scissor.height,
+                );
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_vertex_buffer(0, vertex_buffer.slice(start..end));
+                pass.draw(0..count, 0..1);
+            }
+            self.queue.submit(std::iter::once(encoder.finish()));
+            first_pass = false;
+        }
+
+        // The line family draws last on top (decision D4).
+        if line_start < line_end {
+            self.queue
+                .write_buffer(&self.uniform_buffer, 0, &prepared.uniform_bytes);
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("lumenplot-offscreen-encoder"),
+                });
+            {
+                let color_attachment = Some(wgpu::RenderPassColorAttachment {
+                    view: &target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                });
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("lumenplot-offscreen-line-pass"),
+                    color_attachments: &[color_attachment],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_scissor_rect(
+                    prepared.scissor.x,
+                    prepared.scissor.y,
+                    prepared.scissor.width,
+                    prepared.scissor.height,
+                );
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_vertex_buffer(0, vertex_buffer.slice(line_start..line_end));
+                pass.draw(0..prepared.vertex_count, 0..1);
+            }
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
+
+        // Copy/readback tail mirrors `render_prepared`, which stays
+        // untouched for the line-only path.
+        let mut copy_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("lumenplot-offscreen-encoder"),
+                });
+        copy_encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(prepared.row_pitch),
+                    rows_per_image: Some(prepared.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: prepared.width,
+                height: prepared.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(std::iter::once(copy_encoder.finish()));
 
         let map_end = u64::try_from(prepared.readback_bytes).map_err(|_| {
             RenderError::new(
@@ -1183,6 +1521,400 @@ fn prepare_frame(
     })
 }
 
+/// One uniformly-colored fill/bar draw unit beneath the line family.
+///
+/// Fill and bar interiors triangulate into solid triangles with zero
+/// `local_px`, so the shared line-shader coverage resolves to one; edge
+/// strokes reuse the line expansion. Draws execute in `paint_order`
+/// sequence with each edge immediately after its own fill, and the line
+/// family draws last on top. No new WGSL module, pipeline, or
+/// resource-table entry exists for this lane: every draw reuses the
+/// static line artifact with per-draw uniforms, which keeps the
+/// `shaders/line.wgsl` manifest triple-pin, the `naga 29.0.4`
+/// validation, the `DisplayLogical top-left` space, and the no-runtime-
+/// download rule exactly as pinned.
+#[derive(Clone, Debug)]
+struct FillDraw {
+    vertices: Vec<u8>,
+    color: [u8; 4],
+    half_width_px: f64,
+}
+
+/// Solid-fill uniform half width in pixels.
+///
+/// With zero `local_px`, any half width at or above the shader's
+/// anti-alias width resolves coverage to one; `1.0` keeps the solid
+/// interior independent of line and edge widths.
+const FILL_SOLID_HALF_WIDTH_PX: f64 = 1.0;
+
+/// Prepares validated fill/bar draws beneath the line family.
+///
+/// Reads ONLY the existing renderer-visible projection (the caller passes
+/// the value from `RenderPacket::semantic_frame().fill_bar()`). Draws
+/// follow `paint_order` exactly (decision D4); each edge draws immediately
+/// after its own fill (decision D5). Primitive and point budgets reuse the
+/// existing `MAX_*` family with the fill vertices sharing the running
+/// line point budget (decision D6); any violation fails closed with the
+/// existing error kinds and sanitized messages. No pixel comparison
+/// happens here.
+fn prepare_fill_draws(
+    frame: &FramePacket,
+    fill_bar: &SemanticFillBar,
+) -> Result<Vec<FillDraw>, RenderError> {
+    let [width, height] = frame.canvas_px();
+    let canvas = [f64::from(width), f64::from(height)];
+
+    // Seed the running point budget with the line family so fill vertices
+    // share `MAX_PACKET_POINTS` exactly like packet validation (D6). Line
+    // geometry itself is validated by `prepare_frame`, which the caller
+    // runs first so line errors report first.
+    let mut line_points = 0usize;
+    for series in frame.series() {
+        for segment in series.segments() {
+            line_points = line_points
+                .checked_add(segment.points().len())
+                .ok_or_else(|| {
+                    RenderError::new(
+                        RenderErrorKind::CapacityExceeded,
+                        "fill-bar point count exceeds a supported capacity",
+                    )
+                })?;
+        }
+    }
+    let mut fill_points = 0usize;
+    for fill in fill_bar.fills() {
+        fill_points = fill_points
+            .checked_add(fill.points().len())
+            .ok_or_else(|| {
+                RenderError::new(
+                    RenderErrorKind::CapacityExceeded,
+                    "fill-bar point count exceeds a supported capacity",
+                )
+            })?;
+    }
+    let primitives = fill_bar
+        .fills()
+        .len()
+        .checked_add(fill_bar.bars().len())
+        .ok_or_else(|| {
+            RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "fill-bar draw count exceeds a supported capacity",
+            )
+        })?;
+    check_fill_budgets(line_points, fill_points, primitives)?;
+
+    let mut draws = Vec::new();
+    let mut fill_bytes = 0usize;
+    let push_draw = |draws: &mut Vec<FillDraw>,
+                     fill_bytes: &mut usize,
+                     vertices: Vec<u8>,
+                     color: [u8; 4],
+                     half_width_px: f64| {
+        *fill_bytes = fill_bytes.checked_add(vertices.len()).ok_or_else(|| {
+            RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "fill-bar vertex storage exceeds a supported capacity",
+            )
+        })?;
+        if *fill_bytes > MAX_VERTEX_BYTES {
+            return Err(RenderError::new(
+                RenderErrorKind::CapacityExceeded,
+                "fill-bar vertex storage exceeds a supported capacity",
+            ));
+        }
+        draws.push(FillDraw {
+            vertices,
+            color,
+            half_width_px,
+        });
+        Ok(())
+    };
+
+    for key in fill_bar.paint_order() {
+        match key.family() {
+            FillFamily::Fill => {
+                let fill = fill_bar.fills().get(key.index()).ok_or_else(|| {
+                    RenderError::new(RenderErrorKind::Internal, "fill-bar paint order is invalid")
+                })?;
+                for point in fill.points() {
+                    if !point.x().is_finite()
+                        || !point.y().is_finite()
+                        || point.x() < 0.0
+                        || point.y() < 0.0
+                        || point.x() > canvas[0]
+                        || point.y() > canvas[1]
+                    {
+                        return Err(RenderError::new(
+                            RenderErrorKind::InvalidInput,
+                            "fill-bar point geometry is invalid",
+                        ));
+                    }
+                }
+                let edge_width = match fill.edge() {
+                    Some(edge) => {
+                        if !edge.width_px().is_finite() || edge.width_px() <= 0.0 {
+                            return Err(RenderError::new(
+                                RenderErrorKind::InvalidInput,
+                                "fill-bar edge style is invalid",
+                            ));
+                        }
+                        Some(edge.width_px())
+                    }
+                    None => None,
+                };
+                let points = fill.points();
+                if points.len() < 3 {
+                    return Err(RenderError::new(
+                        RenderErrorKind::Internal,
+                        "fill-bar geometry is invalid",
+                    ));
+                }
+                // Implicit close (decision D2): the open ring fans from
+                // vertex zero, closing last-to-first.
+                let triangles = points.len() - 2;
+                let mut vertices = Vec::new();
+                vertices
+                    .try_reserve_exact(triangles * 3 * BYTES_PER_VERTEX)
+                    .map_err(|_| {
+                        RenderError::new(
+                            RenderErrorKind::OutOfMemory,
+                            "host fill vertex allocation failed",
+                        )
+                    })?;
+                for index in 1..points.len() - 1 {
+                    append_fill_triangle(
+                        &mut vertices,
+                        points[0],
+                        points[index],
+                        points[index + 1],
+                    )?;
+                }
+                let paint = fill.fill();
+                push_draw(
+                    &mut draws,
+                    &mut fill_bytes,
+                    vertices,
+                    [paint.r(), paint.g(), paint.b(), paint.a()],
+                    FILL_SOLID_HALF_WIDTH_PX,
+                )?;
+                if let Some(edge) = fill.edge() {
+                    let width_px = edge_width.ok_or_else(|| {
+                        RenderError::new(
+                            RenderErrorKind::Internal,
+                            "fill-bar edge style is invalid",
+                        )
+                    })?;
+                    let mut edge_vertices = Vec::new();
+                    edge_vertices
+                        .try_reserve_exact(points.len() * 6 * BYTES_PER_VERTEX)
+                        .map_err(|_| {
+                            RenderError::new(
+                                RenderErrorKind::OutOfMemory,
+                                "host fill vertex allocation failed",
+                            )
+                        })?;
+                    for index in 0..points.len() {
+                        let next = points[(index + 1) % points.len()];
+                        append_segment_quad(
+                            &mut edge_vertices,
+                            points[index],
+                            next,
+                            width_px * 0.5,
+                        )?;
+                    }
+                    let paint = edge.color();
+                    push_draw(
+                        &mut draws,
+                        &mut fill_bytes,
+                        edge_vertices,
+                        [paint.r(), paint.g(), paint.b(), paint.a()],
+                        width_px * 0.5,
+                    )?;
+                }
+            }
+            FillFamily::Bar => {
+                let bar = fill_bar.bars().get(key.index()).ok_or_else(|| {
+                    RenderError::new(RenderErrorKind::Internal, "fill-bar paint order is invalid")
+                })?;
+                let rect = bar.rect();
+                let corners = [rect.x_min(), rect.y_min(), rect.x_max(), rect.y_max()];
+                if !corners.iter().all(|value| value.is_finite())
+                    || corners[0] < 0.0
+                    || corners[1] < 0.0
+                    || corners[2] > canvas[0]
+                    || corners[3] > canvas[1]
+                {
+                    return Err(RenderError::new(
+                        RenderErrorKind::InvalidInput,
+                        "fill-bar rectangle geometry is invalid",
+                    ));
+                }
+                let edge_width = match bar.edge() {
+                    Some(edge) => {
+                        if !edge.width_px().is_finite() || edge.width_px() <= 0.0 {
+                            return Err(RenderError::new(
+                                RenderErrorKind::InvalidInput,
+                                "fill-bar edge style is invalid",
+                            ));
+                        }
+                        Some(edge.width_px())
+                    }
+                    None => None,
+                };
+                // Bar rectangles carry no stored vertices (decision D6).
+                let mut vertices = Vec::new();
+                vertices
+                    .try_reserve_exact(6 * BYTES_PER_VERTEX)
+                    .map_err(|_| {
+                        RenderError::new(
+                            RenderErrorKind::OutOfMemory,
+                            "host fill vertex allocation failed",
+                        )
+                    })?;
+                append_bar_triangles(&mut vertices, corners)?;
+                let paint = bar.fill();
+                push_draw(
+                    &mut draws,
+                    &mut fill_bytes,
+                    vertices,
+                    [paint.r(), paint.g(), paint.b(), paint.a()],
+                    FILL_SOLID_HALF_WIDTH_PX,
+                )?;
+                if let Some(edge) = bar.edge() {
+                    let width_px = edge_width.ok_or_else(|| {
+                        RenderError::new(
+                            RenderErrorKind::Internal,
+                            "fill-bar edge style is invalid",
+                        )
+                    })?;
+                    let mut edge_vertices = Vec::new();
+                    edge_vertices
+                        .try_reserve_exact(4 * 6 * BYTES_PER_VERTEX)
+                        .map_err(|_| {
+                            RenderError::new(
+                                RenderErrorKind::OutOfMemory,
+                                "host fill vertex allocation failed",
+                            )
+                        })?;
+                    let [x_min, y_min, x_max, y_max] = corners;
+                    let corners = [
+                        lumenplot_render_api::PacketPoint::new(x_min, y_min),
+                        lumenplot_render_api::PacketPoint::new(x_max, y_min),
+                        lumenplot_render_api::PacketPoint::new(x_max, y_max),
+                        lumenplot_render_api::PacketPoint::new(x_min, y_max),
+                    ];
+                    for index in 0..corners.len() {
+                        let next = corners[(index + 1) % corners.len()];
+                        append_segment_quad(
+                            &mut edge_vertices,
+                            corners[index],
+                            next,
+                            width_px * 0.5,
+                        )?;
+                    }
+                    let paint = edge.color();
+                    push_draw(
+                        &mut draws,
+                        &mut fill_bytes,
+                        edge_vertices,
+                        [paint.r(), paint.g(), paint.b(), paint.a()],
+                        width_px * 0.5,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(draws)
+}
+
+/// Enforces the shared `MAX_*` budget family for fill/bar primitives.
+///
+/// Each fill polygon and bar rectangle is one drawable primitive sharing
+/// `MAX_PACKET_SEGMENTS`, while fill-ring vertices share the running
+/// line point budget against `MAX_PACKET_POINTS` (decision D6, mirroring
+/// packet validation). Bar rectangles carry no stored vertices.
+fn check_fill_budgets(
+    line_points: usize,
+    fill_points: usize,
+    primitives: usize,
+) -> Result<(), RenderError> {
+    if primitives > MAX_PACKET_SEGMENTS {
+        return Err(RenderError::new(
+            RenderErrorKind::CapacityExceeded,
+            "fill-bar draw count exceeds a supported capacity",
+        ));
+    }
+    let total = line_points.checked_add(fill_points).ok_or_else(|| {
+        RenderError::new(
+            RenderErrorKind::CapacityExceeded,
+            "fill-bar point count exceeds a supported capacity",
+        )
+    })?;
+    if total > MAX_PACKET_POINTS {
+        return Err(RenderError::new(
+            RenderErrorKind::CapacityExceeded,
+            "fill-bar point count exceeds a supported capacity",
+        ));
+    }
+    Ok(())
+}
+
+/// Emits one solid fill triangle with zero `local_px`.
+///
+/// Zero locals resolve the shared line-shader coverage to one, so the
+/// triangle paints the draw's uniform color without edge falloff.
+fn append_fill_triangle(
+    vertices: &mut Vec<u8>,
+    first: lumenplot_render_api::PacketPoint,
+    second: lumenplot_render_api::PacketPoint,
+    third: lumenplot_render_api::PacketPoint,
+) -> Result<(), RenderError> {
+    for point in [first, second, third] {
+        append_fill_vertex(vertices, [point.x(), point.y()])?;
+    }
+    Ok(())
+}
+
+/// Emits one solid bar-rectangle as two triangles.
+///
+/// `rect` is `[x_min, y_min, x_max, y_max]` in display space; winding is
+/// irrelevant because the shared pipeline disables culling.
+fn append_bar_triangles(vertices: &mut Vec<u8>, rect: [f64; 4]) -> Result<(), RenderError> {
+    let [x_min, y_min, x_max, y_max] = rect;
+    let corners = [
+        [x_min, y_min],
+        [x_max, y_min],
+        [x_max, y_max],
+        [x_min, y_min],
+        [x_max, y_max],
+        [x_min, y_max],
+    ];
+    for position in corners {
+        append_fill_vertex(vertices, position)?;
+    }
+    Ok(())
+}
+
+fn append_fill_vertex(vertices: &mut Vec<u8>, position: [f64; 2]) -> Result<(), RenderError> {
+    for value in position.into_iter().chain([0.0, 0.0]) {
+        let value = checked_fill_f32(value)?;
+        vertices.extend_from_slice(&value.to_le_bytes());
+    }
+    Ok(())
+}
+
+fn checked_fill_f32(value: f64) -> Result<f32, RenderError> {
+    if !value.is_finite() || value.abs() > f64::from(f32::MAX) {
+        Err(RenderError::new(
+            RenderErrorKind::InvalidInput,
+            "fill-bar vertex value is not representable",
+        ))
+    } else {
+        Ok(value as f32)
+    }
+}
+
 fn aligned_row_pitch(tight_row_bytes: usize) -> Result<u32, RenderError> {
     let alignment = usize::try_from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT).unwrap_or(usize::MAX);
     let aligned = tight_row_bytes
@@ -1385,6 +2117,8 @@ fn block_on<F: Future>(future: F) -> F::Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lumenplot_render_api::__internal::{EdgeStyle, FillPolygon, PaintKey, SrgbRgba8, Viewport};
+    use lumenplot_render_api::{FrameSpec, SceneHandle};
 
     #[test]
     fn retained_capacities_grow_monotonically_and_fail_closed() {
@@ -1506,5 +2240,245 @@ mod tests {
         // The offscreen seam is preserved: static provenance still verifies
         // and no surface is claimed by construction.
         verify_line_shader_artifact().expect("offscreen seam preserved");
+    }
+
+    /// Small line-only frame (160x120) for fill-bar preparation tests.
+    ///
+    /// Bar rectangles are intentionally absent from these fixtures: the
+    /// absolute `LogicalRect` constructor is not exported through the
+    /// renderer-visible boundary, so this crate cannot build `BarRect`
+    /// values. Bar interiors are covered through the corner helper plus
+    /// the shared draw path; end-to-end bar submission awaits the
+    /// authorized producer attach lane.
+    fn fill_test_frame() -> FramePacket {
+        let viewport = Viewport::from_bounds(0.0, 1.0, 0.0, 1.0).expect("viewport must be valid");
+        let mut scene = SceneHandle::new(viewport).expect("scene must build");
+        scene
+            .add_series(vec![0.0, 1.0], vec![0.0, 1.0])
+            .expect("series must be accepted");
+        let spec = FrameSpec::new(
+            [160, 120],
+            [16, 12, 144, 108],
+            100.0,
+            SrgbRgba8::new(31, 119, 180, 255),
+            1.5,
+            SrgbRgba8::new(255, 255, 255, 255),
+        )
+        .expect("spec must be valid");
+        scene.resolve_frame(&spec).expect("frame must resolve")
+    }
+
+    fn fill_triangle() -> FillPolygon {
+        FillPolygon::new(
+            vec![
+                lumenplot_render_api::PacketPoint::new(20.0, 20.0),
+                lumenplot_render_api::PacketPoint::new(60.0, 20.0),
+                lumenplot_render_api::PacketPoint::new(40.0, 60.0),
+            ],
+            SrgbRgba8::new(255, 127, 14, 255),
+            None,
+        )
+        .expect("triangle")
+    }
+
+    /// Triangle inside the 64x48 on-device fixture frame below.
+    fn fill_small_triangle() -> FillPolygon {
+        FillPolygon::new(
+            vec![
+                lumenplot_render_api::PacketPoint::new(12.0, 10.0),
+                lumenplot_render_api::PacketPoint::new(40.0, 10.0),
+                lumenplot_render_api::PacketPoint::new(26.0, 30.0),
+            ],
+            SrgbRgba8::new(255, 127, 14, 255),
+            None,
+        )
+        .expect("small triangle")
+    }
+
+    fn fill_quad_edged() -> FillPolygon {
+        FillPolygon::new(
+            vec![
+                lumenplot_render_api::PacketPoint::new(20.0, 20.0),
+                lumenplot_render_api::PacketPoint::new(60.0, 30.0),
+                lumenplot_render_api::PacketPoint::new(50.0, 70.0),
+                lumenplot_render_api::PacketPoint::new(25.0, 60.0),
+            ],
+            SrgbRgba8::new(31, 119, 180, 128),
+            Some(EdgeStyle::new(SrgbRgba8::new(31, 119, 180, 255), 2.0).expect("edge")),
+        )
+        .expect("quad")
+    }
+
+    fn vertex_at(bytes: &[u8], index: usize) -> [f32; 4] {
+        let start = index * BYTES_PER_VERTEX;
+        [0, 1, 2, 3].map(|lane| {
+            f32::from_le_bytes(
+                bytes[start + lane * 4..start + lane * 4 + 4]
+                    .try_into()
+                    .expect("vertex lane"),
+            )
+        })
+    }
+
+    #[test]
+    fn empty_fill_bar_resolves_to_zero_draws() {
+        let frame = fill_test_frame();
+        let empty = SemanticFillBar::new(Vec::new(), Vec::new(), Vec::new()).expect("empty");
+        let draws = prepare_fill_draws(&frame, &empty).expect("empty draws");
+        assert!(draws.is_empty());
+    }
+
+    #[test]
+    fn fill_fan_triangulates_open_ring_with_implicit_close() {
+        let frame = fill_test_frame();
+        let fill_bar =
+            SemanticFillBar::new(vec![fill_quad_edged()], Vec::new(), vec![PaintKey::fill(0)])
+                .expect("permutation");
+        let draws = prepare_fill_draws(&frame, &fill_bar).expect("draws");
+        assert_eq!(draws.len(), 2);
+        let interior = &draws[0];
+        // Four open-ring vertices fan to two triangles with zero locals.
+        assert_eq!(interior.vertices.len(), 2 * 3 * BYTES_PER_VERTEX);
+        assert_eq!(vertex_at(&interior.vertices, 0), [20.0, 20.0, 0.0, 0.0]);
+        assert_eq!(vertex_at(&interior.vertices, 1), [60.0, 30.0, 0.0, 0.0]);
+        assert_eq!(interior.color, [31, 119, 180, 128]);
+        assert_eq!(interior.half_width_px, FILL_SOLID_HALF_WIDTH_PX);
+    }
+
+    #[test]
+    fn bar_corners_triangulate_to_two_triangles() {
+        let mut bytes = Vec::new();
+        append_bar_triangles(&mut bytes, [10.0, 10.0, 30.0, 50.0]).expect("bar");
+        assert_eq!(bytes.len(), 6 * BYTES_PER_VERTEX);
+        assert_eq!(vertex_at(&bytes, 0), [10.0, 10.0, 0.0, 0.0]);
+        assert_eq!(vertex_at(&bytes, 1), [30.0, 10.0, 0.0, 0.0]);
+        assert_eq!(vertex_at(&bytes, 2), [30.0, 50.0, 0.0, 0.0]);
+        assert_eq!(vertex_at(&bytes, 3), [10.0, 10.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn paint_order_drives_draw_sequence() {
+        let frame = fill_test_frame();
+        let second = FillPolygon::new(
+            vec![
+                lumenplot_render_api::PacketPoint::new(80.0, 20.0),
+                lumenplot_render_api::PacketPoint::new(120.0, 20.0),
+                lumenplot_render_api::PacketPoint::new(100.0, 60.0),
+            ],
+            SrgbRgba8::new(44, 160, 44, 255),
+            None,
+        )
+        .expect("second");
+        let fill_bar = SemanticFillBar::new(
+            vec![fill_triangle(), second],
+            Vec::new(),
+            vec![PaintKey::fill(1), PaintKey::fill(0)],
+        )
+        .expect("permutation");
+        let draws = prepare_fill_draws(&frame, &fill_bar).expect("draws");
+        assert_eq!(draws.len(), 2);
+        assert_eq!(draws[0].color, [44, 160, 44, 255]);
+        assert_eq!(draws[1].color, [255, 127, 14, 255]);
+    }
+
+    #[test]
+    fn edge_draw_follows_its_own_fill() {
+        let frame = fill_test_frame();
+        let fill_bar = SemanticFillBar::new(
+            vec![fill_quad_edged(), fill_triangle()],
+            Vec::new(),
+            vec![PaintKey::fill(0), PaintKey::fill(1)],
+        )
+        .expect("permutation");
+        let draws = prepare_fill_draws(&frame, &fill_bar).expect("draws");
+        assert_eq!(draws.len(), 3);
+        assert_eq!(draws[0].color, [31, 119, 180, 128]);
+        // Four ring edges (including the implicit close) expand to quads.
+        assert_eq!(draws[1].vertices.len(), 4 * 6 * BYTES_PER_VERTEX);
+        assert_eq!(draws[1].color, [31, 119, 180, 255]);
+        assert_eq!(draws[1].half_width_px, 1.0);
+        assert_eq!(draws[2].color, [255, 127, 14, 255]);
+    }
+
+    #[test]
+    fn out_of_canvas_fill_fails_closed() {
+        let frame = fill_test_frame();
+        let escaped = FillPolygon::new(
+            vec![
+                lumenplot_render_api::PacketPoint::new(20.0, 20.0),
+                lumenplot_render_api::PacketPoint::new(60.0, 20.0),
+                lumenplot_render_api::PacketPoint::new(1000.0, 1000.0),
+            ],
+            SrgbRgba8::new(0, 0, 0, 255),
+            None,
+        )
+        .expect("escaped");
+        let fill_bar = SemanticFillBar::new(vec![escaped], Vec::new(), vec![PaintKey::fill(0)])
+            .expect("permutation");
+        let error = prepare_fill_draws(&frame, &fill_bar).expect_err("out of canvas");
+        assert_eq!(error.kind(), RenderErrorKind::InvalidInput);
+        assert!(!error.message().is_empty());
+    }
+
+    #[test]
+    fn shared_budgets_reject_overflow_without_allocation() {
+        assert_eq!(
+            check_fill_budgets(0, 0, MAX_PACKET_SEGMENTS + 1)
+                .expect_err("primitive overflow")
+                .kind(),
+            RenderErrorKind::CapacityExceeded
+        );
+        assert_eq!(
+            check_fill_budgets(MAX_PACKET_POINTS, 1, 0)
+                .expect_err("point overflow")
+                .kind(),
+            RenderErrorKind::CapacityExceeded
+        );
+        assert_eq!(
+            check_fill_budgets(usize::MAX, 1, 0)
+                .expect_err("checked overflow")
+                .kind(),
+            RenderErrorKind::CapacityExceeded
+        );
+        check_fill_budgets(8, 4, 2).expect("small budgets fit");
+    }
+
+    #[test]
+    #[ignore = "environment required: portable GPU adapter/device needed (Lavapipe control or real GPU cell); numeric pixel tolerance stays OPEN until Lavapipe numbers land"]
+    fn fill_draws_submit_through_line_pipeline_where_device_exists() {
+        let mut renderer = Renderer::new().expect(
+            "environment required: portable GPU adapter/device unavailable on this host \
+             (Lavapipe control or real GPU cell); this is not a renderer failure",
+        );
+        let viewport = Viewport::from_bounds(0.0, 1.0, 0.0, 1.0).expect("viewport must be valid");
+        let mut scene = SceneHandle::new(viewport).expect("scene must build");
+        scene
+            .add_series(vec![0.0, 1.0], vec![0.0, 1.0])
+            .expect("series must be accepted");
+        let spec = FrameSpec::new(
+            [64, 48],
+            [8, 6, 56, 42],
+            100.0,
+            SrgbRgba8::new(31, 119, 180, 255),
+            1.5,
+            SrgbRgba8::new(255, 255, 255, 255),
+        )
+        .expect("spec must be valid");
+        let frame = scene.resolve_frame(&spec).expect("frame must resolve");
+        let prepared = prepare_frame(&frame, 8192).expect("frame must prepare");
+        let fill_bar = SemanticFillBar::new(
+            vec![fill_small_triangle()],
+            Vec::new(),
+            vec![PaintKey::fill(0)],
+        )
+        .expect("permutation");
+        let draws = prepare_fill_draws(&frame, &fill_bar).expect("draws");
+        assert_eq!(draws.len(), 1);
+        let rendered = renderer
+            .render_prepared_with_fills(prepared, &draws)
+            .expect("fill submission must succeed where a device exists");
+        assert_eq!(rendered.width(), 64);
+        assert_eq!(rendered.height(), 48);
+        assert_eq!(rendered.rgba8().len(), 64 * 48 * 4);
     }
 }

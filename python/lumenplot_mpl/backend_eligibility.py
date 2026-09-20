@@ -208,10 +208,14 @@ class _StaticEligibilityMixin:
 
         Since the PRAC-A-D amendment of ADR 0015 §4 a standard decorated
         ``Axes`` is eligible: solid major gridlines, major tick strokes,
-        and spine edges render as explicit path commands. Everything else
-        about the decoration surface (visible minor tick content, non-solid
-        grid styles, an opaque facecolor, titles, axis labels, offset
-        text, or child axes) records an explicit unsupported reason.
+        and spine edges render as explicit path commands. Since the B-2a
+        (R2) extension the visible non-empty ``xlabel``/``ylabel`` pair is
+        eligible as well: each label renders as explicit glyph path
+        commands through the same ``_check_tick_label_static`` surface as
+        tick labels. Everything else about the decoration surface (visible
+        minor tick content, non-solid grid styles, an opaque facecolor,
+        titles, offset text, or child axes) records an explicit
+        unsupported reason.
         """
         if isinstance(ax, Axes3D):
             if decorated:
@@ -244,8 +248,18 @@ class _StaticEligibilityMixin:
         ):
             if title != "":
                 self.unsupported("titles are unsupported", "Text")
-        if ax.get_xlabel() != "" or ax.get_ylabel() != "":
-            self.unsupported("axis labels are unsupported", "Text")
+        # B-2a (R2): the visible non-empty xlabel/ylabel pair is eligible
+        # through the shared T-lane static surface (same whitespace,
+        # multi-line, math/TeX, path-effect, font-size, sketch, snap, and
+        # clip contract as tick labels, plus an explicit hyperlink
+        # refusal). Titles (all three positions), offset text, and
+        # legend titles stay refused. Empty or invisible labels draw
+        # nothing, so they skip the check like empty tick labels.
+        for axis in (ax.xaxis, ax.yaxis):
+            label = axis.get_label()
+            if not label.get_visible() or label.get_text() == "":
+                continue
+            self._check_axis_label_static(label)
         for axis in (ax.xaxis, ax.yaxis):
             axis_name = type(axis).__name__
             if axis.get_offset_text().get_text() != "":
@@ -369,6 +383,20 @@ class _StaticEligibilityMixin:
             self.unsupported("explicit snap is unsupported", name)
         if label.get_clip_box() is not None or label.get_clip_path() is not None:
             self.unsupported("custom clipping is unsupported", name)
+
+    def _check_axis_label_static(self, label: Any) -> None:
+        """Whitelist-check one visible non-empty axis label (B-2a R2).
+
+        Axis labels render as filled glyph path commands through the
+        public ``lumenplot_mpl.textpath`` module exactly like tick
+        labels; they satisfy the same static text contract, plus an
+        explicit hyperlink refusal (the native seam carries no URL
+        target and must never drop one silently).
+        """
+        self._check_tick_label_static(label)
+        name = type(label).__name__
+        if label.get_url() is not None:
+            self.unsupported("hyperlinks are unsupported", name)
 
     def _check_legend_static(self, legend: Any) -> None:
         """Whitelist-check one Axes legend (PRAC-A-L, LP-MPL-020).

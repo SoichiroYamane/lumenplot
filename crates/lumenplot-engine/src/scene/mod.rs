@@ -1,9 +1,11 @@
+mod annotation_slice;
 mod ids;
 mod revision;
 mod snapshot;
 mod state;
 mod transaction;
 
+pub(crate) use annotation_slice::live_rectangle_layout;
 pub(crate) use ids::SeriesId;
 pub(crate) use revision::SceneRevision;
 pub(crate) use snapshot::SceneSnapshot;

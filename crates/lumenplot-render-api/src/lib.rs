@@ -31,8 +31,8 @@ pub use crate::frame::{
 #[doc(hidden)]
 pub mod __internal {
     pub use crate::frame::{
-        Bounds3D, Line3DGeometry, Point3D, Projection3D, Semantic3D, SemanticFrame,
-        Triangle3DGeometry, ViewFacts3D,
+        BarRect, Bounds3D, EdgeStyle, FillFamily, FillPolygon, Line3DGeometry, PaintKey, Point3D,
+        Projection3D, Semantic3D, SemanticFillBar, SemanticFrame, Triangle3DGeometry, ViewFacts3D,
     };
     pub use crate::packet::{
         DeviceGeneration, LogicalResourceId, PacketValidationError, PacketValidationErrorKind,

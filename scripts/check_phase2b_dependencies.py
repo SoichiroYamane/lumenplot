@@ -25,7 +25,7 @@ WGPU_LOCK_SHA256 = "58d77cc67bdd45814b214c3bbd5681a94775811226d186899608e44efce1
 # windows-sys, ...), so tracked edge sets render with version suffixes below.
 # Expected only while the winit inventory is present; the base digest above
 # stays authoritative otherwise (fail-closed both ways).
-WINIT_WGPU_LOCK_SHA256 = "9b927b7fbe9786eb3df85f749f8e79f9563a0043553d1f447160619aee1a62e9"
+WINIT_WGPU_LOCK_SHA256 = "737eb66398ede46a419d13d06e736deb8133e95a3a9c0db9db58912b4cfbcc5d"
 WGPU_PACKAGE_VERSION = "29.0.4"
 WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
 WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
