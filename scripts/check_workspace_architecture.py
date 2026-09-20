@@ -124,17 +124,25 @@ WGPU_SOURCE_FILES = {"src/lib.rs", "src/shader.rs"}
 WGPU_SHADER_PATH = "shaders/line.wgsl"
 WGPU_SHADER_SHA256 = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3"
 # WINAPP M1 admission lane (commander ruling 2026-09-13 on the M1 follow-up:
-# Q1-clamp accepted, surface-from-rwh deferred to M2). The window/event host
-# admits exactly one external edge — pinned winit 0.30.13 with default
-# platform backends (baseline ADR 0008) — and exactly one active source file.
-# Both apply only while the window activation sentinel fires; the stub rules
-# below stay authoritative otherwise.
+# Q1-clamp accepted, surface-from-rwh deferred to M2) plus M4-PRESENT-1
+# Option-A (commander ruling 2026-09-20: admit lumenplot-render-api as a
+# window path edge, exact path+version 0.1.0 for normal and test use). The
+# window/event host admits exactly one external edge — pinned winit 0.30.13
+# with default platform backends (baseline ADR 0008) — and exactly the active
+# source inventory below (M1 core plus the M4 present slice + its two test
+# files). Both apply only while the window activation sentinel fires; the stub
+# rules below stay authoritative otherwise.
 WINDOW_EXTERNAL_DEPENDENCIES = {
     "winit": {
         "version": "=0.30.13",
     },
 }
-WINDOW_SOURCE_FILES = {"src/lib.rs"}
+WINDOW_SOURCE_FILES = {
+    "src/lib.rs",
+    "src/present.rs",
+    "tests/present_headless.rs",
+    "tests/present_display.rs",
+}
 # M4 runtime/viewer lane. Runtime input routing is a private module admitted
 # alongside the lifecycle owner; viewer remains a single-source edge.
 RUNTIME_SOURCE_FILES = {"src/lib.rs", "src/input.rs"}
@@ -648,12 +656,15 @@ EXPECTED_EDGES = {
     "lumenplot-render-metal": {"lumenplot-render-api"},
     "lumenplot-render-wgpu": {"lumenplot-render-api"},
     "lumenplot-runtime": {"lumenplot-render-api", "lumenplot-render-wgpu"},
-    # WINAPP contract lane: window/event host over runtime + render-wgpu.
-    # The only permitted external edge is pinned winit 0.30.x (ADR 0003
-    # amendment; no other deps). The M1 admission lane pins the exact
-    # declaration below; it applies only while the window activation
+    # WINAPP contract lane: window/event host over runtime + render-wgpu plus
+    # M4-PRESENT-1 Option-A (commander ruling 2026-09-20): admitted
+    # lumenplot-render-api path edge (exact path+version 0.1.0, normal use
+    # covering integration tests; no separate dev-dependencies table, which
+    # stays forbidden). The only permitted external edge is pinned winit
+    # 0.30.x (ADR 0003 amendment; no other deps). The M1 admission lane pins
+    # the exact declaration below; it applies only while the window activation
     # sentinel fires.
-    "lumenplot-window": {"lumenplot-runtime", "lumenplot-render-wgpu"},
+    "lumenplot-window": {"lumenplot-render-api", "lumenplot-runtime", "lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
     "lumenplot-python": {"lumenplot"},
     "lumenplot-bench": {
@@ -1194,21 +1205,25 @@ WINDOW_FORBIDDEN_CODE_PATTERNS = (
 
 
 def _check_window_source(package_dir: Path, root: Path, errors: list[str]) -> None:
-    """Enforce the admitted M1 single-file window source boundary.
+    """Enforce the admitted M1 + M4-PRESENT-1 window source boundary.
 
-    The accepted M1 seam (backend-neutral cadence core plus one winit shell,
-    review as gate) ships as exactly `src/lib.rs` with public items expected
-    (the seam surface itself); `#[no_mangle]`/`#[export_name]` stay banned so
-    the crate never grows an exported ABI. Unsafe code, serialization
-    vocabulary, non-winit frontend/bridge names, and Metal naming stay banned.
+    The accepted seam (backend-neutral cadence core plus one winit shell,
+    review as gate) ships as exactly `src/lib.rs` plus the M4 present slice
+    `src/present.rs` and its two integration tests
+    (`tests/present_headless.rs`, `tests/present_display.rs`) per the
+    commander Option-A ruling 2026-09-20; `#[no_mangle]`/`#[export_name]`
+    stay banned so the crate never grows an exported ABI. Unsafe code,
+    serialization vocabulary, non-winit frontend/bridge names, and Metal
+    naming stay banned in every listed file (no weakening).
     """
 
-    source_dir = package_dir / "src"
-    rust_files = (
-        {path.relative_to(package_dir).as_posix() for path in source_dir.rglob("*.rs")}
-        if source_dir.is_dir()
-        else set()
-    )
+    rust_files: set[str] = set()
+    for scan_dir in (package_dir / "src", package_dir / "tests"):
+        if scan_dir.is_dir():
+            rust_files.update(
+                path.relative_to(package_dir).as_posix()
+                for path in scan_dir.rglob("*.rs")
+            )
     if rust_files != WINDOW_SOURCE_FILES:
         missing = sorted(WINDOW_SOURCE_FILES - rust_files)
         extra = sorted(rust_files - WINDOW_SOURCE_FILES)
@@ -1239,6 +1254,26 @@ def _check_window_source(package_dir: Path, root: Path, errors: list[str]) -> No
     for label, pattern in WINDOW_FORBIDDEN_CODE_PATTERNS:
         if pattern.search(code):
             errors.append(f"package lumenplot-window: {label} is not allowed")
+    for relative in sorted(WINDOW_SOURCE_FILES - {"src/lib.rs"}):
+        extra_path = package_dir / relative
+        try:
+            extra_source = extra_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            errors.append(
+                f"package lumenplot-window: cannot read {_logical_path(extra_path, root)}"
+            )
+            continue
+        extra_code = _strip_rust_comments_and_literals(extra_source)
+        if not extra_code.strip():
+            errors.append(
+                f"package lumenplot-window: cannot read {_logical_path(extra_path, root)}"
+            )
+            continue
+        if NO_MANGLE_RE.search(extra_code):
+            errors.append("package lumenplot-window: exported ABI is not allowed")
+        for label, pattern in WINDOW_FORBIDDEN_CODE_PATTERNS:
+            if pattern.search(extra_code):
+                errors.append(f"package lumenplot-window: {label} is not allowed")
 
 
 def _find_matching_brace(code: str, opening: int) -> int:

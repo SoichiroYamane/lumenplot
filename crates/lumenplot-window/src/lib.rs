@@ -37,6 +37,8 @@ use lumenplot_runtime::{
     SceneRevision, SubmissionOutcome, SurfaceCondition, SurfaceId,
 };
 
+mod present;
+
 /// Largest window dimension accepted by the M1 seam, mirroring the runtime
 /// surface bound so a validated [`WindowSize`] never fails surface creation.
 pub const MAX_WINDOW_DIMENSION: u32 = 16_384;

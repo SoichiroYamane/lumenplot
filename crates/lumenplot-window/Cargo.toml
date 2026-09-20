@@ -13,6 +13,7 @@ readme.workspace = true
 # lane materializes it here with default platform backends. The
 # architecture checker pins this exact table fail-closed.
 [dependencies]
+lumenplot-render-api = { path = "../lumenplot-render-api", version = "0.1.0" }
 lumenplot-runtime = { path = "../lumenplot-runtime", version = "0.1.0" }
 lumenplot-render-wgpu = { path = "../lumenplot-render-wgpu", version = "0.1.0" }
 winit = { version = "=0.30.13" }
