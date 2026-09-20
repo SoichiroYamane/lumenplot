@@ -65,6 +65,7 @@ EXPECTED_ENGINE_SOURCE_FILES = {
     "src/scene/state.rs",
     "src/scene/transaction.rs",
     "src/scene/snapshot.rs",
+    "src/scene/annotation_slice.rs",
     "src/text.rs",
 }
 EXPECTED_EXPORT_SOURCE_FILES = {

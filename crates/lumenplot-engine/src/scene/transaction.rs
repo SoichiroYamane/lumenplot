@@ -113,8 +113,8 @@ impl<'a> SceneTransaction<'a> {
 
     /// Stages one annotation add as Plot State.
     ///
-    /// P1 scope pins the explicit transform to identity; custom transforms,
-    /// geometry-space hit-testing, and export wiring belong to later stages.
+    /// P1 scope pins the explicit transform to identity; custom transforms
+    /// belong to later stages (hit/export for mirrored kinds ride the carrier).
     /// Identity allocation mirrors `add_series`: a validated add allocates a
     /// never-reused [`AnnotationId`] before staging, so abort or a later
     /// failed commit burns it, while validation failure before allocation
