@@ -554,12 +554,13 @@ impl PlotLayout {
         })
     }
 
-    /// Rebuilds the carrier from fixture runs plus live Slice-4 annotations.
+    /// Rebuilds the carrier from fixture runs plus live Slice-5 annotations.
     ///
     /// The single choke point for the annotation mirror: every annotation
     /// must be an identity-transform rectangle, text box, line, or arrow
-    /// declared in `Data2D` or `AxesLogical`, or construction fails with
-    /// `InvalidInput` before any digest runs. Runs, capacity, and digest handling follow the same validated
+    /// declared in `Data2D`, `AxesLogical`, `FigureLogical`, or
+    /// `DisplayLogical`, or construction fails with `InvalidInput` before
+    /// any digest runs. Runs, capacity, and digest handling follow the same validated
     /// path as [`from_runs`](Self::from_runs), so a mirrored carrier
     /// validates exactly like a fixture one under the caller's revisions.
     pub(crate) fn from_live_parts(
@@ -574,7 +575,9 @@ impl PlotLayout {
                 || annotation.kind() == AnnotationKind::Line
                 || annotation.kind() == AnnotationKind::Arrow;
             let mirrored_space = annotation.space() == AnnotationSpace::Data2D
-                || annotation.space() == AnnotationSpace::AxesLogical;
+                || annotation.space() == AnnotationSpace::AxesLogical
+                || annotation.space() == AnnotationSpace::FigureLogical
+                || annotation.space() == AnnotationSpace::DisplayLogical;
             if !mirrored_kind
                 || !mirrored_space
                 || annotation.transform() != AnnotationTransform::identity()
@@ -2159,7 +2162,8 @@ mod annotation_tests {
                 .kind(),
             SceneErrorKind::InvalidInput
         );
-        // A non-Data2D arrow fails closed even with an identity map.
+        // A non-identity map fails closed even in a mirrored space: a
+        // FigureLogical arrow with a scaled map is not mirrored.
         let foreign = RetainedAnnotation::new(
             4,
             AnnotationSpace::FigureLogical,
@@ -2170,15 +2174,15 @@ mod annotation_tests {
                 y2: 4.0,
                 head_length: 1.0,
             },
-            AnnotationTransform::identity(),
+            AnnotationTransform::new(2.0, 0.0, 10.0, 0.0, 2.0, 20.0).expect("map"),
             1,
             1,
             0,
         )
-        .expect("foreign arrow");
+        .expect("mapped foreign arrow");
         assert_eq!(
             PlotLayout::from_live_parts(runs, vec![foreign], 0, 0)
-                .expect_err("non-Data2D is not mirrored")
+                .expect_err("non-identity is not mirrored")
                 .kind(),
             SceneErrorKind::InvalidInput
         );
@@ -2279,35 +2283,151 @@ mod annotation_tests {
                 .kind(),
             SceneErrorKind::InvalidInput
         );
-        // Remaining spaces fail closed even with an identity map.
-        for (id, space, shape) in [
-            (
-                6,
-                AnnotationSpace::FigureLogical,
+        // FigureLogical and DisplayLogical identity entries mirror through
+        // this same choke point; see
+        // `from_live_parts_mirrors_figure_and_display_identity_four_kinds`.
+    }
+
+    #[test]
+    fn from_live_parts_mirrors_figure_and_display_identity_four_kinds() {
+        fn spaced_annotation(
+            id: u64,
+            space: AnnotationSpace,
+            shape: AnnotationShape,
+        ) -> RetainedAnnotation {
+            RetainedAnnotation::new(id, space, shape, AnnotationTransform::identity(), 1, 1, 0)
+                .expect("spaced annotation")
+        }
+        fn four_kinds(space: AnnotationSpace, first_id: u64) -> Vec<RetainedAnnotation> {
+            vec![
+                spaced_annotation(
+                    first_id,
+                    space,
+                    AnnotationShape::Rectangle {
+                        x_min: 0.0,
+                        y_min: 0.0,
+                        x_max: 4.0,
+                        y_max: 2.0,
+                    },
+                ),
+                spaced_annotation(
+                    first_id + 1,
+                    space,
+                    AnnotationShape::Text {
+                        x: 2.0,
+                        y: 2.0,
+                        half_width: 1.0,
+                        half_height: 1.0,
+                    },
+                ),
+                spaced_annotation(
+                    first_id + 2,
+                    space,
+                    AnnotationShape::Line {
+                        x1: 0.0,
+                        y1: 0.0,
+                        x2: 4.0,
+                        y2: 4.0,
+                    },
+                ),
+                spaced_annotation(
+                    first_id + 3,
+                    space,
+                    AnnotationShape::Arrow {
+                        x1: 0.0,
+                        y1: 0.0,
+                        x2: 4.0,
+                        y2: 4.0,
+                        head_length: 1.0,
+                    },
+                ),
+            ]
+        }
+        let font = FontIdentity::fixture().expect("font");
+        let runs =
+            vec![fixture_run(TextRole::AxisTitle, "title", &font, (0.0, 0.0)).expect("title run")];
+        // One of each of the four kinds in FigureLogical mirrors in order.
+        let layout = PlotLayout::from_live_parts(
+            runs.clone(),
+            four_kinds(AnnotationSpace::FigureLogical, 1),
+            0,
+            0,
+        )
+        .expect("figure mirror");
+        assert_eq!(layout.annotations().len(), 4);
+        assert_eq!(
+            layout
+                .annotations()
+                .iter()
+                .map(|annotation| annotation.kind())
+                .collect::<Vec<_>>(),
+            vec![
+                AnnotationKind::Rectangle,
+                AnnotationKind::Text,
+                AnnotationKind::Line,
+                AnnotationKind::Arrow,
+            ]
+        );
+        assert!(
+            layout
+                .annotations()
+                .iter()
+                .all(|annotation| annotation.space() == AnnotationSpace::FigureLogical)
+        );
+        assert!(layout.validate());
+        // One of each of the four kinds in DisplayLogical mirrors in order.
+        let layout = PlotLayout::from_live_parts(
+            runs.clone(),
+            four_kinds(AnnotationSpace::DisplayLogical, 10),
+            0,
+            0,
+        )
+        .expect("display mirror");
+        assert_eq!(layout.annotations().len(), 4);
+        assert_eq!(
+            layout
+                .annotations()
+                .iter()
+                .map(|annotation| annotation.kind())
+                .collect::<Vec<_>>(),
+            vec![
+                AnnotationKind::Rectangle,
+                AnnotationKind::Text,
+                AnnotationKind::Line,
+                AnnotationKind::Arrow,
+            ]
+        );
+        assert!(
+            layout
+                .annotations()
+                .iter()
+                .all(|annotation| annotation.space() == AnnotationSpace::DisplayLogical)
+        );
+        assert!(layout.validate());
+        // A non-identity map fails closed in each newly mirrored space, with
+        // no new error kind.
+        for (id, space) in [
+            (20, AnnotationSpace::FigureLogical),
+            (21, AnnotationSpace::DisplayLogical),
+        ] {
+            let moved = RetainedAnnotation::new(
+                id,
+                space,
                 AnnotationShape::Rectangle {
                     x_min: 0.0,
                     y_min: 0.0,
                     x_max: 4.0,
                     y_max: 2.0,
                 },
-            ),
-            (
-                7,
-                AnnotationSpace::DisplayLogical,
-                AnnotationShape::Text {
-                    x: 2.0,
-                    y: 2.0,
-                    half_width: 1.0,
-                    half_height: 1.0,
-                },
-            ),
-        ] {
-            let foreign =
-                RetainedAnnotation::new(id, space, shape, AnnotationTransform::identity(), 1, 1, 0)
-                    .expect("foreign annotation");
+                AnnotationTransform::new(2.0, 0.0, 10.0, 0.0, 2.0, 20.0).expect("map"),
+                1,
+                1,
+                0,
+            )
+            .expect("mapped rectangle");
             assert_eq!(
-                PlotLayout::from_live_parts(runs.clone(), vec![foreign], 0, 0)
-                    .expect_err("remaining space is not mirrored")
+                PlotLayout::from_live_parts(runs.clone(), vec![moved], 0, 0)
+                    .expect_err("non-identity is not mirrored")
                     .kind(),
                 SceneErrorKind::InvalidInput
             );
