@@ -321,6 +321,13 @@ jobs:
           # dependencies as already installed, leaving the wheel smoke test
           # with an incomplete environment.
           unset PYTHONPATH
+          # C3: exercise the four runtime venvs as parallel background jobs
+          # sharing the one abi3 wheel built above. Each leg keeps its FULL
+          # unittest discover + runtime probe + assertions verbatim; the join
+          # below preserves the fail-closed policy (any leg failure fails the
+          # step). No leg deduped, no pins changed.
+          leg_pids=()
+          ( set -euo pipefail
           /opt/python/cp311-cp311/bin/python -m venv --clear /tmp/work/venv311
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93' > /tmp/numpy311.txt
           /tmp/work/venv311/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy311.txt
@@ -353,7 +360,8 @@ jobs:
           test "$INSTALLED_VERSION" = "$CARGO_VERSION"
           printf '%s\n' 'helper-success'
           printf '%s\n' 'invalid-input'
-
+          ) & leg_pids+=($!)
+          ( set -euo pipefail
           /opt/python/cp312-cp312/bin/python -m venv --clear /tmp/work/venv312
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:90f9849678c75fe7afa2d348ac842c168b0a4d3d61919687216dfc547976d853' > /tmp/numpy312.txt
           /tmp/work/venv312/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy312.txt
@@ -383,7 +391,8 @@ jobs:
           test "$INSTALLED_VERSION" = "$CARGO_VERSION"
           printf '%s\n' 'helper-success'
           printf '%s\n' 'invalid-input'
-
+          ) & leg_pids+=($!)
+          ( set -euo pipefail
           /opt/python/cp313-cp313/bin/python -m venv --clear /tmp/work/venv313
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:a7830bab239b79cda9c08c2da014761cafb48da6150e1da17ac06283f43b6089' > /tmp/numpy313.txt
           /tmp/work/venv313/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy313.txt
@@ -413,7 +422,8 @@ jobs:
           test "$INSTALLED_VERSION" = "$CARGO_VERSION"
           printf '%s\n' 'helper-success'
           printf '%s\n' 'invalid-input'
-
+          ) & leg_pids+=($!)
+          ( set -euo pipefail
           /opt/python/cp314-cp314/bin/python -m venv --clear /tmp/work/venv314
           printf '%s\n' 'numpy==2.4.6 --hash=sha256:a2c306dea656c12c68f51f4cea133cbe78ca7435eb28c735eac1d3ebe73be6e8' > /tmp/numpy314.txt
           /tmp/work/venv314/bin/python -m pip install --no-index --no-cache-dir --only-binary=:all: --require-hashes --find-links=/cache/wheelhouse -r /tmp/numpy314.txt
@@ -441,6 +451,13 @@ jobs:
           /tmp/work/venv314/bin/python -c 'import importlib.metadata as metadata; print(metadata.version("lumenplot-mpl"))' > /tmp/installed-version314
           IFS= read -r INSTALLED_VERSION < /tmp/installed-version314
           test "$INSTALLED_VERSION" = "$CARGO_VERSION"
+          ) & leg_pids+=($!)
+          # Join all four legs; fail-closed when any leg fails.
+          leg_fail=0
+          for leg_pid in "${leg_pids[@]}"; do
+            if ! wait "$leg_pid"; then leg_fail=1; fi
+          done
+          test "$leg_fail" = "0"
           MANIFEST_ARGS=(--wheel "$WHEEL" --wheel-sha256 "$WHEEL_SHA256" --cargo-version "$CARGO_VERSION" --cargo-lock-sha256 "$CARGO_LOCK_SHA256" --source-commit "$SOURCE_COMMIT" --sbom /evidence/sbom.json)
           if [ -f /evidence/observed.json ]; then
             MANIFEST_ARGS+=(--observed /evidence/observed.json)
