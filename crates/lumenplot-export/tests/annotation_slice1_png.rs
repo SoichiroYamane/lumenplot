@@ -1,17 +1,19 @@
-//! M5-ANNOT Slice-1 PNG evidence through the public export bridge.
+//! M5-ANNOT Slices 1-2 PNG evidence through the public export bridge.
 //!
 //! Scope: ordinary-export behavior of the annotation mirror fallback.
 //! Live Plot State cannot be staged through the public bridge
-//! (annotation transactions stay `pub(crate)` by Slice-1 non-goal), so
-//! the empty-live-map branch is pinned here at the encoded-PNG level:
+//! (annotation transactions stay `pub(crate)` by Slice-1 non-goal, kept by
+//! Slice-2), so the empty-live-map branch is pinned here at the encoded-PNG
+//! level:
 //!
 //! - (a) encoding is deterministic: two encodes of one frame are
 //!   byte-identical;
 //! - (b) the empty-page corner stays background: no hover, focus,
 //!   selection, or drag chrome lands in an ordinary export;
 //! - (c) retained annotation ink lands: the fixture rectangle outline
-//!   strokes a covered pixel, so the sink path the live mirror feeds is
-//!   proven to carry annotation ink into the export.
+//!   strokes a covered pixel and the fixture text box fills its interior
+//!   pixel, so the sink path the live mirror feeds is proven to carry both
+//!   Slice-2 annotation inks into the export.
 //!
 //! Pixel expectations reuse the mask probes pinned by the in-tree
 //! `rasterize_annotations` unit tests on the same 160x140 page.
@@ -71,7 +73,8 @@ fn pixel_at(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
 }
 
 /// (a) Double encode is byte-identical; (b) the far corner stays
-/// background; (c) the fixture rectangle outline inks its edge pixel.
+/// background; (c) the fixture rectangle outline inks its edge pixel and the
+/// fixture text box fills its interior pixel.
 #[test]
 fn annotation_mirror_fallback_exports_deterministically_with_ink_and_clean_corner() {
     let frame = make_page_frame();
@@ -93,6 +96,14 @@ fn annotation_mirror_fallback_exports_deterministically_with_ink_and_clean_corne
         pixel_at(&pixels, width, 120, 100),
         BACKGROUND,
         "rectangle outline must ink its edge pixel"
+    );
+    // Fixture text box interior at logical (10, 20): the Data2D text box
+    // (-2, 16)-(22, 24) fills through the existing fixture ink path, clear
+    // of the series run (display y 56) and retained glyph cells (x >= 16).
+    assert_ne!(
+        pixel_at(&pixels, width, 10, 20),
+        BACKGROUND,
+        "text box must ink its interior pixel"
     );
     // Rectangle interior carries fill from no pass (outline only): the
     // center stays free of annotation ink. The horizontal series runs at

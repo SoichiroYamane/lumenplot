@@ -554,29 +554,31 @@ impl PlotLayout {
         })
     }
 
-    /// Rebuilds the carrier from fixture runs plus live Slice-1 rectangles.
+    /// Rebuilds the carrier from fixture runs plus live Slice-2 annotations.
     ///
     /// The single choke point for the annotation mirror: every annotation
-    /// must be an identity-transform rectangle declared in `Data2D`, or
-    /// construction fails with `InvalidInput` before any digest runs. Runs,
-    /// capacity, and digest handling follow the same validated path as
-    /// [`from_runs`](Self::from_runs), so a mirrored carrier validates
-    /// exactly like a fixture one under the caller's revisions.
+    /// must be an identity-transform rectangle or text box declared in
+    /// `Data2D`, or construction fails with `InvalidInput` before any digest
+    /// runs. Runs, capacity, and digest handling follow the same validated
+    /// path as [`from_runs`](Self::from_runs), so a mirrored carrier
+    /// validates exactly like a fixture one under the caller's revisions.
     pub(crate) fn from_live_parts(
         runs: Vec<ShapedRun>,
-        live_rectangles: Vec<RetainedAnnotation>,
+        live_annotations: Vec<RetainedAnnotation>,
         font_revision: u64,
         layout_revision: u64,
     ) -> Result<Self, SceneError> {
-        for annotation in &live_rectangles {
-            if annotation.kind() != AnnotationKind::Rectangle
+        for annotation in &live_annotations {
+            let mirrored_kind = annotation.kind() == AnnotationKind::Rectangle
+                || annotation.kind() == AnnotationKind::Text;
+            if !mirrored_kind
                 || annotation.space() != AnnotationSpace::Data2D
                 || annotation.transform() != AnnotationTransform::identity()
             {
                 return Err(SceneError::new(SceneErrorKind::InvalidInput));
             }
         }
-        Self::from_runs(runs, live_rectangles, font_revision, layout_revision)
+        Self::from_runs(runs, live_annotations, font_revision, layout_revision)
     }
 
     pub(crate) fn with_layout_revision(&self, layout_revision: u64) -> Self {
