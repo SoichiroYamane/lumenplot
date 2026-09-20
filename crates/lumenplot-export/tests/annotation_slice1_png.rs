@@ -1,9 +1,9 @@
-//! M5-ANNOT Slices 1-4 PNG evidence through the public export bridge.
+//! M5-ANNOT Slices 1-5 PNG evidence through the public export bridge.
 //!
 //! Scope: ordinary-export behavior of the annotation mirror fallback.
 //! Live Plot State cannot be staged through the public bridge
 //! (annotation transactions stay `pub(crate)` by Slice-1 non-goal, kept by
-//! Slices 2-4), so the empty-live-map branch is pinned here at the
+//! Slices 2-5), so the empty-live-map branch is pinned here at the
 //! encoded-PNG level:
 //!
 //! - (a) encoding is deterministic: two encodes of one frame are
@@ -17,6 +17,10 @@
 //!   Slice-3 annotation inks into the export;
 //! - (d) the line-shaft probe rides an `AxesLogical` entry, so the ink the
 //!   Slice-4 mirror newly admits in that space is proven to land through
+//!   the same sink path;
+//! - (e) the arrow-shaft probe rides a `FigureLogical` entry and the
+//!   rectangle-edge probe rides a `DisplayLogical` entry, so the ink the
+//!   Slice-5 mirror newly admits in those spaces is proven to land through
 //!   the same sink path.
 //!
 //! Pixel expectations reuse the mask probes pinned by the in-tree
@@ -100,6 +104,13 @@ fn annotation_mirror_fallback_exports_deterministically_with_ink_and_clean_corne
     // annotation box or shaft, so it must stay background.
     assert_eq!(pixel_at(&pixels, width, 159, 139), BACKGROUND);
     // Fixture rectangle top edge at logical (120, 100): outline ink lands.
+    // The edge entry lives in the DisplayLogical space Slice-5 newly
+    // mirrors, so this probe pins Slice-5 ink through the same sink path.
+    assert_eq!(
+        frame.plot_layout().annotations()[3].space(),
+        AnnotationSpace::DisplayLogical,
+        "rectangle-edge probe must ride the DisplayLogical entry"
+    );
     assert_ne!(
         pixel_at(&pixels, width, 120, 100),
         BACKGROUND,
@@ -130,7 +141,14 @@ fn annotation_mirror_fallback_exports_deterministically_with_ink_and_clean_corne
     );
     // Fixture arrow shaft from (8, 8) to (40, 24): (12, 10) rides the same
     // shaft, clear of the line shaft (y 6 there), glyph cells, text fill,
-    // series run, and rectangle ink.
+    // series run, and rectangle ink. The shaft entry lives in the
+    // FigureLogical space Slice-5 newly mirrors, so this probe pins
+    // Slice-5 ink through the same sink path.
+    assert_eq!(
+        frame.plot_layout().annotations()[2].space(),
+        AnnotationSpace::FigureLogical,
+        "arrow-shaft probe must ride the FigureLogical entry"
+    );
     assert_ne!(
         pixel_at(&pixels, width, 12, 10),
         BACKGROUND,
