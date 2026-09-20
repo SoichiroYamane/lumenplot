@@ -12,7 +12,7 @@ use lumenplot_engine::bridge::{LogicalRect, SrgbRgba8};
 
 use crate::frame::{
     FramePacket, FrameSeamError, FrameSeamErrorKind, MAX_FRAME_DIMENSION, MAX_FRAME_PIXELS,
-    MAX_FRAME_SERIES, PacketRevision, SemanticFrame,
+    MAX_FRAME_SERIES, PacketRevision, SemanticFillBar, SemanticFrame,
 };
 
 const MAX_PACKET_POINTS: usize = 1_000_000;
@@ -699,10 +699,75 @@ fn validate_frame(frame: &FramePacket) -> Result<FrameStats, PacketValidationErr
         }
     }
 
+    // Additive fill-bar carriage (commander decisions D1-D6): exactly one new
+    // branch; the line statements above are untouched. Geometry is re-checked
+    // here so a mutated frame can never publish; line errors report first,
+    // but the build still publishes nothing until every check passes.
+    if let Some(fill_bar) = frame.fill_bar() {
+        validate_fill_bar(fill_bar, canvas_width, canvas_height, &mut point_count)?;
+    }
+
     Ok(FrameStats {
         scene_revision: frame.revision,
         segment_count,
     })
+}
+
+/// Validates the additive fill-bar family without touching the line path.
+///
+/// `validate_frame` gains exactly one `fill_bar` branch which delegates here.
+/// Decision D1 keeps line `segment_count` (and therefore the line draw-count
+/// invariant) line-only, so fill-bar primitives are counted separately
+/// against the same segment-cap family — each fill polygon and bar rectangle
+/// is one drawable primitive — while fill-ring vertices share the running
+/// point budget (each vertex is one stored point; bar rectangles carry no
+/// stored vertices). Decision D6 records this mapping; no separate cap type
+/// is introduced.
+fn validate_fill_bar(
+    fill_bar: &SemanticFillBar,
+    canvas_width: f64,
+    canvas_height: f64,
+    point_count: &mut usize,
+) -> Result<(), PacketValidationError> {
+    if !fill_bar.validate_for_canvas(canvas_width, canvas_height) {
+        return Err(PacketValidationError::new(
+            PacketValidationErrorKind::FrameInvalid,
+            "packet fill-bar semantic geometry is invalid",
+        ));
+    }
+    let primitive_count = fill_bar
+        .fills()
+        .len()
+        .checked_add(fill_bar.bars().len())
+        .ok_or_else(|| {
+            PacketValidationError::new(
+                PacketValidationErrorKind::CapacityExceeded,
+                "packet fill-bar count exceeds a supported capacity",
+            )
+        })?;
+    if primitive_count > MAX_PACKET_SEGMENTS {
+        return Err(PacketValidationError::new(
+            PacketValidationErrorKind::CapacityExceeded,
+            "packet fill-bar count exceeds a supported capacity",
+        ));
+    }
+    for fill in fill_bar.fills() {
+        *point_count = point_count
+            .checked_add(fill.points().len())
+            .ok_or_else(|| {
+                PacketValidationError::new(
+                    PacketValidationErrorKind::CapacityExceeded,
+                    "packet point count exceeds a supported capacity",
+                )
+            })?;
+        if *point_count > MAX_PACKET_POINTS {
+            return Err(PacketValidationError::new(
+                PacketValidationErrorKind::CapacityExceeded,
+                "packet point count exceeds a supported capacity",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn valid_rect(rect: LogicalRect, canvas_width: f64, canvas_height: f64) -> bool {
@@ -778,7 +843,10 @@ fn validate_draws(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{FrameSpec, PacketPoint, PacketSegment};
+    use crate::frame::{
+        BarRect, EdgeStyle, FillFamily, FillPolygon, FrameSpec, PacketPoint, PacketSegment,
+        PaintKey, SemanticFillBar,
+    };
     use lumenplot_engine::bridge::{LogicalRect, LogicalSize, PlotLayout, Viewport};
 
     const WORK: WorkGeneration = WorkGeneration::new(7);
@@ -884,6 +952,315 @@ mod tests {
         assert_eq!(
             packet.device_generation().value(),
             DEVICE_GENERATION.value()
+        );
+    }
+
+    fn fill_bar_band() -> FillPolygon {
+        // Same hand-derived band as the frame carriage fixture: an open quad
+        // ring with inline paint + edge on the packet canvas.
+        FillPolygon::new(
+            vec![
+                PacketPoint::new(100.0, 200.0),
+                PacketPoint::new(200.0, 250.0),
+                PacketPoint::new(300.0, 220.0),
+                PacketPoint::new(100.0, 180.0),
+            ],
+            SrgbRgba8::new(31, 119, 180, 128),
+            Some(EdgeStyle::new(SrgbRgba8::new(31, 119, 180, 255), 1.0).expect("edge")),
+        )
+        .expect("band")
+    }
+
+    fn fill_bar_stacked_bar() -> BarRect {
+        BarRect::new(
+            LogicalRect::new(400.0, 300.0, 440.0, 500.0).expect("absolute bar rect"),
+            SrgbRgba8::new(255, 127, 14, 255),
+            None,
+        )
+    }
+
+    fn fill_bar_frame(point_count: usize) -> FramePacket {
+        let semantic = SemanticFillBar::new(
+            vec![fill_bar_band()],
+            vec![fill_bar_stacked_bar()],
+            vec![PaintKey::fill(0), PaintKey::bar(0)],
+        )
+        .expect("permutation");
+        fixture_frame(point_count).with_fill_bar(semantic)
+    }
+
+    fn nine_vertex_fan() -> FillPolygon {
+        FillPolygon::new(
+            vec![
+                PacketPoint::new(100.0, 100.0),
+                PacketPoint::new(200.0, 100.0),
+                PacketPoint::new(200.0, 200.0),
+                PacketPoint::new(100.0, 200.0),
+                PacketPoint::new(150.0, 250.0),
+                PacketPoint::new(250.0, 250.0),
+                PacketPoint::new(250.0, 150.0),
+                PacketPoint::new(150.0, 150.0),
+                PacketPoint::new(150.0, 100.0),
+            ],
+            SrgbRgba8::new(31, 119, 180, 128),
+            None,
+        )
+        .expect("nine-vertex fan")
+    }
+
+    #[test]
+    fn fill_bar_crosses_the_owner_packet_boundary_without_new_identity() {
+        let packet = RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(fill_bar_frame(8), WORK, DEVICE_GENERATION)
+            .expect("packet");
+        let fill_bar = packet.semantic_frame().fill_bar().expect("fill-bar facts");
+        assert_eq!(fill_bar.fills().len(), 1);
+        assert_eq!(fill_bar.bars().len(), 1);
+        assert_eq!(
+            fill_bar.paint_order(),
+            &[PaintKey::fill(0), PaintKey::bar(0)]
+        );
+        assert_eq!(fill_bar.paint_order()[1].family(), FillFamily::Bar);
+        // Decision D3: paint stays inline, so the resource table is unchanged.
+        assert_eq!(packet.resource_count(), 2);
+        assert_eq!(packet.resource_ids().count(), 2);
+        // Decision D1: the line draw list is exactly the line projection.
+        assert_eq!(packet.draw_count(), 1);
+        packet
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("valid packet");
+        // No new identity: the existing generations cover fill-bar staleness.
+        assert_eq!(packet.scene_revision(), SceneRevision::initial());
+        assert_eq!(packet.frame_revision(), packet.frame().revision());
+        assert_eq!(packet.work_generation().value(), WORK.value());
+        assert_eq!(
+            packet.device_generation().value(),
+            DEVICE_GENERATION.value()
+        );
+    }
+
+    #[test]
+    fn empty_fill_bar_resolves_to_zero_primitives() {
+        let empty = SemanticFillBar::new(Vec::new(), Vec::new(), Vec::new()).expect("empty");
+        let packet = RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(
+                fixture_frame(4).with_fill_bar(empty),
+                WORK,
+                DEVICE_GENERATION,
+            )
+            .expect("packet");
+        assert!(
+            packet
+                .semantic_frame()
+                .fill_bar()
+                .expect("facts")
+                .fills()
+                .is_empty()
+        );
+        assert_eq!(packet.draw_count(), 1);
+        assert_eq!(packet.resource_count(), 2);
+        packet
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("valid packet");
+    }
+
+    #[test]
+    fn fill_bar_geometry_violations_fail_closed_before_publication() {
+        let builder = RenderPacketBuilder::new(WORK, DEVICE_GENERATION);
+        // A fill vertex outside the canvas fails geometry validation with a
+        // sanitized message that never embeds the vertex value.
+        let escaped_fill = FillPolygon::new(
+            vec![
+                PacketPoint::new(100.0, 200.0),
+                PacketPoint::new(200.0, 250.0),
+                PacketPoint::new(801.0, 220.0),
+            ],
+            SrgbRgba8::new(31, 119, 180, 128),
+            None,
+        )
+        .expect("construction admits canvas-external rings");
+        let escaped_fill =
+            SemanticFillBar::new(vec![escaped_fill], Vec::new(), vec![PaintKey::fill(0)])
+                .expect("permutation");
+        let error = builder
+            .build(
+                fixture_frame(4).with_fill_bar(escaped_fill),
+                WORK,
+                DEVICE_GENERATION,
+            )
+            .err()
+            .expect("escaped fill must fail");
+        assert_eq!(error.kind(), PacketValidationErrorKind::FrameInvalid);
+        assert!(!error.to_string().contains("801"));
+
+        // A bar rectangle outside the canvas fails the same way.
+        let escaped_bar = BarRect::new(
+            LogicalRect::new(0.0, 0.0, 900.0, 700.0).expect("rect"),
+            SrgbRgba8::new(255, 127, 14, 255),
+            None,
+        );
+        let escaped_bar =
+            SemanticFillBar::new(Vec::new(), vec![escaped_bar], vec![PaintKey::bar(0)])
+                .expect("permutation");
+        let error = builder
+            .build(
+                fixture_frame(4).with_fill_bar(escaped_bar),
+                WORK,
+                DEVICE_GENERATION,
+            )
+            .err()
+            .expect("escaped bar must fail");
+        assert_eq!(error.kind(), PacketValidationErrorKind::FrameInvalid);
+        assert!(!error.to_string().contains("900"));
+
+        // Failed builds publish nothing: the recording consumer still holds
+        // only its earlier complete packet.
+        let mut renderer = RecordingRenderer::new(WORK, DEVICE_GENERATION);
+        renderer
+            .submit(fill_bar_frame(4), WORK, DEVICE_GENERATION)
+            .expect("current packet");
+        assert_eq!(renderer.published().len(), 1);
+        let invalid = {
+            let escaped = FillPolygon::new(
+                vec![
+                    PacketPoint::new(100.0, 200.0),
+                    PacketPoint::new(200.0, 250.0),
+                    PacketPoint::new(100.0, 601.0),
+                ],
+                SrgbRgba8::new(31, 119, 180, 128),
+                None,
+            )
+            .expect("construction admits canvas-external rings");
+            let semantic = SemanticFillBar::new(vec![escaped], Vec::new(), vec![PaintKey::fill(0)])
+                .expect("permutation");
+            fixture_frame(4).with_fill_bar(semantic)
+        };
+        assert_eq!(
+            renderer
+                .submit(invalid, WORK, DEVICE_GENERATION)
+                .expect_err("invalid fill-bar")
+                .kind(),
+            PacketValidationErrorKind::FrameInvalid
+        );
+        assert_eq!(renderer.published().len(), 1);
+    }
+
+    #[test]
+    fn fill_bar_counts_share_the_max_cap_family() {
+        // Decision D6: each fill/bar primitive shares the segment-cap family,
+        // so exactly MAX_PACKET_SEGMENTS bars publish and one more is a
+        // capacity failure. Bars are the lightest primitive (one Copy struct,
+        // no heap per primitive) under the identity permutation.
+        let in_canvas = LogicalRect::new(40.0, 30.0, 41.0, 31.0).expect("bar rect");
+        let full_bars: Vec<BarRect> = (0..MAX_PACKET_SEGMENTS)
+            .map(|_| BarRect::new(in_canvas, SrgbRgba8::new(255, 127, 14, 255), None))
+            .collect();
+        let full_order: Vec<PaintKey> = (0..MAX_PACKET_SEGMENTS).map(PaintKey::bar).collect();
+        let full =
+            SemanticFillBar::new(Vec::new(), full_bars, full_order).expect("inclusive bound");
+        let packet = RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(
+                fixture_frame(4).with_fill_bar(full),
+                WORK,
+                DEVICE_GENERATION,
+            )
+            .expect("inclusive primitive bound publishes");
+        packet
+            .validate(WORK, DEVICE_GENERATION)
+            .expect("inclusive bound validates");
+        drop(packet);
+
+        let crowded_bars: Vec<BarRect> = (0..=MAX_PACKET_SEGMENTS)
+            .map(|_| BarRect::new(in_canvas, SrgbRgba8::new(255, 127, 14, 255), None))
+            .collect();
+        let crowded_order: Vec<PaintKey> = (0..=MAX_PACKET_SEGMENTS).map(PaintKey::bar).collect();
+        let crowded =
+            SemanticFillBar::new(Vec::new(), crowded_bars, crowded_order).expect("permutation");
+        assert_eq!(
+            RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+                .build(
+                    fixture_frame(4).with_fill_bar(crowded),
+                    WORK,
+                    DEVICE_GENERATION,
+                )
+                .err()
+                .expect("primitive overflow must fail")
+                .kind(),
+            PacketValidationErrorKind::CapacityExceeded
+        );
+
+        // Fill-ring vertices share the point budget with line points: a line
+        // frame just under the point cap publishes alone but overflows once
+        // the nine fill vertices join the same budget.
+        let mut crowded_lines = fixture_frame(4);
+        let line_points = crowded_lines.series[0].segments[0].points.clone();
+        while crowded_lines.series[0].segments[0].points.len() < MAX_PACKET_POINTS - 8 {
+            let room = MAX_PACKET_POINTS - 8 - crowded_lines.series[0].segments[0].points.len();
+            let take = room.min(line_points.len());
+            crowded_lines.series[0].segments[0]
+                .points
+                .extend_from_slice(&line_points[..take]);
+        }
+        RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(crowded_lines.clone(), WORK, DEVICE_GENERATION)
+            .expect("line points alone stay under the cap");
+        let fan =
+            SemanticFillBar::new(vec![nine_vertex_fan()], Vec::new(), vec![PaintKey::fill(0)])
+                .expect("permutation");
+        assert_eq!(
+            RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+                .build(crowded_lines.with_fill_bar(fan), WORK, DEVICE_GENERATION)
+                .err()
+                .expect("shared budget overflow must fail")
+                .kind(),
+            PacketValidationErrorKind::CapacityExceeded
+        );
+        // The same fan on a small line frame publishes: only the shared total
+        // trips the bound.
+        let small_fan =
+            SemanticFillBar::new(vec![nine_vertex_fan()], Vec::new(), vec![PaintKey::fill(0)])
+                .expect("permutation");
+        RenderPacketBuilder::new(WORK, DEVICE_GENERATION)
+            .build(
+                fixture_frame(4).with_fill_bar(small_fan),
+                WORK,
+                DEVICE_GENERATION,
+            )
+            .expect("small shared total publishes");
+    }
+
+    #[test]
+    fn fill_bar_stale_generations_reject_without_new_identity() {
+        // The existing Scene/Work/Device generations cover fill-bar staleness
+        // identically; no new generation type is introduced.
+        let scene = SceneRevision::new(41);
+        let builder = RenderPacketBuilder::for_scene(scene, WORK, DEVICE_GENERATION);
+        let packet = builder
+            .build(fill_bar_frame(4), WORK, DEVICE_GENERATION)
+            .expect("owner-bound fill-bar packet");
+        packet
+            .validate_for_owner(scene, WORK, DEVICE_GENERATION)
+            .expect("current owner point");
+        assert_eq!(
+            packet
+                .validate_for_owner(SceneRevision::new(42), WORK, DEVICE_GENERATION)
+                .expect_err("newer scene must reject the old packet")
+                .kind(),
+            PacketValidationErrorKind::StaleSceneRevision
+        );
+        assert_eq!(
+            packet
+                .validate_for_owner(scene, WorkGeneration::new(6), DEVICE_GENERATION)
+                .expect_err("stale work must reject the old packet")
+                .kind(),
+            PacketValidationErrorKind::StaleWorkGeneration
+        );
+        assert_eq!(
+            packet
+                .validate_for_owner(scene, WORK, DeviceGeneration::new(10))
+                .expect_err("stale renderer state must reject the old packet")
+                .kind(),
+            PacketValidationErrorKind::StaleDeviceGeneration
         );
     }
 

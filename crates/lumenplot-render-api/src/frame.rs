@@ -226,6 +226,7 @@ impl SceneHandle {
             line_width_px: spec.line_width_px,
             series,
             three_d: None,
+            fill_bar: None,
         })
     }
 
@@ -736,6 +737,284 @@ impl Semantic3D {
     }
 }
 
+/// Which fill-bar family a paint key addresses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FillFamily {
+    Fill,
+    Bar,
+}
+
+/// Position of one fill/bar primitive in the fills-first paint order.
+///
+/// `paint_order` on [`SemanticFillBar`] is an exact permutation over fills +
+/// bars: every fill polygon and bar rectangle paints exactly once beneath the
+/// line family, which keeps its own draw order on top (decision D4, the fixed
+/// rule mirroring default zorder).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PaintKey {
+    family: FillFamily,
+    index: usize,
+}
+
+impl PaintKey {
+    /// Key addressing the `index`-th fill polygon.
+    pub fn fill(index: usize) -> Self {
+        Self {
+            family: FillFamily::Fill,
+            index,
+        }
+    }
+
+    /// Key addressing the `index`-th bar rectangle.
+    pub fn bar(index: usize) -> Self {
+        Self {
+            family: FillFamily::Bar,
+            index,
+        }
+    }
+
+    /// Family addressed by this key.
+    pub fn family(self) -> FillFamily {
+        self.family
+    }
+
+    /// Index within the family addressed by this key.
+    pub fn index(self) -> usize {
+        self.index
+    }
+}
+
+/// Edge stroke resolved for one fill/bar primitive.
+///
+/// Paint stays inline on the primitive (decision D3), so the packet resource
+/// table is unchanged. The consumer strokes the edge immediately after its
+/// own fill (decision D5). Width mirrors the [`LineStyle`] contract: finite
+/// and positive at construction, re-checked by
+/// [`SemanticFillBar::validate_for_canvas`]; like the 3D triangle widths,
+/// this slice sets no packet-level upper bound.
+#[derive(Clone, Copy, PartialEq)]
+pub struct EdgeStyle {
+    color: SrgbRgba8,
+    width_px: f64,
+}
+
+impl EdgeStyle {
+    /// Creates an edge stroke; rejects non-finite or non-positive widths.
+    pub fn new(color: SrgbRgba8, width_px: f64) -> Result<Self, FrameSeamError> {
+        if !width_px.is_finite() || width_px <= 0.0 {
+            return Err(invalid_input("fill-bar edge style is invalid"));
+        }
+        Ok(Self { color, width_px })
+    }
+
+    /// Resolved edge color.
+    pub fn color(self) -> SrgbRgba8 {
+        self.color
+    }
+
+    /// Edge width in display pixels.
+    pub fn width_px(self) -> f64 {
+        self.width_px
+    }
+}
+
+/// One closed display-space fill ring.
+///
+/// Carries `fill_between` bands and Polygon patches as absolute geometry:
+/// baseline/`bottom=`/stack offsets, NaN-gap splitting, and color resolution
+/// all stay adapter-side and never reach the frame. Closure is implicit
+/// (decision D2): the ring is stored open and the consumer closes
+/// last-to-first; construction requires at least three finite vertices and
+/// [`SemanticFillBar::validate_for_canvas`] re-checks in-canvas placement.
+#[derive(Clone, PartialEq)]
+pub struct FillPolygon {
+    points: Vec<PacketPoint>,
+    fill: SrgbRgba8,
+    edge: Option<EdgeStyle>,
+}
+
+impl FillPolygon {
+    /// Creates a fill ring; rejects rings under three points or with
+    /// non-finite vertices. The message stays sanitized: it never embeds
+    /// vertex values.
+    pub fn new(
+        points: Vec<PacketPoint>,
+        fill: SrgbRgba8,
+        edge: Option<EdgeStyle>,
+    ) -> Result<Self, FrameSeamError> {
+        if points.len() < 3
+            || points
+                .iter()
+                .any(|point| !point.x.is_finite() || !point.y.is_finite())
+        {
+            return Err(invalid_input("fill polygon is invalid"));
+        }
+        Ok(Self { points, fill, edge })
+    }
+
+    /// Open ring vertices in display space; the consumer closes the ring.
+    pub fn points(&self) -> &[PacketPoint] {
+        &self.points
+    }
+
+    /// Resolved fill paint.
+    pub fn fill(&self) -> SrgbRgba8 {
+        self.fill
+    }
+
+    /// Optional edge stroked immediately after this fill.
+    pub fn edge(&self) -> Option<EdgeStyle> {
+        self.edge
+    }
+}
+
+/// One absolute display-space bar rectangle.
+///
+/// Bar x positions, widths, baselines, `bottom=`, and stacked accumulation
+/// resolve to this absolute rectangle adapter-side; histogram binning and
+/// color-cycle resolution likewise never reach the frame. [`LogicalRect::new`]
+/// rejects degenerate or non-finite rectangles at construction and
+/// [`SemanticFillBar::validate_for_canvas`] re-checks in-canvas placement.
+#[derive(Clone, Copy, PartialEq)]
+pub struct BarRect {
+    rect: LogicalRect,
+    fill: SrgbRgba8,
+    edge: Option<EdgeStyle>,
+}
+
+impl BarRect {
+    /// Creates a bar rectangle from an already-validated absolute rect.
+    pub fn new(rect: LogicalRect, fill: SrgbRgba8, edge: Option<EdgeStyle>) -> Self {
+        Self { rect, fill, edge }
+    }
+
+    /// Absolute rectangle in display space.
+    pub fn rect(self) -> LogicalRect {
+        self.rect
+    }
+
+    /// Resolved fill paint.
+    pub fn fill(self) -> SrgbRgba8 {
+        self.fill
+    }
+
+    /// Optional edge stroked immediately after this fill.
+    pub fn edge(self) -> Option<EdgeStyle> {
+        self.edge
+    }
+}
+
+/// Additive fill/bar meaning carried by the shared semantic frame.
+///
+/// Decision D1 selects this over a unified fill-primitive family: it mirrors
+/// the accepted [`Semantic3D`] precedent with zero change to the M1 line
+/// fields, line draws, and the line draw-count invariant.
+///
+/// Ownership: the producer (`SceneHandle::resolve_frame_candidate`, fed by
+/// adapter-resolved absolute geometry) constructs these primitives;
+/// renderers never feed the frame. The packet builder validates the family
+/// all-or-nothing with everything else; generations, lease/fence retirement,
+/// and loss rebuild are unchanged, and no new generation type is introduced.
+///
+/// Paint rule: `paint_order` is an exact permutation over fills + bars;
+/// fills and bars paint first in that order and the line family draws on top
+/// (decision D4, the fixed rule mirroring default zorder).
+#[derive(Clone)]
+pub struct SemanticFillBar {
+    fills: Vec<FillPolygon>,
+    bars: Vec<BarRect>,
+    paint_order: Vec<PaintKey>,
+}
+
+impl SemanticFillBar {
+    /// Creates fill/bar meaning; `paint_order` must be an exact permutation
+    /// over fills + bars (mirrors the `Semantic3D` painter-order check).
+    /// Empty fills + bars with an empty order resolves to zero primitives,
+    /// mirroring the empty-series rule.
+    pub fn new(
+        fills: Vec<FillPolygon>,
+        bars: Vec<BarRect>,
+        paint_order: Vec<PaintKey>,
+    ) -> Result<Self, FrameSeamError> {
+        // Map each key to a linear slot (fills first, then bars) and require
+        // full 0..n coverage without duplicates or out-of-range indices.
+        let mut slots_valid = paint_order.len() == fills.len() + bars.len();
+        let mut slots = Vec::with_capacity(paint_order.len());
+        for key in &paint_order {
+            let slot = match key.family {
+                FillFamily::Fill if key.index < fills.len() => key.index,
+                FillFamily::Bar if key.index < bars.len() => fills.len() + key.index,
+                _ => {
+                    slots_valid = false;
+                    break;
+                }
+            };
+            slots.push(slot);
+        }
+        if slots_valid {
+            slots.sort_unstable();
+            if slots
+                .iter()
+                .enumerate()
+                .any(|(index, value)| *value != index)
+            {
+                slots_valid = false;
+            }
+        }
+        if !slots_valid {
+            return Err(invalid_input("fill-bar paint order is invalid"));
+        }
+        Ok(Self {
+            fills,
+            bars,
+            paint_order,
+        })
+    }
+
+    /// Fill rings in carriage order.
+    pub fn fills(&self) -> &[FillPolygon] {
+        &self.fills
+    }
+
+    /// Bar rectangles in carriage order.
+    pub fn bars(&self) -> &[BarRect] {
+        &self.bars
+    }
+
+    /// Exact permutation over fills + bars, painted beneath the lines.
+    pub fn paint_order(&self) -> &[PaintKey] {
+        &self.paint_order
+    }
+
+    pub(crate) fn validate_for_canvas(&self, width: f64, height: f64) -> bool {
+        self.fills.iter().all(|fill| {
+            fill.points.iter().all(|point| {
+                point.x.is_finite()
+                    && point.y.is_finite()
+                    && point.x >= 0.0
+                    && point.y >= 0.0
+                    && point.x <= width
+                    && point.y <= height
+            }) && fill
+                .edge
+                .is_none_or(|edge| edge.width_px.is_finite() && edge.width_px > 0.0)
+        }) && self.bars.iter().all(|bar| {
+            let rect = bar.rect;
+            rect.x_min().is_finite()
+                && rect.y_min().is_finite()
+                && rect.x_max().is_finite()
+                && rect.y_max().is_finite()
+                && rect.x_min() >= 0.0
+                && rect.y_min() >= 0.0
+                && rect.x_max() <= width
+                && rect.y_max() <= height
+                && bar
+                    .edge
+                    .is_none_or(|edge| edge.width_px.is_finite() && edge.width_px > 0.0)
+        })
+    }
+}
+
 /// Shared backend-neutral semantic/layout result for one resolved scene.
 ///
 /// The current M2 implementation carries the bounded line-family meaning from
@@ -768,6 +1047,11 @@ impl SemanticFrame {
         self.frame.three_d()
     }
 
+    /// Optional additive fill/bar meaning carried by this semantic frame.
+    pub fn fill_bar(&self) -> Option<&SemanticFillBar> {
+        self.frame.fill_bar()
+    }
+
     #[cfg(test)]
     pub(crate) fn frame_mut(&mut self) -> &mut FramePacket {
         &mut self.frame
@@ -791,6 +1075,7 @@ pub struct FramePacket {
     pub(crate) line_width_px: f64,
     pub(crate) series: Vec<PacketSeries>,
     pub(crate) three_d: Option<Semantic3D>,
+    pub(crate) fill_bar: Option<SemanticFillBar>,
 }
 
 impl FramePacket {
@@ -803,6 +1088,18 @@ impl FramePacket {
 
     pub(crate) fn three_d(&self) -> Option<&Semantic3D> {
         self.three_d.as_ref()
+    }
+
+    /// Attach additive fill/bar semantic facts without changing the M1 frame
+    /// seam or the line draw path (decision D1).
+    #[allow(dead_code)]
+    pub(crate) fn with_fill_bar(mut self, fill_bar: SemanticFillBar) -> Self {
+        self.fill_bar = Some(fill_bar);
+        self
+    }
+
+    pub(crate) fn fill_bar(&self) -> Option<&SemanticFillBar> {
+        self.fill_bar.as_ref()
     }
 
     /// Scene revision the packet was resolved at.
@@ -1205,5 +1502,203 @@ mod tests {
         // Non-finite view bounds are rejected at handle construction.
         assert!(Viewport::from_bounds(f64::NAN, 1.0, 0.0, 1.0).is_err());
         assert!(Viewport::from_bounds(2.0, 1.0, 0.0, 1.0).is_err());
+    }
+
+    fn fill_bar_band() -> FillPolygon {
+        // Hand-derived carriage fixture: one fill_between band as an open
+        // quad ring (closure is implicit per D2) with inline paint + edge.
+        FillPolygon::new(
+            vec![
+                PacketPoint::new(100.0, 200.0),
+                PacketPoint::new(200.0, 250.0),
+                PacketPoint::new(300.0, 220.0),
+                PacketPoint::new(100.0, 180.0),
+            ],
+            SrgbRgba8::new(31, 119, 180, 128),
+            Some(EdgeStyle::new(SrgbRgba8::new(31, 119, 180, 255), 1.0).expect("edge")),
+        )
+        .expect("band")
+    }
+
+    fn fill_bar_stacked_bar() -> BarRect {
+        // One bar whose stacked offset is already resolved to an absolute
+        // rect adapter-side; the frame never sees the stacking inputs.
+        BarRect::new(
+            LogicalRect::new(400.0, 300.0, 440.0, 500.0).expect("absolute bar rect"),
+            SrgbRgba8::new(255, 127, 14, 255),
+            None,
+        )
+    }
+
+    fn fill_bar_fixture() -> SemanticFillBar {
+        SemanticFillBar::new(
+            vec![fill_bar_band()],
+            vec![fill_bar_stacked_bar()],
+            vec![PaintKey::fill(0), PaintKey::bar(0)],
+        )
+        .expect("permutation")
+    }
+
+    #[test]
+    fn fill_bar_fixture_carries_absolute_geometry_with_inline_paint() {
+        let semantic = fill_bar_fixture();
+        assert_eq!(semantic.fills().len(), 1);
+        assert_eq!(semantic.bars().len(), 1);
+        let band = &semantic.fills()[0];
+        assert_eq!(band.points().len(), 4);
+        assert_eq!(band.points()[0], PacketPoint::new(100.0, 200.0));
+        assert!(band.fill() == SrgbRgba8::new(31, 119, 180, 128));
+        let edge = band.edge().expect("band edge");
+        assert!(edge.color() == SrgbRgba8::new(31, 119, 180, 255));
+        assert_eq!(edge.width_px(), 1.0);
+        let bar = semantic.bars()[0];
+        assert_eq!(bar.rect().x_min(), 400.0);
+        assert_eq!(bar.rect().y_min(), 300.0);
+        assert_eq!(bar.rect().x_max(), 440.0);
+        assert_eq!(bar.rect().y_max(), 500.0);
+        assert!(bar.fill() == SrgbRgba8::new(255, 127, 14, 255));
+        assert!(bar.edge().is_none());
+        assert_eq!(
+            semantic.paint_order(),
+            &[PaintKey::fill(0), PaintKey::bar(0)]
+        );
+        assert_eq!(semantic.paint_order()[0].family(), FillFamily::Fill);
+        assert_eq!(semantic.paint_order()[1].family(), FillFamily::Bar);
+        assert!(semantic.validate_for_canvas(f64::from(CANVAS_W), f64::from(CANVAS_H)));
+    }
+
+    #[test]
+    fn default_frames_carry_no_fill_bar_until_attached() {
+        // The producer resolves lines only; fill/bar meaning attaches
+        // additively without changing the M1 seam (decision D1).
+        let handle = fixture_handle();
+        let packet = handle.resolve_frame(&fixture_spec()).expect("packet");
+        assert!(packet.fill_bar().is_none());
+        let attached = handle
+            .resolve_frame(&fixture_spec())
+            .expect("packet")
+            .with_fill_bar(fill_bar_fixture());
+        assert!(attached.fill_bar().is_some());
+    }
+
+    #[test]
+    fn fill_bar_rings_accept_implicit_close_but_reject_degenerate_geometry() {
+        // An unclosed three-point ring is valid: the consumer closes
+        // last-to-first (decision D2).
+        FillPolygon::new(
+            vec![
+                PacketPoint::new(10.0, 10.0),
+                PacketPoint::new(20.0, 10.0),
+                PacketPoint::new(15.0, 20.0),
+            ],
+            SrgbRgba8::new(0, 0, 0, 255),
+            None,
+        )
+        .expect("implicit close");
+        // Under-three-point rings and non-finite vertices are rejected with
+        // sanitized messages that never embed vertex values.
+        for points in [
+            vec![],
+            vec![PacketPoint::new(10.0, 10.0)],
+            vec![PacketPoint::new(10.0, 10.0), PacketPoint::new(20.0, 10.0)],
+            vec![
+                PacketPoint::new(9_999.0, 10.0),
+                PacketPoint::new(f64::NAN, 10.0),
+                PacketPoint::new(15.0, 20.0),
+            ],
+            vec![
+                PacketPoint::new(10.0, 10.0),
+                PacketPoint::new(20.0, f64::INFINITY),
+                PacketPoint::new(15.0, 20.0),
+            ],
+        ] {
+            let error = FillPolygon::new(points, SrgbRgba8::new(0, 0, 0, 255), None)
+                .err()
+                .expect("degenerate ring must be rejected");
+            assert_eq!(error.kind(), FrameSeamErrorKind::InvalidInput);
+            assert!(!error.message().contains("9999"));
+        }
+        // Out-of-canvas placement fails canvas validation, not construction.
+        let escaped = FillPolygon::new(
+            vec![
+                PacketPoint::new(10.0, 10.0),
+                PacketPoint::new(20.0, 10.0),
+                PacketPoint::new(f64::from(CANVAS_W) + 1.0, 20.0),
+            ],
+            SrgbRgba8::new(0, 0, 0, 255),
+            None,
+        )
+        .expect("construction admits canvas-external rings");
+        let semantic = SemanticFillBar::new(vec![escaped], Vec::new(), vec![PaintKey::fill(0)])
+            .expect("permutation");
+        assert!(!semantic.validate_for_canvas(f64::from(CANVAS_W), f64::from(CANVAS_H)));
+    }
+
+    #[test]
+    fn fill_bar_bars_reject_degenerate_rects_and_out_of_canvas() {
+        // Degenerate or non-finite rectangles never become bars.
+        assert!(
+            LogicalRect::new(440.0, 300.0, 400.0, 500.0).is_err(),
+            "inverted rect must be rejected"
+        );
+        assert!(
+            LogicalRect::new(400.0, 300.0, 400.0, 500.0).is_err(),
+            "zero-area rect must be rejected"
+        );
+        // A well-formed rect outside the canvas fails canvas validation.
+        let escaped = BarRect::new(
+            LogicalRect::new(0.0, 0.0, f64::from(CANVAS_W) + 1.0, 10.0).expect("rect"),
+            SrgbRgba8::new(0, 0, 0, 255),
+            None,
+        );
+        let semantic = SemanticFillBar::new(Vec::new(), vec![escaped], vec![PaintKey::bar(0)])
+            .expect("permutation");
+        assert!(!semantic.validate_for_canvas(f64::from(CANVAS_W), f64::from(CANVAS_H)));
+    }
+
+    #[test]
+    fn fill_bar_paint_order_must_be_an_exact_permutation() {
+        // Duplicates, out-of-range indices, wrong-family indices, and missing
+        // primitives are all rejected (mirror of the 3D painter-order check).
+        let fills = vec![fill_bar_band(), fill_bar_band()];
+        let bars = vec![fill_bar_stacked_bar()];
+        for order in [
+            vec![PaintKey::fill(0), PaintKey::fill(0), PaintKey::bar(0)],
+            vec![PaintKey::fill(0), PaintKey::fill(2), PaintKey::bar(0)],
+            vec![PaintKey::fill(0), PaintKey::fill(1), PaintKey::bar(1)],
+            vec![PaintKey::fill(0), PaintKey::fill(1), PaintKey::fill(0)],
+            vec![PaintKey::fill(0), PaintKey::fill(1)],
+            vec![PaintKey::fill(0), PaintKey::bar(0), PaintKey::bar(0)],
+        ] {
+            let error = SemanticFillBar::new(fills.clone(), bars.clone(), order)
+                .err()
+                .expect("broken permutation must be rejected");
+            assert_eq!(error.kind(), FrameSeamErrorKind::InvalidInput);
+        }
+        SemanticFillBar::new(
+            fills,
+            bars,
+            vec![PaintKey::bar(0), PaintKey::fill(1), PaintKey::fill(0)],
+        )
+        .expect("any order across families is a valid permutation");
+        // Empty fills + bars with an empty order resolves to zero primitives,
+        // mirroring the empty-series rule.
+        let empty =
+            SemanticFillBar::new(Vec::new(), Vec::new(), Vec::new()).expect("empty fill-bar");
+        assert!(empty.fills().is_empty());
+        assert!(empty.bars().is_empty());
+        assert!(empty.validate_for_canvas(f64::from(CANVAS_W), f64::from(CANVAS_H)));
+    }
+
+    #[test]
+    fn fill_bar_edge_width_must_be_finite_and_positive() {
+        for width in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let error = EdgeStyle::new(SrgbRgba8::new(0, 0, 0, 255), width)
+                .err()
+                .expect("bad edge width must be rejected");
+            assert_eq!(error.kind(), FrameSeamErrorKind::InvalidInput);
+        }
+        let edge = EdgeStyle::new(SrgbRgba8::new(0, 0, 0, 255), 2.5).expect("edge");
+        assert_eq!(edge.width_px(), 2.5);
     }
 }
