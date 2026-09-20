@@ -1,22 +1,26 @@
-//! M5-ANNOT Slices 1-2 PNG evidence through the public export bridge.
+//! M5-ANNOT Slices 1-3 PNG evidence through the public export bridge.
 //!
 //! Scope: ordinary-export behavior of the annotation mirror fallback.
 //! Live Plot State cannot be staged through the public bridge
 //! (annotation transactions stay `pub(crate)` by Slice-1 non-goal, kept by
-//! Slice-2), so the empty-live-map branch is pinned here at the encoded-PNG
-//! level:
+//! Slice-2 and Slice-3), so the empty-live-map branch is pinned here at the
+//! encoded-PNG level:
 //!
 //! - (a) encoding is deterministic: two encodes of one frame are
 //!   byte-identical;
 //! - (b) the empty-page corner stays background: no hover, focus,
 //!   selection, or drag chrome lands in an ordinary export;
 //! - (c) retained annotation ink lands: the fixture rectangle outline
-//!   strokes a covered pixel and the fixture text box fills its interior
-//!   pixel, so the sink path the live mirror feeds is proven to carry both
-//!   Slice-2 annotation inks into the export.
+//!   strokes a covered pixel, the fixture text box fills its interior
+//!   pixel, and the fixture line and arrow shafts stroke their pixels, so
+//!   the sink path the live mirror feeds is proven to carry all four
+//!   Slice-3 annotation inks into the export.
 //!
 //! Pixel expectations reuse the mask probes pinned by the in-tree
-//! `rasterize_annotations` unit tests on the same 160x140 page.
+//! `rasterize_annotations` unit tests on the same 160x140 page, except the
+//! arrow probe: the mask probe (24, 16) sits under retained glyph cells at
+//! the composed-PNG level, so the PNG arrow probe moves along the same
+//! shaft to (12, 10), clear of every other ink source.
 
 use std::io::Cursor;
 
@@ -73,8 +77,9 @@ fn pixel_at(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
 }
 
 /// (a) Double encode is byte-identical; (b) the far corner stays
-/// background; (c) the fixture rectangle outline inks its edge pixel and the
-/// fixture text box fills its interior pixel.
+/// background; (c) the fixture rectangle outline inks its edge pixel, the
+/// fixture text box fills its interior pixel, and the fixture line and
+/// arrow shafts ink their pixels.
 #[test]
 fn annotation_mirror_fallback_exports_deterministically_with_ink_and_clean_corner() {
     let frame = make_page_frame();
@@ -104,6 +109,22 @@ fn annotation_mirror_fallback_exports_deterministically_with_ink_and_clean_corne
         pixel_at(&pixels, width, 10, 20),
         BACKGROUND,
         "text box must ink its interior pixel"
+    );
+    // Fixture line shaft from (0, 0) to (64, 32): the mask probe pixel
+    // (8, 4) rides the shaft center, clear of the series run, glyph cells
+    // (y >= 16), text fill, and rectangle ink.
+    assert_ne!(
+        pixel_at(&pixels, width, 8, 4),
+        BACKGROUND,
+        "line shaft must ink its crossing pixel"
+    );
+    // Fixture arrow shaft from (8, 8) to (40, 24): (12, 10) rides the same
+    // shaft, clear of the line shaft (y 6 there), glyph cells, text fill,
+    // series run, and rectangle ink.
+    assert_ne!(
+        pixel_at(&pixels, width, 12, 10),
+        BACKGROUND,
+        "arrow shaft must ink its crossing pixel"
     );
     // Rectangle interior carries fill from no pass (outline only): the
     // center stays free of annotation ink. The horizontal series runs at

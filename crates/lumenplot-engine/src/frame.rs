@@ -153,7 +153,7 @@ pub(crate) fn resolve_line_frame(
     )?;
 
     // Slice-1 annotation mirror: the frame carries the fixture runs plus
-    // the live Data2D rectangles whenever Plot State holds any annotation,
+    // the live Data2D mirror set (rect/text/line/arrow, Slices 1-3) whenever Plot State holds any annotation,
     // else the fixture annotations unchanged so existing consumers stay
     // green. The mirrored carrier is stamped with this snapshot's
     // generations and validates through the same carrier path.

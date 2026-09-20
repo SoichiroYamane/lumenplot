@@ -554,12 +554,12 @@ impl PlotLayout {
         })
     }
 
-    /// Rebuilds the carrier from fixture runs plus live Slice-2 annotations.
+    /// Rebuilds the carrier from fixture runs plus live Slice-3 annotations.
     ///
     /// The single choke point for the annotation mirror: every annotation
-    /// must be an identity-transform rectangle or text box declared in
-    /// `Data2D`, or construction fails with `InvalidInput` before any digest
-    /// runs. Runs, capacity, and digest handling follow the same validated
+    /// must be an identity-transform rectangle, text box, line, or arrow
+    /// declared in `Data2D`, or construction fails with `InvalidInput` before
+    /// any digest runs. Runs, capacity, and digest handling follow the same validated
     /// path as [`from_runs`](Self::from_runs), so a mirrored carrier
     /// validates exactly like a fixture one under the caller's revisions.
     pub(crate) fn from_live_parts(
@@ -570,7 +570,9 @@ impl PlotLayout {
     ) -> Result<Self, SceneError> {
         for annotation in &live_annotations {
             let mirrored_kind = annotation.kind() == AnnotationKind::Rectangle
-                || annotation.kind() == AnnotationKind::Text;
+                || annotation.kind() == AnnotationKind::Text
+                || annotation.kind() == AnnotationKind::Line
+                || annotation.kind() == AnnotationKind::Arrow;
             if !mirrored_kind
                 || annotation.space() != AnnotationSpace::Data2D
                 || annotation.transform() != AnnotationTransform::identity()
@@ -2079,6 +2081,105 @@ mod annotation_tests {
             z_order,
         )
         .expect("rectangle annotation")
+    }
+
+    fn line_annotation(id: u64, z_order: i32) -> RetainedAnnotation {
+        RetainedAnnotation::new(
+            id,
+            AnnotationSpace::Data2D,
+            AnnotationShape::Line {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 4.0,
+                y2: 4.0,
+            },
+            AnnotationTransform::identity(),
+            1,
+            1,
+            z_order,
+        )
+        .expect("line annotation")
+    }
+
+    fn arrow_annotation(id: u64, z_order: i32) -> RetainedAnnotation {
+        RetainedAnnotation::new(
+            id,
+            AnnotationSpace::Data2D,
+            AnnotationShape::Arrow {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 4.0,
+                y2: 4.0,
+                head_length: 1.0,
+            },
+            AnnotationTransform::identity(),
+            1,
+            1,
+            z_order,
+        )
+        .expect("arrow annotation")
+    }
+
+    #[test]
+    fn from_live_parts_mirrors_data2d_identity_lines_and_arrows() {
+        let font = FontIdentity::fixture().expect("font");
+        let runs =
+            vec![fixture_run(TextRole::AxisTitle, "title", &font, (0.0, 0.0)).expect("title run")];
+        let layout = PlotLayout::from_live_parts(runs.clone(), vec![line_annotation(1, 0)], 0, 0)
+            .expect("line mirror");
+        assert_eq!(layout.annotations().len(), 1);
+        assert_eq!(layout.annotations()[0].kind(), AnnotationKind::Line);
+        assert!(layout.validate());
+        let layout = PlotLayout::from_live_parts(runs.clone(), vec![arrow_annotation(2, 0)], 0, 0)
+            .expect("arrow mirror");
+        assert_eq!(layout.annotations().len(), 1);
+        assert_eq!(layout.annotations()[0].kind(), AnnotationKind::Arrow);
+        assert!(layout.validate());
+        // A non-identity map fails closed even for a Data2D line.
+        let moved = RetainedAnnotation::new(
+            3,
+            AnnotationSpace::Data2D,
+            AnnotationShape::Line {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 4.0,
+                y2: 4.0,
+            },
+            AnnotationTransform::new(2.0, 0.0, 10.0, 0.0, 2.0, 20.0).expect("map"),
+            1,
+            1,
+            0,
+        )
+        .expect("mapped line");
+        assert_eq!(
+            PlotLayout::from_live_parts(runs.clone(), vec![moved], 0, 0)
+                .expect_err("non-identity is not mirrored")
+                .kind(),
+            SceneErrorKind::InvalidInput
+        );
+        // A non-Data2D arrow fails closed even with an identity map.
+        let foreign = RetainedAnnotation::new(
+            4,
+            AnnotationSpace::FigureLogical,
+            AnnotationShape::Arrow {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 4.0,
+                y2: 4.0,
+                head_length: 1.0,
+            },
+            AnnotationTransform::identity(),
+            1,
+            1,
+            0,
+        )
+        .expect("foreign arrow");
+        assert_eq!(
+            PlotLayout::from_live_parts(runs, vec![foreign], 0, 0)
+                .expect_err("non-Data2D is not mirrored")
+                .kind(),
+            SceneErrorKind::InvalidInput
+        );
     }
 
     #[test]
