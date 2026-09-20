@@ -1,4 +1,4 @@
-//! Live Data2D rect/text/line/arrow mirror (M5-ANNOT Slices 1-3).
+//! Live Data2D/AxesLogical rect/text/line/arrow mirror (M5-ANNOT Slices 1-4).
 //!
 //! The scene keeps two annotation homes: the live Plot State map on
 //! [`SceneState`](super::state::SceneState), mutated by annotation
@@ -7,7 +7,8 @@
 //! the live map into the carrier; it only re-stamps the carrier revision on
 //! data/view change. This module closes that link for exactly four kinds:
 //! identity-transform rectangles, text boxes, lines, and arrows declared in
-//! [`Data2D`](crate::text::AnnotationSpace::Data2D).
+//! [`Data2D`](crate::text::AnnotationSpace::Data2D) or
+//! [`AxesLogical`](crate::text::AnnotationSpace::AxesLogical).
 //!
 //! [`live_rectangle_layout`] filters the live map in deterministic identity
 //! order and [`PlotLayout::from_live_parts`](crate::text::PlotLayout::from_live_parts)
@@ -20,9 +21,9 @@
 //! [`hit_annotation`](crate::text::PlotLayout::hit_annotation).
 //!
 //! Slice bounds: all four kinds stay in Plot State (and in the
-//! accessibility projection) and every Data2D identity one is mirrored;
-//! non-`Data2D` spaces and non-identity transforms are skipped by the filter
-//! and rejected by the constructor. The mirrored carrier is stamped with the resolving
+//! accessibility projection) and every Data2D or AxesLogical identity one is
+//! mirrored; remaining spaces and non-identity transforms are skipped by the
+//! filter and rejected by the constructor. The mirrored carrier is stamped with the resolving
 //! snapshot's font/layout revisions, and annotation-only commits never
 //! advance `layout_revision`, so a mirror stays generation-valid until a
 //! data/view change re-stamps the carrier.
@@ -36,12 +37,12 @@ use crate::text::{
     PlotLayout, RetainedAnnotation,
 };
 
-/// Filters the live annotation map down to the Slice-3 mirror set.
+/// Filters the live annotation map down to the Slice-4 mirror set.
 ///
 /// Returns `None` when the live map holds nothing, in which case frame
 /// resolution keeps carrying the fixture annotations unchanged. Otherwise
-/// returns the identity-transform `Data2D` rectangles, text boxes, lines,
-/// and arrows in deterministic [`AnnotationId`](super::state::AnnotationId) order,
+/// returns the identity-transform `Data2D` and `AxesLogical` rectangles,
+/// text boxes, lines, and arrows in deterministic [`AnnotationId`](super::state::AnnotationId) order,
 /// including the empty set when live annotations exist but none qualify, so
 /// the frame then carries the fixture runs with zero annotations instead of
 /// the fixture four. Counts are reserved before collection and the retained
@@ -66,7 +67,9 @@ pub(crate) fn live_rectangle_layout(
         {
             continue;
         }
-        if annotation.space() != AnnotationSpace::Data2D {
+        if annotation.space() != AnnotationSpace::Data2D
+            && annotation.space() != AnnotationSpace::AxesLogical
+        {
             continue;
         }
         if annotation.transform() != AnnotationTransform::identity() {
@@ -450,13 +453,135 @@ mod tests {
     }
 
     #[test]
+    fn live_axeslogical_four_kinds_are_mirrored_in_id_order() {
+        let mut plot = scene();
+        let line = add_line(
+            &mut plot,
+            AnnotationSpace::AxesLogical,
+            0.0,
+            0.0,
+            4.0,
+            4.0,
+            0,
+        );
+        let rect = add_rect(
+            &mut plot,
+            AnnotationSpace::AxesLogical,
+            rect_shape(1.0, 1.0, 4.0, 3.0),
+            0,
+        );
+        let arrow = add_arrow(
+            &mut plot,
+            AnnotationSpace::AxesLogical,
+            5.0,
+            5.0,
+            8.0,
+            7.0,
+            0,
+        );
+        let text = add_text(&mut plot, AnnotationSpace::AxesLogical, 6.0, 6.0, 0);
+        assert_eq!((line, rect, arrow, text), (1, 2, 3, 4));
+        // Annotation-only commits never advance the layout generation.
+        assert_eq!(plot.state.layout_revision().0, 0);
+
+        let snapshot = plot.snapshot();
+        let mirrored = live_rectangle_layout(&snapshot.state)
+            .expect("filter")
+            .expect("live map is non-empty");
+        assert_eq!(mirrored.len(), 4);
+        // BTree identity order, independent of insertion order.
+        assert_eq!(
+            mirrored
+                .iter()
+                .map(|annotation| annotation.id())
+                .collect::<Vec<_>>(),
+            vec![line, rect, arrow, text]
+        );
+        assert_eq!(
+            mirrored
+                .iter()
+                .map(|annotation| annotation.kind())
+                .collect::<Vec<_>>(),
+            vec![
+                AnnotationKind::Line,
+                AnnotationKind::Rectangle,
+                AnnotationKind::Arrow,
+                AnnotationKind::Text,
+            ]
+        );
+        assert!(
+            mirrored
+                .iter()
+                .all(|annotation| annotation.space() == AnnotationSpace::AxesLogical)
+        );
+
+        let frame = crate::frame::resolve_line_frame(&snapshot, &frame_spec()).expect("frame");
+        let carried = frame.plot_layout().annotations();
+        assert_eq!(carried.len(), 4);
+        assert_eq!(
+            carried
+                .iter()
+                .map(|annotation| annotation.id())
+                .collect::<Vec<_>>(),
+            vec![line, rect, arrow, text]
+        );
+        assert!(frame.plot_layout().validate());
+        assert!(
+            frame
+                .plot_layout()
+                .validate_for_generation(snapshot.font_revision(), snapshot.layout_revision())
+        );
+    }
+
+    #[test]
+    fn mixed_data2d_and_axeslogical_mirror_together_in_id_order() {
+        let mut plot = scene();
+        let data_line = add_line(&mut plot, AnnotationSpace::Data2D, 0.0, 0.0, 4.0, 4.0, 0);
+        let axes_rect = add_rect(
+            &mut plot,
+            AnnotationSpace::AxesLogical,
+            rect_shape(1.0, 1.0, 4.0, 3.0),
+            0,
+        );
+        let axes_arrow = add_arrow(
+            &mut plot,
+            AnnotationSpace::AxesLogical,
+            5.0,
+            5.0,
+            8.0,
+            7.0,
+            0,
+        );
+        let data_text = add_text(&mut plot, AnnotationSpace::Data2D, 6.0, 6.0, 0);
+        assert_eq!((data_line, axes_rect, axes_arrow, data_text), (1, 2, 3, 4));
+
+        let snapshot = plot.snapshot();
+        let frame = crate::frame::resolve_line_frame(&snapshot, &frame_spec()).expect("frame");
+        let carried = frame.plot_layout().annotations();
+        assert_eq!(carried.len(), 4);
+        assert_eq!(carried[0].id(), data_line);
+        assert_eq!(carried[0].space(), AnnotationSpace::Data2D);
+        assert_eq!(carried[0].kind(), AnnotationKind::Line);
+        assert_eq!(carried[1].id(), axes_rect);
+        assert_eq!(carried[1].space(), AnnotationSpace::AxesLogical);
+        assert_eq!(carried[1].kind(), AnnotationKind::Rectangle);
+        assert_eq!(carried[2].id(), axes_arrow);
+        assert_eq!(carried[2].space(), AnnotationSpace::AxesLogical);
+        assert_eq!(carried[2].kind(), AnnotationKind::Arrow);
+        assert_eq!(carried[3].id(), data_text);
+        assert_eq!(carried[3].space(), AnnotationSpace::Data2D);
+        assert_eq!(carried[3].kind(), AnnotationKind::Text);
+        assert!(frame.plot_layout().validate());
+    }
+
+    #[test]
     fn other_kinds_and_spaces_stay_in_state_but_out_of_mirror() {
         let mut plot = scene();
         {
             let mut transaction = plot.transaction();
             transaction
                 .add_annotation(
-                    AnnotationSpace::AxesLogical,
+                    AnnotationSpace::FigureLogical,
                     AnnotationShape::Line {
                         x1: 0.0,
                         y1: 0.0,
@@ -467,7 +592,7 @@ mod tests {
                     1,
                     1,
                 )
-                .expect("axes line");
+                .expect("figure line");
             transaction
                 .add_annotation(
                     AnnotationSpace::FigureLogical,
@@ -484,8 +609,14 @@ mod tests {
                 )
                 .expect("figure arrow");
             transaction
-                .add_annotation(AnnotationSpace::AxesLogical, text_shape(2.0, 2.0), 1, 1, 3)
-                .expect("axes text");
+                .add_annotation(
+                    AnnotationSpace::DisplayLogical,
+                    text_shape(2.0, 2.0),
+                    1,
+                    1,
+                    3,
+                )
+                .expect("display text");
             transaction
                 .add_annotation(
                     AnnotationSpace::DisplayLogical,
@@ -499,8 +630,9 @@ mod tests {
         }
         let snapshot = plot.snapshot();
         assert_eq!(snapshot.state.annotations_map().len(), 4);
-        // Live annotations exist in state, but none is Data2D: the mirror
-        // is empty, so the frame drops the fixture four.
+        // Live annotations exist in state, but none is Data2D or
+        // AxesLogical: the mirror is empty, so the frame drops the fixture
+        // four.
         let mirrored = live_rectangle_layout(&snapshot.state)
             .expect("filter")
             .expect("live map is non-empty");
@@ -509,14 +641,23 @@ mod tests {
         assert!(frame.plot_layout().annotations().is_empty());
         assert!(frame.plot_layout().validate());
 
-        // Adding one qualifying Data2D line mirrors exactly that line.
-        let id = add_line(&mut plot, AnnotationSpace::Data2D, 0.0, 0.0, 4.0, 4.0, 0);
+        // Adding one qualifying AxesLogical line mirrors exactly that line.
+        let id = add_line(
+            &mut plot,
+            AnnotationSpace::AxesLogical,
+            0.0,
+            0.0,
+            4.0,
+            4.0,
+            0,
+        );
         let snapshot = plot.snapshot();
         let frame = crate::frame::resolve_line_frame(&snapshot, &frame_spec()).expect("frame");
         let carried = frame.plot_layout().annotations();
         assert_eq!(carried.len(), 1);
         assert_eq!(carried[0].id(), id);
         assert_eq!(carried[0].kind(), AnnotationKind::Line);
+        assert_eq!(carried[0].space(), AnnotationSpace::AxesLogical);
     }
 
     #[test]
@@ -920,10 +1061,92 @@ mod tests {
         assert_eq!(layout.annotations().len(), 1);
         assert_eq!(layout.annotations()[0].kind(), AnnotationKind::Arrow);
         assert!(layout.validate());
-        // Non-Data2D lines stay out even with an identity map.
+        // AxesLogical identity annotations mirror alongside Data2D: one of
+        // each of the four kinds carries through the same choke point.
+        let axes = vec![
+            RetainedAnnotation::new(
+                10,
+                AnnotationSpace::AxesLogical,
+                rect_shape(0.0, 0.0, 2.0, 2.0),
+                AnnotationTransform::identity(),
+                1,
+                1,
+                0,
+            )
+            .expect("axes rectangle"),
+            RetainedAnnotation::new(
+                11,
+                AnnotationSpace::AxesLogical,
+                AnnotationShape::Text {
+                    x: 2.0,
+                    y: 2.0,
+                    half_width: 1.0,
+                    half_height: 1.0,
+                },
+                AnnotationTransform::identity(),
+                1,
+                1,
+                0,
+            )
+            .expect("axes text"),
+            RetainedAnnotation::new(
+                12,
+                AnnotationSpace::AxesLogical,
+                AnnotationShape::Line {
+                    x1: 0.0,
+                    y1: 0.0,
+                    x2: 4.0,
+                    y2: 4.0,
+                },
+                AnnotationTransform::identity(),
+                1,
+                1,
+                0,
+            )
+            .expect("axes line"),
+            RetainedAnnotation::new(
+                13,
+                AnnotationSpace::AxesLogical,
+                AnnotationShape::Arrow {
+                    x1: 0.0,
+                    y1: 0.0,
+                    x2: 4.0,
+                    y2: 4.0,
+                    head_length: 1.0,
+                },
+                AnnotationTransform::identity(),
+                1,
+                1,
+                0,
+            )
+            .expect("axes arrow"),
+        ];
+        let layout = PlotLayout::from_live_parts(runs.clone(), axes, 0, 0).expect("mirror");
+        assert_eq!(layout.annotations().len(), 4);
+        assert_eq!(
+            layout
+                .annotations()
+                .iter()
+                .map(|annotation| annotation.kind())
+                .collect::<Vec<_>>(),
+            vec![
+                AnnotationKind::Rectangle,
+                AnnotationKind::Text,
+                AnnotationKind::Line,
+                AnnotationKind::Arrow,
+            ]
+        );
+        assert!(
+            layout
+                .annotations()
+                .iter()
+                .all(|annotation| annotation.space() == AnnotationSpace::AxesLogical)
+        );
+        assert!(layout.validate());
+        // Non-Data2D/non-AxesLogical lines stay out even with an identity map.
         let foreign_line = RetainedAnnotation::new(
             4,
-            AnnotationSpace::AxesLogical,
+            AnnotationSpace::FigureLogical,
             AnnotationShape::Line {
                 x1: 0.0,
                 y1: 0.0,
@@ -935,22 +1158,22 @@ mod tests {
             1,
             0,
         )
-        .expect("axes line");
+        .expect("figure line");
         let error = PlotLayout::from_live_parts(runs.clone(), vec![foreign_line], 0, 0)
-            .expect_err("non-Data2D is not mirrored");
+            .expect_err("non-mirrored space is not mirrored");
         assert_eq!(error.kind(), SceneErrorKind::InvalidInput);
         let foreign = RetainedAnnotation::new(
             5,
-            AnnotationSpace::AxesLogical,
+            AnnotationSpace::DisplayLogical,
             rect_shape(0.0, 0.0, 2.0, 2.0),
             AnnotationTransform::identity(),
             1,
             1,
             0,
         )
-        .expect("axes rectangle");
+        .expect("display rectangle");
         let error = PlotLayout::from_live_parts(runs, vec![foreign], 0, 0)
-            .expect_err("non-Data2D is not mirrored");
+            .expect_err("non-mirrored space is not mirrored");
         assert_eq!(error.kind(), SceneErrorKind::InvalidInput);
     }
 

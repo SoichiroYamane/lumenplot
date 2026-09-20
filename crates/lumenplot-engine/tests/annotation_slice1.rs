@@ -1,9 +1,9 @@
-//! M5-ANNOT Slice-1 mirror-selection fallback through the public bridge.
+//! M5-ANNOT Slices 1-4 mirror-selection fallback through the public bridge.
 //!
 //! Scope: the empty-live-map branch of the frame mirror only. Live Plot
 //! State cannot be staged through the public bridge (annotation
 //! transactions stay `pub(crate)` with no bridge exposure by Slice-1
-//! non-goal), so the live-rectangle branch is pinned by the engine unit
+//! non-goal, kept by Slices 2-4), so the live-rectangle branch is pinned by the engine unit
 //! tests in `src/scene/annotation_slice.rs`. What every downstream sink
 //! consumes through this surface is pinned here:
 //!
@@ -14,10 +14,15 @@
 //! - (c) the generation gate the mirror relies on fails closed: after a
 //!   scene change, the old layout no longer validates under the new
 //!   generations while the new frame does.
+//! - (d) the Slice-4 admission predicate (identity-transform 4-kind
+//!   annotations in `Data2D` or `AxesLogical`) selects exactly the fixture
+//!   text and line entries on this same carrier, so the newly mirrored
+//!   space is pinned through the public surface without staging live state.
 
 use lumenplot_engine::bridge::{
-    AnnotationShape, AnnotationSpace, AxisScale, AxisScales, LineFrame, LineFrameSpec, LineStyle,
-    LogicalRect, LogicalSize, PlotScene, SeriesData, SeriesTopology, SrgbRgba8, Viewport,
+    AnnotationShape, AnnotationSpace, AnnotationTransform, AxisScale, AxisScales, LineFrame,
+    LineFrameSpec, LineStyle, LogicalRect, LogicalSize, PlotScene, SeriesData, SeriesTopology,
+    SrgbRgba8, Viewport,
 };
 
 /// Resolve one frame on a fresh scene with a two-point series.
@@ -201,4 +206,37 @@ fn stale_carrier_fails_generation_gate_after_scene_change() {
     );
     // The fallback still carries the fixture four after the change.
     assert_eq!(after.plot_layout().annotations().len(), 4);
+}
+
+/// (d) Slice-4 admission predicate on the fallback carrier: exactly the
+/// fixture `Data2D` text (id 1) and `AxesLogical` line (id 2) satisfy the
+/// identity-transform 4-kind `Data2D`-or-`AxesLogical` rule, while the
+/// `FigureLogical` arrow and `DisplayLogical` rectangle stay out.
+#[test]
+fn slice4_admission_predicate_selects_fixture_text_and_axes_line() {
+    let scene = scene_with_series();
+    let frame = make_frame(&scene, style());
+    let annotations = frame.plot_layout().annotations();
+    assert_eq!(annotations.len(), 4);
+    let admitted: Vec<(f64, f64, f64, f64)> = annotations
+        .iter()
+        .filter(|annotation| {
+            matches!(
+                annotation.shape(),
+                AnnotationShape::Text { .. }
+                    | AnnotationShape::Line { .. }
+                    | AnnotationShape::Arrow { .. }
+                    | AnnotationShape::Rectangle { .. }
+            ) && (annotation.space() == AnnotationSpace::Data2D
+                || annotation.space() == AnnotationSpace::AxesLogical)
+                && annotation.transform() == AnnotationTransform::identity()
+        })
+        .map(|annotation| annotation.bounds())
+        .collect();
+    // Exactly two entries pass, with the exact stored boxes of the fixture
+    // text (Data2D) and the fixture line (AxesLogical).
+    assert_eq!(
+        admitted,
+        vec![(-2.0, 16.0, 22.0, 24.0), (0.0, 0.0, 64.0, 32.0)]
+    );
 }
