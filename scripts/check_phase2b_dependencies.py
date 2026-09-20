@@ -25,7 +25,7 @@ WGPU_LOCK_SHA256 = "58d77cc67bdd45814b214c3bbd5681a94775811226d186899608e44efce1
 # windows-sys, ...), so tracked edge sets render with version suffixes below.
 # Expected only while the winit inventory is present; the base digest above
 # stays authoritative otherwise (fail-closed both ways).
-WINIT_WGPU_LOCK_SHA256 = "737eb66398ede46a419d13d06e736deb8133e95a3a9c0db9db58912b4cfbcc5d"
+WINIT_WGPU_LOCK_SHA256 = "d8853fae90e097bc6f5e8c14664054f99fb1ab111ebd51048820765709499321"
 WGPU_PACKAGE_VERSION = "29.0.4"
 WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
 WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
@@ -188,8 +188,8 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "dependencies": {"bitflags", "objc2"},
     },
     "objc2": {
-        "version": "0.6.2",
-        "checksum": "561f357ba7f3a2a61563a186a163d0a3a5247e1089524a3981d49adb775078bc",
+        "version": "0.6.4",
+        "checksum": "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f",
         "license": "MIT",
         "dependencies": {"objc2-encode"},
     },
@@ -795,7 +795,7 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
 WINIT_LOCK_EDGE_OVERRIDES: dict[str, set[str]] = {
     "dispatch2": {
         "bitflags 2.13.1",
-        "objc2 0.6.2",
+        "objc2 0.6.4",
     },
     "harfrust": {
         "bitflags 2.13.1",
@@ -826,16 +826,16 @@ WINIT_LOCK_EDGE_OVERRIDES: dict[str, set[str]] = {
     "objc2-core-foundation": {
         "bitflags 2.13.1",
         "dispatch2",
-        "objc2 0.6.2",
+        "objc2 0.6.4",
     },
     "objc2-foundation": {
         "bitflags 2.13.1",
-        "objc2 0.6.2",
+        "objc2 0.6.4",
         "objc2-core-foundation",
     },
     "objc2-metal": {
         "bitflags 2.13.1",
-        "objc2 0.6.2",
+        "objc2 0.6.4",
         "objc2-foundation 0.3.2",
     },
     "png": {
@@ -873,7 +873,7 @@ WINIT_WORKSPACE_EDGE_OVERRIDES: dict[str, set[str]] = {
     },
     "lumenplot-render-metal": {
         "lumenplot-render-api",
-        "objc2 0.6.2",
+        "objc2 0.6.4",
         "objc2-foundation 0.3.2",
         "objc2-metal 0.3.2",
     },
