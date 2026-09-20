@@ -11,9 +11,9 @@
 
 use lumenplot::{PlotScene, PublicError, SceneRevision, SceneSnapshot, Viewport};
 use lumenplot_runtime::input::{
-    FocusDirection, FocusTarget, HistoryDirection, InputRouteError, KeyboardEvent, KeyboardKey,
-    ModifierKeys, NavigationDirection, SemanticAction, TransientUiState, next_focus,
-    previous_focus, route_keyboard,
+    AxisRestriction, FocusDirection, FocusTarget, HistoryDirection, InputRouteError, KeyboardEvent,
+    KeyboardKey, ModifierKeys, NavigationDirection, SemanticAction, TransientUiState, ZoomAnchor,
+    next_focus, previous_focus, route_keyboard,
 };
 use lumenplot_runtime::{
     DeviceGeneration, EngineSession, LifecycleOutcome, LoopMode, LoopOutcome, RuntimeError,
@@ -616,6 +616,108 @@ impl Viewer {
             | SemanticAction::Hover { .. } => {
                 unreachable!("keyboard route returned a pointer-only semantic action")
             }
+        }
+    }
+}
+
+// M4-2-B single private viewer apply seam.
+//
+// One explicit entry point wires the already-accepted `SemanticAction` set
+// to the already-private `apply_*` seams above. The entry stays private
+// (`fn`, below `pub(crate)`) with no public signature added: headless
+// callers and the in-file tests use it directly, while any future public
+// UI-integration shape needs a separate architecture ruling. View-affecting
+// actions delegate to the existing single-transaction seams so each
+// committed step advances the scene revision exactly once; routed actions
+// without a scene transaction yet report `ActionOutcome::Deferred` with the
+// revision untouched, never by silent fallback. Pointer-zoom anchors are
+// accepted and ignored headlessly: the deterministic center fraction below
+// applies, and real pointer-coordinate conversion plus drag state and
+// double-click timing remain future work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ActionOutcome {
+    /// The action was viewer-applicable. The flag reports whether the scene
+    /// changed (revision advanced through exactly one facade transaction) or
+    /// the step was revision-neutral (no-op view, focus move, cancel).
+    Applied(bool),
+    /// The action routed successfully but has no scene transaction yet
+    /// (grid, cursor, series visibility, legend, annotation, export, and the
+    /// transient pointer selection/hover/context surface). The revision is
+    /// untouched by decision, never by silent fallback.
+    Deferred,
+}
+
+const fn restriction_to_axis(axis: AxisRestriction) -> ViewerAxis {
+    match axis {
+        AxisRestriction::Both => ViewerAxis::Both,
+        AxisRestriction::X => ViewerAxis::X,
+        AxisRestriction::Y => ViewerAxis::Y,
+    }
+}
+
+impl Viewer {
+    /// Applies one already-routed semantic action headlessly.
+    ///
+    /// Pointer-routed Pan/Zoom/BoxZoom/Home/Navigate/History steps delegate
+    /// to the existing single-transaction seams. Cancel clears pending
+    /// gesture state and focus moves stay transient, both revision-neutral.
+    /// Grid, cursor, series visibility, legend, annotation, export, and the
+    /// transient pointer selection/hover/context surface report
+    /// [`ActionOutcome::Deferred`] with the revision untouched. The zoom
+    /// anchor ([`ZoomAnchor::Pointer`]) is accepted for routing completeness
+    /// but does not change the deterministic headless center fraction.
+    fn apply_action(&mut self, action: SemanticAction) -> Result<ActionOutcome, PublicError> {
+        match action {
+            SemanticAction::Pan { axis } => Ok(ActionOutcome::Applied(
+                self.apply_pan(restriction_to_axis(axis))?,
+            )),
+            SemanticAction::Zoom {
+                axis,
+                anchor: ZoomAnchor::Pointer,
+            } => Ok(ActionOutcome::Applied(
+                self.apply_zoom(restriction_to_axis(axis))?,
+            )),
+            SemanticAction::BoxZoom { axis } => Ok(ActionOutcome::Applied(
+                self.apply_box(restriction_to_axis(axis))?,
+            )),
+            SemanticAction::Home => Ok(ActionOutcome::Applied(self.apply_home()?)),
+            SemanticAction::Navigate { direction } => {
+                let direction = match direction {
+                    NavigationDirection::Left => ViewerDirection::Left,
+                    NavigationDirection::Right => ViewerDirection::Right,
+                    NavigationDirection::Up => ViewerDirection::Up,
+                    NavigationDirection::Down => ViewerDirection::Down,
+                };
+                Ok(ActionOutcome::Applied(self.apply_navigate(direction)?))
+            }
+            SemanticAction::History { direction } => {
+                let changed = match direction {
+                    HistoryDirection::Previous => self.apply_history_previous()?,
+                    HistoryDirection::Next => self.apply_history_next()?,
+                };
+                Ok(ActionOutcome::Applied(changed))
+            }
+            SemanticAction::Cancel => {
+                self.cancel_pending();
+                Ok(ActionOutcome::Applied(false))
+            }
+            SemanticAction::MoveFocus { direction } => {
+                let _ = match direction {
+                    FocusDirection::Next => self.move_focus_next(),
+                    FocusDirection::Previous => self.move_focus_previous(),
+                };
+                Ok(ActionOutcome::Applied(false))
+            }
+            SemanticAction::ToggleGrid
+            | SemanticAction::ToggleCursor
+            | SemanticAction::ToggleSeriesVisibility { .. }
+            | SemanticAction::Legend { .. }
+            | SemanticAction::Annotation { .. }
+            | SemanticAction::Export
+            | SemanticAction::Select { .. }
+            | SemanticAction::ClearSelection
+            | SemanticAction::Context { .. }
+            | SemanticAction::Hover { .. } => Ok(ActionOutcome::Deferred),
         }
     }
 }
@@ -1250,5 +1352,198 @@ mod tests {
             .expect("shift+tab wraps to Plot");
         assert_eq!(observed(&keyed), Some(ViewerFocus::Plot));
         assert_neutral(&keyed, keyed_base, keyed_bounds);
+    }
+
+    // M4-2-B acceptance: the single private `apply_action` seam wires the
+    // already-accepted `SemanticAction` set to the existing
+    // single-transaction `apply_*` seams. View steps commit through exactly
+    // one facade transaction each; deferred actions leave the revision
+    // untouched by decision, never by silent fallback.
+    #[test]
+    fn action_seam_pointer_routes_advance_revision_exactly_once() {
+        let mut viewer = Viewer::new(scene(), LoopMode::NativeOwned);
+        viewer.show().expect("native show");
+        let canonical = viewer.canonical_bounds();
+
+        let before = viewer.revision();
+        assert_eq!(
+            viewer
+                .apply_action(SemanticAction::Pan {
+                    axis: AxisRestriction::Both
+                })
+                .expect("pan"),
+            ActionOutcome::Applied(true)
+        );
+        let after_pan = viewer.revision();
+        assert_ne!(after_pan, before);
+        assert_eq!(viewer.snapshot().revision(), after_pan);
+
+        let before = after_pan;
+        assert_eq!(
+            viewer
+                .apply_action(SemanticAction::Zoom {
+                    axis: AxisRestriction::Both,
+                    anchor: ZoomAnchor::Pointer
+                })
+                .expect("zoom"),
+            ActionOutcome::Applied(true)
+        );
+        let after_zoom = viewer.revision();
+        assert_ne!(after_zoom, before);
+        assert_eq!(viewer.snapshot().revision(), after_zoom);
+
+        let before = after_zoom;
+        assert_eq!(
+            viewer
+                .apply_action(SemanticAction::BoxZoom {
+                    axis: AxisRestriction::Both
+                })
+                .expect("box"),
+            ActionOutcome::Applied(true)
+        );
+        let after_box = viewer.revision();
+        assert_ne!(after_box, before);
+        assert_eq!(viewer.snapshot().revision(), after_box);
+
+        assert_ne!(
+            viewer.current_bounds(),
+            canonical,
+            "view moved off canonical before Home"
+        );
+        let before = after_box;
+        assert_eq!(
+            viewer.apply_action(SemanticAction::Home).expect("home"),
+            ActionOutcome::Applied(true)
+        );
+        let after_home = viewer.revision();
+        assert_ne!(after_home, before);
+        assert_eq!(viewer.current_bounds(), canonical);
+        assert_eq!(viewer.snapshot().revision(), after_home);
+
+        assert_eq!(
+            viewer
+                .apply_action(SemanticAction::Home)
+                .expect("no-op home"),
+            ActionOutcome::Applied(false)
+        );
+        assert_eq!(viewer.revision(), after_home);
+    }
+
+    #[test]
+    fn action_seam_coalesced_multi_buffer_commit_is_one_revision() {
+        let mut viewer = Viewer::new(scene(), LoopMode::NativeOwned);
+        viewer.show().expect("native show");
+        viewer.buffer_pan(ViewerAxis::Both);
+        viewer.buffer_pan(ViewerAxis::Both);
+        let before = viewer.revision();
+        let entries_before = viewer.history.entries.len();
+        assert!(viewer.commit_pending().expect("commit"));
+        let after = viewer.revision();
+        assert_ne!(after, before);
+        assert_eq!(viewer.snapshot().revision(), after);
+        assert_eq!(
+            viewer.history.entries.len(),
+            entries_before + 1,
+            "one coalesced commit pushes exactly one history entry"
+        );
+        assert!(!viewer.commit_pending().expect("empty commit"));
+        assert_eq!(viewer.revision(), after);
+    }
+
+    #[test]
+    fn action_seam_truncates_forward_tail_on_new_commit() {
+        let mut viewer = Viewer::new(scene(), LoopMode::NativeOwned);
+        viewer.show().expect("native show");
+        viewer
+            .apply_action(SemanticAction::Pan {
+                axis: AxisRestriction::Both,
+            })
+            .expect("pan");
+        viewer
+            .apply_action(SemanticAction::Pan {
+                axis: AxisRestriction::Both,
+            })
+            .expect("pan");
+        assert_eq!(viewer.history.entries.len(), 3);
+        assert_eq!(viewer.history.current(), viewer.current_bounds());
+        assert_eq!(
+            viewer
+                .apply_action(SemanticAction::History {
+                    direction: HistoryDirection::Previous
+                })
+                .expect("back"),
+            ActionOutcome::Applied(true)
+        );
+        assert_eq!(viewer.history.index, 1);
+        assert_eq!(
+            viewer
+                .apply_action(SemanticAction::Pan {
+                    axis: AxisRestriction::X,
+                })
+                .expect("new pan"),
+            ActionOutcome::Applied(true)
+        );
+        assert_eq!(viewer.history.entries.len(), 3);
+        assert_eq!(viewer.history.index, 2);
+        assert_eq!(viewer.history.current(), viewer.current_bounds());
+    }
+
+    #[test]
+    fn action_seam_history_previous_at_index_zero_is_revision_neutral() {
+        let mut viewer = Viewer::new(scene(), LoopMode::NativeOwned);
+        viewer.show().expect("native show");
+        assert_eq!(viewer.history.index, 0);
+        let base = viewer.revision();
+        let bounds = viewer.current_bounds();
+        assert_eq!(
+            viewer
+                .apply_action(SemanticAction::History {
+                    direction: HistoryDirection::Previous
+                })
+                .expect("previous at zero"),
+            ActionOutcome::Applied(false)
+        );
+        assert_eq!(viewer.revision(), base);
+        assert_eq!(viewer.snapshot().revision(), base);
+        assert_eq!(viewer.current_bounds(), bounds);
+        assert_eq!(viewer.history.index, 0);
+    }
+
+    #[test]
+    fn action_seam_deferred_set_leaves_revision_untouched() {
+        use lumenplot_runtime::input::{AnnotationAction, LegendAction};
+
+        let mut viewer = Viewer::new(scene(), LoopMode::NativeOwned);
+        viewer.show().expect("native show");
+        let base = viewer.revision();
+        let bounds = viewer.current_bounds();
+        let deferred = [
+            SemanticAction::ToggleGrid,
+            SemanticAction::ToggleCursor,
+            SemanticAction::Export,
+            SemanticAction::ToggleSeriesVisibility { series: 7 },
+            SemanticAction::Legend {
+                action: LegendAction::ToggleVisibility { series: 7 },
+            },
+            SemanticAction::Annotation {
+                action: AnnotationAction::Create,
+            },
+        ];
+        assert_eq!(
+            deferred.len(),
+            6,
+            "deferred set pins its grid/cursor/export/series/legend/annotation count"
+        );
+        for action in deferred {
+            assert_eq!(
+                viewer.apply_action(action).expect("deferred"),
+                ActionOutcome::Deferred
+            );
+            assert_eq!(viewer.revision(), base);
+            assert_eq!(viewer.snapshot().revision(), base);
+            assert_eq!(viewer.current_bounds(), bounds);
+        }
+        assert_eq!(viewer.history.entries.len(), 1);
+        assert_eq!(viewer.history.index, 0);
     }
 }
