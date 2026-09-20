@@ -919,6 +919,14 @@ impl BarRect {
 /// Paint rule: `paint_order` is an exact permutation over fills + bars;
 /// fills and bars paint first in that order and the line family draws on top
 /// (decision D4, the fixed rule mirroring default zorder).
+///
+/// Renderer consumption (M3-FB-CONSUME-B): the validated-only carrier is
+/// `RenderPacket::semantic_frame().fill_bar()`; no new accessor exists.
+/// The `FramePacket` carriage stays `pub(crate)`, so the legacy
+/// `render(&FramePacket)` entry cannot observe fill/bar meaning and stays
+/// line-only. The hidden validated entry consumes this value in
+/// `paint_order` beneath the line family (decision D4) with each edge
+/// stroked immediately after its own fill (decision D5).
 #[derive(Clone)]
 pub struct SemanticFillBar {
     fills: Vec<FillPolygon>,
@@ -1048,6 +1056,11 @@ impl SemanticFrame {
     }
 
     /// Optional additive fill/bar meaning carried by this semantic frame.
+    ///
+    /// Validated-only renderer projection: the hidden validated render
+    /// entry reads this value and paints it beneath the line family
+    /// (decisions D4/D5). The `FramePacket` carriage stays `pub(crate)`
+    /// with no new accessor.
     pub fn fill_bar(&self) -> Option<&SemanticFillBar> {
         self.frame.fill_bar()
     }
