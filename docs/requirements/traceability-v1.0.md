@@ -135,7 +135,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-FUNC-009` | `MUST` | Legend hit-testing and state changes | 2 | v1 | `AT-FUNC-LEGEND` | Not implemented |
 | `LP-FUNC-010` | `MUST` | basic scientific inspection | 2 | v1 | `AT-FUNC-CURSOR` | Not implemented |
 | `LP-FUNC-011` | `MUST` | Plot State and export consistency | 2 | v1 | `AT-FUNC-GRID` | Not implemented |
-| `LP-FUNC-012` | `MUST` | annotation acceptance fixture | 2 | v1 | `AT-FUNC-ANNOTATION`, `AT-EXPORT-ANNOTATION` | Not implemented |
+| `LP-FUNC-012` | `MUST` | annotation acceptance fixture | 2 | v1 | `AT-FUNC-ANNOTATION`, `AT-EXPORT-ANNOTATION` | Not implemented (bounded M5-ANNOT-1B local contract evidence: live Data2D rectangle mirror — `scene/annotation_slice.rs` filter plus hit path, `PlotLayout::from_live_parts`, frame mirror selection, `annotation_slice1` engine/export suites; remaining kinds, spaces, and release closure stay open) |
 | `LP-FUNC-013` | `MUST` | structural PNG output | 2 | v1 | `AT-EXPORT-PNG` | Not implemented |
 | `LP-FUNC-014` | `MUST` | structural PDF output | 2 | v1 | `AT-EXPORT-PDF-VECTOR` | Not implemented |
 | `LP-FUNC-015` | `MUST` | package/import/FFI smoke tests | 1-2 | v1 | `AT-LIFE-FFI`, `AT-MPL-LOADER` | Not implemented |
@@ -375,7 +375,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-FUNC-009` | `MUST` | `AT-FUNC-LEGEND` | Not implemented |
 | `LP-FUNC-010` | `MUST` | `AT-FUNC-CURSOR` | Not implemented |
 | `LP-FUNC-011` | `MUST` | `AT-FUNC-GRID` | Not implemented |
-| `LP-FUNC-012` | `MUST` | `AT-FUNC-ANNOTATION`, `AT-EXPORT-ANNOTATION` | Not implemented |
+| `LP-FUNC-012` | `MUST` | `AT-FUNC-ANNOTATION`, `AT-EXPORT-ANNOTATION` | Not implemented (bounded M5-ANNOT-1B local contract evidence: live Data2D rectangle mirror — `scene/annotation_slice.rs` filter plus hit path, `PlotLayout::from_live_parts`, frame mirror selection, `annotation_slice1` engine/export suites; remaining kinds, spaces, and release closure stay open) |
 | `LP-FUNC-013` | `MUST` | `AT-EXPORT-PNG` | Not implemented |
 | `LP-FUNC-014` | `MUST` | `AT-EXPORT-PDF-VECTOR` | Not implemented |
 | `LP-FUNC-015` | `MUST` | `AT-LIFE-FFI`, `AT-MPL-LOADER` | Not implemented |
