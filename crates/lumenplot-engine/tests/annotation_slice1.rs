@@ -1,9 +1,9 @@
-//! M5-ANNOT Slices 1-4 mirror-selection fallback through the public bridge.
+//! M5-ANNOT Slices 1-5 mirror-selection fallback through the public bridge.
 //!
 //! Scope: the empty-live-map branch of the frame mirror only. Live Plot
 //! State cannot be staged through the public bridge (annotation
 //! transactions stay `pub(crate)` with no bridge exposure by Slice-1
-//! non-goal, kept by Slices 2-4), so the live-rectangle branch is pinned by the engine unit
+//! non-goal, kept by Slices 2-5), so the live-rectangle branch is pinned by the engine unit
 //! tests in `src/scene/annotation_slice.rs`. What every downstream sink
 //! consumes through this surface is pinned here:
 //!
@@ -18,6 +18,10 @@
 //!   annotations in `Data2D` or `AxesLogical`) selects exactly the fixture
 //!   text and line entries on this same carrier, so the newly mirrored
 //!   space is pinned through the public surface without staging live state.
+//! - (e) the Slice-5 admission predicate (identity-transform 4-kind
+//!   annotations in `Data2D`, `AxesLogical`, `FigureLogical`, or
+//!   `DisplayLogical`) selects all four fixture entries, so the two newly
+//!   mirrored spaces are pinned through the public surface the same way.
 
 use lumenplot_engine::bridge::{
     AnnotationShape, AnnotationSpace, AnnotationTransform, AxisScale, AxisScales, LineFrame,
@@ -238,5 +242,46 @@ fn slice4_admission_predicate_selects_fixture_text_and_axes_line() {
     assert_eq!(
         admitted,
         vec![(-2.0, 16.0, 22.0, 24.0), (0.0, 0.0, 64.0, 32.0)]
+    );
+}
+
+/// (e) Slice-5 admission predicate on the fallback carrier: every fixture
+/// entry satisfies the identity-transform 4-kind all-spaces rule, so the
+/// `FigureLogical` arrow and `DisplayLogical` rectangle join the `Data2D`
+/// text and `AxesLogical` line the Slice-4 predicate already selected.
+#[test]
+fn slice5_admission_predicate_selects_all_four_fixture_entries() {
+    let scene = scene_with_series();
+    let frame = make_frame(&scene, style());
+    let annotations = frame.plot_layout().annotations();
+    assert_eq!(annotations.len(), 4);
+    let admitted: Vec<(f64, f64, f64, f64)> = annotations
+        .iter()
+        .filter(|annotation| {
+            matches!(
+                annotation.shape(),
+                AnnotationShape::Text { .. }
+                    | AnnotationShape::Line { .. }
+                    | AnnotationShape::Arrow { .. }
+                    | AnnotationShape::Rectangle { .. }
+            ) && (annotation.space() == AnnotationSpace::Data2D
+                || annotation.space() == AnnotationSpace::AxesLogical
+                || annotation.space() == AnnotationSpace::FigureLogical
+                || annotation.space() == AnnotationSpace::DisplayLogical)
+                && annotation.transform() == AnnotationTransform::identity()
+        })
+        .map(|annotation| annotation.bounds())
+        .collect();
+    // All four entries pass, with the exact stored boxes of the fixture
+    // text (Data2D), line (AxesLogical), arrow (FigureLogical), and
+    // rectangle (DisplayLogical).
+    assert_eq!(
+        admitted,
+        vec![
+            (-2.0, 16.0, 22.0, 24.0),
+            (0.0, 0.0, 64.0, 32.0),
+            (2.0, 2.0, 46.0, 30.0),
+            (100.0, 100.0, 140.0, 120.0),
+        ]
     );
 }
