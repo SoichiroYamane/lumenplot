@@ -7,7 +7,7 @@ use crate::bridge::{
     SceneRevision, SeriesId,
 };
 use crate::error::{SceneError, SceneErrorKind};
-use crate::scene::{AxisRange, AxisScale, SceneSnapshot};
+use crate::scene::{AxisRange, AxisScale, SceneSnapshot, live_rectangle_layout};
 
 pub(crate) const MAX_FRAME_SERIES: usize = 65_536;
 pub(crate) const MAX_FRAME_SEGMENTS: usize = 1_000_000;
@@ -20,7 +20,7 @@ pub(crate) const MAX_FRAME_POINTS: usize = 1_000_000;
 /// consumer. Sinks receive the resolved frame; they do not reconstruct this
 /// mapping from scene state.
 #[derive(Clone, Copy)]
-struct ResolvedLayout {
+pub(crate) struct ResolvedLayout {
     canvas: LogicalSize,
     plot_rect: LogicalRect,
     logical_units_per_inch: f64,
@@ -29,7 +29,7 @@ struct ResolvedLayout {
 }
 
 impl ResolvedLayout {
-    fn new(
+    pub(crate) fn new(
         canvas: LogicalSize,
         plot_rect: LogicalRect,
         logical_units_per_inch: f64,
@@ -89,7 +89,11 @@ impl ResolvedLayout {
         Ok(LinePoint::from_parts(display_x, display_y))
     }
 
-    fn inverse_point(&self, display_x: f64, display_y: f64) -> Result<(f64, f64), SceneError> {
+    pub(crate) fn inverse_point(
+        &self,
+        display_x: f64,
+        display_y: f64,
+    ) -> Result<(f64, f64), SceneError> {
         if !display_x.is_finite() || !display_y.is_finite() {
             return Err(SceneError::new(SceneErrorKind::InvalidInput));
         }
@@ -148,10 +152,28 @@ pub(crate) fn resolve_line_frame(
         snapshot.state.viewport(),
     )?;
 
-    let plot_layout: Arc<crate::text::PlotLayout> = snapshot.plot_layout();
-    if !plot_layout.validate_for_generation(snapshot.font_revision(), snapshot.layout_revision()) {
-        return Err(SceneError::new(SceneErrorKind::Internal));
-    }
+    // Slice-1 annotation mirror: the frame carries the fixture runs plus
+    // the live Data2D rectangles whenever Plot State holds any annotation,
+    // else the fixture annotations unchanged so existing consumers stay
+    // green. The mirrored carrier is stamped with this snapshot's
+    // generations and validates through the same carrier path.
+    let plot_layout: Arc<crate::text::PlotLayout> = match live_rectangle_layout(&snapshot.state)? {
+        Some(live_rectangles) => Arc::new(crate::text::PlotLayout::from_live_parts(
+            snapshot.plot_layout().runs().to_vec(),
+            live_rectangles,
+            snapshot.font_revision(),
+            snapshot.layout_revision(),
+        )?),
+        None => {
+            let carried = snapshot.plot_layout();
+            if !carried
+                .validate_for_generation(snapshot.font_revision(), snapshot.layout_revision())
+            {
+                return Err(SceneError::new(SceneErrorKind::Internal));
+            }
+            carried
+        }
+    };
     let series_map = snapshot.state.series_map();
     if series_map.len() > MAX_FRAME_SERIES {
         return Err(SceneError::new(SceneErrorKind::CapacityExceeded));

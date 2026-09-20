@@ -554,6 +554,31 @@ impl PlotLayout {
         })
     }
 
+    /// Rebuilds the carrier from fixture runs plus live Slice-1 rectangles.
+    ///
+    /// The single choke point for the annotation mirror: every annotation
+    /// must be an identity-transform rectangle declared in `Data2D`, or
+    /// construction fails with `InvalidInput` before any digest runs. Runs,
+    /// capacity, and digest handling follow the same validated path as
+    /// [`from_runs`](Self::from_runs), so a mirrored carrier validates
+    /// exactly like a fixture one under the caller's revisions.
+    pub(crate) fn from_live_parts(
+        runs: Vec<ShapedRun>,
+        live_rectangles: Vec<RetainedAnnotation>,
+        font_revision: u64,
+        layout_revision: u64,
+    ) -> Result<Self, SceneError> {
+        for annotation in &live_rectangles {
+            if annotation.kind() != AnnotationKind::Rectangle
+                || annotation.space() != AnnotationSpace::Data2D
+                || annotation.transform() != AnnotationTransform::identity()
+            {
+                return Err(SceneError::new(SceneErrorKind::InvalidInput));
+            }
+        }
+        Self::from_runs(runs, live_rectangles, font_revision, layout_revision)
+    }
+
     pub(crate) fn with_layout_revision(&self, layout_revision: u64) -> Self {
         let mut next = self.clone();
         next.layout_revision = layout_revision;
