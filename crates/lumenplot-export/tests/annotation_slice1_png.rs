@@ -1,9 +1,9 @@
-//! M5-ANNOT Slices 1-3 PNG evidence through the public export bridge.
+//! M5-ANNOT Slices 1-4 PNG evidence through the public export bridge.
 //!
 //! Scope: ordinary-export behavior of the annotation mirror fallback.
 //! Live Plot State cannot be staged through the public bridge
 //! (annotation transactions stay `pub(crate)` by Slice-1 non-goal, kept by
-//! Slice-2 and Slice-3), so the empty-live-map branch is pinned here at the
+//! Slices 2-4), so the empty-live-map branch is pinned here at the
 //! encoded-PNG level:
 //!
 //! - (a) encoding is deterministic: two encodes of one frame are
@@ -14,7 +14,10 @@
 //!   strokes a covered pixel, the fixture text box fills its interior
 //!   pixel, and the fixture line and arrow shafts stroke their pixels, so
 //!   the sink path the live mirror feeds is proven to carry all four
-//!   Slice-3 annotation inks into the export.
+//!   Slice-3 annotation inks into the export;
+//! - (d) the line-shaft probe rides an `AxesLogical` entry, so the ink the
+//!   Slice-4 mirror newly admits in that space is proven to land through
+//!   the same sink path.
 //!
 //! Pixel expectations reuse the mask probes pinned by the in-tree
 //! `rasterize_annotations` unit tests on the same 160x140 page, except the
@@ -25,8 +28,8 @@
 use std::io::Cursor;
 
 use lumenplot_engine::bridge::{
-    AxisScale, AxisScales, LineFrame, LineFrameSpec, LineStyle, LogicalRect, LogicalSize,
-    PlotScene, SeriesData, SeriesTopology, SrgbRgba8, Viewport,
+    AnnotationSpace, AxisScale, AxisScales, LineFrame, LineFrameSpec, LineStyle, LogicalRect,
+    LogicalSize, PlotScene, SeriesData, SeriesTopology, SrgbRgba8, Viewport,
 };
 use lumenplot_export::bridge::{PngSpec, encode_line_frame_png};
 
@@ -112,7 +115,14 @@ fn annotation_mirror_fallback_exports_deterministically_with_ink_and_clean_corne
     );
     // Fixture line shaft from (0, 0) to (64, 32): the mask probe pixel
     // (8, 4) rides the shaft center, clear of the series run, glyph cells
-    // (y >= 16), text fill, and rectangle ink.
+    // (y >= 16), text fill, and rectangle ink. The shaft entry lives in
+    // the AxesLogical space Slice-4 newly mirrors, so this probe pins
+    // Slice-4 ink through the same sink path.
+    assert_eq!(
+        frame.plot_layout().annotations()[1].space(),
+        AnnotationSpace::AxesLogical,
+        "line-shaft probe must ride the AxesLogical entry"
+    );
     assert_ne!(
         pixel_at(&pixels, width, 8, 4),
         BACKGROUND,
