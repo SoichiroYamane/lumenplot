@@ -11,9 +11,13 @@ The repository license decision and dependency licenses are separate controls:
   requires an explicit review and a deliberate policy change.
 - Yanked releases, unlicensed/copy-left dependencies, and wildcard dependency
   declarations are not silently accepted.
-- The current lockfile has no third-party Cargo dependencies, so this check is
-  a forward-looking guard rather than evidence that future renderer/window/
-  shader/text/native dependencies are approved.
+- The current `Cargo.lock` (v4) records 327 packages: 316 are third-party
+  entries sourced entirely from
+  `registry+https://github.com/rust-lang/crates.io-index`, each with a
+  checksum and none from a Git or unknown source; the remaining 11 are local
+  workspace members with no external source. Dependency licenses stay gated
+  by `deny.toml`, and this inventory is not evidence that any future
+  renderer/window/shader/text/native dependency is approved.
 
 Dependabot creates monthly grouped pull requests only. It does not auto-merge;
 changes involving wgpu, winit, shaders, text/layout engines, native bindings,

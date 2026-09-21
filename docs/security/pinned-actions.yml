@@ -18,6 +18,9 @@ actions:
     used_by:
       - .github/workflows/ci.yml
       - .github/workflows/dependency-policy.yml
+      - .github/workflows/bench-nightly.yml
+      - .github/workflows/phase3a2-wheel.yml
+      - .github/workflows/phase3b-wheel-evidence.yml
     provenance_command: git ls-remote https://github.com/actions/checkout.git refs/tags/v7.0.1
     observed_resolution: 3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -28,6 +31,9 @@ actions:
     commit: 032958afbdc797a9164d3bc0b56325c1308924a5
     used_by:
       - .github/workflows/ci.yml
+      - .github/workflows/bench-nightly.yml
+      - .github/workflows/phase3a2-wheel.yml
+      - .github/workflows/phase3b-wheel-evidence.yml
     provenance_command: git ls-remote https://github.com/dtolnay/rust-toolchain.git refs/heads/1.97.1
     observed_resolution: 032958afbdc797a9164d3bc0b56325c1308924a5
     note: >-
@@ -64,9 +70,39 @@ actions:
     used_by:
       - .github/workflows/phase3a2-wheel.yml
       - .github/workflows/phase3b-wheel-evidence.yml
+      - .github/workflows/bench-nightly.yml
     provenance_command: git ls-remote https://github.com/actions/upload-artifact.git refs/tags/v7.0.1
     observed_resolution: 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
     note: >-
       Optional Phase-3A2 CI-local artifact upload only. It is not a release,
       publication, deployment, signing, or credential workflow and is not used
       by the current baseline.
+
+  - name: actions/cache
+    repository: actions/cache
+    release: v6.1.0
+    source_ref: refs/tags/v6.1.0
+    commit: 55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+    used_by:
+      - .github/workflows/ci.yml
+    provenance_command: git ls-remote https://github.com/actions/cache.git refs/tags/v6.1.0
+    observed_resolution: 55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+    note: >-
+      CI-local caches only: the Cargo cache (registry/git/target, keyed by
+      Cargo.lock plus toolchain) and the pip download cache (keyed by the
+      workflow file plus pyproject.toml), each workflow-scoped with a
+      restore-key prefix. A stale entry costs time, never correctness,
+      because Rust builds stay --locked and pip installs stay version-pinned.
+
+  - name: actions/setup-python
+    repository: actions/setup-python
+    release: v7.0.0
+    source_ref: refs/tags/v7.0.0
+    commit: 5fda3b95a4ea91299a34e894583c3862153e4b97
+    used_by:
+      - .github/workflows/ci.yml
+    provenance_command: git ls-remote https://github.com/actions/setup-python.git refs/tags/v7.0.0
+    observed_resolution: 5fda3b95a4ea91299a34e894583c3862153e4b97
+    note: >-
+      Python contract legs only: provisions the declared CPython floor and
+      ceiling (3.11/3.13) for the version-pinned evidence-stack installs.
