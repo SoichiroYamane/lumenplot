@@ -11,6 +11,7 @@ mod frame;
 mod lod;
 mod scene;
 mod text;
+mod ticks;
 
 #[doc(hidden)]
 pub mod bridge;

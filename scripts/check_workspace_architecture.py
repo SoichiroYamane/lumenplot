@@ -67,6 +67,7 @@ EXPECTED_ENGINE_SOURCE_FILES = {
     "src/scene/snapshot.rs",
     "src/scene/annotation_slice.rs",
     "src/text.rs",
+    "src/ticks.rs",
 }
 EXPECTED_EXPORT_SOURCE_FILES = {
     "src/lib.rs",
@@ -513,6 +514,8 @@ BRIDGE_METHODS = {
     "plot_layout",
     "grid_visible",
     "grid_revision",
+    "x_ticks",
+    "y_ticks",
     "id",
     "style",
     "segments",
@@ -569,6 +572,8 @@ BRIDGE_METHODS_BY_TYPE = {
         "plot_layout",
         "grid_visible",
         "grid_revision",
+        "x_ticks",
+        "y_ticks",
     },
     "LineSeries": {"id", "style", "segments"},
     "LineSegment": {"points"},
@@ -612,6 +617,8 @@ BRIDGE_PHASE2_SIGNATURES = {
         "plot_layout": "pub fn plot_layout(&self) -> &PlotLayout",
         "grid_visible": "pub fn grid_visible(&self) -> bool",
         "grid_revision": "pub fn grid_revision(&self) -> u64",
+        "x_ticks": "pub fn x_ticks(&self) -> &[f64]",
+        "y_ticks": "pub fn y_ticks(&self) -> &[f64]",
     },
     "LineSeries": {
         "id": "pub fn id(&self) -> SeriesId",
