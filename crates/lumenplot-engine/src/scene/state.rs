@@ -117,6 +117,8 @@ pub(crate) struct SceneState {
     layout_revision: ComponentRevision,
     plot_layout: Arc<PlotLayout>,
     annotation_revision: ComponentRevision,
+    grid_visible: bool,
+    grid_revision: ComponentRevision,
     series: BTreeMap<SeriesId, Arc<SeriesStorage>>,
     annotations: BTreeMap<AnnotationId, RetainedAnnotation>,
 }
@@ -129,6 +131,8 @@ pub(crate) struct PublishValues {
     data_changed: bool,
     view_changed: bool,
     annotation_changed: bool,
+    grid_visible: bool,
+    grid_changed: bool,
     series: BTreeMap<SeriesId, Arc<SeriesStorage>>,
     annotations: BTreeMap<AnnotationId, RetainedAnnotation>,
 }
@@ -143,6 +147,8 @@ impl PublishValues {
         data_changed: bool,
         view_changed: bool,
         annotation_changed: bool,
+        grid_visible: bool,
+        grid_changed: bool,
         series: BTreeMap<SeriesId, Arc<SeriesStorage>>,
         annotations: BTreeMap<AnnotationId, RetainedAnnotation>,
     ) -> Self {
@@ -154,6 +160,8 @@ impl PublishValues {
             data_changed,
             view_changed,
             annotation_changed,
+            grid_visible,
+            grid_changed,
             series,
             annotations,
         }
@@ -175,6 +183,8 @@ impl SceneState {
             layout_revision: ComponentRevision(0),
             plot_layout: Arc::new(PlotLayout::fixture()?),
             annotation_revision: ComponentRevision(0),
+            grid_visible: true,
+            grid_revision: ComponentRevision(0),
             series: BTreeMap::new(),
             annotations: BTreeMap::new(),
         })
@@ -189,6 +199,8 @@ impl SceneState {
             data_changed,
             view_changed,
             annotation_changed,
+            grid_visible,
+            grid_changed,
             series,
             annotations,
         } = values;
@@ -221,6 +233,13 @@ impl SceneState {
         } else {
             base.annotation_revision
         };
+        let grid_revision = if grid_changed {
+            base.grid_revision
+                .checked_next()
+                .ok_or_else(|| SceneError::new(SceneErrorKind::RevisionExhausted))?
+        } else {
+            base.grid_revision
+        };
         let plot_layout = if layout_changed {
             Arc::new(base.plot_layout.with_layout_revision(layout_revision.0))
         } else {
@@ -238,6 +257,8 @@ impl SceneState {
             layout_revision,
             plot_layout,
             annotation_revision,
+            grid_visible,
+            grid_revision,
             series,
             annotations,
         })
@@ -281,6 +302,14 @@ impl SceneState {
 
     pub(crate) fn annotation_revision(&self) -> ComponentRevision {
         self.annotation_revision
+    }
+
+    pub(crate) fn grid_visible(&self) -> bool {
+        self.grid_visible
+    }
+
+    pub(crate) fn grid_revision(&self) -> ComponentRevision {
+        self.grid_revision
     }
 
     pub(crate) fn annotation(&self, id: AnnotationId) -> Option<&RetainedAnnotation> {
@@ -332,5 +361,89 @@ impl PlotScene {
         Arc::get_mut(&mut self.state)
             .expect("test scene has no snapshots")
             .revision = revision;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view() -> Viewport {
+        Viewport::from_bounds(0.0, 10.0, 0.0, 10.0).expect("view")
+    }
+
+    fn scales() -> AxisScales {
+        AxisScales::new(AxisScale::Linear, AxisScale::Linear)
+    }
+
+    fn unchanged_values(base: &SceneState, revision: SceneRevision) -> PublishValues {
+        PublishValues::new(
+            base.canonical_view(),
+            base.viewport(),
+            base.scales(),
+            revision,
+            false,
+            false,
+            false,
+            base.grid_visible(),
+            false,
+            base.series_map().clone(),
+            base.annotations_map().clone(),
+        )
+    }
+
+    #[test]
+    fn grid_default_is_visible_with_zero_revision() {
+        let state = SceneState::new(view(), scales()).expect("scene state");
+        assert!(state.grid_visible());
+        assert_eq!(state.grid_revision(), ComponentRevision(0));
+        // The default reproduces current rendering bit-for-bit: every other
+        // component revision starts at zero.
+        assert_eq!(state.layout_revision(), ComponentRevision(0));
+        assert_eq!(state.annotation_revision(), ComponentRevision(0));
+        assert_eq!(
+            state.component_revisions(),
+            (ComponentRevision(0), ComponentRevision(0))
+        );
+    }
+
+    #[test]
+    fn grid_only_publish_bumps_grid_revision_only() {
+        let base = SceneState::new(view(), scales()).expect("scene state");
+        let before_layout = base.plot_layout().clone();
+        let mut values = unchanged_values(&base, SceneRevision(1));
+        values.grid_visible = false;
+        values.grid_changed = true;
+        let next = SceneState::publish(&base, values).expect("publish");
+        assert!(!next.grid_visible());
+        assert_eq!(next.grid_revision(), ComponentRevision(1));
+        // Grid-only publish leaves every other component revision put.
+        assert_eq!(next.layout_revision(), ComponentRevision(0));
+        assert_eq!(next.annotation_revision(), ComponentRevision(0));
+        assert_eq!(
+            next.component_revisions(),
+            (ComponentRevision(0), ComponentRevision(0))
+        );
+        // The retained layout carrier is shared, never re-stamped.
+        assert!(Arc::ptr_eq(&before_layout, next.plot_layout()));
+    }
+
+    #[test]
+    fn publish_without_grid_change_keeps_grid_state() {
+        let base = SceneState::new(view(), scales()).expect("scene state");
+        let next =
+            SceneState::publish(&base, unchanged_values(&base, SceneRevision(1))).expect("publish");
+        assert!(next.grid_visible());
+        assert_eq!(next.grid_revision(), ComponentRevision(0));
+        assert_eq!(next.layout_revision(), ComponentRevision(0));
+    }
+
+    #[test]
+    fn snapshot_wrapper_exposes_grid_flag_without_struct_change() {
+        let plot = PlotScene::new(view(), scales()).expect("scene");
+        let snapshot = plot.snapshot();
+        assert!(snapshot.state.grid_visible());
+        assert_eq!(snapshot.state.grid_revision(), ComponentRevision(0));
+        assert!(Arc::ptr_eq(&plot.state, &snapshot.state));
     }
 }
