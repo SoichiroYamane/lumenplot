@@ -130,7 +130,14 @@ RC_PARAMS: dict[str, Any] = {
     "lines.antialiased": True,
     "lines.color": "red",
     "lines.linestyle": "-",
-    "lines.linewidth": 2.0,
+    # NOTE (tick-width pin, cf. generate_agg_oracle_decorated.py): the
+    # adapter's tick-stroke command reads the tick Line2D's
+    # ``get_linewidth()``, which inherits ``lines.linewidth`` at tick
+    # creation, while Agg draws tick marks at the tick ``width``
+    # (markeredgewidth, 0.8 here). Pinning rc ``lines.linewidth`` to 0.8
+    # keeps the emitted tick stroke identical to the Agg stroke; the red
+    # data line keeps its explicit per-artist linewidth=2.0 below.
+    "lines.linewidth": 0.8,
     "lines.solid_capstyle": "butt",
     "lines.solid_joinstyle": "miter",
     "path.simplify": False,
