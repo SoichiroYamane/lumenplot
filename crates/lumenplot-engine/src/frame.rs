@@ -157,6 +157,12 @@ pub(crate) fn resolve_line_frame(
     // else the fixture annotations unchanged so existing consumers stay
     // green. The mirrored carrier is stamped with this snapshot's
     // generations and validates through the same carrier path.
+    // Slice-6 grid read (frame-local carrier): the grid pair is read from
+    // the snapshot alongside the font/layout generations and stamped into
+    // the frame through `LineFrame::from_parts`. No sink behavior changes
+    // here; downstream cards consume the carried channel.
+    let grid_visible = snapshot.grid_visible();
+    let grid_revision = snapshot.grid_revision();
     let plot_layout: Arc<crate::text::PlotLayout> = match live_rectangle_layout(&snapshot.state)? {
         Some(live_rectangles) => Arc::new(crate::text::PlotLayout::from_live_parts(
             snapshot.plot_layout().runs().to_vec(),
@@ -222,6 +228,8 @@ pub(crate) fn resolve_line_frame(
         background,
         frame_series,
         plot_layout,
+        grid_visible,
+        grid_revision,
     ))
 }
 
@@ -1313,5 +1321,90 @@ mod tests {
         let error = inspect_cursor(&log_layout, &log_snapshot, &spec(), 50.0, 40.0)
             .expect_err("log scale has no cursor map");
         assert_eq!(error.kind(), SceneErrorKind::UnsupportedCapability);
+    }
+
+    #[test]
+    fn grid_visibility_is_carried_on_frame_channel_only() {
+        // CARD F acceptance: grid-off vs grid-on frames differ ONLY in the
+        // ruled grid channel. The scene-revision bump is the expected commit
+        // effect (grid-only commits advance `SceneRevision` but never
+        // `layout_revision`); every other frame channel stays identical.
+        let mut scene = engine_scene_with_points(
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            vec![(vec![0.0, 5.0, 10.0], vec![0.0, 5.0, 10.0])],
+        );
+        let frame_on = resolve_line_frame(&scene.snapshot(), &spec()).expect("grid-on frame");
+        assert!(frame_on.grid_visible());
+        assert_eq!(frame_on.grid_revision(), 0);
+        {
+            let mut transaction = scene.transaction();
+            transaction.set_grid_visible(false);
+            transaction.commit().expect("grid-off commit");
+        }
+        let frame_off = resolve_line_frame(&scene.snapshot(), &spec()).expect("grid-off frame");
+        assert!(!frame_off.grid_visible());
+        assert_eq!(frame_off.grid_revision(), 1);
+        // The grid-only commit bumps the scene revision; that is the
+        // commit effect, not a second channel difference.
+        assert_ne!(frame_on.revision(), frame_off.revision());
+        // Geometry channels are unchanged.
+        assert_eq!(frame_on.canvas().width(), frame_off.canvas().width());
+        assert_eq!(frame_on.canvas().height(), frame_off.canvas().height());
+        assert_eq!(
+            frame_on.logical_units_per_inch(),
+            frame_off.logical_units_per_inch()
+        );
+        assert_eq!(frame_on.plot_rect().x_min(), frame_off.plot_rect().x_min());
+        assert_eq!(frame_on.plot_rect().y_min(), frame_off.plot_rect().y_min());
+        assert_eq!(frame_on.plot_rect().x_max(), frame_off.plot_rect().x_max());
+        assert_eq!(frame_on.plot_rect().y_max(), frame_off.plot_rect().y_max());
+        assert_eq!(frame_on.background().r(), frame_off.background().r());
+        assert_eq!(frame_on.background().g(), frame_off.background().g());
+        assert_eq!(frame_on.background().b(), frame_off.background().b());
+        assert_eq!(frame_on.background().a(), frame_off.background().a());
+        // Series ink is unchanged.
+        assert_eq!(frame_on.series().len(), frame_off.series().len());
+        for (on_series, off_series) in frame_on.series().iter().zip(frame_off.series().iter()) {
+            assert_eq!(on_series.id(), off_series.id());
+            assert_eq!(
+                on_series.style().color().r(),
+                off_series.style().color().r()
+            );
+            assert_eq!(on_series.style().width(), off_series.style().width());
+            assert_eq!(on_series.segments().len(), off_series.segments().len());
+            for (on_segment, off_segment) in on_series
+                .segments()
+                .iter()
+                .zip(off_series.segments().iter())
+            {
+                assert_eq!(on_segment.points().len(), off_segment.points().len());
+                for (on_point, off_point) in
+                    on_segment.points().iter().zip(off_segment.points().iter())
+                {
+                    assert_close(on_point.x(), off_point.x());
+                    assert_close(on_point.y(), off_point.y());
+                }
+            }
+        }
+        // Retained layout generations are unchanged by the grid-only commit.
+        assert_eq!(
+            frame_on.plot_layout().font_revision(),
+            frame_off.plot_layout().font_revision()
+        );
+        assert_eq!(
+            frame_on.plot_layout().layout_revision(),
+            frame_off.plot_layout().layout_revision()
+        );
+        assert!(frame_off.plot_layout().validate());
+        assert!(
+            frame_off.plot_layout().validate_for_generation(
+                frame_off.plot_layout().font_revision(),
+                frame_off.plot_layout().layout_revision()
+            ),
+            "carried layout must validate under its own generations"
+        );
     }
 }
