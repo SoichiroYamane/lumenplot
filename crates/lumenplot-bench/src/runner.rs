@@ -394,7 +394,8 @@ fn detect_cpu_model() -> String {
 /// back to exactly 1.0: when no scaling variable is set (the headless case),
 /// nothing scales the CPU-side pipeline, so 1.0 is the true applied factor --
 /// it is a measurement-provenance record, not a claim about attached
-/// hardware. Compositor presence stays independently recorded as null by
+/// hardware. Compositor presence stays independently recorded from declared
+/// session signals (never inferred from the scale factor) by
 /// [`detect_environment`].
 fn detect_display_scale() -> f64 {
     for key in ["GDK_SCALE", "QT_SCREEN_SCALE_FACTOR"] {
@@ -425,9 +426,80 @@ fn detect_rustc_version() -> String {
         .to_string()
 }
 
+/// Normalize one operator-declared environment value.
+///
+/// Trims surrounding whitespace; a missing, empty, or whitespace-only input
+/// degrades to `None` (unknown/unavailable, emitted as JSON null). A
+/// non-empty value is recorded verbatim -- it is provenance metadata, never
+/// a measured claim, so it cannot flip a gate status on its own.
+fn declared_value(raw: Option<String>) -> Option<String> {
+    match raw.map(|value| value.trim().to_string()) {
+        Some(value) if !value.is_empty() => Some(value),
+        _ => None,
+    }
+}
+
+/// Read one operator-declared variable; unknown degrades to `None` via
+/// [`declared_value`].
+fn declared_env(key: &str) -> Option<String> {
+    declared_value(std::env::var(key).ok())
+}
+
+/// Classify the compositor/session signal from already-read inputs.
+///
+/// Pure over its inputs so unit tests can pin every branch without mutating
+/// the process-global environment. Precedence: explicit operator declaration
+/// (`LUMENPLOT_COMPOSITOR`), then the session-manager declaration
+/// (`XDG_SESSION_TYPE`), then display-server presence (`WAYLAND_DISPLAY`
+/// implies wayland, `DISPLAY` implies x11). All-unknown degrades to `None`.
+fn classify_compositor(
+    declared: Option<String>,
+    session_type: Option<String>,
+    wayland_display: bool,
+    display: bool,
+) -> Option<String> {
+    if let Some(value) = declared_value(declared) {
+        return Some(value);
+    }
+    if let Some(value) = declared_value(session_type) {
+        return Some(value);
+    }
+    if wayland_display {
+        return Some("wayland".to_string());
+    }
+    if display {
+        return Some("x11".to_string());
+    }
+    None
+}
+
+/// Detect the compositor/session signal; unknown degrades to `None`.
+///
+/// Presence of `WAYLAND_DISPLAY`/`DISPLAY` records only that the session
+/// advertises that display server -- it is not a claim that a surface was
+/// presented (the harness owns no window surface on any profile).
+fn detect_compositor() -> Option<String> {
+    classify_compositor(
+        std::env::var("LUMENPLOT_COMPOSITOR").ok(),
+        std::env::var("XDG_SESSION_TYPE").ok(),
+        declared_env("WAYLAND_DISPLAY").is_some(),
+        declared_env("DISPLAY").is_some(),
+    )
+}
+
 /// Detect the run environment; unknown descriptors degrade to "unknown"/null
 /// (they are provenance metadata, not gate observations, so they do not flip
 /// the run status on their own).
+///
+/// Declared-cell population (B6, bench-only): `gpu_vendor`, `gpu_device`,
+/// `gpu_driver`, `gpu_api`, and `gpu_feature_level` record the
+/// operator-declared `LUMENPLOT_GPU_*` variables; `compositor` records the
+/// declared session signal via [`detect_compositor`]; `present_mode` records
+/// the declared `LUMENPLOT_PRESENT_MODE` (the harness observes no present on
+/// any profile, so an undeclared cell stays null rather than inventing a
+/// mode). Every path degrades to null -- partial GPU declarations still emit
+/// `"gpu": null` under the unchanged D1 schema, which requires all five
+/// GPU fields before emitting the object.
 pub(crate) fn detect_environment(profile: &str) -> Environment {
     let render_backend = match profile {
         "accelerated" => "portable-wgpu-offscreen-readback",
@@ -453,14 +525,14 @@ pub(crate) fn detect_environment(profile: &str) -> Environment {
             "release".to_string()
         },
         render_backend: render_backend.to_string(),
-        gpu_vendor: None,
-        gpu_device: None,
-        gpu_driver: None,
-        gpu_api: None,
-        gpu_feature_level: None,
-        compositor: None,
+        gpu_vendor: declared_env("LUMENPLOT_GPU_VENDOR"),
+        gpu_device: declared_env("LUMENPLOT_GPU_DEVICE"),
+        gpu_driver: declared_env("LUMENPLOT_GPU_DRIVER"),
+        gpu_api: declared_env("LUMENPLOT_GPU_API"),
+        gpu_feature_level: declared_env("LUMENPLOT_GPU_FEATURE_LEVEL"),
+        compositor: detect_compositor(),
         display_scale: Some(detect_display_scale()),
-        present_mode: None,
+        present_mode: declared_env("LUMENPLOT_PRESENT_MODE"),
     }
 }
 
@@ -1527,6 +1599,97 @@ mod tests {
         // The D1 schema requires a positive display_scale; headless runs
         // record the truly-applied factor 1.0 rather than null.
         let scale = environment.display_scale.expect("display_scale recorded");
+        assert!(scale.is_finite() && scale > 0.0);
+    }
+
+    #[test]
+    fn declared_value_degrades_unknown_inputs_to_none() {
+        // Unknown-input cases (mandatory): missing, empty, and
+        // whitespace-only declarations must degrade to null, never to an
+        // empty or fabricated string.
+        assert_eq!(declared_value(None), None);
+        assert_eq!(declared_value(Some(String::new())), None);
+        assert_eq!(declared_value(Some("   ".to_string())), None);
+        assert_eq!(declared_value(Some(" \t\n ".to_string())), None);
+        // Declared values record verbatim apart from surrounding trim.
+        assert_eq!(
+            declared_value(Some("  Mesa  ".to_string())),
+            Some("Mesa".to_string())
+        );
+        assert_eq!(
+            declared_value(Some("wayland".to_string())),
+            Some("wayland".to_string())
+        );
+    }
+
+    #[test]
+    fn compositor_classifier_pins_precedence_and_unknown_degrade() {
+        let some = |value: &str| Some(value.to_string());
+        // Explicit operator declaration wins over every other signal.
+        assert_eq!(
+            classify_compositor(some("custom-wm"), some("x11"), true, true),
+            some("custom-wm")
+        );
+        // Blank declarations fall through instead of recording blanks.
+        assert_eq!(
+            classify_compositor(some("  "), some("wayland"), true, true),
+            some("wayland")
+        );
+        // Session-manager declaration wins over display-server presence.
+        assert_eq!(
+            classify_compositor(None, some("tty"), true, true),
+            some("tty")
+        );
+        // Display-server presence implies the session signal only when
+        // nothing is declared; wayland presence wins over DISPLAY.
+        assert_eq!(classify_compositor(None, None, true, true), some("wayland"));
+        assert_eq!(classify_compositor(None, None, false, true), some("x11"));
+        // Unknown-input case (mandatory): all-unknown degrades to null.
+        assert_eq!(classify_compositor(None, None, false, false), None);
+        assert_eq!(
+            classify_compositor(some(""), some("  "), false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn environment_detection_records_declared_cells_without_fabrication() {
+        // Live smoke over the real process environment: every populated
+        // declared cell must be a non-empty provenance string (never an
+        // empty/whitespace fabrication), and unset cells stay null. This
+        // test sets no variables -- std env is process-global and must not
+        // be mutated under parallel tests; branch behavior is pinned above.
+        for profile in ["strict", "accelerated", "unknown-profile"] {
+            let environment = detect_environment(profile);
+            for cell in [
+                environment.gpu_vendor.as_ref(),
+                environment.gpu_device.as_ref(),
+                environment.gpu_driver.as_ref(),
+                environment.gpu_api.as_ref(),
+                environment.gpu_feature_level.as_ref(),
+                environment.compositor.as_ref(),
+                environment.present_mode.as_ref(),
+            ] {
+                assert!(
+                    cell.is_none_or(|value| !value.trim().is_empty()),
+                    "profile {profile} must not fabricate empty env cells"
+                );
+            }
+        }
+        // Profile-to-backend mapping is unchanged by the declared cells.
+        assert_eq!(
+            detect_environment("strict").render_backend,
+            "cpu-private-png-facade"
+        );
+        assert_eq!(
+            detect_environment("accelerated").render_backend,
+            "portable-wgpu-offscreen-readback"
+        );
+        // The D1 schema requires a positive display_scale; headless runs
+        // record the truly-applied factor 1.0 rather than null.
+        let scale = detect_environment("strict")
+            .display_scale
+            .expect("display_scale recorded");
         assert!(scale.is_finite() && scale > 0.0);
     }
 
