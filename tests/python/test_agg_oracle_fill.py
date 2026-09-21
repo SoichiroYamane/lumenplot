@@ -298,9 +298,12 @@ class TestCommittedFillFixture(unittest.TestCase):
             figure = Figure(figsize=(2.0, 1.0), dpi=EFFECTIVE_DPI)
             axes = figure.add_axes((0.1, 0.1, 0.8, 0.8))
             axes.set_axis_off()
+            # FILL-AA (b): strict-eligible fills must be axis-aligned in
+            # device space; this style probe uses an axis-aligned
+            # rectangle so it stays on the native path.
             axes.fill(
-                [0.0, 1.0, 2.0],
-                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0, 1.0],
                 facecolor="red",
                 edgecolor="none",
                 linewidth=0.0,

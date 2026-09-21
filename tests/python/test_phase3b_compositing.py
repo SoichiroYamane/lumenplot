@@ -135,13 +135,13 @@ def _fill_over_line(ax):
                 solid_capstyle="butt", solid_joinstyle="miter")
     ax.add_line(ln)
     ln.set_zorder(1.0)
-    poly = ax.fill([2, 5, 8], [-2.0, -0.5, -2.0], color="blue", lw=0)[0]
+    poly = ax.fill([2, 8, 8, 2], [-2.0, -2.0, -0.5, -0.5], color="blue", lw=0)[0]
     poly.set_zorder(4.0)
 
 
 def _line_over_fill(ax):
     """Agg paint order: fill first (z=1), line above (z=4)."""
-    poly = ax.fill([2, 5, 8], [-2.0, -0.5, -2.0], color="blue", lw=0)[0]
+    poly = ax.fill([2, 8, 8, 2], [-2.0, -2.0, -0.5, -0.5], color="blue", lw=0)[0]
     poly.set_zorder(1.0)
     ln = Line2D([0, 10], [0, 2], color="red", lw=6.0,
                 solid_capstyle="butt", solid_joinstyle="miter")
@@ -159,7 +159,7 @@ def _tie_order(ax):
     """
     ax.add_line(Line2D([0, 10], [0.4, 0.4], color="black", lw=4.0,
                        solid_capstyle="butt", solid_joinstyle="miter"))
-    poly = ax.fill([1, 5, 9], [-2.5, -0.5, -2.5], color="blue",
+    poly = ax.fill([1, 9, 9, 1], [-2.5, -2.5, -0.5, -0.5], color="blue",
                    alpha=0.6, lw=0)[0]
     poly.set_zorder(2.0)
     ax.add_line(Line2D([0, 10], [2.0, 2.0], color="red", lw=4.0,
@@ -702,7 +702,7 @@ class TestAxesPatchExclusion(unittest.TestCase):
         """
 
         def baseline(ax):
-            poly = ax.fill([2, 5, 8], [-2.0, -0.5, -2.0], color="blue",
+            poly = ax.fill([2, 8, 8, 2], [-2.0, -2.0, -0.5, -0.5], color="blue",
                            alpha=0.6, lw=0)[0]
             poly.set_zorder(4.0)
             ln = Line2D([0, 10], [0, 2], color="red", lw=6.0,
@@ -762,7 +762,7 @@ class TestClassMixedTieOrder(unittest.TestCase):
         patch removal (poly 0, bar 1, line 2), then spines (z 2.5).
         """
         ax.grid(True, color="black", linewidth=6.0)
-        poly = ax.fill([1, 9, 9], [-2.0, -2.0, 4.0], color="blue", lw=0)[0]
+        poly = ax.fill([1, 9, 9, 1], [-2.0, -2.0, 4.0, 4.0], color="blue", lw=0)[0]
         poly.set_zorder(2.0)
         bar = ax.bar([5.0], [8.0], width=2.0, color="green")[0]
         bar.set_zorder(2.0)
@@ -808,12 +808,12 @@ class TestClassMixedTieOrder(unittest.TestCase):
             ln = Line2D([0, 10], [0.5, 0.5], color="red", lw=6.0,
                         solid_capstyle="butt", solid_joinstyle="miter")
             ax.add_line(ln)
-            poly = ax.fill([2, 8, 8], [-1.0, -1.0, 3.0], color="blue",
+            poly = ax.fill([2, 8, 8, 2], [-1.0, -1.0, 3.0, 3.0], color="blue",
                            alpha=0.7, lw=0)[0]
             poly.set_zorder(2.0)
 
         def poly_then_line(ax):
-            poly = ax.fill([2, 8, 8], [-1.0, -1.0, 3.0], color="blue",
+            poly = ax.fill([2, 8, 8, 2], [-1.0, -1.0, 3.0, 3.0], color="blue",
                            alpha=0.7, lw=0)[0]
             poly.set_zorder(2.0)
             ln = Line2D([0, 10], [0.5, 0.5], color="red", lw=6.0,
@@ -1142,10 +1142,10 @@ class TestByteExactScenes(unittest.TestCase):
 
     @staticmethod
     def _disjoint_alpha_fills(ax):
-        p1 = ax.fill([1, 4, 4], [1, 1, 4], color="blue",
+        p1 = ax.fill([1, 4, 4, 1], [1, 1, 4, 4], color="blue",
                      alpha=0.5, lw=0)[0]
         p1.set_zorder(2.0)
-        p2 = ax.fill([6, 9, 9], [-3, -3, -1], color="red",
+        p2 = ax.fill([6, 9, 9, 6], [-3, -3, -1, -1], color="red",
                      alpha=0.35, lw=0)[0]
         p2.set_zorder(2.0)
 
@@ -1239,7 +1239,7 @@ class TestZorderMatrix(unittest.TestCase):
                         solid_capstyle="butt", solid_joinstyle="miter")
             ax.add_line(ln)
             ln.set_zorder(zline)
-            poly = ax.fill([2, 6, 8], [-2.5, -0.5, -2.5], color="blue",
+            poly = ax.fill([2, 8, 8, 2], [-2.5, -2.5, -0.5, -0.5], color="blue",
                            lw=0)[0]
             poly.set_zorder(zpoly)
             bar = ax.bar([4.5], [3.0], width=1.4, color="green")[0]
