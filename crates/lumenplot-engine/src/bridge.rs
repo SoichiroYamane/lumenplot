@@ -536,6 +536,8 @@ pub struct LineFrame {
     background: SrgbRgba8,
     series: Vec<LineSeries>,
     plot_layout: Arc<PlotLayout>,
+    grid_visible: bool,
+    grid_revision: u64,
 }
 
 impl LineFrame {
@@ -568,6 +570,15 @@ impl LineFrame {
         &self.plot_layout
     }
 
+    pub(crate) fn grid_visible(&self) -> bool {
+        self.grid_visible
+    }
+
+    pub(crate) fn grid_revision(&self) -> u64 {
+        self.grid_revision
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         revision: SceneRevision,
         canvas: LogicalSize,
@@ -576,6 +587,8 @@ impl LineFrame {
         background: SrgbRgba8,
         series: Vec<LineSeries>,
         plot_layout: Arc<PlotLayout>,
+        grid_visible: bool,
+        grid_revision: u64,
     ) -> Self {
         Self {
             revision,
@@ -585,6 +598,8 @@ impl LineFrame {
             background,
             series,
             plot_layout,
+            grid_visible,
+            grid_revision,
         }
     }
 }

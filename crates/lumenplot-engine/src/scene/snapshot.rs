@@ -41,6 +41,14 @@ impl SceneSnapshot {
         self.state.layout_revision().0
     }
 
+    pub(crate) fn grid_visible(&self) -> bool {
+        self.state.grid_visible()
+    }
+
+    pub(crate) fn grid_revision(&self) -> u64 {
+        self.state.grid_revision().0
+    }
+
     pub(crate) fn plot_layout(&self) -> Arc<PlotLayout> {
         self.state.plot_layout().clone()
     }
