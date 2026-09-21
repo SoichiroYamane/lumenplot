@@ -538,6 +538,8 @@ pub struct LineFrame {
     plot_layout: Arc<PlotLayout>,
     grid_visible: bool,
     grid_revision: u64,
+    x_ticks: Vec<f64>,
+    y_ticks: Vec<f64>,
 }
 
 impl LineFrame {
@@ -578,6 +580,23 @@ impl LineFrame {
         self.grid_revision
     }
 
+    /// Per-axis grid tick positions in data coordinates, stamped by
+    /// `resolve_line_frame` from the crate-internal locator alongside the
+    /// grid pair (SINK-F2 carrier). Sinks project them through the same
+    /// scale rule as series data; the vecs need no separate digest because
+    /// they rebuild deterministically from viewport, scales, and the
+    /// per-axis cap, so `(grid_visible, grid_revision)` pair equality plus
+    /// scene-revision equality already covers them.
+    pub fn x_ticks(&self) -> &[f64] {
+        &self.x_ticks
+    }
+
+    /// Per-axis grid tick positions in data coordinates (y axis). See
+    /// [`LineFrame::x_ticks`] for the carrier contract.
+    pub fn y_ticks(&self) -> &[f64] {
+        &self.y_ticks
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         revision: SceneRevision,
@@ -589,6 +608,8 @@ impl LineFrame {
         plot_layout: Arc<PlotLayout>,
         grid_visible: bool,
         grid_revision: u64,
+        x_ticks: Vec<f64>,
+        y_ticks: Vec<f64>,
     ) -> Self {
         Self {
             revision,
@@ -600,6 +621,8 @@ impl LineFrame {
             plot_layout,
             grid_visible,
             grid_revision,
+            x_ticks,
+            y_ticks,
         }
     }
 }

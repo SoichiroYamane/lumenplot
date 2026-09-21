@@ -163,6 +163,16 @@ pub(crate) fn resolve_line_frame(
     // here; downstream cards consume the carried channel.
     let grid_visible = snapshot.grid_visible();
     let grid_revision = snapshot.grid_revision();
+    // SINK-F2 carrier: per-axis data-coord tick vecs from the pure
+    // crate-internal locator (`crate::ticks`), stamped alongside the grid
+    // pair. This resolve path already gated scales to linear above, so the
+    // locator runs on its linear arm here; the Log10 arm is pinned by unit
+    // tests for the future sink path. Unbounded counts refuse here with
+    // `CapacityExceeded` before any sink allocation (fail-before-allocate).
+    let viewport = snapshot.viewport();
+    let axis_scales = snapshot.axis_scales();
+    let x_ticks = crate::ticks::major_ticks_for_axis(viewport.x(), axis_scales.x())?;
+    let y_ticks = crate::ticks::major_ticks_for_axis(viewport.y(), axis_scales.y())?;
     let plot_layout: Arc<crate::text::PlotLayout> = match live_rectangle_layout(&snapshot.state)? {
         Some(live_rectangles) => Arc::new(crate::text::PlotLayout::from_live_parts(
             snapshot.plot_layout().runs().to_vec(),
@@ -230,6 +240,8 @@ pub(crate) fn resolve_line_frame(
         plot_layout,
         grid_visible,
         grid_revision,
+        x_ticks,
+        y_ticks,
     ))
 }
 
@@ -1406,5 +1418,45 @@ mod tests {
             ),
             "carried layout must validate under its own generations"
         );
+    }
+
+    #[test]
+    fn grid_tick_vecs_are_stamped_deterministically_with_grid_pair() {
+        // SINK-F2 acceptance: resolve stamps per-axis data-coord tick vecs
+        // alongside the grid pair. The vecs are a deterministic function of
+        // viewport, scales, and the per-axis cap, so the
+        // (grid_visible, grid_revision) pair equality covers them with no
+        // separate digest: a grid toggle changes the pair while vec content
+        // rebuilds identical.
+        let mut scene = engine_scene_with_points(
+            0.0,
+            10.0,
+            0.0,
+            10.0,
+            vec![(vec![0.0, 5.0, 10.0], vec![0.0, 5.0, 10.0])],
+        );
+        let first = resolve_line_frame(&scene.snapshot(), &spec()).expect("first frame");
+        assert!(first.grid_visible());
+        // Viewport [0, 10] takes the 2.0 nice step on both axes.
+        assert_eq!(first.x_ticks(), &[0.0, 2.0, 4.0, 6.0, 8.0, 10.0][..]);
+        assert_eq!(first.y_ticks(), &[0.0, 2.0, 4.0, 6.0, 8.0, 10.0][..]);
+        // Deterministic reconstruction across independent resolves.
+        let second = resolve_line_frame(&scene.snapshot(), &spec()).expect("second frame");
+        assert_eq!(first.x_ticks(), second.x_ticks());
+        assert_eq!(first.y_ticks(), second.y_ticks());
+        // Grid toggle moves the pair but leaves vec content identical.
+        {
+            let mut transaction = scene.transaction();
+            transaction.set_grid_visible(false);
+            transaction.commit().expect("grid-off commit");
+        }
+        let off = resolve_line_frame(&scene.snapshot(), &spec()).expect("grid-off frame");
+        assert!(!off.grid_visible());
+        assert_ne!(
+            (first.grid_visible(), first.grid_revision()),
+            (off.grid_visible(), off.grid_revision())
+        );
+        assert_eq!(first.x_ticks(), off.x_ticks());
+        assert_eq!(first.y_ticks(), off.y_ticks());
     }
 }
