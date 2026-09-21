@@ -3,7 +3,7 @@
 //! Usage:
 //!
 //! ```text
-//! lumenplot-bench --profile <strict|hybrid|accelerated|native> [--out <dir>]
+//! lumenplot-bench --profile <strict|hybrid|accelerated|native> [--fixture <line-10k|line-10m>] [--out <dir>]
 //! ```
 //!
 //! Exactly one profile must be selected; profiles are never mixed. The
@@ -24,7 +24,7 @@ mod manifest;
 #[path = "runner.rs"]
 mod runner;
 
-use runner::Profile;
+use runner::{FixtureKind, Profile};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -39,7 +39,9 @@ fn main() {
 }
 
 fn print_usage() {
-    eprintln!("usage: lumenplot-bench --profile <strict|hybrid|accelerated|native> [--out <dir>]");
+    eprintln!(
+        "usage: lumenplot-bench --profile <strict|hybrid|accelerated|native> [--fixture <line-10k|line-10m>] [--out <dir>]"
+    );
 }
 
 /// Parse arguments and dispatch to the run or block-runner mode.
@@ -55,6 +57,7 @@ fn run(args: Vec<String>) -> Result<i32, String> {
 
     let mut iter = args.iter();
     let mut profile: Option<Profile> = None;
+    let mut fixture: Option<FixtureKind> = None;
     let mut out_dir: Option<String> = None;
 
     while let Some(flag) = iter.next() {
@@ -67,6 +70,15 @@ fn run(args: Vec<String>) -> Result<i32, String> {
                 profile = Some(
                     Profile::parse(value).ok_or_else(|| format!("unknown profile {value:?}"))?,
                 );
+            }
+            "--fixture" => {
+                if fixture.is_some() {
+                    return Err("--fixture given more than once".to_string());
+                }
+                let value = iter.next().ok_or("--fixture needs a value")?;
+                fixture = Some(FixtureKind::parse(value).ok_or_else(|| {
+                    format!("unknown fixture {value:?} (expected one of line-10k|line-10m)")
+                })?);
             }
             "--out" => {
                 if out_dir.is_some() {
@@ -81,5 +93,15 @@ fn run(args: Vec<String>) -> Result<i32, String> {
     let profile = profile
         .ok_or("missing required --profile (exactly one of strict|hybrid|accelerated|native)")?;
     let out_dir = out_dir.as_deref().unwrap_or("./bench-out");
-    Ok(runner::run_benchmark(profile, out_dir, std::process::id()))
+    // Absent --fixture stays on the contracted line-10k dispatch path;
+    // an explicit --fixture (either id) routes to the selection entry.
+    match fixture {
+        None => Ok(runner::run_benchmark(profile, out_dir, std::process::id())),
+        Some(fixture_kind) => Ok(runner::run_benchmark_with_fixture(
+            profile,
+            fixture_kind,
+            out_dir,
+            std::process::id(),
+        )),
+    }
 }

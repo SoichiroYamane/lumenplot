@@ -64,6 +64,9 @@ use crate::manifest::{
 
 /// Fixed fixture size required by the O-08 contract (decision D3).
 pub(crate) const FIXTURE_POINTS: usize = 10_000;
+/// Fixed 10M-point fixture size for the MonotonicX native-v1-gate workload
+/// (ADR 0006 section O-16), selected bench-only via `--fixture line-10m`.
+pub(crate) const FIXTURE_POINTS_10M: usize = 10_000_000;
 /// Fixed canvas width in pixels.
 pub(crate) const FIXTURE_CANVAS_WIDTH_PX: u32 = 800;
 /// Fixed canvas height in pixels.
@@ -272,6 +275,98 @@ pub(crate) fn build_fixture_xy() -> (Vec<f64>, Vec<f64>) {
     (xs, ys)
 }
 
+/// Build a fixture series with an explicit point count: the same deterministic
+/// two-tone smooth curve as [`build_fixture_xy`], scaled to `count` points
+/// (`x = i/(count-1)`, `y = 0.5+0.35*sin(6*pi*x)+0.1*x`). Counts below 2
+/// panic fail-closed instead of emitting a degenerate line.
+pub(crate) fn build_fixture_xy_with(count: usize) -> (Vec<f64>, Vec<f64>) {
+    assert!(count >= 2, "fixture count must be at least 2");
+    let mut xs = Vec::with_capacity(count);
+    let mut ys = Vec::with_capacity(count);
+    for index in 0..count {
+        let x = index as f64 / (count - 1) as f64;
+        // Two-tone smooth curve; deterministic, no allocation per frame.
+        let y = 0.5 + 0.35 * (6.0 * std::f64::consts::PI * x).sin() + 0.1 * x;
+        xs.push(x);
+        ys.push(y);
+    }
+    (xs, ys)
+}
+
+/// Build the 10M-point MonotonicX fixture for the native-v1-gate workload.
+///
+/// The contracted 10k builder above stays byte-identical; this path goes
+/// through [`build_fixture_xy_with`] so accepted 10k O-08 evidence is never
+/// re-emitted from a refactored 10k path.
+pub(crate) fn build_fixture_xy_10m() -> (Vec<f64>, Vec<f64>) {
+    build_fixture_xy_with(FIXTURE_POINTS_10M)
+}
+
+/// Bench-only fixture selector behind `--fixture`.
+///
+/// The id is recorded verbatim in the manifest; an unknown id refuses
+/// fail-closed before any output directory is created. LOD-bucket counts stay
+/// null for every fixture (the owning renderer exposes no counters yet), so
+/// selection changes only input `fixture.id`/`fixture.points`, never schema.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FixtureKind {
+    Line10k,
+    Line10m,
+}
+
+impl FixtureKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Line10k => "line-10k",
+            Self::Line10m => "line-10m",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "line-10k" => Some(Self::Line10k),
+            "line-10m" => Some(Self::Line10m),
+            _ => None,
+        }
+    }
+
+    /// Manifest fixture id, recorded verbatim (never relabeled).
+    pub(crate) fn id(self) -> &'static str {
+        self.as_str()
+    }
+
+    pub(crate) fn points(self) -> usize {
+        match self {
+            Self::Line10k => FIXTURE_POINTS,
+            Self::Line10m => FIXTURE_POINTS_10M,
+        }
+    }
+
+    /// Build the fixture series; the 10k path calls the contracted builder.
+    pub(crate) fn build_xy(self) -> (Vec<f64>, Vec<f64>) {
+        match self {
+            Self::Line10k => build_fixture_xy(),
+            Self::Line10m => build_fixture_xy_10m(),
+        }
+    }
+}
+
+/// Best-effort peak resident set size of this process in KiB.
+///
+/// Linux reads `VmHWM` from `/proc/self/status`; every other host reports
+/// unavailable (`None`). Infallible by design: a missing or unparsable field
+/// degrades to `None` and never fails a block.
+fn peak_rss_kib() -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("VmHWM:") {
+            let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+            return digits.parse().ok();
+        }
+    }
+    None
+}
+
 /// Read a best-effort single-line system description file.
 fn read_trimmed(path: &str) -> Option<String> {
     std::fs::read_to_string(path)
@@ -408,6 +503,7 @@ fn samples_line(
 /// This is executed by fresh child processes only; see `run_block_child`.
 fn run_block_in_process(
     profile: Profile,
+    fixture_kind: FixtureKind,
     block_index: u32,
     frames: usize,
     out_dir: &str,
@@ -416,7 +512,7 @@ fn run_block_in_process(
         return Err(format!("frames must be at least {MIN_FRAMES_PER_BLOCK}"));
     }
     let block_started_at_utc = utc_now_rfc3339();
-    let (xs, ys) = build_fixture_xy();
+    let (xs, ys) = fixture_kind.build_xy();
     let board = ClockBoard::detect();
     let scheduler_clock = scheduler_span(profile);
 
@@ -527,6 +623,20 @@ fn run_block_in_process(
     samples_out
         .flush()
         .map_err(|error| format!("cannot flush {samples_path}: {error}"))?;
+
+    // Per-block peak-RSS record (Phase-A smoke provenance): an info-stream
+    // line only, never a manifest field -- the D1 schema is unchanged and
+    // unavailable hosts log `unavailable` instead of a zero.
+    match peak_rss_kib() {
+        Some(kib) => eprintln!(
+            "# block {block_index} peak_rss_kib={kib} fixture={}",
+            fixture_kind.as_str()
+        ),
+        None => eprintln!(
+            "# block {block_index} peak_rss_kib=unavailable fixture={}",
+            fixture_kind.as_str()
+        ),
+    }
 
     scheduler_samples.sort_unstable();
     // A/B order randomization seeded from the pinned manifest seed mixed
@@ -674,6 +784,7 @@ pub(crate) fn run_block_child(args: &[String]) -> Result<(), String> {
     let mut frames: Option<usize> = None;
     let mut out_dir = String::from("./bench-out");
     let mut profile = Profile::Strict;
+    let mut fixture_kind = FixtureKind::Line10k;
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "--block-index" => {
@@ -696,6 +807,12 @@ pub(crate) fn run_block_child(args: &[String]) -> Result<(), String> {
             "--profile" => {
                 profile = Profile::parse(iter.next().ok_or("--profile needs a value")?)
                     .ok_or("unknown --profile value for block runner")?;
+            }
+            "--fixture" => {
+                let value = iter.next().ok_or("--fixture needs a value")?;
+                fixture_kind = FixtureKind::parse(value).ok_or_else(|| {
+                    format!("unknown --fixture value {value:?} (expected one of line-10k|line-10m)")
+                })?;
             }
             // The mode flag that routed us here; not a block parameter.
             "--internal-block-runner" => {}
@@ -722,7 +839,7 @@ pub(crate) fn run_block_child(args: &[String]) -> Result<(), String> {
         return Err(format!("--frames must be at least {MIN_FRAMES_PER_BLOCK}"));
     }
 
-    let summary = run_block_in_process(profile, block_index, frames, &out_dir)?;
+    let summary = run_block_in_process(profile, fixture_kind, block_index, frames, &out_dir)?;
     println!("# block {block_index} complete (fresh pid {})", summary.pid);
     println!(
         "{{\"block_index\": {}, \"pid\": {}, \"started_at_utc\": \"{}\", \
@@ -854,7 +971,24 @@ fn counter_summary(profile: Profile, blocks: &[BlockSummary]) -> CounterSummary<
 /// Execute one full run: 5 fresh-process blocks, manifest assembly, gates.
 ///
 /// Returns the process exit code (0 success, non-zero on protocol failure).
+///
+/// Keeps the contracted line-10k default; `--fixture` handling in `main.rs`
+/// routes to [`run_benchmark_with_fixture`].
 pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
+    run_benchmark_with_fixture(profile, FixtureKind::Line10k, out_dir, pid)
+}
+
+/// Execute one full run with an explicit bench-only fixture selection.
+///
+/// Every protocol property (5 fresh-process blocks, manifest shape, gates)
+/// is fixture-independent; only the fixture build and the manifest
+/// `fixture.id`/`fixture.points` vary.
+pub(crate) fn run_benchmark_with_fixture(
+    profile: Profile,
+    fixture_kind: FixtureKind,
+    out_dir: &str,
+    pid: u32,
+) -> i32 {
     // Fail-closed profile gate, evaluated BEFORE any output directory or
     // child process exists: an unexecutable profile never leaves artifacts
     // behind. A run that executed zero frames can never satisfy the manifest
@@ -901,6 +1035,8 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
                 "--internal-block-runner",
                 "--profile",
                 profile.as_str(),
+                "--fixture",
+                fixture_kind.as_str(),
                 "--block-index",
                 &block_index.to_string(),
                 "--frames",
@@ -956,6 +1092,14 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
             None => {
                 eprintln!("bench: block {block_index} summary unparsable: {summary_line}");
                 return 2;
+            }
+        }
+        // Surface the child's info-stream records (A/B order, per-block
+        // peak RSS) on the parent info stream: `#`-prefixed lines only,
+        // so artifacts and the wire summary stay untouched.
+        for line in String::from_utf8_lossy(&output.stderr).lines() {
+            if line.starts_with('#') {
+                eprintln!("{line}");
             }
         }
     }
@@ -1037,8 +1181,8 @@ pub(crate) fn run_benchmark(profile: Profile, out_dir: &str, pid: u32) -> i32 {
     }
 
     let fixture = Fixture {
-        id: "line-10k",
-        points: FIXTURE_POINTS,
+        id: fixture_kind.id(),
+        points: fixture_kind.points(),
         canvas_px: [FIXTURE_CANVAS_WIDTH_PX, FIXTURE_CANVAS_HEIGHT_PX],
         dpi: FIXTURE_DPI,
     };
@@ -1493,6 +1637,209 @@ mod tests {
                     assert!((0.0..=f64::from(FIXTURE_CANVAS_HEIGHT_PX)).contains(&point.y()));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn fixture_kind_round_trips_both_ids_and_refuses_unknown() {
+        assert_eq!(FixtureKind::parse("line-10k"), Some(FixtureKind::Line10k));
+        assert_eq!(FixtureKind::parse("line-10m"), Some(FixtureKind::Line10m));
+        assert_eq!(FixtureKind::Line10k.as_str(), "line-10k");
+        assert_eq!(FixtureKind::Line10m.as_str(), "line-10m");
+        assert_eq!(FixtureKind::Line10k.id(), "line-10k");
+        assert_eq!(FixtureKind::Line10m.id(), "line-10m");
+        assert_eq!(FixtureKind::Line10k.points(), FIXTURE_POINTS);
+        assert_eq!(FixtureKind::Line10m.points(), FIXTURE_POINTS_10M);
+        assert_eq!(FixtureKind::Line10k.build_xy().0.len(), FIXTURE_POINTS);
+        assert!(FixtureKind::parse("line-10M").is_none());
+        assert!(FixtureKind::parse("").is_none());
+        assert!(FixtureKind::parse("line-100m").is_none());
+    }
+
+    #[test]
+    fn fixture_with_count_matches_contracted_curve() {
+        // Small-count spot check of the generalized builder: endpoints and
+        // the two-tone curve match the contracted 10k formula exactly.
+        let (xs, ys) = build_fixture_xy_with(1_001);
+        assert_eq!((xs.len(), ys.len()), (1_001, 1_001));
+        assert_eq!(xs[0], 0.0);
+        assert!((*xs.last().unwrap() - 1.0).abs() < 1e-12);
+        for window in xs.windows(2) {
+            assert!(window[1] >= window[0]);
+        }
+        assert!(ys.iter().all(|item| item.is_finite()));
+        let middle = 500;
+        let expected =
+            0.5 + 0.35 * (6.0 * std::f64::consts::PI * xs[middle]).sin() + 0.1 * xs[middle];
+        assert!((ys[middle] - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn fixture_with_count_rejects_degenerate_counts() {
+        for count in [0, 1] {
+            let result = std::panic::catch_unwind(|| build_fixture_xy_with(count));
+            assert!(result.is_err(), "count {count} must panic fail-closed");
+        }
+    }
+
+    #[test]
+    fn fixture_10m_builder_has_contracted_shape() {
+        assert_eq!(FIXTURE_POINTS_10M, 10_000_000);
+        let (xs, ys) = build_fixture_xy_10m();
+        assert_eq!(xs.len(), FIXTURE_POINTS_10M);
+        assert_eq!(ys.len(), FIXTURE_POINTS_10M);
+        assert_eq!(xs[0], 0.0);
+        assert!((*xs.last().unwrap() - 1.0).abs() < 1e-12);
+        assert!(ys.iter().all(|item| item.is_finite()));
+        // MonotonicX topology per the ADR 0006 native-v1-gate wording.
+        for window in xs.windows(2) {
+            assert!(window[1] >= window[0]);
+        }
+    }
+
+    #[test]
+    fn block_runner_defaults_to_line_10k_and_refuses_unknown_fixture() {
+        // Unknown fixture ids refuse fail-closed with a naming hint.
+        let bogus_args = [
+            "--internal-block-runner",
+            "--profile",
+            "strict",
+            "--fixture",
+            "line-100m",
+            "--block-index",
+            "0",
+            "--frames",
+            "1000",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let bogus_error = run_block_child(&bogus_args).expect_err("unknown fixture must refuse");
+        assert!(bogus_error.contains("unknown --fixture"), "{bogus_error}");
+        // An absent --fixture defaults to line-10k: a short block then fails
+        // on the frame minimum, proving the default carried through parsing.
+        let short_args = [
+            "--internal-block-runner",
+            "--profile",
+            "strict",
+            "--block-index",
+            "0",
+            "--frames",
+            "999",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let short_error = run_block_child(&short_args).expect_err("short block must refuse");
+        assert!(short_error.contains("at least 1000"), "{short_error}");
+    }
+
+    #[test]
+    fn emitted_manifest_records_selected_fixture_id_and_points() {
+        // The D1 schema is unchanged (schema_version stays 1); only the
+        // bench-owned id/points selection varies per --fixture.
+        for fixture_kind in [FixtureKind::Line10k, FixtureKind::Line10m] {
+            let fixture = Fixture {
+                id: fixture_kind.id(),
+                points: fixture_kind.points(),
+                canvas_px: [FIXTURE_CANVAS_WIDTH_PX, FIXTURE_CANVAS_HEIGHT_PX],
+                dpi: FIXTURE_DPI,
+            };
+            let environment = Environment {
+                os: "test-os".to_string(),
+                os_version: "test-version".to_string(),
+                arch: "test-arch".to_string(),
+                kernel: "test-kernel".to_string(),
+                cpu: "test-cpu".to_string(),
+                toolchain: "test-toolchain".to_string(),
+                build_profile: "release".to_string(),
+                render_backend: "cpu-private-png-facade".to_string(),
+                gpu_vendor: None,
+                gpu_device: None,
+                gpu_driver: None,
+                gpu_api: None,
+                gpu_feature_level: None,
+                compositor: None,
+                display_scale: None,
+                present_mode: None,
+            };
+            let blocks = vec![BlockSummary {
+                block_index: 0,
+                pid: 1,
+                started_at_utc: "2026-08-24T00:00:00.000Z".to_string(),
+                frame_count: MIN_FRAMES_PER_BLOCK,
+                p50_ns: Some(10),
+                p95_ns: Some(20),
+                p99_ns: Some(30),
+            }];
+            let reasons: Vec<String> = Vec::new();
+            let measurement = Measurement {
+                scheduler_clock: RENDER_RETURN_SPAN,
+                scheduler_semantics: CPU_RENDER_SEMANTICS,
+                present_observed: false,
+                scanout_observed: false,
+            };
+            let counters = counter_summary(Profile::Strict, &blocks);
+            let manifest = Manifest {
+                run_id: "run-id",
+                generated_at_utc: "2026-08-24T00:00:00.000Z",
+                profile: "strict",
+                measurement: &measurement,
+                counters: &counters,
+                fixture: &fixture,
+                environment: &environment,
+                clock_lines: "",
+                blocks: &blocks,
+                pooled_line: &emit_pooled(
+                    RENDER_RETURN_SPAN,
+                    MIN_FRAMES_PER_BLOCK,
+                    Some(10),
+                    Some(20),
+                    Some(30),
+                ),
+                max_block_p99_ns: Some(30),
+                inconclusive_reasons: &reasons,
+            };
+            let document = emit_manifest(&manifest);
+            assert!(
+                document.contains(&format!("\"id\": \"{}\"", fixture_kind.as_str())),
+                "missing fixture id for {}",
+                fixture_kind.as_str()
+            );
+            assert!(
+                document.contains(&format!("\"points\": {}", fixture_kind.points())),
+                "missing fixture points for {}",
+                fixture_kind.as_str()
+            );
+            assert!(document.contains("\"schema_version\": 1"));
+        }
+    }
+
+    /// 10M single-frame strict smoke: the 10M fixture builds (see the shape
+    /// test), but frame submission is refused fail-closed by the
+    /// architecture-owned 1M-point facade cap (`MAX_SOURCE_POINTS` in
+    /// `crates/lumenplot/src/lib.rs`; the engine frame seam caps identically
+    /// via `MAX_FRAME_POINTS`). This test pins that refusal -- no OOM, no hang,
+    /// no partial artifact -- and records the smoke peak RSS. A full 10M O-08
+    /// run needs an architecture-authority submission decision first
+    /// (chunked multi-series, cap raise, or downsampled submission).
+    #[test]
+    fn fixture_10m_single_frame_strict_smoke() {
+        let (xs, ys) = FixtureKind::Line10m.build_xy();
+        assert_eq!(xs.len(), FIXTURE_POINTS_10M);
+        // `OwnedLinePngRequest` carries no `Debug`, so `expect_err` cannot
+        // be used here; match instead.
+        let error = match build_frame_request(&xs, &ys) {
+            Ok(_) => panic!("10m frame must hit the facade cap"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("input is invalid"),
+            "fail-closed facade refusal, got: {error}"
+        );
+        match peak_rss_kib() {
+            Some(kib) => eprintln!("# 10m smoke peak_rss_kib={kib} refused_by=facade-1m-cap"),
+            None => eprintln!("# 10m smoke peak_rss_kib=unavailable refused_by=facade-1m-cap"),
         }
     }
 }
