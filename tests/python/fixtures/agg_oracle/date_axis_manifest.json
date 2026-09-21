@@ -84,7 +84,7 @@
     "lines.antialiased": true,
     "lines.color": "red",
     "lines.linestyle": "-",
-    "lines.linewidth": 2.0,
+    "lines.linewidth": 0.8,
     "lines.solid_capstyle": "butt",
     "lines.solid_joinstyle": "miter",
     "path.simplify": false,
