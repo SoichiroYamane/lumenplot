@@ -38,13 +38,13 @@ actions:
 
   - name: DeterminateSystems/nix-installer-action
     repository: DeterminateSystems/nix-installer-action
-    release: v19
-    source_ref: refs/tags/v19
-    commit: 90bb610b90bf290cad97484ba341453bd1cbefea
+    release: v23
+    source_ref: refs/tags/v23
+    commit: 3138316df39ed29be04236d7ffc686fa525866aa
     used_by:
       - .github/workflows/ci.yml
-    provenance_command: git ls-remote https://github.com/DeterminateSystems/nix-installer-action.git refs/tags/v19
-    observed_resolution: 90bb610b90bf290cad97484ba341453bd1cbefea
+    provenance_command: git ls-remote https://github.com/DeterminateSystems/nix-installer-action.git refs/tags/v23
+    observed_resolution: 3138316df39ed29be04236d7ffc686fa525866aa
 
   - name: EmbarkStudios/cargo-deny-action
     repository: EmbarkStudios/cargo-deny-action
