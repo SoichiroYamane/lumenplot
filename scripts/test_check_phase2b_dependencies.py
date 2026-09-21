@@ -260,7 +260,7 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
         def mutate(root: Path) -> None:
             path = root / "Cargo.lock"
             source = path.read_text(encoding="utf-8")
-            marker = 'checksum = "561f357ba7f3a2a61563a186a163d0a3a5247e1089524a3981d49adb775078bc"'
+            marker = 'checksum = "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f"'
             self.assertIn(marker, source)
             path.write_text(
                 source.replace(
@@ -304,7 +304,7 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
             start = source.index('name = "lumenplot-render-metal"')
             end = source.index("[[package]]", start)
             block = source[start:end]
-            for dependency in (' "objc2 0.6.2",\n', ' "objc2-foundation 0.3.2",\n', ' "objc2-metal 0.3.2",\n'):
+            for dependency in (' "objc2 0.6.4",\n', ' "objc2-foundation 0.3.2",\n', ' "objc2-metal 0.3.2",\n'):
                 self.assertIn(dependency, block)
                 block = block.replace(dependency, "")
             lock.write_text(source[:start] + block + source[end:], encoding="utf-8")
@@ -332,7 +332,7 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
             start = source.index('name = "lumenplot-render-metal"')
             end = source.index("[[package]]", start)
             block = source[start:end]
-            for dependency in (' "objc2 0.6.2",\n', ' "objc2-foundation 0.3.2",\n', ' "objc2-metal 0.3.2",\n'):
+            for dependency in (' "objc2 0.6.4",\n', ' "objc2-foundation 0.3.2",\n', ' "objc2-metal 0.3.2",\n'):
                 self.assertIn(dependency, block)
                 block = block.replace(dependency, "")
             source = source[:start] + block + source[end:]

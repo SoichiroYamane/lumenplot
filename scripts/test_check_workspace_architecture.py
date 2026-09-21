@@ -2537,7 +2537,7 @@ fn body_macro_is_below_root_scope() {
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-render-metal/Cargo.toml"
             path.write_text(
-                path.read_text(encoding="utf-8").replace('=0.6.2', "=0.6.1"),
+                path.read_text(encoding="utf-8").replace('=0.6.4', "=0.6.1"),
                 encoding="utf-8",
             )
 
@@ -2551,7 +2551,7 @@ fn body_macro_is_below_root_scope() {
             self.activate_metal_lane(root)
             path = root / "crates/lumenplot-render-metal/Cargo.toml"
             path.write_text(
-                path.read_text(encoding="utf-8").replace('=0.6.2', "=0.6.1"),
+                path.read_text(encoding="utf-8").replace('=0.6.4', "=0.6.1"),
                 encoding="utf-8",
             )
 
