@@ -222,6 +222,8 @@ impl SceneHandle {
             plot_layout,
             font_revision: frame.plot_layout().font_revision(),
             layout_revision: frame.plot_layout().layout_revision(),
+            grid_visible: frame.grid_visible(),
+            grid_revision: frame.grid_revision(),
             line_color: spec.line_color,
             line_width_px: spec.line_width_px,
             series,
@@ -1084,6 +1086,8 @@ pub struct FramePacket {
     pub(crate) plot_layout: Arc<PlotLayout>,
     pub(crate) font_revision: u64,
     pub(crate) layout_revision: u64,
+    pub(crate) grid_visible: bool,
+    pub(crate) grid_revision: u64,
     pub(crate) line_color: SrgbRgba8,
     pub(crate) line_width_px: f64,
     pub(crate) series: Vec<PacketSeries>,
@@ -1118,6 +1122,16 @@ impl FramePacket {
     /// Scene revision the packet was resolved at.
     pub fn revision(&self) -> PacketRevision {
         self.revision
+    }
+
+    /// Grid visibility carried from the resolved engine frame.
+    pub fn grid_visible(&self) -> bool {
+        self.grid_visible
+    }
+
+    /// Grid revision carried from the resolved engine frame.
+    pub fn grid_revision(&self) -> u64 {
+        self.grid_revision
     }
 
     /// Canvas size in pixels, `[width, height]`.
@@ -1327,6 +1341,36 @@ mod tests {
         assert!(after > initial);
         let packet = handle.resolve_frame(&fixture_spec()).expect("packet");
         assert_eq!(packet.revision(), after);
+    }
+
+    #[test]
+    fn grid_pair_is_copied_onto_packet_and_render_projection() {
+        // SINK-C2 acceptance through public construction only: the default
+        // scene carries grid-on at grid revision 0 through
+        // resolve_frame_candidate, and the existing RenderPacket projection
+        // exposes the same pair through frame(). No public grid toggle
+        // exists, so off-state coverage stays in the engine-crate toggle
+        // test; this pins the copy, not a toggle.
+        let handle = fixture_handle();
+        let spec = fixture_spec();
+        let packet = handle.resolve_frame(&spec).expect("packet");
+        assert!(packet.grid_visible());
+        assert_eq!(packet.grid_revision(), 0);
+        let builder =
+            RenderPacketBuilder::new(WorkGeneration::initial(), DeviceGeneration::initial());
+        let render_packet = handle
+            .resolve_render_packet(
+                &spec,
+                &builder,
+                WorkGeneration::initial(),
+                DeviceGeneration::initial(),
+            )
+            .expect("render packet");
+        assert_eq!(render_packet.frame().grid_visible(), packet.grid_visible());
+        assert_eq!(
+            render_packet.frame().grid_revision(),
+            packet.grid_revision()
+        );
     }
 
     #[test]

@@ -504,16 +504,41 @@ impl PacketOwner {
 
     fn prepare_retained(
         &mut self,
+        incoming: &FramePacket,
+        scene_revision: SceneRevision,
         work_generation: WorkGeneration,
         device_generation: DeviceGeneration,
     ) -> Result<Option<PreparedPacket>, RuntimeError> {
-        let (Some(frame), Some(scene_revision)) =
+        let (Some(retained), Some(retained_revision)) =
             (self.retained_frame.clone(), self.retained_scene_revision)
         else {
             return Ok(None);
         };
-        self.prepare(frame, scene_revision, work_generation, device_generation)
+        // SINK-C2 grid gate: the retained frame is reused only when the
+        // incoming publication agrees on both the scene revision and the
+        // carried grid pair (read via the public packet readers). Any
+        // mismatch forces a full prepare of the incoming frame so a grid
+        // toggle can never reuse a stale retained frame. No new error
+        // kinds: both paths return the existing prepare outcome.
+        let grid_unchanged = retained.grid_visible() == incoming.grid_visible()
+            && retained.grid_revision() == incoming.grid_revision();
+        if grid_unchanged && retained_revision == scene_revision {
+            self.prepare(
+                retained,
+                retained_revision,
+                work_generation,
+                device_generation,
+            )
             .map(Some)
+        } else {
+            self.prepare(
+                incoming.clone(),
+                scene_revision,
+                work_generation,
+                device_generation,
+            )
+            .map(Some)
+        }
     }
 
     fn commit(&mut self, mut prepared: PreparedPacket) -> Result<(), RuntimeError> {
@@ -971,16 +996,28 @@ impl EngineSession {
         replacement.bind_device_generation(PacketDeviceGeneration::new(self.device_generation.0));
         let next_work = self.next_work_generation()?;
         self.commit_work_generation(next_work)?;
-        let retained = match self
-            .packet_owner
-            .prepare_retained(self.work_generation, self.device_generation)
-        {
-            Ok(retained) => retained,
-            Err(error) if matches!(error.kind(), RuntimeErrorKind::OutOfMemory) => {
-                let _ = self.handle_out_of_memory();
-                return Err(error);
-            }
-            Err(error) => return Err(error),
+        // Device recovery revalidates the retained frame against itself, so
+        // the grid gate trivially matches and the retained rebuild path
+        // runs; with no retained state there is nothing to rebuild.
+        let retained_source = (
+            self.packet_owner.retained_frame.clone(),
+            self.packet_owner.retained_scene_revision,
+        );
+        let retained = match retained_source {
+            (Some(frame), Some(scene_revision)) => match self.packet_owner.prepare_retained(
+                &frame,
+                scene_revision,
+                self.work_generation,
+                self.device_generation,
+            ) {
+                Ok(retained) => retained,
+                Err(error) if matches!(error.kind(), RuntimeErrorKind::OutOfMemory) => {
+                    let _ = self.handle_out_of_memory();
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            },
+            _ => None,
         };
         if let Some(prepared) = retained {
             let expected_scene = prepared.packet.scene_revision();
@@ -1615,8 +1652,16 @@ mod tests {
         assert!(owner.has_retained_state());
 
         owner.invalidate_device_generation(DeviceGeneration(1));
+        // A matching incoming publication (same grid pair, same scene
+        // revision) rebuilds the retained frame under the new generations.
+        let incoming = retained_frame();
         let rebuilt = owner
-            .prepare_retained(WorkGeneration(2), DeviceGeneration(1))
+            .prepare_retained(
+                &incoming,
+                SceneRevision::new(1),
+                WorkGeneration(2),
+                DeviceGeneration(1),
+            )
             .expect("retained rebuild")
             .expect("retained frame");
         assert_eq!(rebuilt.packet.scene_revision(), PacketSceneRevision::new(1));
@@ -1629,6 +1674,48 @@ mod tests {
             PacketDeviceGeneration::new(1)
         );
         owner.commit(rebuilt).expect("rebuilt completion");
+    }
+
+    #[test]
+    fn packet_owner_full_prepares_incoming_on_retained_mismatch() {
+        // SINK-C2 mismatch leg through public construction only: the grid
+        // pair cannot differ without a public toggle seam, so the newer
+        // scene publication stands in for the incoming side. A revision
+        // mismatch must full-prepare the incoming frame (never reuse the
+        // stale retained frame) and retain the incoming publication.
+        let mut owner = PacketOwner::new();
+        let prepared = owner
+            .prepare(
+                retained_frame(),
+                SceneRevision::new(1),
+                WorkGeneration::initial(),
+                DeviceGeneration::initial(),
+            )
+            .expect("initial packet");
+        owner.commit(prepared).expect("initial completion");
+        assert!(owner.has_retained_state());
+
+        let incoming = retained_frame();
+        owner.invalidate_device_generation(DeviceGeneration(1));
+        let rebuilt = owner
+            .prepare_retained(
+                &incoming,
+                SceneRevision::new(2),
+                WorkGeneration(2),
+                DeviceGeneration(1),
+            )
+            .expect("incoming prepare")
+            .expect("incoming frame");
+        assert_eq!(rebuilt.packet.scene_revision(), PacketSceneRevision::new(2));
+        assert_eq!(
+            rebuilt.packet.work_generation(),
+            PacketWorkGeneration::new(2)
+        );
+        assert_eq!(
+            rebuilt.packet.device_generation(),
+            PacketDeviceGeneration::new(1)
+        );
+        owner.commit(rebuilt).expect("incoming completion");
     }
 
     fn running(mode: LoopMode) -> EngineSession {

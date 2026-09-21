@@ -1596,6 +1596,67 @@ fn body_macro_is_below_root_scope() {
             "bridge public method 'segments' on 'LineSeries' has an unexpected signature",
         )
 
+    def test_engine_bridge_line_frame_grid_readers_are_accepted(self) -> None:
+        with self.fixture() as temporary:
+            fixture_root = Path(temporary)
+            bridge = (fixture_root / "crates/lumenplot-engine/src/bridge.rs").read_text(encoding="utf-8")
+            self.assertIn("pub fn grid_visible(&self) -> bool", bridge)
+            self.assertIn("pub fn grid_revision(&self) -> u64", bridge)
+            returncode, output = self.run_checker(fixture_root)
+            self.assertEqual(returncode, 0, output)
+            self.assertEqual(output, "workspace architecture: OK\n")
+
+    def test_engine_bridge_line_frame_grid_inventory_is_exact(self) -> None:
+        mutations = (
+            (
+                "grid_visible",
+                "    pub fn grid_visible(&self) -> bool {",
+                "    pub(crate) fn grid_visible(&self) -> bool {",
+            ),
+            (
+                "grid_revision",
+                "    pub fn grid_revision(&self) -> u64 {",
+                "    pub(crate) fn grid_revision(&self) -> u64 {",
+            ),
+        )
+        for label, old, new in mutations:
+            with self.subTest(label=label):
+                def mutate(root: Path, old: str = old, new: str = new) -> None:
+                    path = root / "crates/lumenplot-engine/src/bridge.rs"
+                    source = path.read_text(encoding="utf-8")
+                    self.assertIn(old, source)
+                    path.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+                self.assert_mutation_rejected(
+                    mutate,
+                    "bridge public method inventory mismatch for 'LineFrame'",
+                )
+
+    def test_engine_bridge_line_frame_grid_signature_is_exact(self) -> None:
+        mutations = (
+            (
+                "grid_visible return",
+                "pub fn grid_visible(&self) -> bool {",
+                "pub fn grid_visible(&self) -> u64 {",
+                "bridge public method 'grid_visible' on 'LineFrame' has an unexpected signature",
+            ),
+            (
+                "grid_revision return",
+                "pub fn grid_revision(&self) -> u64 {",
+                "pub fn grid_revision(&self) -> bool {",
+                "bridge public method 'grid_revision' on 'LineFrame' has an unexpected signature",
+            ),
+        )
+        for label, old, new, expected in mutations:
+            with self.subTest(label=label):
+                def mutate(root: Path, old: str = old, new: str = new) -> None:
+                    path = root / "crates/lumenplot-engine/src/bridge.rs"
+                    source = path.read_text(encoding="utf-8")
+                    self.assertIn(old, source)
+                    path.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+                self.assert_mutation_rejected(mutate, expected)
+
     def test_engine_bridge_tuple_field_is_rejected(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-engine/src/bridge.rs"
