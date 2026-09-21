@@ -89,7 +89,7 @@ EXPECTED_BENCH_SOURCE_FILES = {
 # The lane is activation-gated like Phase-3B/bench: the allowance exists only
 # while the crate carries Rust source beyond the documentation-only stub.
 METAL_TARGET_EXTERNAL_DEPENDENCIES = {
-    "objc2": {"version": "=0.6.2", "default-features": False, "features": ["std"]},
+    "objc2": {"version": "=0.6.4", "default-features": False, "features": ["std"]},
     "objc2-foundation": {
         "version": "=0.3.2",
         "default-features": False,
