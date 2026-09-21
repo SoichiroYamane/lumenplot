@@ -367,7 +367,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("continue-on-error", self.text)
 
     def test_workflow_uses_existing_full_action_pins(self) -> None:
-        self.assertIn("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683", self.text)
+        self.assertIn("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", self.text)
         self.assertIn("dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5", self.text)
         self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", self.text)
         self.assertIn("contents: read", self.text)
