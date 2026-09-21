@@ -33,9 +33,12 @@ path commands ahead of the axes' content lines. Since the T-lane
 (PRAC-A-W) wire-up, visible non-empty major tick labels are eligible as
 well: each label renders natively as one filled glyph-outline path
 command built by the public ``lumenplot_mpl.textpath`` module from the
-label's own ``FontProperties`` and resolved size. Visible minor tick
-content, non-solid grid styles, an opaque axes facecolor, titles, axis
-labels, offset text, multi-line labels, labels with leading/trailing
+label's own ``FontProperties`` and resolved size. Since the B-2a (R2)
+extension the visible non-empty ``xlabel``/``ylabel`` pair is eligible
+as well: each label renders as explicit glyph path commands through the
+same static text surface as tick labels. Visible minor tick
+content, non-solid grid styles, an opaque axes facecolor, titles,
+offset text, multi-line labels, labels with leading/trailing
 whitespace, and math/TeX text remain outside the slice and raise.
 Since the PRAC-A-L amendment of ADR 0015 §4a a standard Axes legend
 (``matplotlib.legend.Legend``, single-column, line entries) is eligible
