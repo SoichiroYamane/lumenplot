@@ -570,11 +570,11 @@ impl LineFrame {
         &self.plot_layout
     }
 
-    pub(crate) fn grid_visible(&self) -> bool {
+    pub fn grid_visible(&self) -> bool {
         self.grid_visible
     }
 
-    pub(crate) fn grid_revision(&self) -> u64 {
+    pub fn grid_revision(&self) -> u64 {
         self.grid_revision
     }
 
