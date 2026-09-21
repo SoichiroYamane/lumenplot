@@ -22,17 +22,36 @@ before being passed as action inputs.
   it does not auto-merge. Action updates and performance-sensitive dependency
   updates require human review.
 - The baseline contains no release, publish, deploy, signing, or credential
-  workflow. No artifact upload is enabled.
+  workflow. The only artifact uploads are CI-local evidence retention via
+  pinned `actions/upload-artifact` (v7.0.1): bench-nightly keeps validated
+  benchmark manifests/samples for 30 days, while phase3a2-wheel and
+  phase3b-wheel-evidence keep evidence manifests for 7 days. Every upload
+  sets `if-no-files-found: error`, runs under `contents: read` with no
+  secrets, and is gated off untrusted refs: bench-nightly uploads only on a
+  successful run at the `main` ref for `schedule`/`workflow_dispatch`, and
+  the phase3a2/phase3b uploads only on a `push` to `main`. None of these is
+  publication.
 - The Nix job uses the evaluation-only flake check and disables the installer
-  diagnostic endpoint. No mutable cache action is used.
+  diagnostic endpoint. The only cache uses are the two pinned `actions/cache`
+  (v6.1.0) steps in `ci.yml`: the Cargo cache (registry/git/target, keyed by
+  `Cargo.lock` plus toolchain with a `cargo-<os>-` restore prefix) and the
+  pip download cache (keyed by the workflow file plus `pyproject.toml` with a
+  per-Python restore prefix). Both are workflow-scoped; a stale entry costs
+  time, never correctness, because Rust builds stay `--locked` and pip
+  installs stay version-pinned. The Python contract legs use pinned
+  `actions/setup-python` (v7.0.0) for the declared CPython floor and ceiling
+  (3.11/3.13) only.
 
-The accepted Phase-3A2 contract adds no current workflow or package artifact.
-When its implementation sentinel is introduced, the wheel job must use the
-reviewed manylinux tag and digest, separate bridge/offline Docker networks,
-read-only/non-privileged containers, locked Cargo inputs, hash-required local
-wheel installs, explicit GIL CPython paths, and the CI-local redacted evidence
-manifest described by [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md).
-An optional `actions/upload-artifact` use is evidence retention only, is restricted to a trusted push to `main`, retains for seven days, and must remain pinned and fail when the evidence file is absent; it is not publication.
+Five workflows exist on current main (`ci`, `bench-nightly`,
+`dependency-policy`, `phase3a2-wheel`, `phase3b-wheel-evidence`). The
+Phase-3A2/3B evidence lanes implement the accepted contract: the wheel job
+uses the reviewed manylinux tag and digest, separate bridge/offline Docker
+networks, read-only/non-privileged containers, locked Cargo inputs,
+hash-required local wheel installs, explicit GIL CPython paths, and the
+CI-local redacted evidence manifest described by [ADR 0014](../adr/0014-phase3a2-pinned-manylinux-wheel-evidence.md).
+The `actions/upload-artifact` uses are evidence retention only, restricted to
+trusted `main` refs as above, and must remain pinned and fail when the
+evidence file is absent; they are not publication.
 
 ## Build-script, native-code, and artifact risks
 
@@ -49,11 +68,15 @@ an input to a privileged job.
 
 ## Cache poisoning
 
-This baseline intentionally has no `actions/cache` or compiler cache. Fresh
-runners avoid cross-branch cache poisoning and no current dependency/build size
-requires a cache. If caching is later introduced, use a lockfile/toolchain-keyed
-read-only cache, never restore an untrusted PR cache into a privileged job, pin
-the cache action, and document cache invalidation and provenance.
+The baseline caches only through the two pinned `actions/cache` (v6.1.0)
+steps in `ci.yml` described above: a `Cargo.lock`/toolchain-keyed Cargo
+cache and a workflow/packaging-pinned pip download cache, each
+workflow-scoped with a restore-key prefix and kept out of the offline
+containerized evidence lane. A stale entry costs time, never correctness,
+because builds stay `--locked` and installs stay version-pinned. Keep the
+cache action pinned, never restore an untrusted PR cache into a privileged
+job, and document cache invalidation and provenance before any new cache is
+added.
 
 ## Dependency and license policy
 
