@@ -35,6 +35,7 @@ pub(crate) struct SceneTransaction<'a> {
     canonical_view: Viewport,
     viewport: Viewport,
     scales: AxisScales,
+    grid_visible: bool,
     changes: BTreeMap<SeriesId, Arc<SeriesStorage>>,
     annotation_upserts: BTreeMap<AnnotationId, RetainedAnnotation>,
     annotation_deletes: BTreeSet<AnnotationId>,
@@ -47,6 +48,7 @@ impl<'a> SceneTransaction<'a> {
             canonical_view: base.canonical_view(),
             viewport: base.viewport(),
             scales: base.scales(),
+            grid_visible: base.grid_visible(),
             base,
             owner,
             changes: BTreeMap::new(),
@@ -73,6 +75,15 @@ impl<'a> SceneTransaction<'a> {
         scales.validate(&self.viewport)?;
         self.scales = scales;
         Ok(())
+    }
+
+    /// Stages grid visibility as Plot State (M5 Slice-6, carry-only).
+    ///
+    /// The bool setter cannot fail, so there is no `Result` and no new
+    /// error kind; `InvalidInput` stands. No sink reads the flag yet, so
+    /// staging or committing it changes no rendering behavior.
+    pub(crate) fn set_grid_visible(&mut self, visible: bool) {
+        self.grid_visible = visible;
     }
 
     pub(crate) fn add_series(&mut self, data: SeriesInput) -> Result<SeriesId, SceneError> {
@@ -218,6 +229,7 @@ impl<'a> SceneTransaction<'a> {
             canonical_view,
             viewport,
             scales,
+            grid_visible,
             changes,
             annotation_upserts,
             annotation_deletes,
@@ -237,7 +249,8 @@ impl<'a> SceneTransaction<'a> {
             return Err(SceneError::new(SceneErrorKind::CapacityExceeded));
         }
         let annotation_changed = annotations != *base.annotations_map();
-        if !data_changed && !view_changed && !annotation_changed {
+        let grid_changed = grid_visible != base.grid_visible();
+        if !data_changed && !view_changed && !annotation_changed && !grid_changed {
             return Ok(CommitReceipt {
                 revision: base.revision(),
                 changed: false,
@@ -264,6 +277,8 @@ impl<'a> SceneTransaction<'a> {
                 data_changed,
                 view_changed,
                 annotation_changed,
+                grid_visible,
+                grid_changed,
                 series,
                 annotations,
             ),
@@ -901,5 +916,102 @@ mod tests {
         assert_eq!(plot.state.component_revisions().0.0, 1);
         assert_eq!(plot.state.annotation_revision().0, 1);
         assert_eq!(plot.state.annotations_map().len(), 1);
+    }
+
+    #[test]
+    fn grid_set_clear_round_trip_through_setter_transaction() {
+        let mut plot = scene();
+        assert!(plot.state.grid_visible());
+        {
+            let mut transaction = plot.transaction();
+            transaction.set_grid_visible(false);
+            let receipt = transaction.commit().expect("commit");
+            assert!(receipt.changed());
+            assert_eq!(receipt.revision(), SceneRevision(1));
+        }
+        assert!(!plot.state.grid_visible());
+        assert!(!plot.snapshot().state.grid_visible());
+        {
+            let mut transaction = plot.transaction();
+            transaction.set_grid_visible(true);
+            let receipt = transaction.commit().expect("commit");
+            assert!(receipt.changed());
+            assert_eq!(receipt.revision(), SceneRevision(2));
+        }
+        assert!(plot.state.grid_visible());
+        assert!(plot.snapshot().state.grid_visible());
+    }
+
+    #[test]
+    fn grid_only_commits_never_advance_layout_revision() {
+        let mut plot = scene();
+        let old = plot.snapshot();
+        let old_layout = old.plot_layout();
+        {
+            let mut transaction = plot.transaction();
+            transaction.set_grid_visible(false);
+            let receipt = transaction.commit().expect("commit");
+            assert!(receipt.changed());
+            assert_eq!(receipt.revision(), SceneRevision(1));
+        }
+        assert_eq!(plot.revision(), SceneRevision(1));
+        assert_eq!(plot.state.grid_revision().0, 1);
+        // Data/view/layout component keys stay put on a grid-only change,
+        // mirroring the annotation-only rule.
+        assert_eq!(plot.state.component_revisions().0.0, 0);
+        assert_eq!(plot.state.component_revisions().1.0, 0);
+        assert_eq!(plot.state.layout_revision().0, 0);
+        assert_eq!(plot.state.annotation_revision().0, 0);
+        assert!(Arc::ptr_eq(&old_layout, &plot.snapshot().plot_layout()));
+        // Old snapshot stays immutable with the prior flag.
+        assert_eq!(old.revision(), SceneRevision(0));
+        assert!(old.state.grid_visible());
+        assert_eq!(plot.state.annotations_map().len(), 0);
+    }
+
+    #[test]
+    fn grid_set_to_same_value_is_noop() {
+        let mut plot = scene();
+        let revision = plot.revision();
+        {
+            let mut transaction = plot.transaction();
+            transaction.set_grid_visible(true);
+            let receipt = transaction.commit().expect("commit");
+            assert!(!receipt.changed());
+            assert_eq!(receipt.revision(), revision);
+        }
+        assert_eq!(plot.revision(), revision);
+        assert_eq!(plot.state.grid_revision().0, 0);
+        assert_eq!(plot.state.layout_revision().0, 0);
+    }
+
+    #[test]
+    fn grid_and_data_in_one_commit_bump_revision_once() {
+        let mut plot = scene();
+        let mut transaction = plot.transaction();
+        transaction.add_series(data(&[1.0])).expect("series");
+        transaction.set_grid_visible(false);
+        let receipt = transaction.commit().expect("commit");
+        assert!(receipt.changed());
+        assert_eq!(receipt.revision(), SceneRevision(1));
+        assert_eq!(plot.state.component_revisions().0.0, 1);
+        assert_eq!(plot.state.grid_revision().0, 1);
+        // A data change still re-stamps the layout; the grid flag alone
+        // never does.
+        assert_eq!(plot.state.layout_revision().0, 1);
+        assert!(!plot.state.grid_visible());
+    }
+
+    #[test]
+    fn grid_abort_leaves_live_state_untouched() {
+        let mut plot = scene();
+        {
+            let mut transaction = plot.transaction();
+            transaction.set_grid_visible(false);
+            transaction.abort();
+        }
+        assert_eq!(plot.revision(), SceneRevision(0));
+        assert!(plot.state.grid_visible());
+        assert_eq!(plot.state.grid_revision().0, 0);
     }
 }
