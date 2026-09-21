@@ -179,6 +179,39 @@ Check:
 python3 -m unittest discover -s tests/python -p 'test_phase3b_legend.py' -v
 ```
 
+### B-2a — Axis labels (xlabel/ylabel, R2 sub-slice)
+
+| Mechanic | Evidence | Status |
+| --- | --- | --- |
+| M1 whitelist | Visible non-empty `xlabel`/`ylabel` accepted through the shared `_check_tick_label_static` surface plus hyperlink refusal (`python/lumenplot_mpl/backend_eligibility.py`); `TestAxisLabelWhitelist` (`tests/python/test_phase3b_axislabels.py`) | LANDED |
+| M2 collector trace | Per-axis draw-order enumeration (x-ticks, xlabel, y-ticks, ylabel; legend last) with the axis text-group grammar; one glyph command per label in that order carrying the `axis_label` decoration marker; `TestAxisLabelDrawOrder`; emission through the TextPath writer route (`python/lumenplot_mpl/backend_preflight.py`) | LANDED |
+| M3 style contract | `TestAxisLabelStyleContract`: the label's own public `FontProperties` (family/style/weight) and resolved size flow into the outline through `lumenplot_mpl.textpath`; faces change geometry and outlines agree with `TextPath` within §15.1 part 3 (1e-6) | LANDED |
+| M4 strict/hybrid | Refused labels raise before any native write (no PNG); hybrid mode falls back whole-frame with exactly one diagnostic (`TestAxisLabelWhitelist` strict/hybrid paths) | LANDED |
+| M5 negative cases | Titles (all three positions), offset text, multi-line labels, leading/trailing whitespace, math/TeX text, path effects, non-positive font size, sketch, snap, custom clip, hyperlinks refused in `_check_axis_label_static` | LANDED |
+| M6 Agg fixtures | Pinned oracle fixture `axis-labels-xlabel-ylabel-axes-box-spines` (200x100, axes rect 0.22/0.47/0.66/0.43) with `TestCommittedAxisLabelFixture` + `TestAxisLabelAdapterSemantics` (`tests/python/test_agg_oracle_axislabels.py`, 6 tests) under the UNCHANGED manifest contract (`agg-oracle-manifest-v1`); native pixel gate deferred — see note | LANDED (fixtures + semantics; pixel gate deferred) |
+| R1 rollback | §4 procedure, instantiated for axis labels | LANDED (rule) |
+
+B-2a is an R2 sub-slice of `LP-MPL-020`, not a new C-class: it extends the
+strict surface to the visible non-empty `xlabel`/`ylabel` pair only. Empty
+or invisible labels draw nothing and stay eligible; titles (all three
+positions), offset text, and legend titles stay refused.
+
+Native-pixel-gate note: the oracle module pins the reference, mask, and
+manifest so a future native spine-stroke lane can add the pixel gate without
+regenerating evidence, but asserts no native pixel comparison — glyph outline
+placement resolves exactly while the 0.8pt spine/tick-stroke antialiased
+fringe exceeds the fixed §15.1 fringe budget on the current native
+rasterizer, and tolerances, spine geometry paths, and native crates are
+frozen for this lane. The B-2a pixel gate stays OPEN until that lane lands
+under the unchanged manifest contract. Proposed condition in §5.
+
+Check:
+
+```text
+python3 -m unittest discover -s tests/python -p 'test_phase3b_axislabels.py' -v
+python3 -m unittest discover -s tests/python -p 'test_agg_oracle_axislabels.py' -v
+```
+
 ## 3. Adjacent gates (out of scope, referenced for boundary clarity)
 
 These rows interact with eligibility but are not per-class extensions; they
@@ -237,6 +270,7 @@ applied by this file; the canonical
 | `LP-MPL-021` (`AT-MPL-PREFLIGHT-SOUNDNESS`) | `Not implemented` | `Not implemented` (no flip proposed yet) | PR #103 fixtures green; flip requires gate-closure review, adjudicated separately |
 | C2 slanted fills | Inside no row's eligible surface by fixture scoping | Explicit strict refusal + hybrid whole-frame fallback (FILL-AA (b)) | Enforcing code lands on `main` |
 | C3 Agg oracle | `test_phase3b_bar.py` parity only | Add pinned bar/histogram oracle parity | PR #102 merges green |
+| B-2a native pixel gate | Pinned oracle + semantic adapter checks only (PR #207) | Native pixel-parity assertion for `axis-labels-xlabel-ylabel-axes-box-spines` | A future native spine-stroke lane meets the unchanged §15.1 fringe budget; tolerances, spine geometry paths, and native crates stay frozen until then |
 
 ## 6. Evidence trail
 
@@ -249,6 +283,7 @@ applied by this file; the canonical
 | #105 | Axis-aware gap fixtures (`TestCommittedGapAxesFixture`, `TestGapAdapterSemantics`); test-only, no source change | Merged |
 | #106 | F1 Line2D-gap residual reduction (24.8 cell coverage in `crates/lumenplot-python/src/frame/agg_line.rs`) | Merged |
 | #107 | Rect-stroke AA convergence (24.8 cell coverage with rectilinear snap) | Merged (HEAD base) |
+| #207 | B-2a axis-label sub-slice: strict xlabel/ylabel eligibility (visible non-empty accepted; titles/offset/legend-titles refused), per-axis draw-order enumeration, axis text-group grammar, TextPath-route decoration emission; 24 mechanics/refusal + 6 oracle tests under the unchanged manifest contract; native pixel gate deferred | Merged |
 
 ## 7. Verification of this file
 
