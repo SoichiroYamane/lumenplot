@@ -1183,6 +1183,16 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         other eligible stroke. The shared ``_check_stroke_common`` runs
         the dash/sketch/snap/clip surface; the clip bookkeeping also
         seeds the fill command's ``clip_rect``.
+
+        FILL-AA decision (b): a fill artist is strict-eligible IFF every
+        polygon edge is axis-aligned in device/display space after
+        transform (|dx| <= 1e-6 device px OR |dy| <= 1e-6 device px).
+        Any slanted edge makes the artist strict-ineligible (fail before
+        writing in strict; whole-frame Agg fallback in hybrid). Curves
+        are already refused above; integer-pixel alignment is NOT part
+        of eligibility (sub-pixel axis-aligned positions stay eligible;
+        the pixel gate arbitrates them). Bars keep their existing
+        angle==0 refusal; this message mirrors its reason style.
         """
         path = call["path"]
         codes = path.codes
@@ -1206,10 +1216,141 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         )
         if real_points < 3:
             self.unsupported("degenerate fill path")
+        self._check_fill_axis_alignment(call)
         gc = call["gc"]
         if gc.get_hatch() is not None:
             self.unsupported("hatching is unsupported in strict mode")
         self._check_stroke_common(gc)
+
+    def _check_fill_axis_alignment(self, call: dict) -> None:
+        """Refuse one fill draw_path whose device-space edges slant.
+
+        Every polygon edge is resolved in device/display pixels through
+        the collected public transform (the same transform Agg used),
+        then required to be axis-aligned: |dx| <= 1e-6 OR |dy| <= 1e-6.
+        Subpaths are delimited by MOVETO/CLOSEPOLY so the CLOSEPOLY
+        dummy vertex never forms an edge; an unclosed trailing loop is
+        checked with its implicit closing edge, matching the seam's
+        implicit-close behavior. Non-finite endpoints are skipped (gap
+        handling owns them); an unresolvable transform fails closed
+        with the same reason.
+        """
+        path = call["path"]
+        codes = path.codes
+        transform = call.get("transform")
+        if transform is None:
+            self.unsupported(
+                "slanted fill edges are unsupported in strict mode; "
+                "fills must be axis-aligned"
+            )
+            return
+        try:
+            import numpy as _np
+
+            verts = _np.asarray(path.vertices, dtype=float)
+            if verts.size == 0:
+                return
+            if verts.ndim != 2 or verts.shape[1] != 2:
+                self.unsupported(
+                    "slanted fill edges are unsupported in strict mode; "
+                    "fills must be axis-aligned"
+                )
+                return
+            device = transform.transform(verts)
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            self.unsupported(
+                "slanted fill edges are unsupported in strict mode; "
+                "fills must be axis-aligned"
+            )
+            return
+        try:
+            import math as _math
+
+            def _edge_slanted(p0: Any, p1: Any) -> bool:
+                try:
+                    x0 = float(p0[0])
+                    y0 = float(p0[1])
+                    x1 = float(p1[0])
+                    y1 = float(p1[1])
+                except (IndexError, TypeError, ValueError):
+                    return True
+                if not (
+                    _math.isfinite(x0)
+                    and _math.isfinite(y0)
+                    and _math.isfinite(x1)
+                    and _math.isfinite(y1)
+                ):
+                    return False
+                return (
+                    abs(x1 - x0) > 1.0e-6 and abs(y1 - y0) > 1.0e-6
+                )
+
+            if codes is None:
+                points = [tuple(row) for row in device.tolist()]
+                if len(points) >= 3:
+                    for index in range(len(points)):
+                        if _edge_slanted(
+                            points[index],
+                            points[(index + 1) % len(points)],
+                        ):
+                            self.unsupported(
+                                "slanted fill edges are unsupported in "
+                                "strict mode; fills must be axis-aligned"
+                            )
+                            return
+                return
+            code_list = [int(code) for code in codes]
+            current: list[tuple[float, float]] = []
+            for index, code in enumerate(code_list):
+                if code == int(Path.MOVETO):
+                    if len(current) >= 3:
+                        if _edge_slanted(current[-1], current[0]):
+                            self.unsupported(
+                                "slanted fill edges are unsupported in "
+                                "strict mode; fills must be axis-aligned"
+                            )
+                            return
+                    current = [tuple(device[index].tolist())]
+                elif code == int(Path.LINETO):
+                    point = tuple(device[index].tolist())
+                    if current:
+                        if _edge_slanted(current[-1], point):
+                            self.unsupported(
+                                "slanted fill edges are unsupported in "
+                                "strict mode; fills must be axis-aligned"
+                            )
+                            return
+                        current.append(point)
+                    else:
+                        current = [point]
+                elif code == int(Path.CLOSEPOLY):
+                    if len(current) >= 2:
+                        if _edge_slanted(current[-1], current[0]):
+                            self.unsupported(
+                                "slanted fill edges are unsupported in "
+                                "strict mode; fills must be axis-aligned"
+                            )
+                            return
+                    current = []
+                elif code == 0:
+                    continue
+                else:
+                    # Curve codes are already refused above; they never
+                    # satisfy the axis-aligned edge contract either.
+                    continue
+            if len(current) >= 3:
+                if _edge_slanted(current[-1], current[0]):
+                    self.unsupported(
+                        "slanted fill edges are unsupported in strict mode; "
+                        "fills must be axis-aligned"
+                    )
+                    return
+        except (AttributeError, IndexError, TypeError, ValueError):
+            self.unsupported(
+                "slanted fill edges are unsupported in strict mode; "
+                "fills must be axis-aligned"
+            )
+            return
 
     def _check_stroke_common(self, gc: Any) -> None:
         """Shared dash/sketch/snap/clip checks for one eligible stroke.

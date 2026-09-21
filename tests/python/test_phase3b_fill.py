@@ -138,8 +138,10 @@ class TestFillWhitelist(unittest.TestCase):
         self.addCleanup(self.patcher.stop)
 
     def test_polygon_is_strict_eligible(self):
+        # FILL-AA (b): strict-eligible fills are axis-aligned in device
+        # space; this rectangle stays on the native path.
         fig, canvas, ax = _fill_canvas(
-            build=lambda ax: ax.fill([0, 5, 10], [-3, 5, -3],
+            build=lambda ax: ax.fill([1, 4, 4, 1], [-2, -2, 2, 2],
                                      color="red", lw=0),
         )
         result = canvas.render_png()
@@ -148,9 +150,11 @@ class TestFillWhitelist(unittest.TestCase):
         self.assertIsInstance(poly, Polygon)
 
     def test_fill_between_is_strict_eligible(self):
+        # FILL-AA (b): constant top/bottom keeps every device-space edge
+        # axis-aligned.
         fig, canvas, ax = _fill_canvas(
-            build=lambda ax: ax.fill_between([0, 5, 10], [-3, -1, -3],
-                                             [2, 5, 2], color="blue"),
+            build=lambda ax: ax.fill_between([0, 5, 10], [-3, -3, -3],
+                                             [2, 2, 2], color="blue"),
         )
         result = canvas.render_png()
         self.assertEqual(result.diagnostics, ())
@@ -159,7 +163,7 @@ class TestFillWhitelist(unittest.TestCase):
 
     def test_line_and_fill_coexist_in_one_axes(self):
         def build(ax):
-            ax.fill([0, 5, 10], [-3, 5, -3], color="red", lw=0)
+            ax.fill([1, 4, 4, 1], [-2, -2, 2, 2], color="red", lw=0)
             ax.add_line(Line2D([1, 9], [1, 3], color="green", linewidth=2.0,
                                solid_capstyle="butt",
                                solid_joinstyle="miter"))
@@ -199,7 +203,7 @@ class TestFillCollectorTrace(unittest.TestCase):
 
     def test_fill_command_reaches_the_spec(self):
         fig, canvas, ax = _fill_canvas(
-            build=lambda ax: ax.fill([0, 5, 10], [-3, 5, -3],
+            build=lambda ax: ax.fill([1, 4, 4, 1], [-2, -2, 2, 2],
                                      color="red", lw=0),
         )
         canvas.render_png()
@@ -211,20 +215,22 @@ class TestFillCollectorTrace(unittest.TestCase):
         self.assertEqual(command["kind"], "path")
         vertices = command["vertices"]
         bbox = ax.get_window_extent()
-        # Data (0,-3),(5,5),(10,-3) through the public affine.
+        # Data (1,-2),(4,-2),(4,2),(1,2) through the public affine.
         expected = [
-            [bbox.x0 + 0.0 / 10 * bbox.width,
-             bbox.y0 + 0.0 / 8 * bbox.height],
-            [bbox.x0 + 5.0 / 10 * bbox.width,
-             bbox.y0 + 8.0 / 8 * bbox.height],
-            [bbox.x0 + 10.0 / 10 * bbox.width,
-             bbox.y0 + 0.0 / 8 * bbox.height],
+            [bbox.x0 + 1.0 / 10 * bbox.width,
+             bbox.y0 + 1.0 / 8 * bbox.height],
+            [bbox.x0 + 4.0 / 10 * bbox.width,
+             bbox.y0 + 1.0 / 8 * bbox.height],
+            [bbox.x0 + 4.0 / 10 * bbox.width,
+             bbox.y0 + 5.0 / 8 * bbox.height],
+            [bbox.x0 + 1.0 / 10 * bbox.width,
+             bbox.y0 + 5.0 / 8 * bbox.height],
         ]
         for got, want in zip(vertices, expected):
             self.assertAlmostEqual(got[0], want[0], places=6)
             self.assertAlmostEqual(got[1], want[1], places=6)
         # The closed Polygon path carries its duplicate closing vertex
-        # (Agg's draw_path shows nverts=4 with codes [1,2,2,79]); the
+        # (Agg's draw_path shows nverts=5 with codes [1,2,2,2,79]); the
         # adapter preserves it verbatim so the trace and the spec agree.
         self.assertEqual(len(vertices), len(expected) + 1)
         # A closed polygon loop carries the CLOSEPOLY code so the native
@@ -235,8 +241,8 @@ class TestFillCollectorTrace(unittest.TestCase):
 
     def test_fill_between_geometry_matches_public_affine(self):
         xs = [0, 5, 10]
-        y1 = [-3, -1, -3]
-        y2 = [2, 5, 2]
+        y1 = [-3, -3, -3]
+        y2 = [2, 2, 2]
 
         def build(ax):
             ax.fill_between(xs, y1, y2, color="blue")
@@ -277,9 +283,9 @@ class TestFillCollectorTrace(unittest.TestCase):
 
     def test_two_series_fill_between_produces_two_commands(self):
         def build(ax):
-            ax.fill_between([0, 5, 10], [-3, -1, -3], [0, 1, 0],
+            ax.fill_between([0, 5, 10], [-3, -3, -3], [0, 0, 0],
                             color="blue")
-            ax.fill_between([0, 5, 10], [1, 2, 1], [3, 5, 2],
+            ax.fill_between([0, 5, 10], [1, 1, 1], [3, 3, 3],
                             color="orange")
 
         fig, canvas, ax = _fill_canvas(build=build)
@@ -327,7 +333,7 @@ class TestFillCollectorTrace(unittest.TestCase):
 
     def test_negative_span_fill_reaches_the_spec(self):
         def build(ax):
-            ax.fill([1, 5, 9], [0, -3, 0], color="purple")
+            ax.fill([1, 9, 9, 1], [-3, -3, 0, 0], color="purple")
 
         fig, canvas, ax = _fill_canvas(build=build)
         canvas.render_png()
@@ -379,14 +385,14 @@ class TestFillStyleContract(unittest.TestCase):
 
     def test_face_color_reaches_fill_rgba(self):
         command = self._content_command(
-            lambda ax: ax.fill([0, 5, 10], [-3, 5, -3], color="red", lw=0),
+            lambda ax: ax.fill([1, 4, 4, 1], [-2, -2, 2, 2], color="red", lw=0),
         )
         self.assertEqual(list(command["fill_rgba"]), [255, 0, 0, 255])
         self.assertIsNone(command["stroke_rgba"])
 
     def test_alpha_applies_once_to_face(self):
         command = self._content_command(
-            lambda ax: ax.fill([0, 5, 10], [-3, 5, -3],
+            lambda ax: ax.fill([1, 4, 4, 1], [-2, -2, 2, 2],
                                color="orange", alpha=0.35, lw=0),
         )
         fill = list(command["fill_rgba"])
@@ -398,7 +404,7 @@ class TestFillStyleContract(unittest.TestCase):
         # the face color (rcParams-driven 'face' semantics); with nonzero
         # lw the stroke then uses that resolved color.
         command = self._content_command(
-            lambda ax: ax.fill([0, 5, 10], [-3, 5, -3], color="red",
+            lambda ax: ax.fill([1, 4, 4, 1], [-2, -2, 2, 2], color="red",
                                linewidth=2.0),
         )
         self.assertEqual(list(command["fill_rgba"]), [255, 0, 0, 255])
@@ -407,7 +413,7 @@ class TestFillStyleContract(unittest.TestCase):
 
     def test_explicit_edge_color_and_width(self):
         command = self._content_command(
-            lambda ax: ax.fill([0, 5, 10], [-3, 5, -3], facecolor="red",
+            lambda ax: ax.fill([1, 4, 4, 1], [-2, -2, 2, 2], facecolor="red",
                                edgecolor="blue", linewidth=3.0),
         )
         self.assertEqual(list(command["fill_rgba"]), [255, 0, 0, 255])
@@ -416,7 +422,7 @@ class TestFillStyleContract(unittest.TestCase):
 
     def test_zero_width_edge_draws_no_stroke(self):
         command = self._content_command(
-            lambda ax: ax.fill([0, 5, 10], [-3, 5, -3], facecolor="red",
+            lambda ax: ax.fill([1, 4, 4, 1], [-2, -2, 2, 2], facecolor="red",
                                edgecolor="blue", linewidth=0.0),
         )
         self.assertIsNone(command["stroke_rgba"])
@@ -425,7 +431,7 @@ class TestFillStyleContract(unittest.TestCase):
         # Agg applies the patch alpha to the edge too (probe: gc reports
         # the same alpha for face and edge); the contract mirrors that.
         command = self._content_command(
-            lambda ax: ax.fill([0, 5, 10], [-3, 5, -3], facecolor="red",
+            lambda ax: ax.fill([1, 4, 4, 1], [-2, -2, 2, 2], facecolor="red",
                                edgecolor="black", alpha=0.5, linewidth=2.0),
         )
         stroke = list(command["stroke_rgba"])
@@ -436,7 +442,7 @@ class TestFillStyleContract(unittest.TestCase):
         # FillBetweenPolyCollection defaults to a round join (probed Agg
         # gc); the spec carries the artist's own resolved join.
         command = self._content_command(
-            lambda ax: ax.fill_between([0, 5, 10], [-3, -1, -3], [2, 5, 2],
+            lambda ax: ax.fill_between([0, 5, 10], [-3, -3, -3], [2, 2, 2],
                                        color="blue", lw=2.0),
         )
         self.assertEqual(command["join"], "round")
@@ -589,13 +595,11 @@ class TestFillPixelParity(unittest.TestCase):
         )
 
     def test_simple_fill_interior_and_boundary(self):
-        # A single closed polygon is exact under the Agg-compat blend mode
-        # everywhere except slanted edges that graze pixel corners, where
-        # Agg's analytic coverage and tiny-skia's 4x4 estimator disagree by
-        # one subsample quantum (2/16 of alpha = 32/255 per channel; the
-        # interior is byte-exact). That quantum is the ratified AA ramp cap.
+        # FILL-AA (b): axis-aligned rectangles stay strict-eligible and
+        # byte-exact under the Agg-compat blend mode (no slanted fringe).
         self._assert_pixel_parity(
-            lambda ax: ax.fill([0, 5, 10], [-3, 5, -3], color="red", lw=0),
+            lambda ax: ax.fill([1, 4, 4, 1], [-2, -2, 2, 2],
+                               color="red", lw=0),
             tol=0,
             min_exact_fraction=0.95,
             worst_cap=32,
@@ -603,24 +607,130 @@ class TestFillPixelParity(unittest.TestCase):
 
     def test_fill_between_two_series(self):
         self._assert_pixel_parity(lambda ax: (
-            ax.fill_between([0, 5, 10], [-3, -1, -3], [0, 1, 0],
+            ax.fill_between([0, 5, 10], [-3, -3, -3], [0, 0, 0],
                             color="blue", lw=0),
-            ax.fill_between([0, 5, 10], [1, 2, 1], [3, 5, 2],
+            ax.fill_between([0, 5, 10], [1, 1, 1], [3, 3, 3],
                             color="orange", lw=0),
         ))
 
     def test_alpha_overlap_blend(self):
         self._assert_pixel_parity(lambda ax: (
-            ax.fill_between([0, 5, 10], [-2, -1, -2], [2, 3, 2],
+            ax.fill_between([0, 5, 10], [-2, -2, -2], [2, 2, 2],
                             color="green", alpha=0.5, lw=0),
-            ax.fill([2, 6, 9], [-1, 4, -1], color="orange", alpha=0.35,
+            ax.fill([2, 6, 6, 2], [-1, -1, 3, 3], color="orange", alpha=0.35,
                     lw=0),
         ))
 
     def test_negative_span_fill(self):
         self._assert_pixel_parity(
-            lambda ax: ax.fill([1, 5, 9], [0, -3, 0], color="purple", lw=0),
+            lambda ax: ax.fill([1, 9, 9, 1], [-3, -3, 0, 0],
+                               color="purple", lw=0),
         )
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
+class TestSlantedFillRefusal(unittest.TestCase):
+    """FILL-AA decision (b): slanted fills exit strict eligibility.
+
+    Strict mode refuses before writing with an explicit reason naming
+    the fill surface; hybrid-explicit uses the existing whole-frame Agg
+    fallback with exactly one diagnostic whose decoded pixels equal the
+    Agg reference. Native PlotScene path untouched (own CPU reference).
+    """
+
+    def _strict_canvas(self, build):
+        from matplotlib import figure as mpl_figure
+
+        fig = mpl_figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        canvas = _load_backend().FigureCanvasLumenPlot(fig, mode="strict")
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.axison = False
+        build(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(-3.0, 5.0)
+        return fig, canvas
+
+    def _hybrid_canvas(self, build):
+        from matplotlib import figure as mpl_figure
+
+        fig = mpl_figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        canvas = _load_backend().FigureCanvasLumenPlot(fig, mode="hybrid")
+        ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ax.axison = False
+        build(ax)
+        ax.set_xlim(0.0, 10.0)
+        ax.set_ylim(-3.0, 5.0)
+        return fig, canvas
+
+    def _assert_strict_refuses(self, build):
+        import tempfile
+        import os
+
+        fig, canvas = self._strict_canvas(build)
+        with self.assertRaises(
+            backend_mod.LumenPlotUnsupportedError
+        ) as ctx:
+            canvas.render_png()
+        self.assertIn("slanted fill edges", str(ctx.exception))
+        # Fail before writing: print_png to a file must also refuse and
+        # leave no PNG behind.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "slanted.png")
+            with self.assertRaises(
+                backend_mod.LumenPlotUnsupportedError
+            ):
+                canvas.print_png(target)
+            self.assertFalse(os.path.exists(target))
+
+    def _assert_hybrid_fallback_pixel_exact(self, build):
+        from matplotlib import figure as mpl_figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        fig, canvas = self._hybrid_canvas(build)
+        result = canvas.render_png()
+        self.assertEqual(len(result.diagnostics), 1)
+        diagnostic = result.diagnostics[0]
+        self.assertEqual(diagnostic.kind, "unsupported-capability")
+        self.assertEqual(diagnostic.scope, "whole-frame")
+        self.assertEqual(diagnostic.representation, "raster")
+        self.assertEqual(diagnostic.output_format, "png")
+        self.assertEqual(diagnostic.fallback_type, "matplotlib-agg")
+        # Decoded pixels must equal the Agg reference for the same input.
+        ref_fig = mpl_figure.Figure(figsize=(2.0, 1.0), dpi=100)
+        ref_ax = ref_fig.add_axes([0.1, 0.1, 0.8, 0.8])
+        ref_ax.axison = False
+        build(ref_ax)
+        ref_ax.set_xlim(0.0, 10.0)
+        ref_ax.set_ylim(-3.0, 5.0)
+        FigureCanvasAgg(ref_fig)
+        buffer = io.BytesIO()
+        ref_fig.savefig(buffer, format="png", dpi=100)
+        ref_bytes = buffer.getvalue()
+        aw, ah, arows = _decode_rgba8(ref_bytes)
+        nw, nh, nrows = _decode_rgba8(result.png_bytes)
+        self.assertEqual((aw, ah), (nw, nh))
+        self.assertEqual(b"".join(arows), b"".join(nrows))
+
+    def test_slanted_triangle_strict_refuses_hybrid_fallback_exact(self):
+        build = lambda ax: ax.fill([0, 5, 10], [-3, 5, -3],
+                                   color="red", lw=0)
+        self._assert_strict_refuses(build)
+        self._assert_hybrid_fallback_pixel_exact(build)
+
+    def test_slanted_band_strict_refuses_hybrid_fallback_exact(self):
+        build = lambda ax: ax.fill_between([0, 5, 10], [-3, -1, -3],
+                                           [2, 5, 2], color="blue", lw=0)
+        self._assert_strict_refuses(build)
+        self._assert_hybrid_fallback_pixel_exact(build)
+
+    def test_slanted_stack_strict_refuses_hybrid_fallback_exact(self):
+        def build(ax):
+            ax.stackplot([0, 5, 10], [[0, 1, 0], [1, 2, 1]],
+                         colors=["orange", "purple"],
+                         edgecolor="none", linewidth=0.0)
+
+        self._assert_strict_refuses(build)
+        self._assert_hybrid_fallback_pixel_exact(build)
 
 
 if __name__ == "__main__":  # pragma: no cover

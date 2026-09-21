@@ -121,16 +121,16 @@ def _dashboard_banded(ax):
     """All five families in disjoint y-bands; steps-mid has duplicate x.
 
     Bands: orange band fill (top), purple steps-mid line, red default
-    line, steelblue bars (one negative), blue triangle fill (bottom).
+    line, steelblue bars (one negative), blue rectangle fill (bottom).
     The duplicate-x sample pair exercises the step expansion boundary
     inside a mixed frame (LP-FUNC-034 fixture geometry).
     """
-    ax.fill_between([0, 5, 10], [3.2, 3.8, 3.4], [4.2, 5.0, 4.6],
+    ax.fill_between([0, 5, 10], [3.2, 3.2, 3.2], [4.2, 4.2, 4.2],
                     color="orange", lw=0)
     ax.bar([2, 7], [3, -1], width=1.0, color="steelblue")
     ax.plot([0, 10], [0.8, 2.8], color="red", lw=2.0,
             solid_capstyle="butt", solid_joinstyle="miter")
-    ax.fill([1, 5, 9], [-2.8, -0.5, -2.2], color="blue", lw=0)
+    ax.fill([1, 9, 9, 1], [-2.8, -2.8, -0.5, -0.5], color="blue", lw=0)
     ax.add_line(Line2D(
         [0, 2.5, 5, 5, 7.5, 10], [2.6, 1.6, 2.4, 2.4, 1.8, 2.5],
         drawstyle="steps-mid", color="purple", lw=2.0,
@@ -221,7 +221,7 @@ class TestMixedStrictComposition(unittest.TestCase):
         self.assertEqual(result.diagnostics, ())
         commands = [c for c in self.stub.last_spec["commands"]
                     if not c.get("decoration")]
-        # Agg z-order: band fill, bar, bar, triangle fill, default line,
+        # Agg z-order: band fill, bar, bar, rectangle fill, default line,
         # expanded steps-mid line (12 vertices from 5 samples incl. the
         # duplicate-x pair).
         self.assertEqual(len(commands), 6)
@@ -234,7 +234,7 @@ class TestMixedStrictComposition(unittest.TestCase):
         canvas.render_png()
         commands = [c for c in self.stub.last_spec["commands"]
                     if not c.get("decoration")]
-        band_fill, bar_neg, bar_pos, tri_fill, line, steps = commands
+        band_fill, bar_neg, bar_pos, rect_fill, line, steps = commands
         # Band fill: FillBetweenPolyCollection carries closed codes and a
         # round join (probed Agg gc, LP-FUNC-032 style contract).
         self.assertEqual(band_fill["join"], "round")
@@ -247,9 +247,10 @@ class TestMixedStrictComposition(unittest.TestCase):
             self.assertEqual(bar["codes"][-1], 79)  # CLOSEPOLY
         self.assertEqual(bar_pos["fill_rgba"], [70, 130, 180, 255])
         self.assertEqual(bar_neg["fill_rgba"], [70, 130, 180, 255])
-        # Triangle fill: closed Polygon path (LP-FUNC-032).
-        self.assertEqual(tri_fill["fill_rgba"], [0, 0, 255, 255])
-        self.assertEqual(len(tri_fill["vertices"]), 4)
+        # Rectangle fill: closed Polygon path (LP-FUNC-032, FILL-AA (b)
+        # axis-aligned: 4 corners + CLOSEPOLY dummy).
+        self.assertEqual(rect_fill["fill_rgba"], [0, 0, 255, 255])
+        self.assertEqual(len(rect_fill["vertices"]), 5)
         # Default line: single open stroke, no codes needed (LP-FUNC-031).
         self.assertIsNone(line["codes"])
         self.assertEqual(line["stroke_rgba"], [255, 0, 0, 255])
@@ -269,11 +270,11 @@ class TestMixedStrictComposition(unittest.TestCase):
                 [0, 2.5, 5, 5, 7.5, 10], [2.6, 1.6, 2.4, 2.4, 1.8, 2.5],
                 drawstyle="steps-mid", color="purple", lw=2.0,
                 solid_capstyle="butt", solid_joinstyle="miter"))
-            ax.fill([1, 5, 9], [-2.8, -0.5, -2.2], color="blue", lw=0)
+            ax.fill([1, 9, 9, 1], [-2.8, -2.8, -0.5, -0.5], color="blue", lw=0)
             ax.plot([0, 10], [0.8, 2.8], color="red", lw=2.0,
                     solid_capstyle="butt", solid_joinstyle="miter")
             ax.bar([2, 7], [3, -1], width=1.0, color="steelblue")
-            ax.fill_between([0, 5, 10], [3.2, 3.8, 3.4], [4.2, 5.0, 4.6],
+            ax.fill_between([0, 5, 10], [3.2, 3.2, 3.2], [4.2, 4.2, 4.2],
                             color="orange", lw=0)
 
         fig, canvas, ax = _mixed_canvas(build=reversed_build)
@@ -444,7 +445,7 @@ class TestMixedFramePixelParity(unittest.TestCase):
         composition across families matches Agg's single blend."""
 
         def build(ax):
-            ax.fill_between([0, 5, 10], [-2, -1, -2], [2, 3, 2],
+            ax.fill_between([0, 5, 10], [-2, -2, -2], [2, 2, 2],
                             color="green", alpha=0.5, lw=0)
             ax.bar([2, 7], [3, 2], width=1.2, color="steelblue", alpha=0.35)
             ax.add_line(Line2D(
@@ -454,12 +455,12 @@ class TestMixedFramePixelParity(unittest.TestCase):
         self._assert_pixel_parity(build)
 
     def test_negative_span_mixed_below_baseline(self):
-        """Below-baseline bars under a triangular fill apex: negative
+        """Below-baseline bars under a rectangular fill: negative
         extents compose exactly (byte-level agreement outside AA)."""
 
         def build(ax):
             ax.bar([2, 7], [-2, -3], width=1.0, color="teal")
-            ax.fill([1, 5, 9], [0, 3, 0], color="orange", lw=0)
+            ax.fill([1, 9, 9, 1], [0, 0, 3, 3], color="orange", lw=0)
             ax.plot([0, 10], [-1, 2], color="red", lw=2.0,
                     solid_capstyle="butt", solid_joinstyle="miter")
 
