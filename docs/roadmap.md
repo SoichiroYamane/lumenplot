@@ -474,7 +474,7 @@ The recommended immediate queue is:
 1. **M0 baseline reconciliation** — update traceability for the latest merged
    work, settle the profile default, and make the clean verification command
    reliable on macOS/Nix and wheel-installed Python. The bounded M0 code and
-   evidence lanes are now merged locally; the release remains pre-alpha.
+   evidence lanes are now merged locally; the release remains pre-alpha. Traceability now records bounded evidence for PR223 (B1B runtime-internal), PR224 (M5-5B outline-only v1), and PR225 (SINK-P0 Option-B consume-only) with zero status flips; profile default and clean verification path remain open.
 2. **M1 adapter modularization plus packaged runtime evidence** — reduce the
    `backend.py` collision hotspot without changing public behavior, then close
    the accepted Phase-3B package matrix.
