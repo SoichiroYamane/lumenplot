@@ -1,9 +1,14 @@
-//! Private line-only PDF output.
+//! Private line-plus-retained-text-outline PDF output (outline-only v1).
 //!
 //! This sink deliberately stops at the existing semantic `LineFrame`: it emits
-//! encoded-sRGB `DeviceRGB` vector strokes and a vector background, but does not
-//! claim text, fonts, SVG, annotations, axes, Legend, or the full-v1 public
-//! export contract. Those capabilities remain pending a separate contract.
+//! encoded-sRGB `DeviceRGB` vector strokes, a vector background, and one filled
+//! vector cell per stored glyph origin from the ONE retained `PlotLayout`.
+//! Cells are sink-local, use stored positions with zero remeasurement, and
+//! carry no searchable text: the stream contains no text-showing operators,
+//! font resources, or embedded/subset font programs (searchable text stays a
+//! deferred post-v1 contract). Annotations, axes, Legend, SVG, per-run
+//! clip/style scopes, true space projections, and the full-v1 public export
+//! contract remain declined here pending their own contracts.
 
 use std::fmt;
 use std::mem::size_of;
@@ -11,7 +16,10 @@ use std::mem::size_of;
 use lumenplot_engine::bridge::LineFrame;
 
 use crate::error::{ExportError, ExportErrorKind};
-use crate::raster::{MAX_DIMENSION, MAX_OUTPUT_BYTES, MAX_PATH_POINTS, MAX_WORK_BYTES};
+use crate::raster::{
+    MAX_DIMENSION, MAX_OUTPUT_BYTES, MAX_PATH_POINTS, MAX_WORK_BYTES, TEXT_GLYPH_HEIGHT_LOGICAL,
+    TEXT_GLYPH_WIDTH_LOGICAL,
+};
 
 const PDF_POINTS_PER_INCH: f64 = 72.0;
 const PDF_MAX_COORDINATE: f64 = MAX_DIMENSION as f64;
@@ -33,6 +41,19 @@ const PDF_BYTES_PER_OBJECT: usize = 256;
 const PDF_BYTES_PER_XREF_ENTRY: usize = 32;
 const PDF_FIXED_OUTPUT_BYTES: usize = 4_096;
 const PDF_MAX_XREF_OFFSET: usize = 9_999_999_999;
+
+// M5-5B retained-text outline rule (outline-only v1): each stored glyph origin
+// contributes one axis-aligned filled vector cell sized by the shared fixture
+// cell (the same sink-local 5x7 logical cell the PNG boundary inks), read from
+// the ONE retained `PlotLayout` with zero remeasurement. Ink is fixed opaque
+// black like the PNG fixture ink; per-run clip/style refs stay validated but
+// uninterpreted (a later contract), mirroring the raster text pass.
+const PDF_BYTES_PER_TEXT_GLYPH: usize = 64;
+const PDF_CORNERS_PER_TEXT_GLYPH: usize = 4;
+const PDF_TEXT_SECTION_BYTES: usize = 64;
+// Mirrors the raster sink diagnostic for the same failure so both sinks report
+// one uniform message for an invalid retained result.
+const PDF_RETAINED_LAYOUT_ERROR: &str = "retained text layout is invalid";
 
 const PDF_FORMAT_ERROR: &str = "PDF encoding failed";
 
@@ -92,6 +113,19 @@ impl PdfPlan {
         let logical_to_points = PDF_POINTS_PER_INCH / logical_units_per_inch;
         if !logical_to_points.is_finite() || logical_to_points <= 0.0 {
             return Err(ExportError::capacity_exceeded());
+        }
+
+        // The retained result is re-validated at the sink: a corrupt digest,
+        // an empty run set, or any invalid stored position fails here with
+        // `InvalidInput` before any geometry work or allocation, mirroring the
+        // raster plan gate. Generation staleness itself is rejected upstream at
+        // frame resolution; the sink only ever receives a resolved frame and
+        // never remeasures.
+        if !frame.plot_layout().validate() {
+            return Err(ExportError::new(
+                ExportErrorKind::InvalidInput,
+                PDF_RETAINED_LAYOUT_ERROR,
+            ));
         }
 
         let canvas = frame.canvas();
@@ -176,6 +210,35 @@ impl PdfPlan {
             }
         }
 
+        // Retained glyphs ride the same path-point ceiling as line art: each
+        // stored origin contributes one outline cell (four corners) to the sink
+        // representation. Counting happens here, before any estimate, so a
+        // hostile run length fails before allocation. Ceiling VALUES are
+        // unchanged by this slice; text only adds rejections, never headroom.
+        let mut text_glyphs = 0usize;
+        for run in frame.plot_layout().runs() {
+            text_glyphs = text_glyphs
+                .checked_add(run.positions().len())
+                .ok_or_else(ExportError::capacity_exceeded)?;
+            if text_glyphs > MAX_PATH_POINTS {
+                return Err(ExportError::capacity_exceeded());
+            }
+        }
+        let text_path_points = text_glyphs
+            .checked_mul(PDF_CORNERS_PER_TEXT_GLYPH)
+            .ok_or_else(ExportError::capacity_exceeded)?;
+        if text_path_points > MAX_PATH_POINTS {
+            return Err(ExportError::capacity_exceeded());
+        }
+
+        let text_content_bytes = text_glyphs
+            .checked_mul(PDF_BYTES_PER_TEXT_GLYPH)
+            .ok_or_else(ExportError::capacity_exceeded)?;
+        let text_section_bytes = if text_glyphs == 0 {
+            0
+        } else {
+            PDF_TEXT_SECTION_BYTES
+        };
         let content_estimate = checked_sum(&[
             PDF_FIXED_CONTENT_BYTES,
             path_points
@@ -187,6 +250,8 @@ impl PdfPlan {
             series_count
                 .checked_mul(PDF_BYTES_PER_SERIES)
                 .ok_or_else(ExportError::capacity_exceeded)?,
+            text_content_bytes,
+            text_section_bytes,
         ])?;
         let object_count = object_count(series_count)?;
         let output_estimate = checked_sum(&[
@@ -471,6 +536,13 @@ fn build_content(frame: &LineFrame, plan: &PdfPlan) -> Result<Vec<u8>, ExportErr
     }
     content.write_str_checked("Q\n")?;
 
+    // Canvas-scoped retained-text outlines land after the plot clip above
+    // closes: labels (axis/title/legend) live outside the plot rect by
+    // definition, so this pass runs unclipped like the raster text plan. Cells
+    // fully outside the canvas are skipped without error — ordinary clipping,
+    // never a bounds error.
+    write_retained_text_outlines(&mut content, frame, plan)?;
+
     if content.len() > plan.content_estimate {
         return Err(ExportError::capacity_exceeded());
     }
@@ -495,6 +567,102 @@ fn write_path_point(
     output.write_str_checked(" ")?;
     write_pdf_number(output, y)?;
     output.write_fmt_checked(format_args!(" {operator}\n"))
+}
+
+/// Emits one filled vector cell per stored glyph origin from the ONE retained
+/// layout, in layout order, with zero remeasurement.
+///
+/// Cells fully outside the canvas are skipped without error and non-finite
+/// scaled geometry is skipped the same way. The section is omitted entirely
+/// when no cell lands, so frames with out-of-canvas text keep their exact
+/// prior bytes apart from the preflight estimate. Ink is fixed opaque black;
+/// the stream carries no text operators or font resources by construction.
+fn write_retained_text_outlines(
+    output: &mut PdfWriter,
+    frame: &LineFrame,
+    plan: &PdfPlan,
+) -> Result<(), ExportError> {
+    let canvas = frame.canvas();
+    let mut open = false;
+    for run in frame.plot_layout().runs() {
+        for position in run.positions() {
+            let Some((x, y, width, height)) = text_cell_points(
+                position.x(),
+                position.y(),
+                canvas.width(),
+                canvas.height(),
+                plan.logical_to_points,
+                plan.page_height,
+            ) else {
+                continue;
+            };
+            if !open {
+                output.write_str_checked("q\n")?;
+                write_color(
+                    output,
+                    lumenplot_engine::bridge::SrgbRgba8::new(0, 0, 0, 255),
+                    "rg",
+                )?;
+                open = true;
+            }
+            write_pdf_number(output, x)?;
+            output.write_str_checked(" ")?;
+            write_pdf_number(output, y)?;
+            output.write_str_checked(" ")?;
+            write_pdf_number(output, width)?;
+            output.write_str_checked(" ")?;
+            write_pdf_number(output, height)?;
+            output.write_str_checked(" re\nf\n")?;
+        }
+    }
+    if open {
+        output.write_str_checked("Q\n")?;
+    }
+    Ok(())
+}
+
+/// Maps one stored glyph origin to a canvas-clipped PDF rect.
+///
+/// The fixture cell opens at the stored origin with the shared sink-local 5x7
+/// logical size, clamps to the canvas like the raster glyph cell, and flips to
+/// PDF y-up points. Returns `None` when the cell falls fully outside the
+/// canvas or leaves the finite range: both mean "nothing to draw here", never
+/// a bounds error.
+fn text_cell_points(
+    x: f64,
+    y: f64,
+    canvas_width: f64,
+    canvas_height: f64,
+    logical_to_points: f64,
+    page_height: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let right_logical = x + TEXT_GLYPH_WIDTH_LOGICAL;
+    let bottom_logical = y + TEXT_GLYPH_HEIGHT_LOGICAL;
+    if !right_logical.is_finite() || !bottom_logical.is_finite() {
+        return None;
+    }
+    let left = x.clamp(0.0, canvas_width);
+    let top = y.clamp(0.0, canvas_height);
+    let right = right_logical.clamp(0.0, canvas_width);
+    let bottom = bottom_logical.clamp(0.0, canvas_height);
+    if right <= left || bottom <= top {
+        return None;
+    }
+    let x = logical_to_points_checked(left, logical_to_points).ok()?;
+    let width = logical_to_points_checked(right - left, logical_to_points).ok()?;
+    let top_points = logical_to_points_checked(top, logical_to_points).ok()?;
+    let bottom_points = logical_to_points_checked(bottom, logical_to_points).ok()?;
+    let height = bottom_points - top_points;
+    if ![x, width, height, bottom_points]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return None;
+    }
+    Some((x, page_height - bottom_points, width, height))
 }
 
 fn write_page(output: &mut PdfWriter, plan: &PdfPlan) -> Result<(), ExportError> {
@@ -529,7 +697,7 @@ fn write_info(
     output_dpi: f64,
 ) -> Result<(), ExportError> {
     output.write_str_checked(
-        "<< /Producer (LumenPlot private line PDF sink) /LPFormat (private-line-vector-v1) /LPLogicalUnitsPerInch (",
+        "<< /Producer (LumenPlot private line+text-outline PDF sink) /LPFormat (private-line-text-outline-v1) /LPLogicalUnitsPerInch (",
     )?;
     write_pdf_number(output, logical_units_per_inch)?;
     output.write_str_checked(") /LPOutputDpi (")?;
