@@ -163,16 +163,32 @@ pub(crate) fn resolve_line_frame(
     // here; downstream cards consume the carried channel.
     let grid_visible = snapshot.grid_visible();
     let grid_revision = snapshot.grid_revision();
-    // SINK-F2 carrier: per-axis data-coord tick vecs from the pure
-    // crate-internal locator (`crate::ticks`), stamped alongside the grid
-    // pair. This resolve path already gated scales to linear above, so the
-    // locator runs on its linear arm here; the Log10 arm is pinned by unit
-    // tests for the future sink path. Unbounded counts refuse here with
-    // `CapacityExceeded` before any sink allocation (fail-before-allocate).
+    // SINK-P0 Option-B carrier: per-axis display-space tick vecs. The pure
+    // crate-internal locator (`crate::ticks`) still yields data-coord ticks
+    // on its linear arm (the resolve gate above keeps the Log10 arm
+    // unreachable here); each result is projected once through the existing
+    // layout transform at stamp time, so sinks consume display-space
+    // positions without projecting. Unbounded counts refuse in the locator
+    // with `CapacityExceeded` before any sink allocation
+    // (fail-before-allocate).
     let viewport = snapshot.viewport();
     let axis_scales = snapshot.axis_scales();
-    let x_ticks = crate::ticks::major_ticks_for_axis(viewport.x(), axis_scales.x())?;
-    let y_ticks = crate::ticks::major_ticks_for_axis(viewport.y(), axis_scales.y())?;
+    let x_data_ticks = crate::ticks::major_ticks_for_axis(viewport.x(), axis_scales.x())?;
+    let y_data_ticks = crate::ticks::major_ticks_for_axis(viewport.y(), axis_scales.y())?;
+    // The cross-axis input is arbitrary: the linear map separates axes, so
+    // the stored coordinate is exact for any finite input. The range minima
+    // are finite on every layout that constructed successfully above, and a
+    // non-finite tick refuses here exactly like a non-finite series point.
+    let mut x_ticks = Vec::new();
+    reserve(&mut x_ticks, x_data_ticks.len())?;
+    for tick in x_data_ticks {
+        x_ticks.push(layout.transform_point(tick, viewport.y().min())?.x());
+    }
+    let mut y_ticks = Vec::new();
+    reserve(&mut y_ticks, y_data_ticks.len())?;
+    for tick in y_data_ticks {
+        y_ticks.push(layout.transform_point(viewport.x().min(), tick)?.y());
+    }
     let plot_layout: Arc<crate::text::PlotLayout> = match live_rectangle_layout(&snapshot.state)? {
         Some(live_rectangles) => Arc::new(crate::text::PlotLayout::from_live_parts(
             snapshot.plot_layout().runs().to_vec(),
@@ -1422,9 +1438,10 @@ mod tests {
 
     #[test]
     fn grid_tick_vecs_are_stamped_deterministically_with_grid_pair() {
-        // SINK-F2 acceptance: resolve stamps per-axis data-coord tick vecs
-        // alongside the grid pair. The vecs are a deterministic function of
-        // viewport, scales, and the per-axis cap, so the
+        // SINK-P0 Option-B acceptance: resolve stamps per-axis
+        // display-space tick vecs alongside the grid pair. The vecs are a
+        // deterministic function of viewport, scales, plot geometry, and
+        // the per-axis cap projected once at stamp time, so the
         // (grid_visible, grid_revision) pair equality covers them with no
         // separate digest: a grid toggle changes the pair while vec content
         // rebuilds identical.
@@ -1437,9 +1454,19 @@ mod tests {
         );
         let first = resolve_line_frame(&scene.snapshot(), &spec()).expect("first frame");
         assert!(first.grid_visible());
-        // Viewport [0, 10] takes the 2.0 nice step on both axes.
-        assert_eq!(first.x_ticks(), &[0.0, 2.0, 4.0, 6.0, 8.0, 10.0][..]);
-        assert_eq!(first.y_ticks(), &[0.0, 2.0, 4.0, 6.0, 8.0, 10.0][..]);
+        // Viewport [0, 10] takes the 2.0 nice step on both axes; the
+        // test spec maps plot x 10..90 and plot y 20..60, so data ticks
+        // [0, 2, 4, 6, 8, 10] stamp as display positions below.
+        let expected_x = [10.0, 26.0, 42.0, 58.0, 74.0, 90.0];
+        let expected_y = [60.0, 52.0, 44.0, 36.0, 28.0, 20.0];
+        assert_eq!(first.x_ticks().len(), expected_x.len());
+        assert_eq!(first.y_ticks().len(), expected_y.len());
+        for (actual, expected) in first.x_ticks().iter().zip(expected_x.iter()) {
+            assert_close(*actual, *expected);
+        }
+        for (actual, expected) in first.y_ticks().iter().zip(expected_y.iter()) {
+            assert_close(*actual, *expected);
+        }
         // Deterministic reconstruction across independent resolves.
         let second = resolve_line_frame(&scene.snapshot(), &spec()).expect("second frame");
         assert_eq!(first.x_ticks(), second.x_ticks());

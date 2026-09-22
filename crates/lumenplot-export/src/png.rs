@@ -37,6 +37,26 @@ pub fn encode_line_frame_png(
     ];
     let mut pixels = new_pixels(plan.pixel_count(), background)?;
 
+    // SINK-P0 Option-B: consume the resolve-stamped display-space ticks
+    // through the private grid helper. The pass is plot-clipped like series
+    // (the line plan, never the canvas-scoped text plan) and ordered under
+    // series per LP-FUNC-035/Q3; grid-off yields an empty mask whose
+    // composite is a no-op, preserving the pre-grid bytes (Q7).
+    let grid_mask = raster::rasterize_grid(
+        frame.grid_visible(),
+        frame.x_ticks(),
+        frame.y_ticks(),
+        &plan,
+    )?;
+    composite_mask(
+        &mut pixels,
+        &grid_mask,
+        &plan,
+        raster::GRID_INK_RGBA8,
+        plan.width(),
+        plan.height(),
+    )?;
+
     for series in frame.series() {
         let mask = raster::rasterize_series(series, &plan)?;
         let color = series.style().color();
@@ -476,17 +496,78 @@ mod tests {
     }
 
     #[test]
-    fn transparent_background_and_source_canonicalize_rgb() {
+    fn grid_on_inks_stamped_display_positions_under_series() {
+        // SINK-P0 end-to-end: the default frame is grid-on with nonempty
+        // display-space ticks; viewport (0,10)^2 over plot 8..56 maps data
+        // tick 4.0 to display x 27.2. Pixel (27,30) sits on that hairline,
+        // clear of the horizontal grid rows (27.2/36.8), the series row
+        // (y=56), every glyph cell, and every annotation shape, so only
+        // grid ink can land there.
         let (_, frame, spec) = make_frame(
-            (2.0, 2.0),
+            (160.0, 140.0),
+            (8.0, 8.0, 56.0, 56.0),
+            1.0,
+            (vec![0.0, 10.0], vec![0.0, 0.0]),
+            (SrgbRgba8::new(255, 0, 0, 255), 1.0),
+            SrgbRgba8::new(255, 255, 255, 255),
+        );
+        assert!(frame.grid_visible());
+        assert!(!frame.x_ticks().is_empty() && !frame.y_ticks().is_empty());
+        let first = encode_line_frame_png(&frame, &spec).expect("PNG");
+        let second = encode_line_frame_png(&frame, &spec).expect("PNG");
+        assert_eq!(first, second);
+        let (width, height, data) = decode_rgba(&first);
+        assert_eq!((width, height), (160, 140));
+        let pixel = |x: u32, y: u32| -> [u8; 4] {
+            let offset = (y * 160 + x) as usize * 4;
+            data[offset..offset + 4]
+                .try_into()
+                .expect("pixel inside the canvas")
+        };
+        let probe = pixel(27, 30);
+        assert_ne!(probe, [255, 255, 255, 255]);
+        assert_ne!(probe, [0, 0, 0, 255]);
+        assert_eq!(probe[3], 255);
+        // The difference is attributable to the grid pass alone: the same
+        // carrier through the helper with visibility on inks the probe
+        // mask cell, while visibility off leaves the whole mask clear.
+        let plan = crate::raster::RasterPlan::new(&frame, &spec).expect("plan");
+        let on = crate::raster::rasterize_grid(true, frame.x_ticks(), frame.y_ticks(), &plan)
+            .expect("grid mask");
+        assert_ne!(on.data()[30 * 160 + 27], 0);
+        let off = crate::raster::rasterize_grid(false, frame.x_ticks(), frame.y_ticks(), &plan)
+            .expect("grid mask");
+        assert!(off.data().iter().all(|coverage| *coverage == 0));
+    }
+
+    #[test]
+    fn transparent_background_and_source_canonicalize_rgb() {
+        // The canvas extends past the 2x2 plot so one corner escapes the
+        // SINK-P0 grid: plot display ticks fall at 0.0..2.0 in both axes,
+        // inking the plot while pixel (4,4) stays clear of every grid line,
+        // the (empty) series, every glyph cell, and every annotation shape.
+        let (_, frame, spec) = make_frame(
+            (5.0, 5.0),
             (0.0, 0.0, 2.0, 2.0),
             1.0,
             (Vec::new(), Vec::new()),
             (SrgbRgba8::new(10, 20, 30, 0), 1.0),
             SrgbRgba8::new(40, 50, 60, 0),
         );
-        let (_, _, data) = decode_rgba(&encode_line_frame_png(&frame, &spec).expect("PNG"));
-        assert!(data.chunks_exact(4).all(|pixel| pixel == [0, 0, 0, 0]));
+        let (width, height, data) =
+            decode_rgba(&encode_line_frame_png(&frame, &spec).expect("PNG"));
+        assert_eq!((width, height), (5, 5));
+        let pixel = |x: u32, y: u32| -> [u8; 4] {
+            let offset = (y * 5 + x) as usize * 4;
+            data[offset..offset + 4]
+                .try_into()
+                .expect("pixel inside the canvas")
+        };
+        // Off-ink pixels canonicalize transparent source to zero RGB.
+        assert_eq!(pixel(4, 4), [0, 0, 0, 0]);
+        // On-plot grid ink lands: (0,1) sits on the x=0 hairline inside
+        // the plot clip.
+        assert_ne!(pixel(0, 1), [0, 0, 0, 0]);
     }
 
     #[test]
@@ -743,18 +824,31 @@ mod tests {
                 .try_into()
                 .expect("pixel inside the canvas")
         };
-        // Retained ink near the probes: the series row is y=64, shafts stay
+        // Retained ink near the probes: the series row is y=56, shafts stay
         // at y<=32, glyph cells sit at x 16..21/32..37/48..53 with y 16..23
         // plus (64..69, 32..39) and (64..69, 48..55), the text box covers
         // x -2..22 with y 16..24, and the arrow shaft spans x 8..40 with
-        // y 8..24. A center crosshair would ink row y=36 across the plot
-        // and column x=36 down the plot; both strips avoid every retained
-        // mark above, so any crosshair ink would stand out here.
-        for x in 40..64u32 {
-            assert_eq!(pixel(x, 36), [255, 255, 255, 255], "row probe at x={x}");
+        // y 8..24. SINK-P0 grid hairlines cross the plot at display x/y
+        // 8/17.6/27.2/36.8/46.4/56, so the background strips move to the
+        // grid gaps: row y=40 for x in 48..52 and column x=38 for y in
+        // 40..44. Both strips avoid every retained mark and every grid
+        // line, so any crosshair ink would stand out here.
+        for x in 48..52u32 {
+            assert_eq!(pixel(x, 40), [255, 255, 255, 255], "row probe at x={x}");
         }
-        for y in 30..52u32 {
-            assert_eq!(pixel(36, y), [255, 255, 255, 255], "column probe at y={y}");
+        for y in 40..44u32 {
+            assert_eq!(pixel(38, y), [255, 255, 255, 255], "column probe at y={y}");
         }
+        // The plot-center strips are grid-inked by rule, not by a baked-in
+        // crosshair: the helper mask is nonzero at (48,36) with visibility
+        // on and clear with visibility off, attributing the center content
+        // to the grid pass alone.
+        let plan = crate::raster::RasterPlan::new(&frame, &spec).expect("plan");
+        let on = crate::raster::rasterize_grid(true, frame.x_ticks(), frame.y_ticks(), &plan)
+            .expect("grid mask");
+        assert_ne!(on.data()[36 * 160 + 48], 0);
+        let off = crate::raster::rasterize_grid(false, frame.x_ticks(), frame.y_ticks(), &plan)
+            .expect("grid mask");
+        assert!(off.data().iter().all(|coverage| *coverage == 0));
     }
 }

@@ -13,12 +13,12 @@
 use std::fmt;
 use std::mem::size_of;
 
-use lumenplot_engine::bridge::LineFrame;
+use lumenplot_engine::bridge::{LineFrame, SrgbRgba8};
 
 use crate::error::{ExportError, ExportErrorKind};
 use crate::raster::{
-    MAX_DIMENSION, MAX_OUTPUT_BYTES, MAX_PATH_POINTS, MAX_WORK_BYTES, TEXT_GLYPH_HEIGHT_LOGICAL,
-    TEXT_GLYPH_WIDTH_LOGICAL,
+    GRID_INK_RGBA8, MAX_DIMENSION, MAX_OUTPUT_BYTES, MAX_PATH_POINTS, MAX_WORK_BYTES,
+    TEXT_GLYPH_HEIGHT_LOGICAL, TEXT_GLYPH_WIDTH_LOGICAL,
 };
 
 const PDF_POINTS_PER_INCH: f64 = 72.0;
@@ -29,6 +29,9 @@ const PDF_BOUNDARY_EPSILON: f64 = 1.0e-9;
 const PDF_MAX_SERIES: usize = 65_536;
 const PDF_MAX_SEGMENTS: usize = 1_000_000;
 const PDF_INITIAL_CAPACITY: usize = 1_048_576;
+// SINK-P0 grid stroke width in points (Q2 O1: 0.5pt PDF hairline,
+// mirroring the 1-device-px PNG hairline).
+const GRID_WIDTH_POINTS: f64 = 0.5;
 
 // These are conservative upper bounds for the fixed-point number format and
 // operators emitted below. They are used only for preflight; the capped writer
@@ -210,6 +213,32 @@ impl PdfPlan {
             }
         }
 
+        // SINK-P0 grid: each display-space tick draws one full-span plot
+        // line (two endpoints, one segment). Grid work folds into the
+        // existing path/segment ceilings and the content estimate below
+        // with no second cap; the single shared /GRID gs object rides the
+        // object count further below.
+        let grid_ticks = frame
+            .x_ticks()
+            .len()
+            .checked_add(frame.y_ticks().len())
+            .ok_or_else(ExportError::capacity_exceeded)?;
+        let grid_points = grid_ticks
+            .checked_mul(2)
+            .ok_or_else(ExportError::capacity_exceeded)?;
+        path_points = path_points
+            .checked_add(grid_points)
+            .ok_or_else(ExportError::capacity_exceeded)?;
+        if path_points > MAX_PATH_POINTS {
+            return Err(ExportError::capacity_exceeded());
+        }
+        nonempty_segments = nonempty_segments
+            .checked_add(grid_ticks)
+            .ok_or_else(ExportError::capacity_exceeded)?;
+        if nonempty_segments > PDF_MAX_SEGMENTS {
+            return Err(ExportError::capacity_exceeded());
+        }
+
         // Retained glyphs ride the same path-point ceiling as line art: each
         // stored origin contributes one outline cell (four corners) to the sink
         // representation. Counting happens here, before any estimate, so a
@@ -291,17 +320,18 @@ impl PdfPlan {
     }
 
     fn info_object_id(&self) -> Result<usize, ExportError> {
-        6usize
+        7usize
             .checked_add(self.series_count)
             .ok_or_else(ExportError::capacity_exceeded)
     }
 }
 
 fn object_count(series_count: usize) -> Result<usize, ExportError> {
-    // Objects: catalog, pages, page, contents, background ExtGState, one line
-    // ExtGState per series, and the provenance Info dictionary.
+    // Objects: catalog, pages, page, contents, background ExtGState, the
+    // single shared grid ExtGState (SINK-P0 /GRID), one line ExtGState per
+    // series, and the provenance Info dictionary.
     series_count
-        .checked_add(6)
+        .checked_add(7)
         .ok_or_else(ExportError::capacity_exceeded)
 }
 
@@ -450,9 +480,16 @@ pub(crate) fn encode_line_frame_pdf(
     write_ext_gstate(&mut output, frame.background().a())?;
     write_object_footer(&mut output)?;
 
+    // SINK-P0: the single shared grid ExtGState lives at object 6, ahead
+    // of the per-series states, so series ids shift by one.
+    offsets.push(output.len());
+    write_object_header(&mut output, 6)?;
+    write_ext_gstate(&mut output, GRID_INK_RGBA8[3])?;
+    write_object_footer(&mut output)?;
+
     for (index, series) in frame.series().iter().enumerate() {
         offsets.push(output.len());
-        let object_id = 6usize
+        let object_id = 7usize
             .checked_add(index)
             .ok_or_else(ExportError::capacity_exceeded)?;
         write_object_header(&mut output, object_id)?;
@@ -507,6 +544,18 @@ fn build_content(frame: &LineFrame, plan: &PdfPlan) -> Result<Vec<u8>, ExportErr
     content.write_str_checked(" ")?;
     write_pdf_number(&mut content, plan.plot.y_max - plan.plot.y_min)?;
     content.write_str_checked(" re\nW\nn\n")?;
+
+    // SINK-P0 Option-B: consume the resolve-stamped display-space ticks
+    // inside the plot clip, ahead of series per LP-FUNC-035/Q3. Grid-off
+    // appends zero bytes, so grid-off content is byte-identical to the
+    // pre-grid stream (Q7).
+    write_grid_content(
+        &mut content,
+        frame.grid_visible(),
+        frame.x_ticks(),
+        frame.y_ticks(),
+        plan,
+    )?;
 
     for (index, series) in frame.series().iter().enumerate() {
         if series
@@ -621,6 +670,77 @@ fn write_retained_text_outlines(
     Ok(())
 }
 
+/// Emits the SINK-P0 Option-B grid section inside the caller's plot clip.
+///
+/// Consume-only: `x_ticks`/`y_ticks` are display-space logical positions
+/// stamped at resolve time. Ticks convert through the existing
+/// `logical_to_points` path while span endpoints reuse the validated plot
+/// bounds, so every line is plot-clipped by the surrounding `W n` scope.
+/// Ticks outside the plot are skipped without error; no `/GRID gs`
+/// operator is emitted when no line lands, and `grid_visible == false`
+/// appends zero bytes (Q7 byte identity).
+fn write_grid_content(
+    output: &mut PdfWriter,
+    grid_visible: bool,
+    x_ticks: &[f64],
+    y_ticks: &[f64],
+    plan: &PdfPlan,
+) -> Result<(), ExportError> {
+    if !grid_visible {
+        return Ok(());
+    }
+    let mut wrote_header = false;
+    for tick in x_ticks {
+        if !tick.is_finite() {
+            return Err(ExportError::invalid_input());
+        }
+        let x = logical_to_points_checked(*tick, plan.logical_to_points)?;
+        if x < plan.plot.x_min - PDF_BOUNDARY_EPSILON || x > plan.plot.x_max + PDF_BOUNDARY_EPSILON
+        {
+            continue;
+        }
+        if !wrote_header {
+            write_grid_header(output)?;
+            wrote_header = true;
+        }
+        write_pdf_number(output, x)?;
+        output.write_str_checked(" ")?;
+        write_pdf_number(output, plan.plot.y_min)?;
+        output.write_str_checked(" m\n")?;
+        write_pdf_number(output, x)?;
+        output.write_str_checked(" ")?;
+        write_pdf_number(output, plan.plot.y_max)?;
+        output.write_str_checked(" l\nS\n")?;
+    }
+    for tick in y_ticks {
+        if !tick.is_finite() {
+            return Err(ExportError::invalid_input());
+        }
+        let y_from_top = logical_to_points_checked(*tick, plan.logical_to_points)?;
+        let y = plan.page_height - y_from_top;
+        if !y.is_finite() {
+            return Err(ExportError::capacity_exceeded());
+        }
+        if y < plan.plot.y_min - PDF_BOUNDARY_EPSILON || y > plan.plot.y_max + PDF_BOUNDARY_EPSILON
+        {
+            continue;
+        }
+        if !wrote_header {
+            write_grid_header(output)?;
+            wrote_header = true;
+        }
+        write_pdf_number(output, plan.plot.x_min)?;
+        output.write_str_checked(" ")?;
+        write_pdf_number(output, y)?;
+        output.write_str_checked(" m\n")?;
+        write_pdf_number(output, plan.plot.x_max)?;
+        output.write_str_checked(" ")?;
+        write_pdf_number(output, y)?;
+        output.write_str_checked(" l\nS\n")?;
+    }
+    Ok(())
+}
+
 /// Maps one stored glyph origin to a canvas-clipped PDF rect.
 ///
 /// The fixture cell opens at the stored origin with the shared sink-local 5x7
@@ -665,16 +785,36 @@ fn text_cell_points(
     Some((x, page_height - bottom_points, width, height))
 }
 
+/// Emits the single shared grid graphics state (Q4): the `/GRID gs`
+/// operator shape with the series caps/joins (1 J / 0 j / 4 M), the
+/// provisional grid ink, and the O1 0.5pt hairline width.
+fn write_grid_header(output: &mut PdfWriter) -> Result<(), ExportError> {
+    output.write_str_checked("/GRID gs\n")?;
+    write_color(
+        output,
+        SrgbRgba8::new(
+            GRID_INK_RGBA8[0],
+            GRID_INK_RGBA8[1],
+            GRID_INK_RGBA8[2],
+            GRID_INK_RGBA8[3],
+        ),
+        "RG",
+    )?;
+    write_pdf_number(output, GRID_WIDTH_POINTS)?;
+    output.write_str_checked(" w\n1 J\n0 j\n4 M\n")?;
+    Ok(())
+}
+
 fn write_page(output: &mut PdfWriter, plan: &PdfPlan) -> Result<(), ExportError> {
     output.write_str_checked("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ")?;
     write_pdf_number(output, plan.page_width)?;
     output.write_str_checked(" ")?;
     write_pdf_number(output, plan.page_height)?;
     output.write_str_checked(
-        "] /Resources << /ProcSet [/PDF] /ColorSpace << /RGB /DeviceRGB >> /ExtGState << /BG 5 0 R",
+        "] /Resources << /ProcSet [/PDF] /ColorSpace << /RGB /DeviceRGB >> /ExtGState << /BG 5 0 R /GRID 6 0 R",
     )?;
     for index in 0..plan.series_count {
-        let object_id = 6usize
+        let object_id = 7usize
             .checked_add(index)
             .ok_or_else(ExportError::capacity_exceeded)?;
         output.write_fmt_checked(format_args!(" /L{index} {object_id} 0 R"))?;
@@ -1108,5 +1248,84 @@ mod tests {
         let error = encode_line_frame_pdf(&frame, &spec).expect_err("allocation failure");
         crate::set_allocation_failure_for_test(false);
         assert_eq!(error.kind(), ExportErrorKind::AllocationFailed);
+    }
+
+    #[test]
+    fn grid_off_appends_no_bytes_and_empty_grid_emits_no_state() {
+        // Private seam: explicit visibility plus synthetic display-space
+        // tick vecs straight into the grid helper (no public API).
+        let frame = make_frame(
+            96.0,
+            SrgbRgba8::new(0, 0, 0, 255),
+            1.0,
+            SrgbRgba8::new(255, 255, 255, 255),
+        );
+        assert!(frame.grid_visible());
+        assert!(!frame.x_ticks().is_empty() && !frame.y_ticks().is_empty());
+        let spec = PdfSpec::new(300.0).expect("PDF spec");
+        let plan = PdfPlan::new(&frame, &spec).expect("plan");
+        // Grid-off appends nothing: grid-off content is byte-identical to
+        // the pre-grid stream (Q7).
+        let mut off = PdfWriter::new(plan.content_estimate, MAX_OUTPUT_BYTES).expect("writer");
+        write_grid_content(&mut off, false, frame.x_ticks(), frame.y_ticks(), &plan).expect("grid");
+        assert!(off.into_inner().is_empty());
+        // Grid-on with no ticks also appends nothing: no dangling /GRID gs.
+        let mut empty = PdfWriter::new(plan.content_estimate, MAX_OUTPUT_BYTES).expect("writer");
+        write_grid_content(&mut empty, true, &[], &[], &plan).expect("grid");
+        assert!(empty.into_inner().is_empty());
+        // Grid-on with the carried ticks lands exactly one shared state.
+        let baseline = build_content(&frame, &plan).expect("content");
+        let body = str::from_utf8(&baseline).expect("content UTF-8");
+        assert_eq!(body.matches("/GRID gs").count(), 1);
+    }
+
+    #[test]
+    fn grid_on_pdf_orders_clip_then_grid_then_series_with_shared_state() {
+        let frame = make_frame(
+            96.0,
+            SrgbRgba8::new(0, 0, 0, 255),
+            1.0,
+            SrgbRgba8::new(255, 255, 255, 255),
+        );
+        let spec = PdfSpec::new(300.0).expect("PDF spec");
+        let first = encode_line_frame_pdf(&frame, &spec).expect("PDF");
+        let second = encode_line_frame_pdf(&frame, &spec).expect("PDF");
+        assert_eq!(first, second);
+        assert_structurally_valid(&first);
+        let body = str::from_utf8(&first).expect("PDF body");
+        // The single shared grid state lives at object 6, ahead of the
+        // per-series states.
+        assert!(body.contains("/GRID 6 0 R"));
+        assert!(body.contains("/L0 7 0 R"));
+        let drawing = content(&first);
+        assert!(drawing.contains("/GRID gs"));
+        assert!(drawing.contains("0.690196 0.690196 0.690196 RG"));
+        assert!(drawing.contains("0.500000 w"));
+        assert!(drawing.contains("1 J\n0 j\n4 M"));
+        let clip = drawing.find("W\nn").expect("plot clip");
+        let grid = drawing.find("/GRID gs").expect("grid section");
+        let series = drawing.find("/L0 gs").expect("series section");
+        assert!(clip < grid && grid < series);
+    }
+
+    #[test]
+    fn grid_ticks_outside_plot_skip_and_nonfinite_refuses() {
+        let frame = make_frame(
+            96.0,
+            SrgbRgba8::new(0, 0, 0, 255),
+            1.0,
+            SrgbRgba8::new(255, 255, 255, 255),
+        );
+        let spec = PdfSpec::new(300.0).expect("PDF spec");
+        let plan = PdfPlan::new(&frame, &spec).expect("plan");
+        // Far outside the plot: skipped without error, no state emitted.
+        let mut out = PdfWriter::new(plan.content_estimate, MAX_OUTPUT_BYTES).expect("writer");
+        write_grid_content(&mut out, true, &[100.0], &[100.0], &plan).expect("grid");
+        assert!(out.into_inner().is_empty());
+        // Non-finite carrier fails closed instead of drawing.
+        let mut bad = PdfWriter::new(plan.content_estimate, MAX_OUTPUT_BYTES).expect("writer");
+        let error =
+            write_grid_content(&mut bad, true, &[f64::NAN], &[], &plan).expect_err("non-finite");
+        assert_eq!(error.kind(), ExportErrorKind::InvalidInput);
     }
 }

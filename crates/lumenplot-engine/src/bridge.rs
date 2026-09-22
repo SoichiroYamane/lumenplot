@@ -580,19 +580,26 @@ impl LineFrame {
         self.grid_revision
     }
 
-    /// Per-axis grid tick positions in data coordinates, stamped by
-    /// `resolve_line_frame` from the crate-internal locator alongside the
-    /// grid pair (SINK-F2 carrier). Sinks project them through the same
-    /// scale rule as series data; the vecs need no separate digest because
-    /// they rebuild deterministically from viewport, scales, and the
-    /// per-axis cap, so `(grid_visible, grid_revision)` pair equality plus
-    /// scene-revision equality already covers them.
+    /// Per-axis grid tick positions in display-space logical coordinates,
+    /// stamped by `resolve_line_frame` (SINK-P0 Option-B carrier).
+    ///
+    /// Each entry is the display-space x of one vertical grid line in the
+    /// same logical canvas coordinate system as [`LinePoint`] and
+    /// `ResolvedLayout::transform_point`, with y increasing in the existing
+    /// canvas direction. Sinks draw each entry as a full plot-height line
+    /// clipped to the plot rect; they never project or re-derive positions.
+    /// The vectors are immutable resolved-frame data for sink consumption:
+    /// they rebuild deterministically from viewport, scales, plot geometry,
+    /// and the per-axis cap through the single resolve-time projection, so
+    /// `(grid_visible, grid_revision)` pair equality plus scene-revision
+    /// equality already covers them with no separate digest.
     pub fn x_ticks(&self) -> &[f64] {
         &self.x_ticks
     }
 
-    /// Per-axis grid tick positions in data coordinates (y axis). See
-    /// [`LineFrame::x_ticks`] for the carrier contract.
+    /// Per-axis grid tick positions in display-space logical coordinates
+    /// (y axis). Each entry is the display-space y of one horizontal grid
+    /// line; see [`LineFrame::x_ticks`] for the carrier contract.
     pub fn y_ticks(&self) -> &[f64] {
         &self.y_ticks
     }
