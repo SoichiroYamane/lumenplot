@@ -3124,6 +3124,326 @@ mod tests {
         );
     }
 
+    // B1B-RUNTIME (commander SCOPE RULING option-(b) on t_81ce0421): the
+    // viewer-consumed live `route_keyboard` seam must agree with both motion
+    // preferences. `route_keyboard` takes no motion parameter by design, so
+    // parity means the live seam equals `route_with_motion` under Normal and
+    // under Reduced (and the bare `route`) for every accepted keyboard route
+    // and every keyboard rejection.
+    #[test]
+    fn route_keyboard_matches_both_motion_preferences() {
+        let legend_entry_9 = TransientUiState::with_focus(Some(FocusTarget::LegendEntry(9)));
+        let series_9 = TransientUiState::with_focus(Some(FocusTarget::Series(9)));
+        let plot = TransientUiState::with_focus(Some(FocusTarget::Plot));
+        let annotation_3 = TransientUiState::with_focus(Some(FocusTarget::Annotation(3)));
+        let legend_focus = TransientUiState::with_focus(Some(FocusTarget::Legend));
+        let ok_cases = [
+            (
+                "left navigation",
+                KeyboardEvent::new(KeyboardKey::ArrowLeft, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Navigate {
+                    direction: NavigationDirection::Left,
+                },
+            ),
+            (
+                "right navigation",
+                KeyboardEvent::new(KeyboardKey::ArrowRight, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Navigate {
+                    direction: NavigationDirection::Right,
+                },
+            ),
+            (
+                "up navigation",
+                KeyboardEvent::new(KeyboardKey::ArrowUp, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Navigate {
+                    direction: NavigationDirection::Up,
+                },
+            ),
+            (
+                "down navigation",
+                KeyboardEvent::new(KeyboardKey::ArrowDown, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Navigate {
+                    direction: NavigationDirection::Down,
+                },
+            ),
+            (
+                "history previous",
+                KeyboardEvent::new(KeyboardKey::PageUp, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::History {
+                    direction: HistoryDirection::Previous,
+                },
+            ),
+            (
+                "history next",
+                KeyboardEvent::new(KeyboardKey::PageDown, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::History {
+                    direction: HistoryDirection::Next,
+                },
+            ),
+            (
+                "keyboard home",
+                KeyboardEvent::new(KeyboardKey::Home, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Home,
+            ),
+            (
+                "focus next",
+                KeyboardEvent::new(KeyboardKey::Tab, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::MoveFocus {
+                    direction: FocusDirection::Next,
+                },
+            ),
+            (
+                "focus previous",
+                KeyboardEvent::new(KeyboardKey::Tab, ModifierKeys::SHIFT),
+                TransientUiState::new(),
+                SemanticAction::MoveFocus {
+                    direction: FocusDirection::Previous,
+                },
+            ),
+            (
+                "keyboard cancel",
+                KeyboardEvent::new(KeyboardKey::Escape, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::Cancel,
+            ),
+            (
+                "grid",
+                KeyboardEvent::new(KeyboardKey::G, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::ToggleGrid,
+            ),
+            (
+                "cursor",
+                KeyboardEvent::new(KeyboardKey::C, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::ToggleCursor,
+            ),
+            (
+                "export",
+                KeyboardEvent::new(KeyboardKey::E, ModifierKeys::NONE),
+                TransientUiState::new(),
+                SemanticAction::Export,
+            ),
+            (
+                "series visibility via series focus",
+                KeyboardEvent::new(KeyboardKey::V, ModifierKeys::NONE),
+                series_9,
+                SemanticAction::ToggleSeriesVisibility { series: 9 },
+            ),
+            (
+                "series visibility via legend entry focus",
+                KeyboardEvent::new(KeyboardKey::V, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::ToggleSeriesVisibility { series: 9 },
+            ),
+            (
+                "legend keyboard operation",
+                KeyboardEvent::new(KeyboardKey::L, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::Legend {
+                    action: LegendAction::ToggleVisibility { series: 9 },
+                },
+            ),
+            (
+                "legend restore",
+                KeyboardEvent::new(KeyboardKey::R, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::Legend {
+                    action: LegendAction::Restore { series: 9 },
+                },
+            ),
+            (
+                "annotation create",
+                KeyboardEvent::new(KeyboardKey::A, ModifierKeys::NONE),
+                plot,
+                SemanticAction::Annotation {
+                    action: AnnotationAction::Create,
+                },
+            ),
+            (
+                "annotation edit via A",
+                KeyboardEvent::new(KeyboardKey::A, ModifierKeys::NONE),
+                annotation_3,
+                SemanticAction::Annotation {
+                    action: AnnotationAction::Edit { annotation: 3 },
+                },
+            ),
+            (
+                "legend enter",
+                KeyboardEvent::new(KeyboardKey::Enter, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::Legend {
+                    action: LegendAction::ToggleVisibility { series: 9 },
+                },
+            ),
+            (
+                "annotation enter",
+                KeyboardEvent::new(KeyboardKey::Enter, ModifierKeys::NONE),
+                annotation_3,
+                SemanticAction::Annotation {
+                    action: AnnotationAction::Edit { annotation: 3 },
+                },
+            ),
+            (
+                "legend space",
+                KeyboardEvent::new(KeyboardKey::Space, ModifierKeys::NONE),
+                legend_entry_9,
+                SemanticAction::Legend {
+                    action: LegendAction::ToggleVisibility { series: 9 },
+                },
+            ),
+            (
+                "annotation delete",
+                KeyboardEvent::new(KeyboardKey::Delete, ModifierKeys::NONE),
+                annotation_3,
+                SemanticAction::Annotation {
+                    action: AnnotationAction::Delete { annotation: 3 },
+                },
+            ),
+        ];
+        let err_cases = [
+            (
+                "unknown key",
+                KeyboardEvent::new(KeyboardKey::Other(0xdead), ModifierKeys::NONE),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedKeyboardKey,
+            ),
+            (
+                "control navigation",
+                KeyboardEvent::new(KeyboardKey::ArrowLeft, ModifierKeys::CONTROL),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedModifierCombination,
+            ),
+            (
+                "alt grid",
+                KeyboardEvent::new(KeyboardKey::G, ModifierKeys::ALT),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedModifierCombination,
+            ),
+            (
+                "control shift tab",
+                KeyboardEvent::new(
+                    KeyboardKey::Tab,
+                    ModifierKeys::SHIFT.union(ModifierKeys::CONTROL),
+                ),
+                TransientUiState::new(),
+                InputRouteErrorKind::UnsupportedKeyboardModifiers,
+            ),
+            (
+                "legend without focus",
+                KeyboardEvent::new(KeyboardKey::L, ModifierKeys::NONE),
+                TransientUiState::new(),
+                InputRouteErrorKind::FocusRequired,
+            ),
+            (
+                "legend with plot focus",
+                KeyboardEvent::new(KeyboardKey::L, ModifierKeys::NONE),
+                plot,
+                InputRouteErrorKind::UnsupportedFocusTarget,
+            ),
+            (
+                "visibility without focus",
+                KeyboardEvent::new(KeyboardKey::V, ModifierKeys::NONE),
+                TransientUiState::new(),
+                InputRouteErrorKind::FocusRequired,
+            ),
+            (
+                "annotation delete on legend",
+                KeyboardEvent::new(KeyboardKey::Delete, ModifierKeys::NONE),
+                legend_entry_9,
+                InputRouteErrorKind::UnsupportedFocusTarget,
+            ),
+            (
+                "annotation create on legend",
+                KeyboardEvent::new(KeyboardKey::A, ModifierKeys::NONE),
+                legend_focus,
+                InputRouteErrorKind::UnsupportedFocusTarget,
+            ),
+            (
+                "enter on plot",
+                KeyboardEvent::new(KeyboardKey::Enter, ModifierKeys::NONE),
+                plot,
+                InputRouteErrorKind::AmbiguousKeyboardCombination,
+            ),
+            (
+                "space on annotation",
+                KeyboardEvent::new(KeyboardKey::Space, ModifierKeys::NONE),
+                annotation_3,
+                InputRouteErrorKind::UnsupportedFocusTarget,
+            ),
+        ];
+        assert_eq!(
+            ok_cases.len(),
+            23,
+            "keyboard parity fixture must pin its accepted count"
+        );
+        assert_eq!(
+            err_cases.len(),
+            11,
+            "keyboard parity fixture must pin its rejection count"
+        );
+        let mut ok_seen = 0usize;
+        for (name, event, state, expected) in ok_cases {
+            let live = route_keyboard(event, state);
+            let normal =
+                route_with_motion(InputEvent::Keyboard(event), state, MotionPreference::Normal);
+            let reduced = route_with_motion(
+                InputEvent::Keyboard(event),
+                state,
+                MotionPreference::Reduced,
+            );
+            let bare = route(InputEvent::Keyboard(event), state);
+            assert_eq!(live, normal, "{name}");
+            assert_eq!(live, reduced, "{name}");
+            assert_eq!(normal, reduced, "{name}");
+            assert_eq!(live, bare, "{name}");
+            assert_eq!(live, Ok(expected), "{name}");
+            ok_seen += 1;
+        }
+        let mut err_seen = 0usize;
+        for (name, event, state, expected) in err_cases {
+            let live = route_keyboard(event, state);
+            let normal =
+                route_with_motion(InputEvent::Keyboard(event), state, MotionPreference::Normal);
+            let reduced = route_with_motion(
+                InputEvent::Keyboard(event),
+                state,
+                MotionPreference::Reduced,
+            );
+            let bare = route(InputEvent::Keyboard(event), state);
+            assert_eq!(live, normal, "{name}");
+            assert_eq!(live, reduced, "{name}");
+            assert_eq!(normal, reduced, "{name}");
+            assert_eq!(live, bare, "{name}");
+            let live_err = live.expect_err("route_keyboard should reject the input");
+            let normal_err = normal.expect_err("route should reject the input");
+            let reduced_err = reduced.expect_err("route should reject the input");
+            assert_eq!(live_err.kind(), expected, "{name}");
+            assert_eq!(normal_err.kind(), expected, "{name}");
+            assert_eq!(reduced_err.kind(), expected, "{name}");
+            assert_eq!(live_err.message(), normal_err.message(), "{name}");
+            assert_eq!(live_err.message(), reduced_err.message(), "{name}");
+            assert!(!live_err.message().is_empty(), "{name}");
+            err_seen += 1;
+        }
+        assert_eq!(
+            ok_seen, 23,
+            "every accepted keyboard route must run via the live seam under both motions"
+        );
+        assert_eq!(
+            err_seen, 11,
+            "every keyboard rejection must run via the live seam under both motions"
+        );
+    }
+
     #[test]
     fn routes_are_deterministic_and_do_not_mutate_transient_input() {
         let state = TransientUiState::with_focus(Some(FocusTarget::LegendEntry(12)));
