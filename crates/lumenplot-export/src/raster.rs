@@ -45,6 +45,11 @@ pub(crate) const ANNOTATION_INK_RGBA8: [u8; 4] = [0, 0, 0, 255];
 const ANNOTATION_CORNERS_PER_BOX: usize = 4;
 const ANNOTATION_POINTS_PER_SHAFT: usize = 2;
 
+// SINK-P0 grid ink (provisional Q2 O1 proposal): 1-device-px hairlines in
+// the Matplotlib default grid color (#b0b0b0, alpha 1.0, solid). The oracle
+// measurement card pins the exact RGBA; sinks must not invent a second ink.
+pub(crate) const GRID_INK_RGBA8: [u8; 4] = [176, 176, 176, 255];
+
 #[derive(Clone, Copy)]
 struct ClipRect {
     x_min: f64,
@@ -235,9 +240,19 @@ impl RasterPlan {
                 return Err(ExportError::capacity_exceeded());
             }
         }
+        // SINK-P0 grid: each display-space tick draws one full-span line
+        // (two endpoints). Grid work folds into the shared path-point
+        // ceiling with no second cap.
+        let grid_path_points = frame
+            .x_ticks()
+            .len()
+            .checked_add(frame.y_ticks().len())
+            .and_then(|ticks| ticks.checked_mul(2))
+            .ok_or_else(ExportError::capacity_exceeded)?;
         let total_path_points = path_points
             .checked_add(text_path_points)
             .and_then(|total| total.checked_add(annotation_points))
+            .and_then(|total| total.checked_add(grid_path_points))
             .ok_or_else(ExportError::capacity_exceeded)?;
         if total_path_points > MAX_PATH_POINTS {
             return Err(ExportError::capacity_exceeded());
@@ -284,6 +299,9 @@ impl RasterPlan {
         let annotation_mask_bytes = pixel_count
             .checked_mul(2)
             .ok_or_else(ExportError::capacity_exceeded)?;
+        // The grid pass peaks at one full-canvas A8 mask, bounded exactly
+        // like the line-art mask above (SINK-P0, no second cap).
+        let grid_mask_bytes = pixel_count;
         let path_bytes = total_path_points
             .checked_mul(size_of::<[f32; 2]>())
             .and_then(|value| value.checked_add(total_path_points.checked_mul(24)?))
@@ -292,6 +310,7 @@ impl RasterPlan {
             .checked_add(mask_bytes)
             .and_then(|value| value.checked_add(text_mask_bytes))
             .and_then(|value| value.checked_add(annotation_mask_bytes))
+            .and_then(|value| value.checked_add(grid_mask_bytes))
             .and_then(|value| value.checked_add(raw_bytes))
             .and_then(|value| value.checked_add(path_bytes))
             .and_then(|value| value.checked_add(output_estimate))
@@ -451,6 +470,89 @@ pub(crate) fn rasterize_series(
     let path = path_builder.finish().ok_or_else(ExportError::internal)?;
     let stroke = Stroke {
         width: stroke_width as f32,
+        miter_limit: 4.0,
+        line_cap: LineCap::Butt,
+        line_join: LineJoin::Miter,
+        dash: None,
+    };
+    let stroked = path
+        .stroke(&stroke, 1.0)
+        .ok_or_else(ExportError::internal)?;
+    ensure_stroked_path_is_representable(&stroked)?;
+    mask.fill_path(&stroked, FillRule::Winding, true, Transform::identity());
+    Ok(mask)
+}
+
+/// Rasterizes resolve-stamped display-space grid ticks into an A8 mask.
+///
+/// SINK-P0 Option-B consume-only pass: `x_ticks` holds display-space x
+/// positions of full-height vertical lines and `y_ticks` display-space y
+/// positions of full-width horizontal lines, both in logical coordinates at
+/// the plan scale. Lines span the full canvas; the plot clip applies at
+/// compositing time through the caller's plan (never the canvas-scoped text
+/// plan), so mask ink outside the plot rect composites to nothing. Ticks
+/// outside the canvas are skipped without error, like out-of-canvas text;
+/// a non-finite tick is corrupt carrier data and fails with `InvalidInput`,
+/// mirroring the series path. `grid_visible == false` returns an empty
+/// mask: grid-off allocates no grid ink and the resulting no-op composite
+/// preserves the pre-grid bytes (Q7).
+pub(crate) fn rasterize_grid(
+    grid_visible: bool,
+    x_ticks: &[f64],
+    y_ticks: &[f64],
+    plan: &RasterPlan,
+) -> Result<Mask, ExportError> {
+    if allocation_is_forced_to_fail() {
+        return Err(ExportError::allocation_failed());
+    }
+    let data = zero_mask_data(plan.pixel_count())?;
+    let size = IntSize::from_wh(plan.width(), plan.height()).ok_or_else(ExportError::internal)?;
+    let mut mask = Mask::from_vec(data, size).ok_or_else(ExportError::allocation_failed)?;
+    if !grid_visible {
+        return Ok(mask);
+    }
+    // O1 hairline: exactly one device pixel at any plan scale, stroked with
+    // the series caps/joins for a single shared stroke shape.
+    const GRID_WIDTH_DEVICE_PX: f32 = 1.0;
+    let scale = plan.scale();
+    // Width and height are checked positive at construction, so these
+    // conversions stay finite and exactly representable here.
+    let canvas_width = f64::from(plan.width());
+    let canvas_height = f64::from(plan.height());
+    let mut path_builder = PathBuilder::new();
+    let mut has_line = false;
+    for tick in x_ticks {
+        if !tick.is_finite() {
+            return Err(ExportError::invalid_input());
+        }
+        let x = checked_scale(*tick, scale)?;
+        if x < 0.0 || x > canvas_width {
+            continue;
+        }
+        let x = x as f32;
+        path_builder.move_to(x, 0.0);
+        path_builder.line_to(x, canvas_height as f32);
+        has_line = true;
+    }
+    for tick in y_ticks {
+        if !tick.is_finite() {
+            return Err(ExportError::invalid_input());
+        }
+        let y = checked_scale(*tick, scale)?;
+        if y < 0.0 || y > canvas_height {
+            continue;
+        }
+        let y = y as f32;
+        path_builder.move_to(0.0, y);
+        path_builder.line_to(canvas_width as f32, y);
+        has_line = true;
+    }
+    if !has_line {
+        return Ok(mask);
+    }
+    let path = path_builder.finish().ok_or_else(ExportError::internal)?;
+    let stroke = Stroke {
+        width: GRID_WIDTH_DEVICE_PX,
         miter_limit: 4.0,
         line_cap: LineCap::Butt,
         line_join: LineJoin::Miter,
@@ -1268,5 +1370,103 @@ mod tests {
             bytes_after,
             crate::png::encode_line_frame_png(&frame_after, &spec).expect("PNG")
         );
+    }
+
+    #[test]
+    fn grid_off_helper_allocates_no_ink_and_preserves_composited_bytes() {
+        // SINK-P0 Q7: grid-off is byte-identity through the real helper +
+        // compositing path. The frame below is grid-on by default with
+        // nonempty display-space ticks, so the `false` arm runs against
+        // real carrier input (private seam: explicit visibility plus tick
+        // vecs straight into the helper, no public API).
+        let frame = make_canvas_frame((160.0, 140.0), (8.0, 8.0, 56.0, 56.0));
+        assert!(frame.grid_visible());
+        assert!(!frame.x_ticks().is_empty() && !frame.y_ticks().is_empty());
+        let spec = PngSpec::new(1.0).expect("spec");
+        let plan = RasterPlan::new(&frame, &spec).expect("plan");
+        let mask = rasterize_grid(false, frame.x_ticks(), frame.y_ticks(), &plan).expect("mask");
+        assert!(mask.data().iter().all(|coverage| *coverage == 0));
+
+        let background = frame.background();
+        let background = [
+            background.r(),
+            background.g(),
+            background.b(),
+            background.a(),
+        ];
+        let mut pixels =
+            crate::compositor::new_pixels(plan.pixel_count(), background).expect("pixels");
+        let before = crate::compositor::to_rgba8(&pixels).expect("bytes");
+        crate::compositor::composite_mask(
+            &mut pixels,
+            &mask,
+            &plan,
+            GRID_INK_RGBA8,
+            plan.width(),
+            plan.height(),
+        )
+        .expect("composite");
+        assert_eq!(crate::compositor::to_rgba8(&pixels).expect("bytes"), before);
+    }
+
+    #[test]
+    fn grid_on_helper_diffs_inside_plot_and_clips_without_error() {
+        let frame = make_canvas_frame((160.0, 140.0), (8.0, 8.0, 56.0, 56.0));
+        let spec = PngSpec::new(1.0).expect("spec");
+        let plan = RasterPlan::new(&frame, &spec).expect("plan");
+        // Synthetic display-space ticks: plot edges (8/56), an interior
+        // crossing (36), and outside-canvas values that must skip silently.
+        let x_ticks = [8.0, 36.0, 200.0];
+        let y_ticks = [8.0, 36.0, 200.0];
+        let mask = rasterize_grid(true, &x_ticks, &y_ticks, &plan).expect("mask");
+        // Interior crossing lands ink; verticals span the full canvas
+        // height and horizontals the full width (the mask itself is
+        // unclipped: the plot clip applies at compositing time).
+        assert_ne!(mask.data()[36 * 160 + 36], 0);
+        assert_ne!(mask.data()[100 * 160 + 36], 0);
+        assert_ne!(mask.data()[36 * 160 + 100], 0);
+        // Plot-edge hairlines still ink their inner half.
+        assert_ne!(mask.data()[36 * 160 + 8], 0);
+        // Far from every line the mask stays clear.
+        assert_eq!(mask.data()[130 * 160 + 150], 0);
+        // Grid-on with no ticks is an empty mask, and outside-canvas ticks
+        // change nothing versus the in-range subset.
+        let empty = rasterize_grid(true, &[], &[], &plan).expect("mask");
+        assert!(empty.data().iter().all(|coverage| *coverage == 0));
+        let subset = rasterize_grid(true, &[8.0, 36.0], &[8.0, 36.0], &plan).expect("mask");
+        assert_eq!(mask.data(), subset.data());
+        // Deterministic for the same inputs.
+        let again = rasterize_grid(true, &x_ticks, &y_ticks, &plan).expect("mask");
+        assert_eq!(mask.data(), again.data());
+        // The plot clip (not the mask) confines ink: compositing with the
+        // line plan leaves outside-plot pixels untouched.
+        let background = [255, 255, 255, 255];
+        let mut pixels =
+            crate::compositor::new_pixels(plan.pixel_count(), background).expect("pixels");
+        crate::compositor::composite_mask(
+            &mut pixels,
+            &mask,
+            &plan,
+            GRID_INK_RGBA8,
+            plan.width(),
+            plan.height(),
+        )
+        .expect("composite");
+        let bytes = crate::compositor::to_rgba8(&pixels).expect("bytes");
+        let at = |x: usize, y: usize| -> [u8; 4] {
+            bytes[(y * 160 + x) * 4..(y * 160 + x) * 4 + 4]
+                .try_into()
+                .expect("pixel")
+        };
+        assert_ne!(at(36, 36), background);
+        assert_eq!(at(100, 36), background);
+        // Corrupt carrier fails closed instead of drawing.
+        let error = rasterize_grid(true, &[f64::NAN], &[], &plan).expect_err("non-finite");
+        assert_eq!(error.kind(), ExportErrorKind::InvalidInput);
+        // Forced allocation failure surfaces before any fill.
+        set_allocation_failure_for_test(true);
+        let error = rasterize_grid(true, &[36.0], &[36.0], &plan).expect_err("allocation");
+        set_allocation_failure_for_test(false);
+        assert_eq!(error.kind(), ExportErrorKind::AllocationFailed);
     }
 }
