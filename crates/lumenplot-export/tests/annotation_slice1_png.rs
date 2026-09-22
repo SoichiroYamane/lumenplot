@@ -161,12 +161,14 @@ fn annotation_mirror_fallback_exports_deterministically_with_ink_and_clean_corne
 }
 
 /// Small page: every fixture annotation falls outside the 4x4 canvas, so
-/// the annotation pass is a no-op and the top-left corner stays
-/// background while encoding stays deterministic.
+/// the annotation pass is a no-op and the probe at (3, 3) stays
+/// background while encoding stays deterministic. The probe sits outside
+/// the plot clip (grid is plot-clipped), preserving the annotation no-op
+/// and determinism intent.
 #[test]
 fn small_page_corner_stays_background() {
     let canvas = LogicalSize::new(4.0, 4.0).expect("canvas");
-    let plot = LogicalRect::new(0.0, 0.0, 4.0, 4.0).expect("plot");
+    let plot = LogicalRect::new(0.0, 0.0, 2.0, 2.0).expect("plot");
     let style = LineStyle::new(SrgbRgba8::new(20, 40, 80, 255), 1.0).expect("style");
     let frame_spec =
         LineFrameSpec::new(canvas, plot, 1.0, style, SrgbRgba8::new(255, 255, 255, 255))
@@ -190,5 +192,5 @@ fn small_page_corner_stays_background() {
     assert_eq!(first, second, "encoding must be deterministic");
     let (width, height, pixels) = decode_rgba8(&first);
     assert_eq!((width, height), (4, 4));
-    assert_eq!(pixel_at(&pixels, width, 0, 0), BACKGROUND);
+    assert_eq!(pixel_at(&pixels, width, 3, 3), BACKGROUND);
 }
