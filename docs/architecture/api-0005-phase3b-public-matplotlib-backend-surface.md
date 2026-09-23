@@ -251,6 +251,14 @@ Constraints already binding regardless of final names: savefig/print_png return
 replaced atomically; warnings/recording modes must be explicit and no silent
 ignore mode may exist if a warning mode is accepted.
 
+Command-kind note (2026-09-23 architecture-authority option-a amendment,
+ADR 0015 section 4b): the bounded slice additionally admits one
+coverage-blit command kind carrying a per-label hinted alpha mask as
+`decoration: "legend_label"` (PNG-only; legend first, tick/date-glyph
+labels sequenced after). The canvas method, result type, diagnostic type,
+warning type, and `last_diagnostics` names above are unchanged, and the
+public `glyph_outline_commands` contract is untouched.
+
 ## Alternatives considered
 
 - **Freezing exact public names before helper evidence** was rejected: API 0003

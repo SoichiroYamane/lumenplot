@@ -313,6 +313,10 @@ Acceptance has four independent parts:
    not used to excuse a geometry mismatch, and corresponding outline vertices
    must agree within `1e-6` logical points after the declared transform. If a
    feature cannot meet this bar, it remains outside strict eligibility.
+   Pointer (2026-09-23 architecture-authority option-a amendment, ADR 0015
+   section 4b): legend labels (later tick/date-glyph labels) may ride
+   PNG-only hinted coverage-blit under that amendment; this pointer changes
+   no threshold, row class, or MUST text in this item.
 4. **Operational parity and fallback.** `hybrid-explicit` renders the original
    request once through whole-frame Agg when native eligibility is absent and
    publishes exactly one diagnostic. Its decoded pixels must equal the Agg
