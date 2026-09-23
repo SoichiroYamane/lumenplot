@@ -1153,8 +1153,9 @@ class TestTickLabelWireUp(unittest.TestCase):
     """End-to-end behavior of the tick-label text lane.
 
     Eligibility: a default decorated axes with visible major tick labels
-    renders natively; labels become ``kind: "path"`` glyph commands built
-    by the public T-lane module. Unsupported text surfaces keep refusing.
+    renders natively; labels become ``kind: "image"`` coverage-blit
+    commands built via the public T-lane helper. Unsupported text
+    surfaces keep refusing.
     """
 
     def _canvas_with(self, build, figsize=(2.0, 1.0), **canvas_kwargs):
@@ -1196,49 +1197,130 @@ class TestTickLabelWireUp(unittest.TestCase):
         self.assertEqual(canvas.last_diagnostics, ())
 
     def test_tick_label_commands_present_in_spec(self):
-        """AC (b): each visible label contributes one frozen-seam path
-        command whose fill surface matches the T-lane contract."""
+        """AC (b): each visible label contributes one coverage-blit image
+        command whose ink matches the T-lane contract."""
+        import importlib
+        import unittest.mock
+
+        textpath = importlib.import_module("lumenplot_mpl.textpath")
+        support = importlib.import_module("lumenplot_mpl.backend_support")
+        real_mask = textpath._label_coverage_mask
+        calls: list = []
+
+        def recording_mask(*args, **kwargs):
+            result = real_mask(*args, **kwargs)
+            calls.append((args, kwargs, result))
+            return result
+
         canvas = self._canvas_with(self._labeled_line)
-        result = canvas.render_png()
+        with unittest.mock.patch.object(
+            textpath, "_label_coverage_mask", recording_mask
+        ):
+            result = canvas.render_png()
         self.assertEqual(result.diagnostics, ())
         commands = _StubNativeModule.last_spec["commands"]
         self.assertIsNotNone(commands)
-        paths = [c for c in commands if c.get("kind") == "path"
-                 and c.get("fill_rgba") is not None
-                 and c.get("stroke_rgba") is None]
-        self.assertTrue(paths, "no filled glyph path commands in spec")
-        for command in paths:
-            self.assertEqual(command["fill_rgba"], [0, 0, 0, 255])
-            self.assertIsNone(command["stroke_rgba"])
-            self.assertEqual(command["line_width_pt"], 0.0)
-            self.assertEqual(command["cap"], "butt")
-            self.assertEqual(command["join"], "miter")
-            self.assertIsNone(command["dashes"])
-            self.assertEqual(
-                command["transform"], [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
-            )
+        images = [c for c in commands if c.get("kind") == "image"]
+        self.assertTrue(images, "no coverage-blit label commands in spec")
+        for command in images:
+            self.assertEqual(command["decoration"], "tick_label")
+            for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                self.assertNotIn(absent, command)
         # Default x ticks are 0/5/10 and y ticks 0/1..5 -> eight labels,
-        # each contributing exactly one whole-outline path command.
-        self.assertEqual(len(paths), len(self._visible_labels()))
-        # Placement: the frozen seam's vertex frame is bottom-left origin
+        # each contributing exactly one coverage-blit image command.
+        labels = [
+            label
+            for ax in getattr(self, "_axes_created", [])
+            for axis in (ax.xaxis, ax.yaxis)
+            for label in axis.get_majorticklabels()
+            if label.get_visible() and label.get_text() != ""
+        ]
+        self.assertEqual(len(images), len(labels))
+        self.assertEqual(len(images), len(self._visible_labels()))
+        # One coverage-helper call per tick label, in draw order.
+        self.assertEqual(len(calls), len(labels))
+        for command, label, call in zip(images, labels, calls):
+            args, kwargs, outcome = call
+            self.assertEqual(args[0], str(label.get_text()))
+            self.assertEqual(args[3], 100.0)
+            self.assertEqual(args[4], float(label.get_rotation()))
+            # Tick anchors may sit off-canvas (x labels below the axes);
+            # only finiteness is pinned here while exact geometry rides
+            # the command pins below.
+            for anchor in (args[1], args[2]):
+                self.assertTrue(anchor == anchor)
+                self.assertLess(abs(float(anchor)), 1e9)
+            self.assertEqual(kwargs["font_size_pt"], float(label.get_fontsize()))
+            self.assertEqual(kwargs["dpi"], 100.0)
+            label_prop = label.get_fontproperties()
+            self.assertEqual(
+                tuple(kwargs["prop"].get_family()),
+                tuple(label_prop.get_family()),
+            )
+            self.assertEqual(
+                kwargs["prop"].get_style(), label_prop.get_style()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_weight(), label_prop.get_weight()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_size_in_points(),
+                float(label.get_fontsize()),
+            )
+            left_col, top_row, mask_w, mask_h, mask = outcome
+            style = support._rgba8(label.get_color(), label.get_alpha())
+            self.assertEqual(command["x"], float(left_col))
+            self.assertEqual(
+                command["y"], float(100.0 - (top_row + mask_h))
+            )
+            self.assertEqual(command["width"], mask_w)
+            self.assertEqual(command["height"], mask_h)
+            self.assertEqual(command["clip_rect"], [0.0, 0.0, 200.0, 100.0])
+            self.assertGreater(mask_w, 0)
+            self.assertGreater(mask_h, 0)
+            self.assertTrue(any(mask))
+            # Wire pin: every blit pixel carries the label color with the
+            # helper coverage folded into alpha, packed per the adapter.
+            raw_rgba = bytes(command["rgba"])
+            self.assertEqual(len(raw_rgba), 4 * mask_w * mask_h)
+            expected_rgba = bytearray(4 * mask_w * mask_h)
+            for index, cover in enumerate(mask):
+                expected_rgba[4 * index] = style[0]
+                expected_rgba[4 * index + 1] = style[1]
+                expected_rgba[4 * index + 2] = style[2]
+                expected_rgba[4 * index + 3] = textpath._agg_multiply_byte(
+                    style[3], int(cover)
+                )
+            self.assertEqual(raw_rgba, bytes(expected_rgba))
+            for index in range(mask_w * mask_h):
+                self.assertEqual(
+                    tuple(raw_rgba[4 * index:4 * index + 3]), tuple(style[:3])
+                )
+                self.assertEqual(
+                    raw_rgba[4 * index + 3],
+                    textpath._agg_multiply_byte(style[3], int(mask[index])),
+                )
+        # Placement: the frozen seam's image-box frame is bottom-left origin
         # (the seam applies its own display flip), so x-axis label ink must
         # sit BELOW the axes rectangle in that frame. This band geometry
         # pins the anchor pipeline against sign flips the stub seam itself
         # cannot observe.
-        for command in paths:
-            ys = [v[1] for v in command["vertices"]]
-            xs = [v[0] for v in command["vertices"]]
-            if all(x < 18.0 for x in xs):
+        for command in images:
+            left = command["x"]
+            right = command["x"] + command["width"]
+            bottom = command["y"]
+            top = command["y"] + command["height"]
+            if right < 18.0:
                 # A y-axis label: entirely left of the axes edge.
-                self.assertGreater(min(ys), 0.0)
+                self.assertGreater(bottom, 0.0)
             else:
                 # An x-axis label: entirely below the axes bottom edge
                 # (seam y = 10 for this fixture); an unflipped top-left
                 # regression lands these near y >= 90 instead.
                 self.assertLess(
-                    max(ys),
+                    top,
                     12.0,
-                    f"label misplaced: {command['vertices'][:3]}",
+                    f"label misplaced: {(left, bottom, right, top)}",
                 )
 
 
@@ -1295,12 +1377,15 @@ class TestTickLabelWireUp(unittest.TestCase):
         result = canvas.render_png()
         self.assertEqual(result.diagnostics, ())
         commands = _StubNativeModule.last_spec["commands"]
-        paths = [c for c in commands if c.get("kind") == "path"
-                 and c.get("fill_rgba") is not None]
+        images = [c for c in commands if c.get("kind") == "image"]
+        for command in images:
+            self.assertEqual(command["decoration"], "tick_label")
+            for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                self.assertNotIn(absent, command)
         # Both stacked axes keep default label visibility, so the shared
         # spec carries every visible label of every created axes.
-        self.assertEqual(len(paths), len(self._visible_labels()))
-        self.assertGreaterEqual(len(paths), 4)
+        self.assertEqual(len(images), len(self._visible_labels()))
+        self.assertGreaterEqual(len(images), 4)
 
 
 # ---------------------------------------------------------------------------
