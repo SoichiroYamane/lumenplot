@@ -25,7 +25,10 @@ WGPU_LOCK_SHA256 = "58d77cc67bdd45814b214c3bbd5681a94775811226d186899608e44efce1
 # windows-sys, ...), so tracked edge sets render with version suffixes below.
 # Expected only while the winit inventory is present; the base digest above
 # stays authoritative otherwise (fail-closed both ways).
-WINIT_WGPU_LOCK_SHA256 = "d8853fae90e097bc6f5e8c14664054f99fb1ab111ebd51048820765709499321"
+# Repinned 2026-09-23 for PR230 M4-PRESENT-2: the lockfile gains only the
+# surface-wgpu rename edge of pinned wgpu 29.0.4 in lumenplot-window
+# (commander ruling ref t_25d6515f; no version or checksum change).
+WINIT_WGPU_LOCK_SHA256 = "6c26143f4f7a82e55f4ed16faf466a99e46d40375293b7bc94672f97bc85f794"
 WGPU_PACKAGE_VERSION = "29.0.4"
 WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
 WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {

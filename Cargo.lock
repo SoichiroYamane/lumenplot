@@ -1120,6 +1120,7 @@ dependencies = [
  "lumenplot-render-api",
  "lumenplot-render-wgpu",
  "lumenplot-runtime",
+ "wgpu",
  "winit",
 ]
 

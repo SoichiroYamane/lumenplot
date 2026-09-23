@@ -3,8 +3,10 @@
 //! Accepted DAG identity (commander ruling 2026-09-13; ADR 0003 amendment):
 //! `crates/lumenplot-window` hosts the native window/event loop over
 //! `lumenplot-runtime` and `lumenplot-render-wgpu`, with `publish = false`.
-//! The only permitted external edge is pinned winit 0.30.x (baseline
-//! 0.30.13); no other external dependency is admitted.
+//! The permitted external edges are pinned winit 0.30.x (baseline
+//! 0.30.13) plus the M4-PRESENT-2 renamed portable-backend edge (same
+//! reviewed baseline the render-wgpu crate uses); no other external
+//! dependency is admitted.
 //!
 //! Main-thread ownership (runtime, surface, GPU device) follows ADR 0005:
 //! the [`WindowApp`] core owns one [`EngineSession`](lumenplot_runtime::EngineSession)
@@ -31,6 +33,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use lumenplot_runtime::{
     EngineSession, LifecycleOutcome, LoopMode, LoopOutcome, RuntimeError, RuntimeErrorKind,
@@ -38,6 +41,9 @@ use lumenplot_runtime::{
 };
 
 mod present;
+mod surface;
+
+use surface::SurfaceTransport;
 
 /// Largest window dimension accepted by the M1 seam, mirroring the runtime
 /// surface bound so a validated [`WindowSize`] never fails surface creation.
@@ -571,10 +577,17 @@ impl WindowApp {
 /// per ADR 0005) and translates OS window events into [`CadenceEvent`]s.
 /// Redraws are requested once at open and on size-affecting events; no
 /// continuous pump runs here, so an occluded window never busy-loops.
+///
+/// M4-PRESENT-2: the shell additionally owns one private [`SurfaceTransport`]
+/// created with the window in `resumed`. Each redraw first records the
+/// lifecycle event on the core and then presents exactly one surface frame
+/// through [`present::present_surface`]; a surface failure is reported
+/// observably and exits the loop instead of falling back silently.
 pub struct WinitHost {
     size: WindowSize,
     core: Option<WindowApp>,
-    window: Option<winit::window::Window>,
+    window: Option<Arc<winit::window::Window>>,
+    transport: Option<SurfaceTransport>,
     open_error: Option<WindowError>,
     close_outcome: Option<CloseOutcome>,
 }
@@ -587,6 +600,7 @@ impl WinitHost {
             size,
             core: None,
             window: None,
+            transport: None,
             open_error: None,
             close_outcome: None,
         }
@@ -618,6 +632,31 @@ impl WinitHost {
             }
         }
     }
+
+    /// Present exactly one surface frame for the live window, if the surface
+    /// transport was created.
+    ///
+    /// Called after the lifecycle event is recorded so the core accounting
+    /// stays first. A surface failure is reported observably on stderr and
+    /// exits the loop; the loop never continues presenting, and it never
+    /// falls back to offscreen pixels.
+    fn present_once(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let (Some(core), Some(window), Some(transport)) = (
+            self.core.as_ref(),
+            self.window.as_ref(),
+            self.transport.as_mut(),
+        ) else {
+            return;
+        };
+        if let Err(error) = present::present_surface(core, window, transport) {
+            eprintln!(
+                "lumenplot-window: surface present failed: {} ({})",
+                error.message(),
+                error.kind().as_str()
+            );
+            event_loop.exit();
+        }
+    }
 }
 
 impl winit::application::ApplicationHandler for WinitHost {
@@ -643,8 +682,36 @@ impl winit::application::ApplicationHandler for WinitHost {
         match event_loop.create_window(attributes) {
             Ok(window) => {
                 window.request_redraw();
-                self.core = Some(core);
-                self.window = Some(window);
+                let window = Arc::new(window);
+                let pixels = window.inner_size();
+                let (width, height) = if pixels.width == 0 || pixels.height == 0 {
+                    (self.size.width(), self.size.height())
+                } else {
+                    (pixels.width, pixels.height)
+                };
+                match SurfaceTransport::create(Arc::clone(&window), width, height) {
+                    Ok(transport) => {
+                        eprintln!(
+                            "lumenplot-window: surface configured: {}x{} {:?}",
+                            width,
+                            height,
+                            transport.format()
+                        );
+                        self.core = Some(core);
+                        self.window = Some(window);
+                        self.transport = Some(transport);
+                    }
+                    Err(error) => {
+                        let _ = core;
+                        eprintln!(
+                            "lumenplot-window: surface configure failed: {} ({})",
+                            error.message(),
+                            error.kind().as_str()
+                        );
+                        self.open_error = Some(error);
+                        event_loop.exit();
+                    }
+                }
             }
             Err(_) => {
                 let _ = core;
@@ -676,6 +743,7 @@ impl winit::application::ApplicationHandler for WinitHost {
             }
             winit::event::WindowEvent::RedrawRequested => {
                 self.translate(event_loop, CadenceEvent::RedrawRequested);
+                self.present_once(event_loop);
             }
             winit::event::WindowEvent::Resized(size) => {
                 match WindowSize::new(size.width, size.height) {

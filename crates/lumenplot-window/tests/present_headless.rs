@@ -12,7 +12,7 @@
 use lumenplot_render_api::__internal::{SrgbRgba8, Viewport};
 use lumenplot_render_api::{FrameSpec, SceneHandle};
 use lumenplot_runtime::{
-    EngineSession, LoopMode, RuntimeErrorKind, SceneRevision, SurfaceCondition,
+    EngineSession, LifecycleOutcome, LoopMode, RuntimeErrorKind, SceneRevision, SurfaceCondition,
 };
 use lumenplot_window::{
     CadenceEvent, CloseOutcome, EventApplied, FrameOutcome, WindowApp, WindowErrorKind, WindowSize,
@@ -137,6 +137,68 @@ fn state_only_owner_path_is_explicit_without_backend() {
         error.kind(),
         RuntimeErrorKind::BackendUnavailable,
         "missing portable backend must be an explicit outcome"
+    );
+}
+
+#[test]
+fn suspend_resume_is_idempotent_without_backend() {
+    let mut session = EngineSession::new(LoopMode::NativeOwned);
+    session
+        .run_native_loop()
+        .expect("native loop entry must succeed");
+    let surface = session
+        .create_surface(ORACLE_CANVAS)
+        .expect("surface must be created");
+    assert_eq!(
+        session.suspend(surface),
+        Ok(LifecycleOutcome::Suspended),
+        "first suspend must suspend the active surface"
+    );
+    assert_eq!(
+        session.suspend(surface),
+        Ok(LifecycleOutcome::AlreadySuspended),
+        "second suspend must stay idempotent"
+    );
+    assert_eq!(
+        session.resume(surface),
+        Ok(LifecycleOutcome::Resumed),
+        "resume must schedule reconfiguration"
+    );
+    assert_eq!(
+        session.resume(surface),
+        Ok(LifecycleOutcome::AlreadyActive),
+        "resume of an active surface must stay idempotent"
+    );
+}
+
+#[test]
+fn surface_loss_rebuild_is_explicit_without_backend() {
+    let mut session = EngineSession::new(LoopMode::NativeOwned);
+    session
+        .run_native_loop()
+        .expect("native loop entry must succeed");
+    let surface = session
+        .create_surface(ORACLE_CANVAS)
+        .expect("surface must be created");
+    assert_eq!(
+        session.handle_surface_loss(surface),
+        Ok(LifecycleOutcome::SurfaceLost),
+        "loss must be recorded observably"
+    );
+    assert_eq!(
+        session.handle_surface_loss(surface),
+        Ok(LifecycleOutcome::AlreadyLost),
+        "repeated loss must stay idempotent"
+    );
+    assert_eq!(
+        session.recreate_surface(surface),
+        Ok(LifecycleOutcome::SurfaceRecreated),
+        "recreate must rebuild through the owner thread"
+    );
+    assert_eq!(
+        session.suspend(surface),
+        Ok(LifecycleOutcome::Suspended),
+        "rebuilt surface must accept lifecycle work again"
     );
 }
 
