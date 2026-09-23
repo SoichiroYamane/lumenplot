@@ -4,15 +4,14 @@ The semantic checks run without the compiled extension.  The pixel comparison
 is deliberately a separate strict native test: it is skipped with an explicit
 setup reason when ``lumenplot_mpl._native.render_frame_png`` is unavailable and
 never substitutes a stub or Agg fallback as parity evidence.  The strict test
-encodes a documented, P3-owned glyph quarantine (pinned label-box geometry
-that fails loud on drift); the fixed S15.1 manifest contract is unchanged.
+asserts full S15.1 parity with no exclusions; the fixed S15.1 manifest
+contract is unchanged.
 """
 
 from __future__ import annotations
 
 import hashlib
 import importlib
-import math
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -24,7 +23,6 @@ try:
         FRINGE_MAX_CHANNEL_DELTA,
         PIXEL_CLASS_CODES,
         compare_pngs,
-        compare_rgba8,
         decode_png_rgba8,
         load_reference_fixture,
     )
@@ -33,7 +31,6 @@ except ImportError:  # ``unittest discover -s tests/python``
         FRINGE_MAX_CHANNEL_DELTA,
         PIXEL_CLASS_CODES,
         compare_pngs,
-        compare_rgba8,
         decode_png_rgba8,
         load_reference_fixture,
     )
@@ -438,10 +435,22 @@ class TestLegendAdapterSemantics(unittest.TestCase):
         )
 
     def test_strict_spec_legend_labels_match_textpath_extraction(self):
-        """Each legend label glyph matches the public textpath outline."""
+        """Each legend label rides as one coverage-blit image command."""
 
         textpath = importlib.import_module("lumenplot_mpl.textpath")
-        commands = self._capture_spec()
+        support = importlib.import_module("lumenplot_mpl.backend_support")
+        real_mask = textpath._label_coverage_mask
+        calls: list = []
+
+        def recording_mask(*args, **kwargs):
+            result = real_mask(*args, **kwargs)
+            calls.append((args, kwargs, result))
+            return result
+
+        with unittest.mock.patch.object(
+            textpath, "_label_coverage_mask", recording_mask
+        ):
+            commands = self._capture_spec()
         labels = [c for c in commands if c.get("decoration") == "legend_label"]
         self.assertEqual(len(labels), 2)
         with fixture_rc_context():
@@ -449,79 +458,82 @@ class TestLegendAdapterSemantics(unittest.TestCase):
             texts = list(legend.get_texts())
         self.assertEqual([t.get_text() for t in texts], ["alpha", "beta"])
         self.assertEqual(len(labels), len(texts))
-        for command, label in zip(labels, texts):
-            expected = textpath.glyph_outline_commands(
-                str(label.get_text()),
-                (0.0, 0.0),
-                1.0,
-                0.0,
-                font_size_pt=float(label.get_fontsize()),
-                prop=label.get_fontproperties(),
-            )[0]
-            self.assertEqual(command["codes"], expected["codes"])
-            self.assertEqual(len(command["vertices"]), len(expected["vertices"]))
-            self.assertEqual(command["fill_rgba"], [0, 0, 0, 255])
-            self.assertIsNone(command["stroke_rgba"])
+        # One coverage-helper call per legend label, in legend order.
+        self.assertEqual(len(calls), len(texts))
+        for command, label, call in zip(labels, texts, calls):
+            args, kwargs, outcome = call
+            self.assertEqual(args[0], str(label.get_text()))
+            self.assertEqual(args[3], 100.0)
+            self.assertEqual(args[4], float(label.get_rotation()))
+            for anchor, bound in ((args[1], 200.0), (args[2], 100.0)):
+                self.assertTrue(anchor == anchor)
+                self.assertGreaterEqual(float(anchor), 0.0)
+                self.assertLessEqual(float(anchor), bound)
+            self.assertEqual(kwargs["font_size_pt"], float(label.get_fontsize()))
+            self.assertEqual(kwargs["dpi"], EFFECTIVE_DPI)
+            label_prop = label.get_fontproperties()
+            self.assertEqual(
+                tuple(kwargs["prop"].get_family()),
+                tuple(label_prop.get_family()),
+            )
+            self.assertEqual(
+                kwargs["prop"].get_style(), label_prop.get_style()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_weight(), label_prop.get_weight()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_size_in_points(),
+                float(label.get_fontsize()),
+            )
+            left_col, top_row, mask_w, mask_h, mask = outcome
+            style = support._rgba8(label.get_color(), label.get_alpha())
+            # Representation pin: coverage-blit image command, never an
+            # outline path and never outline keys on an image command.
+            self.assertEqual(command["kind"], "image")
+            self.assertEqual(command["decoration"], "legend_label")
+            for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                self.assertNotIn(absent, command)
+            self.assertEqual(command["x"], float(left_col))
+            self.assertEqual(
+                command["y"], float(100.0 - (top_row + mask_h))
+            )
+            self.assertEqual(command["width"], mask_w)
+            self.assertEqual(command["height"], mask_h)
+            self.assertEqual(command["clip_rect"], [0.0, 0.0, 200.0, 100.0])
+            self.assertGreater(mask_w, 0)
+            self.assertGreater(mask_h, 0)
+            self.assertTrue(any(mask))
+            self.assertGreaterEqual(command["x"], 0.0)
+            self.assertGreaterEqual(command["y"], 0.0)
+            self.assertLessEqual(command["x"] + mask_w, 200.0)
+            self.assertLessEqual(command["y"] + mask_h, 100.0)
+            # Wire pin: every blit pixel carries the label color with the
+            # helper coverage folded into alpha, packed per the adapter.
+            raw_rgba = bytes(command["rgba"])
+            self.assertEqual(len(raw_rgba), 4 * mask_w * mask_h)
+            expected_rgba = bytearray(4 * mask_w * mask_h)
+            for index, cover in enumerate(mask):
+                expected_rgba[4 * index] = style[0]
+                expected_rgba[4 * index + 1] = style[1]
+                expected_rgba[4 * index + 2] = style[2]
+                expected_rgba[4 * index + 3] = textpath._agg_multiply_byte(
+                    style[3], int(cover)
+                )
+            self.assertEqual(raw_rgba, bytes(expected_rgba))
+            for index in range(mask_w * mask_h):
+                self.assertEqual(
+                    tuple(raw_rgba[4 * index:4 * index + 3]), tuple(style[:3])
+                )
+                self.assertEqual(
+                    raw_rgba[4 * index + 3],
+                    textpath._agg_multiply_byte(style[3], int(mask[index])),
+                )
 
 
-# Documented glyph quarantine for the strict legend parity test below.
-#
-# PARKED scope, P3 writer-track owned. The renderer lane (thin-spine
-# projecting caps, Agg-faithful frame subdivision, content fringe,
-# draw-order) delivers background/fully-covered byte-exact pixels, zero
-# oversized pixels outside the two legend label boxes, and a small
-# all-delta-1 renderer fringe. The remaining in-box residual is
-# glyph-shaping scope: measured 398 quarantined px (of which 372 oversized,
-# max channel delta 28) on the landing lane (renderer fix plus writer
-# handoff f881168 from card t_71585976, on origin/main cda9018; convergence
-# evidence t_d806ffab; landing card t_4169af15). That remainder moves only
-# with the P3 writer lane, which owns this quarantine's removal.
-#
-# The quarantine excludes ONLY the two label glyph boxes below (plus a
-# fixed 2 px pad). It pins their Agg-measured geometry verbatim and fails
-# LOUD if that geometry changes, so no renderer regression can hide inside
-# it. If P3 ever clears the glyph residual, the parked-residual assertion
-# fails LOUD as well, forcing this quarantine's removal instead of letting
-# a dead exclusion linger silently. The fixed S15.1 manifest contract
-# itself is unchanged: background/fully-covered byte-exact, fringe max
-# channel delta 1, fringe rate over total pixels <= 0.001.
-_GLYPH_QUARANTINE_PAD_PX = 2
-# Agg-measured legend label boxes in display points (bottom-left origin)
-# for Matplotlib 3.11.1, DejaVu Sans 10pt, under the fixture rc-params.
-# Pinned verbatim: any drift fails LOUD (see the strict test).
-_PINNED_LABEL_BOXES = (
-    ("alpha", 127.49999999999997, 63.16341145833333, 167.49999999999997, 77.5),
-    (
-        "beta",
-        127.49999999999997,
-        41.882378472222214,
-        159.49999999999997,
-        56.218967013888886,
-    ),
-)
-# Integer quarantine rects as (label, x0, top_row0, x1, top_row1) with
-#   x in [floor(x0) - pad, ceil(x1) + pad) and
-#   top-to-bottom rows in [floor(H - y1) - pad, ceil(H - y0) + pad)
-# on the fixed 200x100 frame. Pinned verbatim with the boxes above.
-_PINNED_QUARANTINE_RECTS = (
-    ("alpha", 125, 20, 170, 39),
-    ("beta", 125, 41, 162, 61),
-)
-_PINNED_QUARANTINE_PIXELS = 1595
-# Renderer-lane residual OUTSIDE the quarantine, measured on the landing
-# lane: 111 antialias-fringe px, every channel delta exactly 1, zero
-# oversized, zero background/fully-covered. Growth fails LOUD; shrinkage
-# from genuine renderer progress stays green and is reported.
-_RENDERER_FRINGE_CAP_PX = 111
-
-
-def _label_quarantine_mask(width, height):
-    """Return the pinned glyph-box quarantine as a top-to-bottom bool grid."""
-
-    mask = np.zeros((height, width), dtype=bool)
-    for _label, x0, row0, x1, row1 in _PINNED_QUARANTINE_RECTS:
-        mask[row0:row1, x0:x1] = True
-    return mask
+# The P3 PNG-only label-coverage lane (ADR 0015 section 4b) removed the
+# glyph quarantine: legend labels ride as coverage-blit commands and the
+# strict test below asserts full S15.1 parity with no exclusions.
 
 
 class TestLegendNativeAggParity(unittest.TestCase):
@@ -535,58 +547,6 @@ class TestLegendNativeAggParity(unittest.TestCase):
         self.native = _require_real_native_seam()
 
     def test_strict_native_render_matches_fixed_agg_reference(self):
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-
-        quarantine_owner = (
-            "PARKED glyph scope, P3 writer-track owned "
-            "(writer handoff f881168, card t_71585976; convergence "
-            "t_d806ffab; landing t_4169af15): "
-        )
-        # Live label geometry comes from a dedicated Agg figure built from
-        # the same pinned inputs, so the strict render figure below is
-        # never perturbed by the geometry probe.
-        with fixture_rc_context():
-            geometry_figure, _gax, geometry_legend, _glines = (
-                build_fixture_figure()
-            )
-            geometry_canvas = FigureCanvasAgg(geometry_figure)
-            geometry_canvas.draw()
-            live_boxes = [
-                (
-                    text.get_text(),
-                    text.get_window_extent(
-                        renderer=geometry_canvas.get_renderer()
-                    ),
-                )
-                for text in geometry_legend.get_texts()
-            ]
-        # 1. LOUD geometry pin: the quarantine is only valid for the exact
-        # label boxes it documents. Any drift fails here, never silently.
-        self.assertEqual(
-            [name for name, _box in live_boxes],
-            [name for name, *_rest in _PINNED_LABEL_BOXES],
-            quarantine_owner + "legend label identity changed",
-        )
-        for (name, box), pinned in zip(live_boxes, _PINNED_LABEL_BOXES):
-            _exp_name, exp_x0, exp_y0, exp_x1, exp_y1 = pinned
-            self.assertEqual(name, _exp_name, quarantine_owner + "label order changed")
-            for corner, got, exp in (
-                ("x0", box.x0, exp_x0),
-                ("y0", box.y0, exp_y0),
-                ("x1", box.x1, exp_x1),
-                ("y1", box.y1, exp_y1),
-            ):
-                self.assertAlmostEqual(
-                    float(got),
-                    float(exp),
-                    places=6,
-                    msg=(
-                        quarantine_owner
-                        + f"label box {name!r} corner {corner} drifted "
-                        f"({got!r} != {exp!r}); re-derive the quarantine "
-                        "in the P3 writer lane instead of widening it here"
-                    ),
-                )
         backend = importlib.import_module("lumenplot_mpl.backend")
         with fixture_rc_context():
             figure, _axes, _legend, _lines = build_fixture_figure()
@@ -599,154 +559,35 @@ class TestLegendNativeAggParity(unittest.TestCase):
         self.assertEqual(
             (width, height),
             (200, 100),
-            quarantine_owner + "frame geometry changed; pinned rects are stale",
+            "frame geometry changed",
         )
-        # 2. Derive the integer quarantine from the LIVE boxes, then require
-        # it to equal the pinned rects: the exclusion set can never drift
-        # with unpinned geometry.
-        pad = _GLYPH_QUARANTINE_PAD_PX
-        derived_rects = []
-        for name, box in live_boxes:
-            derived_rects.append(
-                (
-                    name,
-                    max(0, math.floor(float(box.x0)) - pad),
-                    max(0, math.floor(float(height - box.y1)) - pad),
-                    min(width, math.ceil(float(box.x1)) + pad),
-                    min(height, math.ceil(float(height - box.y0)) + pad),
-                )
-            )
-        self.assertEqual(
-            derived_rects,
-            list(_PINNED_QUARANTINE_RECTS),
-            quarantine_owner + "quarantine rects drifted with live geometry",
-        )
-        quarantine = _label_quarantine_mask(width, height)
-        self.assertEqual(
-            int(quarantine.sum()),
-            _PINNED_QUARANTINE_PIXELS,
-            quarantine_owner + "quarantine pixel count changed",
-        )
-        # 3. Full-frame report under the unchanged S15.1 manifest contract.
+        # Full-frame report under the unchanged S15.1 manifest contract:
+        # background/fully-covered byte-exact, fringe max channel delta
+        # 1, fringe mismatch rate over total pixels <= 0.001. No
+        # exclusions remain: legend labels ride as coverage-blit commands.
         full = compare_pngs(
             self.fixture.reference_png,
             result.png_bytes,
             self.fixture.mask,
             manifest=self.fixture.manifest,
         )
-        delta = np.abs(
-            candidate.astype(np.int16) - reference.astype(np.int16)
-        ).max(axis=2)
-        mismatched = delta != 0
-        oversized = delta > FRINGE_MAX_CHANNEL_DELTA
-        in_quarantine = mismatched & quarantine
-        out_quarantine = mismatched & ~quarantine
-        in_oversized = oversized & quarantine
-        out_oversized = oversized & ~quarantine
-        where = (
-            f"full=[{full.summary()}] quarantined_mismatches={int(in_quarantine.sum())} "
-            f"quarantined_oversized={int(in_oversized.sum())} "
-            f"renderer_mismatches={int(out_quarantine.sum())} "
-            f"renderer_oversized={int(out_oversized.sum())} "
-            f"renderer_max_delta={int(delta[~quarantine].max())}"
-        )
-        # 4a. S15.1 background/fully-covered clauses hold frame-wide: the
-        # writer lane cleared every exact-class pixel, quarantine or not.
+        where = f"full=[{full.summary()}]"
         self.assertEqual(
             full.exact_mismatch_count, 0, "background/fully-covered must be byte-exact; " + where
         )
-        # 4b. Every oversized pixel sits inside the quarantine: the renderer
-        # lane contributes no delta>1 anywhere.
         self.assertEqual(
-            int(out_oversized.sum()),
-            0,
-            "oversized pixels outside the glyph quarantine are renderer scope; " + where,
-        )
-        self.assertEqual(
-            int(in_oversized.sum()),
             full.fringe_oversized_count,
-            "quarantine must cover every oversized pixel; " + where,
-        )
-        self.assertEqual(
-            int(in_quarantine.sum()) + int(out_quarantine.sum()),
-            full.mismatch_count,
-            "quarantine partition must cover the full residual; " + where,
-        )
-        # 4c. Outside the quarantine the fringe-delta clause holds and the
-        # renderer fringe stays within its documented cap. Growth fails
-        # LOUD; genuine shrinkage stays green and is reported above.
-        self.assertLessEqual(
-            int(delta[~quarantine].max()),
-            1,
-            "non-quarantined max channel delta exceeds the S15.1 fringe allowance; " + where,
-        )
-        out_exact = (self.fixture.mask.labels != PIXEL_CLASS_CODES["antialias-fringe"]) & out_quarantine
-        self.assertEqual(
-            int(out_exact.sum()),
             0,
-            "non-quarantined mismatches must all be antialias-fringe; " + where,
+            "image must carry no delta>1 fringe; " + where,
         )
         self.assertLessEqual(
-            int(out_quarantine.sum()),
-            _RENDERER_FRINGE_CAP_PX,
-            "renderer fringe grew past its documented cap; " + where,
+            full.max_channel_delta,
+            FRINGE_MAX_CHANNEL_DELTA,
+            "max channel delta exceeds the fringe allowance; " + where,
         )
-        # 4d. The parked residual is still present: if P3 ever clears the
-        # glyphs, this fails LOUD and forces the quarantine's removal.
-        self.assertGreater(
-            int(in_quarantine.sum()),
-            0,
-            quarantine_owner
-            + "glyph residual cleared; remove this quarantine in the P3 lane "
-            "instead of carrying a dead exclusion; " + where,
-        )
-        # 5. The unchanged oracle comparator (manifest-validated) over the
-        # de-quarantined image: every S15.1 clause holds EXCEPT the rate
-        # clause, which the documented 111 px renderer fringe exceeds
-        # (0.00555 vs the 0.001 contract, i.e. 111 vs 20 px on this frame).
-        # That single suspension is the documented content of this
-        # quarantine alongside the parked glyph scope, and it is reinstated
-        # in full when the P3 lane removes the quarantine.
-        masked = candidate.copy()
-        masked[quarantine] = reference[quarantine]
-        gated = compare_rgba8(
-            reference,
-            masked,
-            self.fixture.mask,
-            manifest=self.fixture.manifest,
-        )
-        self.assertEqual(
-            gated.exact_mismatch_count,
-            0,
-            "de-quarantined background/fully-covered must be byte-exact; "
-            + gated.summary()
-            + "; "
-            + where,
-        )
-        self.assertEqual(
-            gated.fringe_oversized_count,
-            0,
-            "de-quarantined image must carry no delta>1 fringe; "
-            + gated.summary()
-            + "; "
-            + where,
-        )
-        self.assertLessEqual(
-            gated.max_channel_delta,
-            1,
-            "de-quarantined max channel delta exceeds the fringe allowance; "
-            + gated.summary()
-            + "; "
-            + where,
-        )
-        self.assertLessEqual(
-            gated.fringe_mismatch_count,
-            _RENDERER_FRINGE_CAP_PX,
-            "de-quarantined fringe count grew past the documented renderer "
-            "cap (S15.1 rate clause suspended here, see above); "
-            + gated.summary()
-            + "; "
-            + where,
+        self.assertTrue(
+            full.passed,
+            "S15.1 oracle gate must pass with no exclusions; " + where,
         )
 
 

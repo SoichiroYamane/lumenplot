@@ -302,3 +302,168 @@ def _writer_glyph_outline_commands(
             "clip_rect": None,
         }
     ]
+
+
+def _agg_multiply_byte(alpha: int, cover: int) -> int:
+    # Integer effective-alpha product matching the native agg_multiply
+    # (round(alpha * cover / 255) over the byte range). A full style
+    # alpha of 255 is the identity, so opaque label ink keeps the exact
+    # FreeType coverage byte.
+    shifted = alpha * cover + 128
+    return min(255, ((shifted >> 8) + shifted) >> 8)
+
+
+def _label_coverage_mask(
+    text: str,
+    anchor_x: float,
+    anchor_y_down: float,
+    canvas_height_px: float,
+    angle_deg: float,
+    *,
+    font_size_pt: float = 10.0,
+    prop: FontProperties | None = None,
+    dpi: float = 100.0,
+) -> tuple[int, int, int, int, bytes]:
+    """Return one Agg-faithful alpha mask for a legend label.
+
+    This helper is intentionally private. It mirrors the plain-text branch
+    of Matplotlib ``RendererAgg._draw_text_glyphs_and_boxes``: per-label
+    ``FT2Font`` raster at the output DPI with ``get_hinting_flag()`` into
+    one alpha mask, anchored by the caller-supplied Agg display anchor
+    (x right, y down) with rotation baked into each glyph bitmap exactly
+    as Agg bakes it. The public ``glyph_outline_commands`` contract is
+    untouched; the vector/PDF text path never calls this helper.
+
+    Returns ``(left_col, top_row, width, height, mask)`` in y-down device
+    pixels, row-major, one coverage byte per pixel. Coverage accumulates
+    source-over across the label's glyphs in label order, matching Agg's
+    sequential glyph blending.
+
+    Raises ValueError with the ``unsupported-text-path`` token for empty
+    or whitespace-only text, non-finite arguments, or any font layout or
+    raster step the seam cannot represent.
+    """
+    if not isinstance(text, str):
+        raise _unsupported("text must be a string")
+    if not text.strip():
+        raise _unsupported("text must contain visible glyphs")
+    if prop is not None and not isinstance(prop, FontProperties):
+        raise _unsupported("font properties must be a FontProperties")
+    anchor_x = _as_float(anchor_x)
+    anchor_y_down = _as_float(anchor_y_down)
+    canvas_height_px = _as_float(canvas_height_px)
+    angle_deg = _as_float(angle_deg)
+    font_size_pt = _as_float(font_size_pt)
+    dpi = _as_float(dpi)
+    if dpi <= 0.0:
+        raise _unsupported("dpi must be finite and > 0")
+    if canvas_height_px <= 0.0:
+        raise _unsupported("canvas height must be finite and > 0")
+    height_px = int(canvas_height_px)
+    if float(height_px) != canvas_height_px:
+        raise _unsupported("canvas height must be integral pixels")
+
+    if prop is None:
+        prop = FontProperties()
+
+    try:
+        from matplotlib.backends.backend_agg import get_hinting_flag
+        from matplotlib.font_manager import findfont, get_font
+        from matplotlib.ft2font import RenderMode
+
+        font = get_font(findfont(prop, fontext="ttf"))
+        font.clear()
+        font.set_size(float(font_size_pt), float(dpi))
+        hinting_flags = get_hinting_flag()
+        items = font._layout(str(text), flags=hinting_flags)
+        if not items:
+            raise ValueError("font layout returned no glyphs")
+    except ValueError as error:
+        if str(error).startswith("unsupported-text-path:"):
+            raise
+        raise _unsupported(f"font layout failed: {error}") from error
+    except (AttributeError, OSError, RuntimeError, TypeError) as error:
+        raise _unsupported(f"font layout failed: {error}") from error
+
+    # Plain-text rotation Agg bakes into each glyph bitmap (the slant /
+    # extend effects are 0 / 1 here exactly as Agg's draw_text passes
+    # them for non-mathtext labels).
+    theta = math.radians(angle_deg)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    matrix = [
+        [round(0x10000 * cos_t), round(-0x10000 * sin_t)],
+        [round(0x10000 * sin_t), round(0x10000 * cos_t)],
+    ]
+
+    stamps: list[tuple[int, int, int, int, bytes]] = []
+    try:
+        for item in items:
+            glyph_font = item.ft_object
+            glyph_font.set_size(float(font_size_pt), float(dpi))
+            dx = _as_float(item.x)
+            dy = _as_float(item.y)
+            glyph_font._set_transform(
+                matrix,
+                [
+                    round(0x40 * (anchor_x + dx * cos_t - dy * sin_t)),
+                    round(
+                        0x40
+                        * (
+                            float(height_px)
+                            - anchor_y_down
+                            + dx * sin_t
+                            + dy * cos_t
+                        )
+                    ),
+                ],
+            )
+            bitmap = glyph_font._render_glyph(
+                item.glyph_index, hinting_flags, RenderMode.NORMAL
+            )
+            rows, cols = (int(value) for value in bitmap.buffer.shape)
+            if rows <= 0 or cols <= 0:
+                continue
+            coverage = bytes(bitmap.buffer)
+            if len(coverage) != rows * cols:
+                raise ValueError("glyph bitmap has an unexpected shape")
+            left = int(bitmap.left)
+            # draw_text_image takes the bitmap bottom side in y-down
+            # pixels; the stamp rows run upward from it.
+            bottom_side = height_px - int(bitmap.top) + rows
+            stamps.append((left, bottom_side - rows, cols, rows, coverage))
+    except ValueError as error:
+        if str(error).startswith("unsupported-text-path:"):
+            raise
+        raise _unsupported(f"font raster failed: {error}") from error
+    except (AttributeError, IndexError, TypeError) as error:
+        raise _unsupported(f"font raster failed: {error}") from error
+
+    if not stamps:
+        raise _unsupported("label produced no ink")
+
+    left_col = min(stamp[0] for stamp in stamps)
+    top_row = min(stamp[1] for stamp in stamps)
+    right_col = max(stamp[0] + stamp[2] for stamp in stamps)
+    bottom_row = max(stamp[1] + stamp[3] for stamp in stamps)
+    width = right_col - left_col
+    height = bottom_row - top_row
+    if width <= 0 or height <= 0:
+        raise _unsupported("label produced no ink")
+
+    mask = [0.0] * (width * height)
+    for col0, row0, cols, rows, coverage in stamps:
+        for row in range(rows):
+            base = (row0 - top_row + row) * width + (col0 - left_col)
+            for col in range(cols):
+                cover = float(coverage[row * cols + col]) / 255.0
+                if cover == 0.0:
+                    continue
+                index = base + col
+                # Source-over accumulation in label order, matching
+                # Agg's sequential glyph blending over the label ink.
+                mask[index] = cover + mask[index] * (1.0 - cover)
+    mask_bytes = bytes(min(255, int(round(value * 255.0))) for value in mask)
+    if all(byte == 0 for byte in mask_bytes):
+        raise _unsupported("label produced no ink")
+    return (left_col, top_row, width, height, mask_bytes)

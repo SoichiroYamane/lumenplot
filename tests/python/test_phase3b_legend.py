@@ -316,10 +316,23 @@ class TestLegendEligibility(unittest.TestCase):
         self.assertEqual(handles[1]["line_width_pt"], 1.0)
 
     def test_label_glyph_commands_match_textpath_extraction(self):
+        """The legend label rides as one coverage-blit image command."""
         from lumenplot_mpl import textpath
+        from lumenplot_mpl.backend_support import _rgba8
 
         _, canvas, _, legend = _legend_canvas()
-        canvas.render_png()
+        real_mask = textpath._label_coverage_mask
+        calls: list = []
+
+        def recording_mask(*args, **kwargs):
+            result = real_mask(*args, **kwargs)
+            calls.append((args, kwargs, result))
+            return result
+
+        with unittest.mock.patch.object(
+            textpath, "_label_coverage_mask", recording_mask
+        ):
+            canvas.render_png()
         spec = _StubNativeModule.last_spec
         assert spec is not None
         labels = [
@@ -328,20 +341,79 @@ class TestLegendEligibility(unittest.TestCase):
             if command.get("decoration") == "legend_label"
         ]
         self.assertEqual(len(labels), 1)
-        expected = textpath.glyph_outline_commands(
-            "alpha", (0.0, 0.0), 1.0, 0.0, font_size_pt=10.0
-        )[0]
-        self.assertEqual(labels[0]["codes"], list(expected["codes"]))
-        # Same vertex count; positions are the scaled/anchored outlines.
-        self.assertEqual(len(labels[0]["vertices"]), len(expected["vertices"]))
-        xs = [vertex[0] for vertex in labels[0]["vertices"]]
-        ys = [vertex[1] for vertex in labels[0]["vertices"]]
-        self.assertTrue(all(math_finite(x) for x in xs))
-        self.assertTrue(all(math_finite(y) for y in ys))
-        self.assertGreaterEqual(min(xs), 0.0)
-        self.assertLessEqual(max(xs), 300.0)
-        self.assertGreaterEqual(min(ys), 0.0)
-        self.assertLessEqual(max(ys), 200.0)
+        texts = list(legend.get_texts())
+        self.assertEqual([t.get_text() for t in texts], ["alpha"])
+        self.assertEqual(len(calls), 1)
+        command = labels[0]
+        label = texts[0]
+        args, kwargs, outcome = calls[0]
+        self.assertEqual(args[0], str(label.get_text()))
+        self.assertEqual(args[3], 200.0)
+        self.assertEqual(args[4], float(label.get_rotation()))
+        for anchor, bound in ((args[1], 300.0), (args[2], 200.0)):
+            self.assertTrue(anchor == anchor)
+            self.assertGreaterEqual(float(anchor), 0.0)
+            self.assertLessEqual(float(anchor), bound)
+        self.assertEqual(kwargs["font_size_pt"], float(label.get_fontsize()))
+        self.assertEqual(kwargs["dpi"], 100.0)
+        label_prop = label.get_fontproperties()
+        self.assertEqual(
+            tuple(kwargs["prop"].get_family()),
+            tuple(label_prop.get_family()),
+        )
+        self.assertEqual(
+            kwargs["prop"].get_style(), label_prop.get_style()
+        )
+        self.assertEqual(
+            kwargs["prop"].get_weight(), label_prop.get_weight()
+        )
+        self.assertEqual(
+            kwargs["prop"].get_size_in_points(),
+            float(label.get_fontsize()),
+        )
+        left_col, top_row, mask_w, mask_h, mask = outcome
+        style = _rgba8(label.get_color(), label.get_alpha())
+        # Representation pin: coverage-blit image command, never an
+        # outline path and never outline keys on an image command.
+        self.assertEqual(command["kind"], "image")
+        self.assertEqual(command["decoration"], "legend_label")
+        for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+            self.assertNotIn(absent, command)
+        self.assertEqual(command["x"], float(left_col))
+        self.assertEqual(
+            command["y"], float(200.0 - (top_row + mask_h))
+        )
+        self.assertEqual(command["width"], mask_w)
+        self.assertEqual(command["height"], mask_h)
+        self.assertEqual(command["clip_rect"], [0.0, 0.0, 300.0, 200.0])
+        self.assertGreater(mask_w, 0)
+        self.assertGreater(mask_h, 0)
+        self.assertTrue(any(mask))
+        self.assertGreaterEqual(command["x"], 0.0)
+        self.assertGreaterEqual(command["y"], 0.0)
+        self.assertLessEqual(command["x"] + mask_w, 300.0)
+        self.assertLessEqual(command["y"] + mask_h, 200.0)
+        # Wire pin: every blit pixel carries the label color with the
+        # helper coverage folded into alpha, packed per the adapter.
+        raw_rgba = bytes(command["rgba"])
+        self.assertEqual(len(raw_rgba), 4 * mask_w * mask_h)
+        expected_rgba = bytearray(4 * mask_w * mask_h)
+        for index, cover in enumerate(mask):
+            expected_rgba[4 * index] = style[0]
+            expected_rgba[4 * index + 1] = style[1]
+            expected_rgba[4 * index + 2] = style[2]
+            expected_rgba[4 * index + 3] = textpath._agg_multiply_byte(
+                style[3], int(cover)
+            )
+        self.assertEqual(raw_rgba, bytes(expected_rgba))
+        for index in range(mask_w * mask_h):
+            self.assertEqual(
+                tuple(raw_rgba[4 * index:4 * index + 3]), tuple(style[:3])
+            )
+            self.assertEqual(
+                raw_rgba[4 * index + 3],
+                textpath._agg_multiply_byte(style[3], int(mask[index])),
+            )
 
 
 def math_finite(value) -> bool:
