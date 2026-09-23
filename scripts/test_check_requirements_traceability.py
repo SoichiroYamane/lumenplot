@@ -131,10 +131,10 @@ class RequirementsTraceabilityCheckerTests(unittest.TestCase):
             lines = section.splitlines(keepends=True)
             for index, line in enumerate(lines):
                 if line.startswith("| `LP-PROD-003` "):
-                    self.assertTrue(line.rstrip().endswith("| Not implemented |"))
+                    self.assertIn("| Not implemented", line)
                     lines[index] = line.replace(
-                        "| Not implemented |",
-                        "| Implemented (bounded; test mutation) |",
+                        "| Not implemented",
+                        "| Implemented (bounded; test mutation)",
                         1,
                     )
                     break
