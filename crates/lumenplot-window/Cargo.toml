@@ -8,12 +8,18 @@ repository.workspace = true
 readme.workspace = true
 
 # WINAPP contract lane (commander ruling 2026-09-13; ADR 0003 amendment):
-# skeletal window/event host over runtime + render-wgpu. The only permitted
-# external edge is pinned winit 0.30.x (baseline ADR 0008: 0.30.13); the M1
-# lane materializes it here with default platform backends. The
+# skeletal window/event host over runtime + render-wgpu. The permitted
+# external edges are pinned winit 0.30.x (baseline ADR 0008: 0.30.13) with
+# default platform backends plus the M4-PRESENT-2 renamed portable-backend
+# edge below (architecture-authority ruling 2026-09-23; same reviewed
+# =29.0.4 baseline the render-wgpu crate uses). The
 # architecture checker pins this exact table fail-closed.
 [dependencies]
 lumenplot-render-api = { path = "../lumenplot-render-api", version = "0.1.0" }
 lumenplot-runtime = { path = "../lumenplot-runtime", version = "0.1.0" }
 lumenplot-render-wgpu = { path = "../lumenplot-render-wgpu", version = "0.1.0" }
 winit = { version = "=0.30.13" }
+# M4-PRESENT-2 lane: the surface transport names the portable backend through
+# this renamed edge so the window source never spells the backend crate name.
+# Pinned to the exact reviewed baseline the render-wgpu crate uses.
+surface-wgpu = { package = "wgpu", version = "=29.0.4", default-features = false, features = ["std", "wgsl", "vulkan"] }

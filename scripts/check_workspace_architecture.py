@@ -129,19 +129,29 @@ WGPU_SHADER_SHA256 = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5e
 # Q1-clamp accepted, surface-from-rwh deferred to M2) plus M4-PRESENT-1
 # Option-A (commander ruling 2026-09-20: admit lumenplot-render-api as a
 # window path edge, exact path+version 0.1.0 for normal and test use). The
-# window/event host admits exactly one external edge — pinned winit 0.30.13
-# with default platform backends (baseline ADR 0008) — and exactly the active
-# source inventory below (M1 core plus the M4 present slice + its two test
-# files). Both apply only while the window activation sentinel fires; the stub
-# rules below stay authoritative otherwise.
+# window/event host admits exactly two external edges — pinned winit 0.30.13
+# with default platform backends (baseline ADR 0008) plus the M4-PRESENT-2
+# renamed portable-backend edge below (same reviewed =29.0.4 baseline the
+# render-wgpu crate uses; the window source never spells the backend crate
+# name) — and exactly the active source inventory below (M1 core plus the M4
+# present slice and surface transport + its two test files). Both apply only
+# while the window activation sentinel fires; the stub rules below stay
+# authoritative otherwise.
 WINDOW_EXTERNAL_DEPENDENCIES = {
     "winit": {
         "version": "=0.30.13",
+    },
+    "surface-wgpu": {
+        "package": "wgpu",
+        "version": "=29.0.4",
+        "default-features": False,
+        "features": ["std", "wgsl", "vulkan"],
     },
 }
 WINDOW_SOURCE_FILES = {
     "src/lib.rs",
     "src/present.rs",
+    "src/surface.rs",
     "tests/present_headless.rs",
     "tests/present_display.rs",
 }
@@ -674,10 +684,11 @@ EXPECTED_EDGES = {
     # M4-PRESENT-1 Option-A (commander ruling 2026-09-20): admitted
     # lumenplot-render-api path edge (exact path+version 0.1.0, normal use
     # covering integration tests; no separate dev-dependencies table, which
-    # stays forbidden). The only permitted external edge is pinned winit
-    # 0.30.x (ADR 0003 amendment; no other deps). The M1 admission lane pins
-    # the exact declaration below; it applies only while the window activation
-    # sentinel fires.
+    # stays forbidden). The permitted external edges are pinned winit
+    # 0.30.x (ADR 0003 amendment) plus the M4-PRESENT-2 renamed
+    # portable-backend edge (architecture-authority ruling 2026-09-23).
+    # The admission lane pins the exact declarations above; they apply only
+    # while the window activation sentinel fires.
     "lumenplot-window": {"lumenplot-render-api", "lumenplot-runtime", "lumenplot-render-wgpu"},
     "lumenplot-viewer": {"lumenplot", "lumenplot-runtime"},
     "lumenplot-python": {"lumenplot"},
@@ -1219,13 +1230,15 @@ WINDOW_FORBIDDEN_CODE_PATTERNS = (
 
 
 def _check_window_source(package_dir: Path, root: Path, errors: list[str]) -> None:
-    """Enforce the admitted M1 + M4-PRESENT-1 window source boundary.
+    """Enforce the admitted M1 + M4-PRESENT-1/2 window source boundary.
 
     The accepted seam (backend-neutral cadence core plus one winit shell,
     review as gate) ships as exactly `src/lib.rs` plus the M4 present slice
-    `src/present.rs` and its two integration tests
+    `src/present.rs`, the M4-PRESENT-2 private surface transport
+    `src/surface.rs`, and its two integration tests
     (`tests/present_headless.rs`, `tests/present_display.rs`) per the
-    commander Option-A ruling 2026-09-20; `#[no_mangle]`/`#[export_name]`
+    commander Option-A ruling 2026-09-20 and the architecture-authority
+    M4-PRESENT-2 ruling 2026-09-23; `#[no_mangle]`/`#[export_name]`
     stay banned so the crate never grows an exported ABI. Unsafe code,
     serialization vocabulary, non-winit frontend/bridge names, and Metal
     naming stay banned in every listed file (no weakening).
