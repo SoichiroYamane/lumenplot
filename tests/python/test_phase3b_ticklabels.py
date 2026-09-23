@@ -1,7 +1,7 @@
 """T-lane tick-label contract tests (LP-MPL-020, LP-FUNC-003 adjacency).
 
 Covers the four per-class mechanics for visible major tick labels rendered
-natively as filled glyph-outline path commands:
+natively as coverage-blit image commands:
 
 - M1 whitelist: default decorated axes with visible major tick labels are
   strict-eligible; the ``_check_tick_label_static`` PRAC-A-W surface keeps
@@ -12,8 +12,9 @@ natively as filled glyph-outline path commands:
   draw order (x-axis before y-axis; ``label1`` before ``label2`` per tick)
   and the emitted spec carries one glyph command per label in that order.
 - M3 style contract: the label's own public ``FontProperties``
-  (family/style/weight) and resolved size flow into the outline through
-  ``lumenplot_mpl.textpath``; faces change geometry, and outlines agree
+  (family/style/weight) and resolved size flow into the coverage helper
+  through ``lumenplot_mpl.textpath``; faces change the helper call, and
+  the public outlines agree
   with ``TextPath`` for the same properties within S15.1 part 3 (1e-6).
 - M4 strict behavior: a refused label raises before any native write and
   hybrid mode falls back whole-frame with exactly one diagnostic.
@@ -419,10 +420,11 @@ class TestTickLabelStyleContract(unittest.TestCase):
         self.assertIn("unsupported-text-path", str(ctx.exception))
 
     def test_spec_glyph_topology_matches_resolved_face(self):
-        """End to end: each spec glyph keeps its label face's topology."""
-        from matplotlib.path import Path
+        """End to end: each spec label rides its face's coverage blit."""
+        import importlib
 
         textpath = _load_textpath()
+        support = importlib.import_module("lumenplot_mpl.backend_support")
         preflight_mod = _load_preflight()
         fig, ax = _labeled_figure()
         for label in ax.xaxis.get_majorticklabels():
@@ -432,33 +434,88 @@ class TestTickLabelStyleContract(unittest.TestCase):
         self.assertEqual(preflight.reasons, [])
         preflight.collect(fig, width_px=200, height_px=100, dpi=100.0)
         self.assertEqual(preflight.reasons, [])
-        spec = preflight.build_frame_spec(
-            fig, width_px=200, height_px=100, output_dpi=100.0
-        )
+        real_mask = textpath._label_coverage_mask
+        calls: list = []
+
+        def recording_mask(*args, **kwargs):
+            result = real_mask(*args, **kwargs)
+            calls.append((args, kwargs, result))
+            return result
+
+        with unittest.mock.patch.object(
+            textpath, "_label_coverage_mask", recording_mask
+        ):
+            spec = preflight.build_frame_spec(
+                fig, width_px=200, height_px=100, output_dpi=100.0
+            )
         self.assertEqual(preflight.reasons, [])
         glyphs = [c for c in spec["commands"] if c.get("decoration") == "tick_label"]
         payloads = preflight._observed_text_payloads
         self.assertEqual(len(glyphs), len(payloads))
-        for command, payload in zip(glyphs, payloads):
+        self.assertEqual(
+            [str(payload["artist"].get_text()) for payload in payloads],
+            ["xa", "xb", "ya", "yb"],
+        )
+        # One coverage-helper call per tick label, in draw order; the
+        # label face flows into the helper call, not into spec topology.
+        self.assertEqual(len(calls), len(payloads))
+        for command, payload, call in zip(glyphs, payloads, calls):
             label = payload["artist"]
-            expected = textpath.glyph_outline_commands(
-                str(label.get_text()),
-                (0.0, 0.0),
-                1.0,
-                0.0,
-                font_size_pt=float(label.get_fontsize()),
-                prop=label.get_fontproperties(),
-            )[0]
-            # An affine placement never changes topology: same codes and
-            # vertex count as the resolved-face outline.
-            self.assertEqual(command["codes"], expected["codes"])
-            self.assertEqual(len(command["vertices"]), len(expected["vertices"]))
-            reference = TextPath(
-                (0.0, 0.0),
-                str(label.get_text()),
-                size=float(label.get_fontsize()),
-                prop=label.get_fontproperties(),
+            args, kwargs, outcome = call
+            self.assertEqual(args[0], str(label.get_text()))
+            self.assertEqual(args[3], 100.0)
+            self.assertEqual(args[4], float(label.get_rotation()))
+            # Tick anchors may sit off-canvas (x labels below the axes);
+            # only finiteness is pinned here while exact geometry rides
+            # the command pins below.
+            for anchor in (args[1], args[2]):
+                self.assertTrue(anchor == anchor)
+                self.assertLess(abs(float(anchor)), 1e9)
+            self.assertEqual(kwargs["font_size_pt"], float(label.get_fontsize()))
+            self.assertEqual(kwargs["dpi"], 100.0)
+            label_prop = label.get_fontproperties()
+            self.assertEqual(
+                tuple(kwargs["prop"].get_family()),
+                tuple(label_prop.get_family()),
             )
-            # The seam vocabulary reuses the Path code numerics, so the
-            # resolved-face outline must carry the TextPath codes verbatim.
-            self.assertEqual(expected["codes"], [int(code) for code in reference.codes])
+            self.assertEqual(
+                kwargs["prop"].get_style(), label_prop.get_style()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_weight(), label_prop.get_weight()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_size_in_points(),
+                float(label.get_fontsize()),
+            )
+            left_col, top_row, mask_w, mask_h, mask = outcome
+            style = support._rgba8(label.get_color(), label.get_alpha())
+            # Representation pin: coverage-blit image command, never an
+            # outline path and never outline keys on an image command.
+            self.assertEqual(command["kind"], "image")
+            self.assertEqual(command["decoration"], "tick_label")
+            for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                self.assertNotIn(absent, command)
+            self.assertEqual(command["x"], float(left_col))
+            self.assertEqual(
+                command["y"], float(100.0 - (top_row + mask_h))
+            )
+            self.assertEqual(command["width"], mask_w)
+            self.assertEqual(command["height"], mask_h)
+            self.assertEqual(command["clip_rect"], [0.0, 0.0, 200.0, 100.0])
+            self.assertGreater(mask_w, 0)
+            self.assertGreater(mask_h, 0)
+            self.assertTrue(any(mask))
+            # Wire pin: every blit pixel carries the label color with the
+            # helper coverage folded into alpha, packed per the adapter.
+            raw_rgba = bytes(command["rgba"])
+            self.assertEqual(len(raw_rgba), 4 * mask_w * mask_h)
+            expected_rgba = bytearray(4 * mask_w * mask_h)
+            for index, cover in enumerate(mask):
+                expected_rgba[4 * index] = style[0]
+                expected_rgba[4 * index + 1] = style[1]
+                expected_rgba[4 * index + 2] = style[2]
+                expected_rgba[4 * index + 3] = textpath._agg_multiply_byte(
+                    style[3], int(cover)
+                )
+            self.assertEqual(raw_rgba, bytes(expected_rgba))

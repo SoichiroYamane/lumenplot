@@ -1,14 +1,15 @@
 """Focused Agg-oracle tests for the tick-label + axes-box fixture.
 
 The semantic checks run without the compiled extension.  A strict native
-pixel comparison is deliberately NOT asserted here: glyph outline
-placement resolves exactly (zero-offset, per-face topology below) but the
+pixel comparison is deliberately NOT asserted here: label ink rides as
+coverage-blit image commands (per-label helper pins below) but the
 0.8pt spine/tick-stroke antialiased fringe exceeds the fixed S15.1 fringe
 budget on the current native rasterizer, while tolerances, spine geometry
 paths, and native crates are all frozen for this lane.  The committed
 reference, mask, and manifest below pin the oracle side so a future
 native spine-stroke lane can add the pixel gate without regenerating
-evidence.  Measured local evidence (current-base seam): glyph-only ink
+evidence.  Measured local evidence (outline route, pre-blit seam):
+glyph-only ink
 93% overlap at zero offset with good core fill; spine/tick thin-stroke
 fringe mismatches ~1100px over the 20px budget; no tolerance, API, or
 schema change was made to accommodate it.
@@ -203,10 +204,22 @@ class TestTickLabelAdapterSemantics(unittest.TestCase):
         return commands
 
     def test_strict_spec_carries_five_glyph_commands_in_draw_order(self):
-        """One resolved-face glyph command per visible major label, x first."""
+        """One coverage-blit image command per visible major label, x first."""
 
         textpath = importlib.import_module("lumenplot_mpl.textpath")
-        commands = self._capture_spec()
+        support = importlib.import_module("lumenplot_mpl.backend_support")
+        real_mask = textpath._label_coverage_mask
+        calls: list = []
+
+        def recording_mask(*args, **kwargs):
+            result = real_mask(*args, **kwargs)
+            calls.append((args, kwargs, result))
+            return result
+
+        with unittest.mock.patch.object(
+            textpath, "_label_coverage_mask", recording_mask
+        ):
+            commands = self._capture_spec()
         glyphs = [c for c in commands if c.get("decoration") == "tick_label"]
         self.assertEqual(len(glyphs), len(XTICKLABELS) + len(YTICKLABELS))
         with fixture_rc_context():
@@ -222,20 +235,75 @@ class TestTickLabelAdapterSemantics(unittest.TestCase):
             ["0", "5", "10", "0", "5"],
         )
         self.assertEqual(len(glyphs), len(labels))
-        for command, label in zip(glyphs, labels):
-            expected = textpath.glyph_outline_commands(
-                str(label.get_text()),
-                (0.0, 0.0),
-                1.0,
-                0.0,
-                font_size_pt=float(label.get_fontsize()),
-                prop=label.get_fontproperties(),
-            )[0]
-            # Placement is affine-only: topology is the resolved face's own.
-            self.assertEqual(command["codes"], expected["codes"])
-            self.assertEqual(len(command["vertices"]), len(expected["vertices"]))
-            self.assertEqual(command["fill_rgba"], [0, 0, 0, 255])
-            self.assertIsNone(command["stroke_rgba"])
+        # One coverage-helper call per tick label, in draw order.
+        self.assertEqual(len(calls), len(labels))
+        for command, label, call in zip(glyphs, labels, calls):
+            args, kwargs, outcome = call
+            self.assertEqual(args[0], str(label.get_text()))
+            self.assertEqual(args[3], 100.0)
+            self.assertEqual(args[4], float(label.get_rotation()))
+            # Tick anchors may sit off-canvas (x labels below the axes);
+            # only finiteness is pinned here while exact geometry rides
+            # the command pins below.
+            for anchor in (args[1], args[2]):
+                self.assertTrue(anchor == anchor)
+                self.assertLess(abs(float(anchor)), 1e9)
+            self.assertEqual(kwargs["font_size_pt"], float(label.get_fontsize()))
+            self.assertEqual(kwargs["dpi"], EFFECTIVE_DPI)
+            label_prop = label.get_fontproperties()
+            self.assertEqual(
+                tuple(kwargs["prop"].get_family()),
+                tuple(label_prop.get_family()),
+            )
+            self.assertEqual(
+                kwargs["prop"].get_style(), label_prop.get_style()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_weight(), label_prop.get_weight()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_size_in_points(),
+                float(label.get_fontsize()),
+            )
+            left_col, top_row, mask_w, mask_h, mask = outcome
+            style = support._rgba8(label.get_color(), label.get_alpha())
+            # Representation pin: coverage-blit image command, never an
+            # outline path and never outline keys on an image command.
+            self.assertEqual(command["kind"], "image")
+            self.assertEqual(command["decoration"], "tick_label")
+            for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                self.assertNotIn(absent, command)
+            self.assertEqual(command["x"], float(left_col))
+            self.assertEqual(
+                command["y"], float(100.0 - (top_row + mask_h))
+            )
+            self.assertEqual(command["width"], mask_w)
+            self.assertEqual(command["height"], mask_h)
+            self.assertEqual(command["clip_rect"], [0.0, 0.0, 200.0, 100.0])
+            self.assertGreater(mask_w, 0)
+            self.assertGreater(mask_h, 0)
+            self.assertTrue(any(mask))
+            # Wire pin: every blit pixel carries the label color with the
+            # helper coverage folded into alpha, packed per the adapter.
+            raw_rgba = bytes(command["rgba"])
+            self.assertEqual(len(raw_rgba), 4 * mask_w * mask_h)
+            expected_rgba = bytearray(4 * mask_w * mask_h)
+            for index, cover in enumerate(mask):
+                expected_rgba[4 * index] = style[0]
+                expected_rgba[4 * index + 1] = style[1]
+                expected_rgba[4 * index + 2] = style[2]
+                expected_rgba[4 * index + 3] = textpath._agg_multiply_byte(
+                    style[3], int(cover)
+                )
+            self.assertEqual(raw_rgba, bytes(expected_rgba))
+            for index in range(mask_w * mask_h):
+                self.assertEqual(
+                    tuple(raw_rgba[4 * index:4 * index + 3]), tuple(style[:3])
+                )
+                self.assertEqual(
+                    raw_rgba[4 * index + 3],
+                    textpath._agg_multiply_byte(style[3], int(mask[index])),
+                )
 
     def test_strict_spec_spines_trace_the_axes_box(self):
         """All four visible spine edges ride the 200x100 axes rectangle."""

@@ -12,10 +12,10 @@ lives in ``crates/lumenplot-engine/tests/text_layout_units.rs``):
 - (a) shared-shaping determinism: identical outline inputs produce
   byte-identical commands on every call;
 - (b) 1e-6 agreement: the public outline route agrees with ``TextPath``
-  for the same ``FontProperties`` within S15.1 part 3, and the declared
-  display transform (``p_display = R(angle) @ S(dpi/72) @ p_outline +
-  anchor``) re-applied to a strict-render spec glyph agrees within 1e-6
-  logical points -- the shared result is projected, never remeasured;
+  for the same ``FontProperties`` within S15.1 part 3, and each
+  strict-render spec tick label rides the coverage helper with the
+  recorded anchor/angle/face carrying the helper mask at the helper
+  origin -- the shared result is projected, never remeasured;
 - (c) no-remeasurement gate: ``render-api`` + ``export`` sources contain
   no text measurement/shaping calls, and ``textpath`` never imports the
   private extension module;
@@ -40,7 +40,6 @@ otherwise.
 
 from __future__ import annotations
 
-import math
 import os
 import struct
 import sys
@@ -241,24 +240,35 @@ class TestShapedLayoutAgreement(unittest.TestCase):
             self.assertAlmostEqual(gy, -float(ry), places=6)
 
     def test_spec_glyphs_agree_with_declared_transform_within_1e6(self):
-        """Projected labels match R(angle) @ S(dpi/72) @ outline + anchor.
+        """Projected labels match the helper anchor math, never remeasured.
 
-        The outline is consumed without remeasurement: re-applying the
-        one declared matrix to the outline command reproduces the spec
-        glyph vertices within 1e-6 logical points.
+        Each strict-render spec tick label rides the coverage helper with
+        the collector-recorded anchor/angle plus the label face, and the
+        command carries exactly the helper mask at the helper origin.
         """
         textpath = _load_textpath()
+        import importlib
+
+        support = importlib.import_module("lumenplot_mpl.backend_support")
         fig, _ax = _labeled_figure()
-        result = _strict_render(fig)
+        real_mask = textpath._label_coverage_mask
+        calls: list = []
+
+        def recording_mask(*args, **kwargs):
+            result = real_mask(*args, **kwargs)
+            calls.append((args, kwargs, result))
+            return result
+
+        with unittest.mock.patch.object(
+            textpath, "_label_coverage_mask", recording_mask
+        ):
+            result = _strict_render(fig)
         self.assertEqual(result.diagnostics, ())
         commands = _StubNativeModule.last_spec["commands"]
         glyphs = [c for c in commands if c.get("decoration") == "tick_label"]
         self.assertEqual(len(glyphs), 4)
-        # Re-derive the expected vertices from the outline route plus the
-        # anchor/angle the collector payloads recorded, mirroring
-        # ``_tick_label_commands`` without calling it.
-        import importlib
-
+        # Mirror the anchor/face the collector payloads recorded without
+        # calling ``_tick_label_commands``.
         preflight_mod = importlib.import_module("lumenplot_mpl.backend_preflight")
         preflight = preflight_mod._EligibilityPreflight()
         preflight.check_static(fig)
@@ -266,30 +276,72 @@ class TestShapedLayoutAgreement(unittest.TestCase):
         preflight.collect(fig, width_px=200, height_px=100, dpi=100.0)
         self.assertEqual(preflight.reasons, [])
         dpi = preflight._effective_dpi
-        scale = dpi / 72.0
         height_px = float(preflight._height_px)
+        self.assertEqual(dpi, 100.0)
+        self.assertEqual(height_px, 100.0)
         self.assertEqual(len(preflight._observed_text_payloads), len(glyphs))
-        for command, payload in zip(glyphs, preflight._observed_text_payloads):
+        self.assertEqual(len(calls), len(glyphs))
+        for command, payload, call in zip(
+            glyphs, preflight._observed_text_payloads, calls
+        ):
             label = payload["artist"]
-            outline = textpath._writer_glyph_outline_commands(
-                str(label.get_text()),
-                (0.0, 0.0),
-                1.0,
-                0.0,
-                font_size_pt=float(label.get_fontsize()),
-                prop=label.get_fontproperties(),
-                dpi=dpi,
-            )[0]
-            theta = math.radians(float(payload["angle"]))
-            cos_t, sin_t = math.cos(theta), math.sin(theta)
-            anchor_x, anchor_y = float(payload["x"]), float(payload["y"])
-            self.assertEqual(len(command["vertices"]), len(outline["vertices"]))
-            for (cx, cy), (vx, vy) in zip(command["vertices"], outline["vertices"]):
-                px, py = vx * scale, vy * scale
-                expected_x = anchor_x + px * cos_t + py * sin_t
-                expected_y = height_px - (anchor_y - px * sin_t + py * cos_t)
-                self.assertAlmostEqual(cx, expected_x, places=6)
-                self.assertAlmostEqual(cy, expected_y, places=6)
+            args, kwargs, outcome = call
+            # The helper receives the recorded anchor unchanged (no second
+            # flip), the canvas height, the recorded angle, and the label
+            # face at the output DPI.
+            self.assertEqual(args[0], str(label.get_text()))
+            self.assertEqual(args[1], float(payload["x"]))
+            self.assertEqual(args[2], float(payload["y"]))
+            self.assertEqual(args[3], 100.0)
+            self.assertEqual(args[4], float(payload["angle"]))
+            self.assertEqual(kwargs["font_size_pt"], float(label.get_fontsize()))
+            self.assertEqual(kwargs["dpi"], dpi)
+            label_prop = label.get_fontproperties()
+            self.assertEqual(
+                tuple(kwargs["prop"].get_family()),
+                tuple(label_prop.get_family()),
+            )
+            self.assertEqual(
+                kwargs["prop"].get_style(), label_prop.get_style()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_weight(), label_prop.get_weight()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_size_in_points(),
+                float(label.get_fontsize()),
+            )
+            left_col, top_row, mask_w, mask_h, mask = outcome
+            style = support._rgba8(label.get_color(), label.get_alpha())
+            # Representation pin: coverage-blit image command, never an
+            # outline path and never outline keys on an image command.
+            self.assertEqual(command["kind"], "image")
+            self.assertEqual(command["decoration"], "tick_label")
+            for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                self.assertNotIn(absent, command)
+            self.assertEqual(command["x"], float(left_col))
+            self.assertEqual(
+                command["y"], float(100.0 - (top_row + mask_h))
+            )
+            self.assertEqual(command["width"], mask_w)
+            self.assertEqual(command["height"], mask_h)
+            self.assertEqual(command["clip_rect"], [0.0, 0.0, 200.0, 100.0])
+            self.assertGreater(mask_w, 0)
+            self.assertGreater(mask_h, 0)
+            self.assertTrue(any(mask))
+            # Wire pin: every blit pixel carries the label color with the
+            # helper coverage folded into alpha, packed per the adapter.
+            raw_rgba = bytes(command["rgba"])
+            self.assertEqual(len(raw_rgba), 4 * mask_w * mask_h)
+            expected_rgba = bytearray(4 * mask_w * mask_h)
+            for index, cover in enumerate(mask):
+                expected_rgba[4 * index] = style[0]
+                expected_rgba[4 * index + 1] = style[1]
+                expected_rgba[4 * index + 2] = style[2]
+                expected_rgba[4 * index + 3] = textpath._agg_multiply_byte(
+                    style[3], int(cover)
+                )
+            self.assertEqual(raw_rgba, bytes(expected_rgba))
 
 
 class TestNoRemeasurementGate(unittest.TestCase):
