@@ -188,7 +188,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-RENDER-002` | `MUST` | width fixture | 1 | v1 | `AT-SEM-RENDER-GOLDEN` | Not implemented |
 | `LP-RENDER-003` | `MUST` | 1x/2x/3x matrix | 1 | v1 | `AT-SEM-HIDPI` | Not implemented |
 | `LP-RENDER-004` | `MUST` | alpha fixture | 1 | v1 | `AT-SEM-COLOR` | Not implemented |
-| `LP-RENDER-005` | `MUST` | clipping golden | 1 | v1 | `AT-SEM-RENDER-GOLDEN` | Not implemented |
+| `LP-RENDER-005` | `MUST` | clipping golden | 1 | v1 | `AT-SEM-RENDER-GOLDEN` | Not implemented (PR231 evidence note: merged b70a42b6, crates/lumenplot-python/src/frame/agg_line.rs exact-f64 ClipBox; row stays open pending AT-SEM-RENDER-GOLDEN golden evidence) |
 | `LP-RENDER-006` | `MUST` | interaction golden and benchmark | 1 | v1 | `AT-FUNC-PAN-ZOOM`, `AT-BENCH-FRAME` | Not measured (environment required where hardware or GPU is involved) |
 | `LP-RENDER-007` | `SHOULD` | rendering quality fixture | 1 | v1 non-blocking | `AT-SEM-RENDER-GOLDEN` | Not implemented |
 | `LP-RENDER-008` | `SHOULD` | rendering quality fixture | 1 | v1 non-blocking | `AT-SEM-RENDER-GOLDEN` | Not implemented |
@@ -402,7 +402,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-RENDER-002` | `MUST` | `AT-SEM-RENDER-GOLDEN` | Not implemented |
 | `LP-RENDER-003` | `MUST` | `AT-SEM-HIDPI` | Not implemented |
 | `LP-RENDER-004` | `MUST` | `AT-SEM-COLOR` | Not implemented |
-| `LP-RENDER-005` | `MUST` | `AT-SEM-RENDER-GOLDEN` | Not implemented |
+| `LP-RENDER-005` | `MUST` | `AT-SEM-RENDER-GOLDEN` | Not implemented (PR231 evidence note: merged b70a42b6, crates/lumenplot-python/src/frame/agg_line.rs exact-f64 ClipBox; row stays open pending AT-SEM-RENDER-GOLDEN golden evidence) |
 | `LP-RENDER-006` | `MUST` | `AT-FUNC-PAN-ZOOM`, `AT-BENCH-FRAME` | Not measured (environment required where hardware or GPU is involved) |
 | `LP-RENDER-010` | `MUST` | `AT-SEM-RENDER-GOLDEN` | Not implemented |
 | `LP-QUAL-002` | `MUST NOT` | `AT-BENCH-HOTPATH` | Not measured (environment required where hardware or GPU is involved) |
