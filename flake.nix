@@ -25,6 +25,15 @@
           # toolchains. No effect on Linux systems.
           darwinOnly =
             if pkgs.stdenv.hostPlatform.isDarwin then [ pkgs.libiconv ] else [ ];
+          # darwin linker search path for the installed CLT SDK libiconv
+          # (tbd stub at MacOSX.sdk/usr/lib); mkShellNoCC provides no cc
+          # wrapper so NIX_LDFLAGS is unconsumed - LIBRARY_PATH is what the
+          # nix-profile clang driver honors. Linux shells unchanged.
+          darwinEnv =
+            if pkgs.stdenv.hostPlatform.isDarwin then {
+              LIBRARY_PATH = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib";
+            } else
+              { };
           pythonWithPip = pkgs.python3.withPackages (pythonPackages: [
             pythonPackages.pip
           ]);
@@ -35,7 +44,7 @@
               [ ];
         in
         {
-          default = pkgs.mkShellNoCC {
+          default = pkgs.mkShellNoCC ({
             packages = [
               pkgs.cargo
               pkgs.cargo-deny
@@ -46,7 +55,7 @@
             ] ++ darwinOnly;
             RUST_BACKTRACE = "1";
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibs;
-          };
+          } // darwinEnv);
         }
       );
     };
