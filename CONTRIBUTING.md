@@ -33,7 +33,17 @@ the relevant public repository workflow.
 
 ## Required local gates
 
-Formatting and verification commands are intentionally explicit:
+The canonical gate is:
+
+```bash
+nix develop -c bash scripts/verify.sh
+```
+
+See [Verification commands](README.md#verification-commands) for the
+reproducible gate description.
+
+Formatting and verification commands are intentionally explicit. The commands
+below are the manual equivalent:
 
 ```bash
 # Format a working branch.
@@ -47,6 +57,17 @@ cargo metadata --locked --no-deps --format-version 1
 nix flake check --all-systems --no-build --no-update-lock-file
 git diff --check
 ```
+
+For an environment that already has the local package installed, the two
+explicit bypasses are available for diagnosis only:
+
+```bash
+bash scripts/verify.sh --skip-install --skip-nix
+```
+
+The bypass command is not a replacement for the default gate: native runtime
+tests must be run after a successful local build, and the Nix check must be
+reported separately when it is skipped.
 
 Run the checks from the repository root. If a command cannot run in the local
 environment, report the exact command and reason in the pull request rather
