@@ -1,29 +1,30 @@
-"""B-2a axis-label contract tests (LP-MPL-020, R2 subset).
+"""B-2a center-title contract tests (LP-MPL-020, R3 subset).
 
-Covers the four per-class mechanics for the visible non-empty
-``xlabel``/``ylabel`` pair rendered natively as filled glyph-outline
-path commands (B-2a R2: xlabel/ylabel eligible, titles refused):
+Covers the four per-class mechanics for the visible non-empty center
+``title`` rendered natively as filled glyph-outline path commands
+(B-2a R3: center title eligible, left/right titles refused):
 
-- M1 whitelist: a default decorated axes with visible xlabel/ylabel is
-  strict-eligible; the ``_check_axis_label_static`` surface (shared
+- M1 whitelist: a default decorated axes with a visible center title is
+  strict-eligible; the ``_check_title_static`` surface (shared
   ``_check_tick_label_static`` contract plus hyperlink refusal) keeps
-  refusing titles (center/left/right), offset text, multi-line labels,
-  leading/trailing whitespace, math/TeX text, path effects,
+  refusing left/right titles, legend titles, offset text, multi-line
+  titles, leading/trailing whitespace, math/TeX text, path effects,
   non-positive font size, sketch, snap, custom clipping, and
   hyperlinks.
-- M2 collector trace: the stage-two ``draw_text`` queue observes labels
-  in draw order (x-ticks, xlabel, y-ticks, ylabel) and the emitted spec
-  carries one glyph command per label in that order with the
-  ``axis_label`` decoration marker.
-- M3 style contract: the label's own public ``FontProperties``
+- M2 collector trace: the stage-two ``draw_text`` queue observes the
+  title after its axes' tick and axis labels (legend entries, when
+  present, queue after the title) and the emitted spec carries one
+  glyph command for the title in that order with the ``title``
+  decoration marker.
+- M3 style contract: the title's own public ``FontProperties``
   (family/style/weight) and resolved size flow into the outline through
   ``lumenplot_mpl.textpath``; faces change geometry, and outlines agree
   with ``TextPath`` for the same properties within S15.1 part 3 (1e-6).
-- M4 strict behavior: a refused label raises before any native write and
+- M4 strict behavior: a refused title raises before any native write and
   hybrid mode falls back whole-frame with exactly one diagnostic.
 
 Pixel parity against the pinned Agg oracle lives in
-``test_agg_oracle_axislabels.py``; this module needs only the stub seam.
+``test_agg_oracle_titles.py``; this module needs only the stub seam.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ import unittest.mock
 
 try:
     import matplotlib
-except ModuleNotFoundError:  # offline cells: axis-label evidence is a later slice
+except ModuleNotFoundError:  # offline cells: title evidence is a later slice
     matplotlib = None
 else:
     matplotlib.use("module://matplotlib.backends.backend_agg")  # baseline only
@@ -88,8 +89,8 @@ def _install_stub_native():
     return unittest.mock.patch.object(real, "_native", lambda: _StubNativeModule)
 
 
-def _labeled_figure():
-    """Build a strict-eligible figure with pinned tick + axis labels."""
+def _titled_figure():
+    """Build a strict-eligible figure with pinned tick labels + title."""
     fig = figure.Figure(figsize=(2.0, 1.0), dpi=100)
     ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
     ax.set_facecolor("none")
@@ -109,8 +110,7 @@ def _labeled_figure():
     ax.set_xticklabels(["xa", "xb"])
     ax.set_yticks([0.0, 5.0])
     ax.set_yticklabels(["ya", "yb"])
-    ax.set_xlabel("xlab")
-    ax.set_ylabel("ylab")
+    ax.set_title("ctitle")
     return fig, ax
 
 
@@ -120,8 +120,8 @@ def _strict_render(fig):
 
 
 @unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
-class TestAxisLabelWhitelist(unittest.TestCase):
-    """M1 whitelist entry plus the negative surface (B-2a R2)."""
+class TestTitleWhitelist(unittest.TestCase):
+    """M1 whitelist entry plus the negative surface (B-2a R3)."""
 
     def setUp(self):
         patcher = _install_stub_native()
@@ -129,37 +129,52 @@ class TestAxisLabelWhitelist(unittest.TestCase):
         self.addCleanup(patcher.stop)
         _StubNativeModule.last_spec = None
 
-    def test_xlabel_ylabel_are_strict_eligible(self):
-        fig, ax = _labeled_figure()
-        result = _strict_render(fig)
-        self.assertEqual(result.diagnostics, ())
-        self.assertEqual(ax.get_xlabel(), "xlab")
-        self.assertEqual(ax.get_ylabel(), "ylab")
-
-    def test_empty_labels_stay_eligible(self):
-        fig, ax = _labeled_figure()
-        ax.set_xlabel("")
-        ax.set_ylabel("")
-        result = _strict_render(fig)
-        self.assertEqual(result.diagnostics, ())
-
     def test_center_title_is_strict_eligible(self):
-        # B-2a (R3) Q1-remainder ruling: the visible non-empty center
-        # title is eligible; left/right titles stay refused below.
-        fig, ax = _labeled_figure()
-        ax.set_title("hello")
+        fig, ax = _titled_figure()
         result = _strict_render(fig)
         self.assertEqual(result.diagnostics, ())
-        self.assertEqual(ax.get_title("center"), "hello")
+        self.assertEqual(ax.get_title("center"), "ctitle")
+
+    def test_empty_and_invisible_titles_stay_eligible(self):
+        fig, ax = _titled_figure()
+        ax.set_title("")
+        result = _strict_render(fig)
+        self.assertEqual(result.diagnostics, ())
+        fig, ax = _titled_figure()
+        ax.title.set_visible(False)
+        result = _strict_render(fig)
+        self.assertEqual(result.diagnostics, ())
 
     def test_left_and_right_titles_refused(self):
         for loc in ("left", "right"):
             with self.subTest(loc=loc):
-                fig, ax = _labeled_figure()
+                fig, ax = _titled_figure()
                 ax.set_title("hello", loc=loc)
                 backend = _load_backend()
                 with self.assertRaises(backend.LumenPlotUnsupportedError):
                     _strict_render(fig)
+
+    def test_legend_title_refused(self):
+        # Legend titles are P3-owned (t_c9a0f98c still pending): a legend
+        # carrying a title stays refused even with an eligible center
+        # title on the axes.
+        fig, ax = _titled_figure()
+        ax.add_line(
+            Line2D(
+                [0, 10],
+                [0, 5],
+                color="blue",
+                linewidth=2.0,
+                solid_capstyle="butt",
+                solid_joinstyle="miter",
+                label="entry",
+            )
+        )
+        legend = ax.legend()
+        legend.set_title("legtitle")
+        backend = _load_backend()
+        with self.assertRaises(backend.LumenPlotUnsupportedError):
+            _strict_render(fig)
 
     def test_offset_text_refused(self):
         # Natural offset: large limits with the default scalar formatter
@@ -183,33 +198,33 @@ class TestAxisLabelWhitelist(unittest.TestCase):
         with self.assertRaises(backend.LumenPlotUnsupportedError):
             _strict_render(fig)
 
-    def test_multiline_axis_label_refused(self):
-        fig, ax = _labeled_figure()
-        ax.set_xlabel("xa\nxb")
+    def test_multiline_title_refused(self):
+        fig, ax = _titled_figure()
+        ax.set_title("cti\ntle")
         backend = _load_backend()
         with self.assertRaises(backend.LumenPlotUnsupportedError):
             _strict_render(fig)
         preflight_mod = _load_preflight()
         preflight = preflight_mod._EligibilityPreflight()
-        preflight._check_axis_label_static(ax.xaxis.get_label())
+        preflight._check_title_static(ax.title)
         self.assertTrue(
             any("multi-line" in reason for _, reason in preflight.reasons),
             f"multi-line guard did not fire: {preflight.reasons!r}",
         )
 
     def test_leading_trailing_whitespace_refused(self):
-        for text in (" xlab", "xlab ", " xlab "):
+        for text in (" ctitle", "ctitle ", " ctitle "):
             with self.subTest(text=text):
-                fig, ax = _labeled_figure()
-                ax.set_xlabel(text)
+                fig, ax = _titled_figure()
+                ax.set_title(text)
                 backend = _load_backend()
                 with self.assertRaises(backend.LumenPlotUnsupportedError) as ctx:
                     _strict_render(fig)
                 self.assertIn("whitespace", str(ctx.exception))
 
     def test_math_text_refused(self):
-        fig, ax = _labeled_figure()
-        ax.set_xlabel("$xlab$")
+        fig, ax = _titled_figure()
+        ax.set_title("$ctitle$")
         backend = _load_backend()
         with self.assertRaises(backend.LumenPlotUnsupportedError) as ctx:
             _strict_render(fig)
@@ -218,34 +233,32 @@ class TestAxisLabelWhitelist(unittest.TestCase):
     def test_path_effects_refused(self):
         from matplotlib import patheffects
 
-        fig, ax = _labeled_figure()
-        label = ax.xaxis.get_label()
-        label.set_path_effects(
+        fig, ax = _titled_figure()
+        ax.title.set_path_effects(
             [patheffects.withStroke(linewidth=2, foreground="red")]
         )
         preflight_mod = _load_preflight()
         preflight = preflight_mod._EligibilityPreflight()
-        preflight._check_axis_label_static(label)
+        preflight._check_title_static(ax.title)
         self.assertTrue(
             any("path effects" in reason for _, reason in preflight.reasons),
             f"path-effects guard did not fire: {preflight.reasons!r}",
         )
 
     def test_non_positive_font_size_refused(self):
-        fig, ax = _labeled_figure()
-        label = ax.xaxis.get_label()
+        fig, ax = _titled_figure()
         preflight_mod = _load_preflight()
         preflight = preflight_mod._EligibilityPreflight()
-        with unittest.mock.patch.object(label, "get_fontsize", return_value=0):
-            preflight._check_axis_label_static(label)
+        with unittest.mock.patch.object(ax.title, "get_fontsize", return_value=0):
+            preflight._check_title_static(ax.title)
         self.assertTrue(
             any("font size" in reason for _, reason in preflight.reasons),
             f"font-size guard did not fire: {preflight.reasons!r}",
         )
 
     def test_sketch_refused(self):
-        fig, ax = _labeled_figure()
-        ax.xaxis.get_label().set_sketch_params(
+        fig, ax = _titled_figure()
+        ax.title.set_sketch_params(
             scale=1.0, length=128.0, randomness=16.0
         )
         backend = _load_backend()
@@ -254,8 +267,8 @@ class TestAxisLabelWhitelist(unittest.TestCase):
         self.assertIn("sketch", str(ctx.exception))
 
     def test_explicit_snap_refused(self):
-        fig, ax = _labeled_figure()
-        ax.xaxis.get_label().set_snap(True)
+        fig, ax = _titled_figure()
+        ax.title.set_snap(True)
         backend = _load_backend()
         with self.assertRaises(backend.LumenPlotUnsupportedError) as ctx:
             _strict_render(fig)
@@ -264,8 +277,8 @@ class TestAxisLabelWhitelist(unittest.TestCase):
     def test_custom_clip_refused(self):
         from matplotlib.transforms import Bbox
 
-        fig, ax = _labeled_figure()
-        ax.xaxis.get_label().set_clip_box(
+        fig, ax = _titled_figure()
+        ax.title.set_clip_box(
             Bbox([[0.0, 0.0], [10.0, 10.0]])
         )
         backend = _load_backend()
@@ -274,11 +287,11 @@ class TestAxisLabelWhitelist(unittest.TestCase):
         self.assertIn("clipping", str(ctx.exception))
 
     def test_hyperlink_refused(self):
-        fig, ax = _labeled_figure()
-        ax.xaxis.get_label().set_url("https://example.invalid/")
+        fig, ax = _titled_figure()
+        ax.title.set_url("https://example.invalid/")
         preflight_mod = _load_preflight()
         preflight = preflight_mod._EligibilityPreflight()
-        preflight._check_axis_label_static(ax.xaxis.get_label())
+        preflight._check_title_static(ax.title)
         self.assertTrue(
             any("hyperlink" in reason for _, reason in preflight.reasons),
             f"hyperlink guard did not fire: {preflight.reasons!r}",
@@ -286,16 +299,16 @@ class TestAxisLabelWhitelist(unittest.TestCase):
 
     def test_refusal_writes_nothing_to_native_seam(self):
         """M4: strict mode fails before writing (no partial publication)."""
-        fig, ax = _labeled_figure()
+        fig, ax = _titled_figure()
         ax.set_title("bad title", loc="left")
         backend = _load_backend()
         with self.assertRaises(backend.LumenPlotUnsupportedError):
             _strict_render(fig)
         self.assertIsNone(_StubNativeModule.last_spec)
 
-    def test_hybrid_refused_label_falls_back_with_one_diagnostic(self):
-        """M4: hybrid renders refused labels once through whole-frame Agg."""
-        fig, ax = _labeled_figure()
+    def test_hybrid_refused_title_falls_back_with_one_diagnostic(self):
+        """M4: hybrid renders refused titles once through whole-frame Agg."""
+        fig, ax = _titled_figure()
         ax.set_title("bad title", loc="left")
         backend = _load_backend()
         canvas = backend.FigureCanvasLumenPlot(fig, mode="hybrid")
@@ -308,8 +321,8 @@ class TestAxisLabelWhitelist(unittest.TestCase):
 
 
 @unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
-class TestAxisLabelDrawOrder(unittest.TestCase):
-    """M2 collector-trace expectation: labels queue in draw order."""
+class TestTitleDrawOrder(unittest.TestCase):
+    """M2 collector-trace expectation: the title queues after labels."""
 
     def _collect_texts(self, fig):
         preflight_mod = _load_preflight()
@@ -323,8 +336,23 @@ class TestAxisLabelDrawOrder(unittest.TestCase):
             for p in preflight._observed_text_payloads
         ]
 
-    def test_xlabel_after_xticks_before_yticks(self):
-        fig, _ax = _labeled_figure()
+    def test_title_after_ticks(self):
+        fig, _ax = _titled_figure()
+        self.assertEqual(
+            self._collect_texts(fig),
+            [
+                ("xa", "tick_label"),
+                ("xb", "tick_label"),
+                ("ya", "tick_label"),
+                ("yb", "tick_label"),
+                ("ctitle", "title"),
+            ],
+        )
+
+    def test_title_after_axis_labels(self):
+        fig, ax = _titled_figure()
+        ax.set_xlabel("xlab")
+        ax.set_ylabel("ylab")
         self.assertEqual(
             self._collect_texts(fig),
             [
@@ -334,33 +362,46 @@ class TestAxisLabelDrawOrder(unittest.TestCase):
                 ("ya", "tick_label"),
                 ("yb", "tick_label"),
                 ("ylab", "axis_label"),
+                ("ctitle", "title"),
             ],
         )
 
-    def test_xlabel_only_queues_after_xticks(self):
-        fig, ax = _labeled_figure()
-        ax.set_ylabel("")
+    def test_title_before_legend_entries(self):
+        fig, ax = _titled_figure()
+        ax.add_line(
+            Line2D(
+                [0, 10],
+                [0, 5],
+                color="blue",
+                linewidth=2.0,
+                solid_capstyle="butt",
+                solid_joinstyle="miter",
+                label="entry",
+            )
+        )
+        ax.legend()
         self.assertEqual(
             self._collect_texts(fig),
             [
                 ("xa", "tick_label"),
                 ("xb", "tick_label"),
-                ("xlab", "axis_label"),
                 ("ya", "tick_label"),
                 ("yb", "tick_label"),
+                ("ctitle", "title"),
+                ("entry", "legend_label"),
             ],
         )
 
-    def test_spec_carries_one_glyph_command_per_label_in_order(self):
+    def test_spec_carries_one_glyph_command_for_title_in_order(self):
         patcher = _install_stub_native()
         patcher.start()
         self.addCleanup(patcher.stop)
-        fig, _ax = _labeled_figure()
+        fig, _ax = _titled_figure()
         result = _strict_render(fig)
         self.assertEqual(result.diagnostics, ())
         commands = _StubNativeModule.last_spec["commands"]
-        glyphs = [c for c in commands if c.get("decoration") == "axis_label"]
-        self.assertEqual(len(glyphs), 2)
+        glyphs = [c for c in commands if c.get("decoration") == "title"]
+        self.assertEqual(len(glyphs), 1)
         ticks = [c for c in commands if c.get("decoration") == "tick_label"]
         self.assertEqual(len(ticks), 4)
         # Glyph commands paint after every axes content command: the text
@@ -368,19 +409,19 @@ class TestAxisLabelDrawOrder(unittest.TestCase):
         last_content = max(
             index
             for index, command in enumerate(commands)
-            if command.get("decoration") not in ("tick_label", "axis_label")
+            if command.get("decoration") not in ("tick_label", "title")
         )
         first_glyph = min(
             index
             for index, command in enumerate(commands)
-            if command.get("decoration") in ("tick_label", "axis_label")
+            if command.get("decoration") in ("tick_label", "title")
         )
         self.assertGreater(first_glyph, last_content)
 
 
 @unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
-class TestAxisLabelStyleContract(unittest.TestCase):
-    """M3 style contract: the label face resolves into the outline."""
+class TestTitleStyleContract(unittest.TestCase):
+    """M3 style contract: the title face resolves into the outline."""
 
     def setUp(self):
         patcher = _install_stub_native()
@@ -388,24 +429,27 @@ class TestAxisLabelStyleContract(unittest.TestCase):
         self.addCleanup(patcher.stop)
         _StubNativeModule.last_spec = None
 
-    def test_bold_and_italic_labels_are_eligible(self):
-        fig, ax = _labeled_figure()
-        ax.xaxis.get_label().set_weight("bold")
-        ax.yaxis.get_label().set_style("italic")
+    def test_bold_and_italic_titles_are_eligible(self):
+        fig, ax = _titled_figure()
+        ax.title.set_weight("bold")
         result = _strict_render(fig)
         self.assertEqual(result.diagnostics, ())
         glyphs = [
             c
             for c in _StubNativeModule.last_spec["commands"]
-            if c.get("decoration") == "axis_label"
+            if c.get("decoration") == "title"
         ]
-        self.assertEqual(len(glyphs), 2)
+        self.assertEqual(len(glyphs), 1)
+        fig, ax = _titled_figure()
+        ax.title.set_style("italic")
+        result = _strict_render(fig)
+        self.assertEqual(result.diagnostics, ())
 
     def test_face_changes_outline_geometry(self):
         """The face must flow into the outline (catches prop=None drift)."""
         textpath = _load_textpath()
         normal = textpath.glyph_outline_commands(
-            "xlab",
+            "ctitle",
             (0.0, 0.0),
             1.0,
             0.0,
@@ -413,7 +457,7 @@ class TestAxisLabelStyleContract(unittest.TestCase):
             prop=FontProperties(weight="normal", style="normal"),
         )[0]
         bold = textpath.glyph_outline_commands(
-            "xlab",
+            "ctitle",
             (0.0, 0.0),
             1.0,
             0.0,
@@ -421,7 +465,7 @@ class TestAxisLabelStyleContract(unittest.TestCase):
             prop=FontProperties(weight="bold", style="normal"),
         )[0]
         italic = textpath.glyph_outline_commands(
-            "xlab",
+            "ctitle",
             (0.0, 0.0),
             1.0,
             0.0,
@@ -467,19 +511,19 @@ class TestAxisLabelStyleContract(unittest.TestCase):
         textpath = _load_textpath()
         with self.assertRaises(ValueError) as ctx:
             textpath.glyph_outline_commands(
-                "xlab", (0.0, 0.0), 1.0, 0.0, font_size_pt=10.0,
+                "ctitle", (0.0, 0.0), 1.0, 0.0, font_size_pt=10.0,
                 prop="bold",  # type: ignore[arg-type]
             )
         self.assertIn("unsupported-text-path", str(ctx.exception))
 
     def test_spec_glyph_topology_matches_resolved_face(self):
-        """End to end: each spec glyph keeps its label face's topology."""
+        """End to end: the spec title glyph keeps its label face's topology."""
         from matplotlib.path import Path
 
         textpath = _load_textpath()
         preflight_mod = _load_preflight()
-        fig, ax = _labeled_figure()
-        ax.xaxis.get_label().set_weight("bold")
+        fig, ax = _titled_figure()
+        ax.title.set_weight("bold")
         preflight = preflight_mod._EligibilityPreflight()
         preflight.check_static(fig)
         self.assertEqual(preflight.reasons, [])
@@ -489,11 +533,11 @@ class TestAxisLabelStyleContract(unittest.TestCase):
             fig, width_px=200, height_px=100, output_dpi=100.0
         )
         self.assertEqual(preflight.reasons, [])
-        glyphs = [c for c in spec["commands"] if c.get("decoration") == "axis_label"]
+        glyphs = [c for c in spec["commands"] if c.get("decoration") == "title"]
         payloads = [p for p in preflight._observed_text_payloads
-                    if p.get("kind") == "axis_label"]
+                    if p.get("kind") == "title"]
         self.assertEqual(len(glyphs), len(payloads))
-        self.assertEqual(len(glyphs), 2)
+        self.assertEqual(len(glyphs), 1)
         for command, payload in zip(glyphs, payloads):
             label = payload["artist"]
             expected = textpath.glyph_outline_commands(
