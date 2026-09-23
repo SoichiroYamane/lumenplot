@@ -42,7 +42,7 @@ Each per-class row below is checked against the same six mechanics:
 
 | ID | Mechanic | What must exist together |
 | --- | --- | --- |
-| M1 | Whitelist entry | Documented-public artist class in the static whitelist (`backend_preflight.py`) plus the accepted-record amendment (ADR 0015 §4/§4a/§4b or later) |
+| M1 | Whitelist entry | Documented-public artist class in the static whitelist (`backend_eligibility.py`) plus the accepted-record amendment (ADR 0015 §4/§4a/§4b or later) |
 | M2 | Collector trace | Exact eligible collector-trace expectation asserted by a trace test (balanced-group grammar; no silent base-class no-op) |
 | M3 | Style contract | Resolved style contract test (cap/join/solid/width/alpha/clip; Agg-resolved values, not approximations) |
 | M4 | Strict/hybrid behavior | Strict mode fails before writing (`LumenPlotUnsupportedError`, no PNG); hybrid mode renders once through whole-frame Agg with exactly one diagnostic |
@@ -73,7 +73,7 @@ Each per-class row below is checked against the same six mechanics:
 
 | Mechanic | Evidence | Status |
 | --- | --- | --- |
-| M1 whitelist | `matplotlib.lines.Line2D` in the static whitelist (`python/lumenplot_mpl/backend_preflight.py`); base eligible trace in [ADR 0015 §4](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) | LANDED |
+| M1 whitelist | `matplotlib.lines.Line2D` in the static whitelist (`python/lumenplot_mpl/backend_eligibility.py`); base eligible trace in [ADR 0015 §4](../adr/0015-phase3b-public-matplotlib-adapter-contract.md) | LANDED |
 | M2 collector trace | Exact `figure → patch → axes → line2d` grammar; `TestStepProfileModes`-adjacent profile tests plus the eligible-trace assertions in the Phase-3B backend suites (`tests/python/test_phase3b_backend.py`) | LANDED |
 | M3 style contract | Butt cap / miter join / solid / finite width surface in `_check_line2d_static`; style fixtures in the Phase-3B suites | LANDED |
 | M4 strict/hybrid | `TestStrictErrorFixtures`, `TestTerminalAdapterErrors` (`tests/python/test_phase3b_error_and_mixed_output.py`); preflight soundness `TestStrictPreflightSoundness` / `TestHybridPreflightSoundness` (`tests/python/test_mpl_preflight_soundness.py`, PR #103) | LANDED |
@@ -239,7 +239,7 @@ decoded-pixel, text/style, or operational parity per §15.1), or the fixed
 gate is found to have been widened after a failed result.
 
 1. Remove the class from strict eligibility: delete its whitelist entry and
-   its collector-trace branch in `backend_preflight.py` so strict mode
+   its collector-trace branch in `backend_collector.py` so strict mode
    refuses it explicitly before writing.
 2. Retain explicit whole-frame Agg fallback in hybrid mode with exactly one
    diagnostic (no partial native render, no silent approximation).
