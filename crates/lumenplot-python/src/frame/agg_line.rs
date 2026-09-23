@@ -33,6 +33,67 @@ const MITER_LIMIT: f64 = 4.0;
 /// exact single-segment route (see `stroke_polygon`).
 const MAX_STROKE_COORD: f64 = 1e9;
 
+/// Device-space clip box in y-down device pixels, stored as exact f64
+/// doubles. Mirrors Matplotlib's `set_clipbox` integer box exactly: the
+/// command clip rect (y-up display `[x, y, w, h]`) rounds to the Agg box,
+/// and a missing (or all-zero) rect means the full canvas (MPL's
+/// zero-cliprect branch). Private to this module; plain f64 only.
+#[derive(Clone, Copy, Debug)]
+struct ClipBox {
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+}
+
+fn clip_box_for(clip_rect: Option<[f64; 4]>, width: u32, height: u32) -> ClipBox {
+    let full = ClipBox {
+        x1: 0.0,
+        y1: 0.0,
+        x2: f64::from(width),
+        y2: f64::from(height),
+    };
+    let Some(rect) = clip_rect else {
+        return full;
+    };
+    let [x, y, w, h] = rect;
+    if x == 0.0 && y == 0.0 && x + w == 0.0 && y + h == 0.0 {
+        return full;
+    }
+    let width = f64::from(width);
+    let height = f64::from(height);
+    let mut x1 = (x + 0.5).floor().max(0.0);
+    let mut y1 = (height - (y + h) + 0.5).floor().max(0.0);
+    let mut x2 = (x + w + 0.5).floor().min(width);
+    let mut y2 = (height - y + 0.5).floor().min(height);
+    if x1 > x2 {
+        core::mem::swap(&mut x1, &mut x2);
+    }
+    if y1 > y2 {
+        core::mem::swap(&mut y1, &mut y2);
+    }
+    ClipBox { x1, y1, x2, y2 }
+}
+
+/// Exact `a * b / c` in f64 (`ras_conv_dbl::mul_div`); the operand order
+/// here is load-bearing and must stay token-for-token with Agg.
+fn clip_mul_div(a: f64, b: f64, c: f64) -> f64 {
+    a * b / c
+}
+
+/// Cyrus-Beck region flags (`agg_clip_liang_barsky.h`): bit 0 `x > x2`,
+/// bit 1 `y > y2`, bit 2 `x < x1`, bit 3 `y < y1`.
+fn clip_flags(x: f64, y: f64, clip: &ClipBox) -> u32 {
+    (x > clip.x2) as u32
+        | (((y > clip.y2) as u32) << 1)
+        | (((x < clip.x1) as u32) << 2)
+        | (((y < clip.y1) as u32) << 3)
+}
+
+fn clip_flags_y(y: f64, clip: &ClipBox) -> u32 {
+    (((y > clip.y2) as u32) << 1) | (((y < clip.y1) as u32) << 3)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Point {
     x: f64,
@@ -51,9 +112,14 @@ struct SubpixelPoint {
     y: i64,
 }
 
+/// Precision contract (architecture-authority scanline-core ruling):
+/// polygon vertices stay exact f64 doubles through clipping; integer
+/// rounding applies ONLY at the final per-edge cell handoff inside the
+/// edge clipper (match-MPL-sl_clip_dbl: ras_conv_dbl upscale identity,
+/// exact mul_div, iround(v*256) at handoff). Never round here.
 #[derive(Clone, Copy, Debug)]
 struct Polygon {
-    points: [SubpixelPoint; 4],
+    points: [Point; 4],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -68,6 +134,9 @@ struct CellRasterizer {
     cells: Vec<Cell>,
     current: Cell,
     has_current: bool,
+    clip_x1: f64,
+    clip_y1: f64,
+    clip_f1: u32,
 }
 
 impl CellRasterizer {
@@ -80,6 +149,9 @@ impl CellRasterizer {
             cells,
             current: Cell::default(),
             has_current: false,
+            clip_x1: 0.0,
+            clip_y1: 0.0,
+            clip_f1: 0,
         })
     }
 
@@ -281,23 +353,274 @@ impl CellRasterizer {
         self.render_scanline_edge(row, x_from, SUBPIXEL_SCALE - first, end.x, end_fractional_y)
     }
 
-    fn add_polygon(&mut self, polygon: Polygon) -> Result<(), FrameError> {
-        for index in 0..polygon.points.len() {
-            let next = (index + 1) % polygon.points.len();
-            self.add_edge(polygon.points[index], polygon.points[next])?;
+    fn add_polygon(&mut self, clip: &ClipBox, polygon: Polygon) -> Result<(), FrameError> {
+        // Same walk sequence as before (including the closing edge): each
+        // edge now passes through the f64 clipper, which rounds only at
+        // the handoff into add_edge.
+        let points = polygon.points;
+        self.clip_move_to(clip, points[0]);
+        for point in points.iter().skip(1) {
+            self.clip_line_to(clip, point.x, point.y)?;
         }
+        // Agg auto-close: line back to the contour start.
+        self.clip_line_to(clip, points[0].x, points[0].y)?;
         Ok(())
     }
 
-    fn add_contour(&mut self, points: &[SubpixelPoint]) -> Result<(), FrameError> {
+    fn add_contour(&mut self, clip: &ClipBox, points: &[Point]) -> Result<(), FrameError> {
         if points.len() < 3 {
             return Ok(());
         }
-        for index in 0..points.len() {
-            let next = (index + 1) % points.len();
-            self.add_edge(points[index], points[next])?;
+        self.clip_move_to(clip, points[0]);
+        for point in &points[1..] {
+            self.clip_line_to(clip, point.x, point.y)?;
         }
+        // Agg auto-close: line back to the contour start.
+        self.clip_line_to(clip, points[0].x, points[0].y)?;
         Ok(())
+    }
+
+    /// Edge clipper ported token-for-token from Agg's
+    /// `rasterizer_sl_clip<ras_conv_dbl>` (`agg_rasterizer_sl_clip.h`):
+    /// outline vertices stay exact f64 doubles through clipping
+    /// (`upscale` identity, `mul_div` exact `a*b/c`), and the ONLY integer
+    /// rounding on this path is `to_subpixel` at each handoff into
+    /// `add_edge` (MPL's `xi`/`yi` = `iround(v*256)`; Agg's fallback
+    /// `iround` is bit-identical to Rust `f64::round` for all finite
+    /// values). Clipping is always on: every caller supplies the
+    /// `clip_box_for` box (axes clip rect, else full canvas), exactly like
+    /// MPL's `set_clipbox`.
+    fn clip_move_to(&mut self, clip: &ClipBox, point: Point) {
+        self.clip_x1 = point.x;
+        self.clip_y1 = point.y;
+        self.clip_f1 = clip_flags(point.x, point.y, clip);
+    }
+
+    fn clip_line_to(&mut self, clip: &ClipBox, x2: f64, y2: f64) -> Result<(), FrameError> {
+        let f2 = clip_flags(x2, y2, clip);
+        if (self.clip_f1 & 10) == (f2 & 10) && (self.clip_f1 & 10) != 0 {
+            // Invisible by Y.
+            self.clip_x1 = x2;
+            self.clip_y1 = y2;
+            self.clip_f1 = f2;
+            return Ok(());
+        }
+        let x1 = self.clip_x1;
+        let y1 = self.clip_y1;
+        let f1 = self.clip_f1;
+        match ((f1 & 5) << 1) | (f2 & 5) {
+            // Visible by X.
+            0 => {
+                self.clip_line_clip_y(clip, Point { x: x1, y: y1 }, Point { x: x2, y: y2 }, f1, f2)?
+            }
+            // x2 > clip.x2
+            1 => {
+                let y3 = y1 + clip_mul_div(clip.x2 - x1, y2 - y1, x2 - x1);
+                let f3 = clip_flags_y(y3, clip);
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: x1, y: y1 },
+                    Point { x: clip.x2, y: y3 },
+                    f1,
+                    f3,
+                )?;
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x2, y: y3 },
+                    Point { x: clip.x2, y: y2 },
+                    f3,
+                    f2,
+                )?;
+            }
+            // x1 > clip.x2
+            2 => {
+                let y3 = y1 + clip_mul_div(clip.x2 - x1, y2 - y1, x2 - x1);
+                let f3 = clip_flags_y(y3, clip);
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x2, y: y1 },
+                    Point { x: clip.x2, y: y3 },
+                    f1,
+                    f3,
+                )?;
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x2, y: y3 },
+                    Point { x: x2, y: y2 },
+                    f3,
+                    f2,
+                )?;
+            }
+            // x1 > clip.x2 && x2 > clip.x2
+            3 => self.clip_line_clip_y(
+                clip,
+                Point { x: clip.x2, y: y1 },
+                Point { x: clip.x2, y: y2 },
+                f1,
+                f2,
+            )?,
+            // x2 < clip.x1
+            4 => {
+                let y3 = y1 + clip_mul_div(clip.x1 - x1, y2 - y1, x2 - x1);
+                let f3 = clip_flags_y(y3, clip);
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: x1, y: y1 },
+                    Point { x: clip.x1, y: y3 },
+                    f1,
+                    f3,
+                )?;
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x1, y: y3 },
+                    Point { x: clip.x1, y: y2 },
+                    f3,
+                    f2,
+                )?;
+            }
+            // x1 > clip.x2 && x2 < clip.x1
+            6 => {
+                let y3 = y1 + clip_mul_div(clip.x2 - x1, y2 - y1, x2 - x1);
+                let y4 = y1 + clip_mul_div(clip.x1 - x1, y2 - y1, x2 - x1);
+                let f3 = clip_flags_y(y3, clip);
+                let f4 = clip_flags_y(y4, clip);
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x2, y: y1 },
+                    Point { x: clip.x2, y: y3 },
+                    f1,
+                    f3,
+                )?;
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x2, y: y3 },
+                    Point { x: clip.x1, y: y4 },
+                    f3,
+                    f4,
+                )?;
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x1, y: y4 },
+                    Point { x: clip.x1, y: y2 },
+                    f4,
+                    f2,
+                )?;
+            }
+            // x1 < clip.x1
+            8 => {
+                let y3 = y1 + clip_mul_div(clip.x1 - x1, y2 - y1, x2 - x1);
+                let f3 = clip_flags_y(y3, clip);
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x1, y: y1 },
+                    Point { x: clip.x1, y: y3 },
+                    f1,
+                    f3,
+                )?;
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x1, y: y3 },
+                    Point { x: x2, y: y2 },
+                    f3,
+                    f2,
+                )?;
+            }
+            // x1 < clip.x1 && x2 > clip.x2
+            9 => {
+                let y3 = y1 + clip_mul_div(clip.x1 - x1, y2 - y1, x2 - x1);
+                let y4 = y1 + clip_mul_div(clip.x2 - x1, y2 - y1, x2 - x1);
+                let f3 = clip_flags_y(y3, clip);
+                let f4 = clip_flags_y(y4, clip);
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x1, y: y1 },
+                    Point { x: clip.x1, y: y3 },
+                    f1,
+                    f3,
+                )?;
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x1, y: y3 },
+                    Point { x: clip.x2, y: y4 },
+                    f3,
+                    f4,
+                )?;
+                self.clip_line_clip_y(
+                    clip,
+                    Point { x: clip.x2, y: y4 },
+                    Point { x: clip.x2, y: y2 },
+                    f4,
+                    f2,
+                )?;
+            }
+            // x1 < clip.x1 && x2 < clip.x1
+            12 => self.clip_line_clip_y(
+                clip,
+                Point { x: clip.x1, y: y1 },
+                Point { x: clip.x1, y: y2 },
+                f1,
+                f2,
+            )?,
+            // Remaining arms need contradictory x flags on a normalized
+            // box; Agg's switch ignores them the same way.
+            _ => {}
+        }
+        self.clip_f1 = f2;
+        self.clip_x1 = x2;
+        self.clip_y1 = y2;
+        Ok(())
+    }
+
+    fn clip_line_clip_y(
+        &mut self,
+        clip: &ClipBox,
+        p1: Point,
+        p2: Point,
+        f1: u32,
+        f2: u32,
+    ) -> Result<(), FrameError> {
+        let (x1, y1) = (p1.x, p1.y);
+        let (x2, y2) = (p2.x, p2.y);
+        let f1 = f1 & 10;
+        let f2 = f2 & 10;
+        if (f1 | f2) == 0 {
+            // Fully visible: hand exact doubles to the single rounding
+            // site, then walk the unchanged integer core.
+            return self.add_edge(
+                to_subpixel(Point { x: x1, y: y1 }),
+                to_subpixel(Point { x: x2, y: y2 }),
+            );
+        }
+        if f1 == f2 {
+            // Invisible by Y.
+            return Ok(());
+        }
+        let (mut tx1, mut ty1) = (x1, y1);
+        let (mut tx2, mut ty2) = (x2, y2);
+        // y1 < clip.y1
+        if (f1 & 8) != 0 {
+            tx1 = x1 + clip_mul_div(clip.y1 - y1, x2 - x1, y2 - y1);
+            ty1 = clip.y1;
+        }
+        // y1 > clip.y2
+        if (f1 & 2) != 0 {
+            tx1 = x1 + clip_mul_div(clip.y2 - y1, x2 - x1, y2 - y1);
+            ty1 = clip.y2;
+        }
+        // y2 < clip.y1
+        if (f2 & 8) != 0 {
+            tx2 = x1 + clip_mul_div(clip.y1 - y1, x2 - x1, y2 - y1);
+            ty2 = clip.y1;
+        }
+        // y2 > clip.y2
+        if (f2 & 2) != 0 {
+            tx2 = x1 + clip_mul_div(clip.y2 - y1, x2 - x1, y2 - y1);
+            ty2 = clip.y2;
+        }
+        self.add_edge(
+            to_subpixel(Point { x: tx1, y: ty1 }),
+            to_subpixel(Point { x: tx2, y: ty2 }),
+        )
     }
 
     fn write_mask(mut self, mask: &mut Mask, width: u32, height: u32) -> Result<(), FrameError> {
@@ -454,9 +777,10 @@ pub(super) fn try_rasterize(
     let Some(cell_capacity) = cell_capacity_bound(&polygons) else {
         return Ok(None);
     };
+    let clip = clip_box_for(command.clip_rect, width, height);
     let mut rasterizer = CellRasterizer::new(cell_capacity)?;
     for polygon in polygons {
-        rasterizer.add_polygon(polygon)?;
+        rasterizer.add_polygon(&clip, polygon)?;
     }
     let mut mask = coverage_mask(width, height, pixel_count)?;
     rasterizer.write_mask(&mut mask, width, height)?;
@@ -472,12 +796,12 @@ pub(super) fn try_rasterize_triangle_fill(
     if !command.triangle_agg || command.vertices.len() < 3 {
         return Ok(None);
     }
-    let mut points = [SubpixelPoint { x: 0, y: 0 }; 3];
+    let mut points = [Point { x: 0.0, y: 0.0 }; 3];
     for (index, vertex) in command.vertices.iter().take(3).enumerate() {
         let Some(point) = map_device_point(command.transform, *vertex, height) else {
             return Ok(None);
         };
-        points[index] = to_subpixel(point);
+        points[index] = point;
     }
     let polygon = Polygon {
         points: [points[0], points[1], points[2], points[0]],
@@ -485,8 +809,9 @@ pub(super) fn try_rasterize_triangle_fill(
     let Some(cell_capacity) = cell_capacity_bound(&[polygon]) else {
         return Ok(None);
     };
+    let clip = clip_box_for(command.clip_rect, width, height);
     let mut rasterizer = CellRasterizer::new(cell_capacity)?;
-    rasterizer.add_polygon(polygon)?;
+    rasterizer.add_polygon(&clip, polygon)?;
     let mut mask = coverage_mask(width, height, pixel_count)?;
     rasterizer.write_mask(&mut mask, width, height)?;
     if !command.antialias {
@@ -820,7 +1145,7 @@ fn extract_rectilinear_chain(
     Ok(Some(points))
 }
 
-fn contour_capacity_bound(points: &[SubpixelPoint]) -> Option<usize> {
+fn contour_capacity_bound(points: &[Point]) -> Option<usize> {
     if points.len() < 3 {
         return None;
     }
@@ -828,18 +1153,8 @@ fn contour_capacity_bound(points: &[SubpixelPoint]) -> Option<usize> {
     for index in 0..points.len() {
         let start = points[index];
         let end = points[(index + 1) % points.len()];
-        let x_cells = usize::try_from(
-            (end.x - start.x)
-                .unsigned_abs()
-                .div_ceil(SUBPIXEL_SCALE as u64),
-        )
-        .ok()?;
-        let y_cells = usize::try_from(
-            (end.y - start.y)
-                .unsigned_abs()
-                .div_ceil(SUBPIXEL_SCALE as u64),
-        )
-        .ok()?;
+        let x_cells = cells_for_span(end.x - start.x)?;
+        let y_cells = cells_for_span(end.y - start.y)?;
         capacity = capacity
             .checked_add(x_cells)?
             .checked_add(y_cells)?
@@ -968,22 +1283,23 @@ fn rasterize_rectilinear_chain(
     {
         return Ok(None);
     }
-    let mut contour: Vec<SubpixelPoint> = Vec::new();
+    let mut contour: Vec<Point> = Vec::new();
     contour
         .try_reserve_exact(left.len() + right.len())
         .map_err(|_| FrameError::OutOfMemory)?;
-    contour.push(to_subpixel(left[0]));
+    contour.push(left[0]);
     for point in &right {
-        contour.push(to_subpixel(*point));
+        contour.push(*point);
     }
     for point in left[1..].iter().rev() {
-        contour.push(to_subpixel(*point));
+        contour.push(*point);
     }
     let Some(cell_capacity) = contour_capacity_bound(&contour) else {
         return Ok(None);
     };
+    let clip = clip_box_for(command.clip_rect, width, height);
     let mut rasterizer = CellRasterizer::new(cell_capacity)?;
-    rasterizer.add_contour(&contour)?;
+    rasterizer.add_contour(&clip, &contour)?;
     let mut mask = coverage_mask(width, height, pixel_count)?;
     rasterizer.write_mask(&mut mask, width, height)?;
     Ok(Some(mask))
@@ -1176,22 +1492,23 @@ fn rasterize_oblique_chain(
     {
         return Ok(None);
     }
-    let mut contour: Vec<SubpixelPoint> = Vec::new();
+    let mut contour: Vec<Point> = Vec::new();
     contour
         .try_reserve_exact(left.len() + right.len())
         .map_err(|_| FrameError::OutOfMemory)?;
-    contour.push(to_subpixel(left[0]));
+    contour.push(left[0]);
     for point in &right {
-        contour.push(to_subpixel(*point));
+        contour.push(*point);
     }
     for point in left[1..].iter().rev() {
-        contour.push(to_subpixel(*point));
+        contour.push(*point);
     }
     let Some(cell_capacity) = contour_capacity_bound(&contour) else {
         return Ok(None);
     };
+    let clip = clip_box_for(command.clip_rect, width, height);
     let mut rasterizer = CellRasterizer::new(cell_capacity)?;
-    rasterizer.add_contour(&contour)?;
+    rasterizer.add_contour(&clip, &contour)?;
     let mut mask = coverage_mask(width, height, pixel_count)?;
     rasterizer.write_mask(&mut mask, width, height)?;
     Ok(Some(mask))
@@ -1682,8 +1999,8 @@ fn rasterize_closed_curve_loop(
             y: current.y - side * miter_y,
         });
     }
-    let mut outer_cells: Vec<SubpixelPoint> = Vec::new();
-    let mut inner_cells: Vec<SubpixelPoint> = Vec::new();
+    let mut outer_cells: Vec<Point> = Vec::new();
+    let mut inner_cells: Vec<Point> = Vec::new();
     outer_cells
         .try_reserve_exact(count)
         .map_err(|_| FrameError::OutOfMemory)?;
@@ -1694,13 +2011,13 @@ fn rasterize_closed_curve_loop(
         if !point.x.is_finite() || !point.y.is_finite() {
             return Ok(None);
         }
-        outer_cells.push(to_subpixel(*point));
+        outer_cells.push(*point);
     }
     for point in &inner {
         if !point.x.is_finite() || !point.y.is_finite() {
             return Ok(None);
         }
-        inner_cells.push(to_subpixel(*point));
+        inner_cells.push(*point);
     }
     // The interior hole cancels under the nonzero rule: traverse the
     // inner contour in the opposite direction to the outer one.
@@ -1718,8 +2035,9 @@ fn rasterize_closed_curve_loop(
         return Ok(None);
     }
     let mut rasterizer = CellRasterizer::new(cell_capacity)?;
-    rasterizer.add_contour(&outer_cells)?;
-    rasterizer.add_contour(&inner_cells)?;
+    let clip = clip_box_for(command.clip_rect, width, height);
+    rasterizer.add_contour(&clip, &outer_cells)?;
+    rasterizer.add_contour(&clip, &inner_cells)?;
     let mut mask = coverage_mask(width, height, pixel_count)?;
     rasterizer.write_mask(&mut mask, width, height)?;
     Ok(Some(mask))
@@ -1828,7 +2146,7 @@ fn rasterize_rect_ring(
         })
         .map_err(|_| FrameError::OutOfMemory)?;
     polygons.push(Polygon {
-        points: outer_points.map(to_subpixel),
+        points: outer_points,
     });
     let bevel_cutouts = [
         [
@@ -1893,12 +2211,7 @@ fn rasterize_rect_ring(
             polygons.push(Polygon {
                 // Reverse the outer winding to subtract the square corner and
                 // leave Agg's bevel-style rectilinear join.
-                points: [
-                    to_subpixel(corner),
-                    to_subpixel(second),
-                    to_subpixel(first),
-                    to_subpixel(corner),
-                ],
+                points: [corner, second, first, corner],
             });
         }
     }
@@ -1923,15 +2236,16 @@ fn rasterize_rect_ring(
             },
         ];
         polygons.push(Polygon {
-            points: inner_points.map(to_subpixel),
+            points: inner_points,
         });
     }
     let Some(cell_capacity) = cell_capacity_bound(&polygons) else {
         return Ok(None);
     };
+    let clip = clip_box_for(command.clip_rect, width, height);
     let mut rasterizer = CellRasterizer::new(cell_capacity)?;
     for polygon in polygons {
-        rasterizer.add_polygon(polygon)?;
+        rasterizer.add_polygon(&clip, polygon)?;
     }
     let mut mask = coverage_mask(width, height, pixel_count)?;
     rasterizer.write_mask(&mut mask, width, height)?;
@@ -1976,14 +2290,17 @@ fn stroke_polygon(segment: Segment, stroke_width: f64) -> Option<Polygon> {
     // Corners may lie outside the command clip or the canvas: strokes
     // centered on a clip boundary (axes spines) or ending exactly on a
     // clip corner (axes-clipped diagonals) legitimately spill over by up
-    // to half the stroke width. Agg strokes first and clips coverage
-    // after, so the quad is always emitted here; the cell writer only
-    // stores in-canvas cells and the caller applies the device clip to
-    // the finished mask. Rejecting here silently dropped every such
-    // stroke to the tiny-skia fallback (legend spines + content fringe).
-    // Only non-finite or absurd magnitudes fall through: the scanline
-    // edge arithmetic runs in fixed-point subpixels, and the cell
-    // capacity gate below already bounds allocation, not overflow.
+    // to half the stroke width. Agg strokes first and clips EDGES to the
+    // clip box in exact doubles second (then rounds only at the cell
+    // handoff), so the quad is always emitted here as exact f64; the edge
+    // clipper below performs the MPL-identical cut. The cell writer only
+    // stores in-canvas cells and the caller keeps applying the device
+    // clip to the finished mask as a backstop. Rejecting here silently
+    // dropped every such stroke to the tiny-skia fallback (legend spines
+    // + content fringe). Only non-finite or absurd magnitudes fall
+    // through: the scanline edge arithmetic runs in fixed-point
+    // subpixels, and the cell capacity gate below already bounds
+    // allocation, not overflow.
     if corners.iter().any(|point| {
         !point.x.is_finite()
             || !point.y.is_finite()
@@ -1992,12 +2309,16 @@ fn stroke_polygon(segment: Segment, stroke_width: f64) -> Option<Polygon> {
     }) {
         return None;
     }
-    Some(Polygon {
-        points: corners.map(to_subpixel),
-    })
+    Some(Polygon { points: corners })
 }
 
 fn to_subpixel(point: Point) -> SubpixelPoint {
+    // THE single integer-rounding site on the stroke path: exact-f64
+    // outline vertices reach this function only through the edge
+    // clipper's per-edge cell handoff (MPL's xi/yi = iround(v*256)).
+    // Agg's fallback iround is bit-identical to f64::round (half away
+    // from zero) for all finite values, so this also matches MPL on the
+    // fully-visible fast path.
     SubpixelPoint {
         x: (point.x * SUBPIXEL_SCALE as f64).round() as i64,
         y: (point.y * SUBPIXEL_SCALE as f64).round() as i64,
@@ -2010,18 +2331,8 @@ fn cell_capacity_bound(polygons: &[Polygon]) -> Option<usize> {
         for index in 0..polygon.points.len() {
             let start = polygon.points[index];
             let end = polygon.points[(index + 1) % polygon.points.len()];
-            let x_cells = usize::try_from(
-                (end.x - start.x)
-                    .unsigned_abs()
-                    .div_ceil(SUBPIXEL_SCALE as u64),
-            )
-            .ok()?;
-            let y_cells = usize::try_from(
-                (end.y - start.y)
-                    .unsigned_abs()
-                    .div_ceil(SUBPIXEL_SCALE as u64),
-            )
-            .ok()?;
+            let x_cells = cells_for_span(end.x - start.x)?;
+            let y_cells = cells_for_span(end.y - start.y)?;
             capacity = capacity
                 .checked_add(x_cells)?
                 .checked_add(y_cells)?
@@ -2032,6 +2343,21 @@ fn cell_capacity_bound(polygons: &[Polygon]) -> Option<usize> {
         }
     }
     Some(capacity.max(1))
+}
+
+/// Cell-span bound for an exact-f64 edge delta in device px. Adds one
+/// subpixel slack so the bound never comes out smaller than the old
+/// integer-span version for the same geometry (rounding can widen a span
+/// by up to one subpixel): reservation-only, never a behavior change.
+fn cells_for_span(delta_px: f64) -> Option<usize> {
+    if !delta_px.is_finite() {
+        return None;
+    }
+    let sub = delta_px.abs() * SUBPIXEL_SCALE as f64 + 1.0;
+    if !sub.is_finite() {
+        return None;
+    }
+    usize::try_from((sub / SUBPIXEL_SCALE as f64).ceil() as u64).ok()
 }
 
 fn coverage_alpha(area: i64) -> u8 {
@@ -2126,6 +2452,7 @@ mod tests {
         // committed log oracle carries the durable Agg-parity gate.
         let mut command = gap_command();
         command.vertices = vec![[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]];
+        command.clip_rect = None;
         let mask = try_rasterize(&command, 8, 8, 64, 1.0)
             .expect("route")
             .expect("oblique chain eligible");
@@ -2209,6 +2536,7 @@ mod tests {
         let mut command = gap_command();
         command.vertices = vec![[1.0, 6.0], [1.0, 4.0], [5.0, 4.0], [5.0, 2.0]];
         command.codes = None;
+        command.clip_rect = None;
         let mask = try_rasterize(&command, 8, 8, 64, 1.0)
             .expect("route")
             .expect("rectilinear chain eligible");
