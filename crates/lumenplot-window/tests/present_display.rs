@@ -15,6 +15,7 @@ use lumenplot_render_wgpu::Renderer;
 use lumenplot_runtime::{
     EngineSession, LoopMode, SceneRevision, SubmissionOutcome, SurfaceCondition,
 };
+use lumenplot_window::{WindowSize, WinitHost};
 
 /// Declared control cell: portable Lavapipe baseline (first).
 const CELL_LAVAPIPE_CONTROL: &str = "Lavapipe control (portable baseline, first)";
@@ -222,4 +223,159 @@ fn present_display_offscreen_geometry_and_retained_resources() {
             "same-size warmed render must not recreate its target at {scale}x"
         );
     }
+}
+
+/// Bounded surface harness: forwards every event to the product [`WinitHost`]
+/// and exits the loop after `budget` redraws.
+///
+/// One cell therefore proves exactly a brief run (configure + N presents +
+/// clean exit, no focus loop, no fullscreen): each forwarded redraw presents
+/// exactly one surface frame through the real M4-PRESENT-2 body. A surface
+/// failure exits the loop early with an observable stderr line, so a short
+/// count fails the cell instead of passing silently.
+struct SurfaceHarness {
+    host: WinitHost,
+    redraws: u32,
+    budget: u32,
+}
+
+impl SurfaceHarness {
+    fn new(width: u32, height: u32, budget: u32) -> Self {
+        let size = WindowSize::new(width, height).expect("harness size must be valid");
+        Self {
+            host: WinitHost::new(size),
+            redraws: 0,
+            budget: budget.max(1),
+        }
+    }
+}
+
+impl winit::application::ApplicationHandler for SurfaceHarness {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        winit::application::ApplicationHandler::resumed(&mut self.host, event_loop);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        event: winit::event::WindowEvent,
+    ) {
+        if matches!(event, winit::event::WindowEvent::RedrawRequested) {
+            self.redraws += 1;
+        }
+        winit::application::ApplicationHandler::window_event(
+            &mut self.host,
+            event_loop,
+            window_id,
+            event,
+        );
+        if self.redraws >= self.budget {
+            event_loop.exit();
+        }
+    }
+}
+
+/// Build a harness event loop.
+///
+/// The Rust test runner executes cells on a worker thread, never on the
+/// process main thread, while `winit` guards loop creation to the main
+/// thread by default. The harness therefore opts into `any_thread` on both
+/// Linux backends explicitly. This is test-only: the product
+/// [`WinitHost`](lumenplot_window::WinitHost)/`run_window` seam keeps the
+/// ADR 0005 main-thread ownership (the core is still created on the thread
+/// that drives it, which inside a cell is the harness thread), and no
+/// product signature changes.
+#[cfg(target_os = "linux")]
+fn harness_event_loop() -> winit::event_loop::EventLoop<()> {
+    use winit::platform::wayland::EventLoopBuilderExtWayland;
+    use winit::platform::x11::EventLoopBuilderExtX11;
+    let mut builder = winit::event_loop::EventLoop::builder();
+    EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
+    EventLoopBuilderExtX11::with_any_thread(&mut builder, true);
+    builder.build().expect(
+        "environment required: no native event loop on this host (headless or no compositor); this is not a present failure",
+    )
+}
+
+/// Build a harness event loop (non-Linux fallback: default construction).
+#[cfg(not(target_os = "linux"))]
+fn harness_event_loop() -> winit::event_loop::EventLoop<()> {
+    winit::event_loop::EventLoop::new().expect(
+        "environment required: no native event loop on this host (headless or no compositor); this is not a present failure",
+    )
+}
+/// Run one brief surface cell and return its observed redraw count.
+///
+/// Panics with an `environment required` message (never a silent pass) when
+/// the host offers no event loop or no adapter/device for the selected
+/// loader route. Prints the cell geometry, close verdict, and elapsed time
+/// as evidence; tolerance stays OPEN (asserted, never compared).
+fn run_surface_cell(width: u32, height: u32, budget: u32, cell: &str) -> u32 {
+    assert_eq!(
+        GPU_CPU_ORACLE_TOLERANCE_STATUS.as_bytes()[0],
+        b'O',
+        "tolerance gate must stay visibly OPEN (no numeric bound claimed)"
+    );
+    let started = std::time::Instant::now();
+    let event_loop = harness_event_loop();
+    let mut harness = SurfaceHarness::new(width, height, budget);
+    event_loop
+        .run_app(&mut harness)
+        .expect("event loop must run to the harness bound");
+    let elapsed_ms = started.elapsed().as_millis();
+    if let Some(error) = harness.host.open_error() {
+        panic!(
+            "environment required: surface configure unavailable on {cell}: {} ({}) (no adapter/device on this route; this is not a renderer failure)",
+            error.message(),
+            error.kind().as_str()
+        );
+    }
+    assert_eq!(
+        harness.redraws, budget,
+        "harness must observe exactly its redraw budget on {cell}"
+    );
+    let close = match harness.host.close_outcome() {
+        Some(outcome) => format!("{outcome:?}"),
+        None => "harness-bounded exit (no user close requested)".to_owned(),
+    };
+    println!(
+        "surface cell {cell}: {width}x{height} redraws={} close={close} elapsed_ms={elapsed_ms}",
+        harness.redraws,
+    );
+    harness.redraws
+}
+
+/// Lavapipe control cell: real surface configure/present, first.
+///
+/// One brief small launch proves configure plus repeated draw/close through
+/// the real body on the portable baseline (one process hosts at most one
+/// event loop, so repeated launches are proven by repeated invocations of
+/// this cell plus the named-host cell, each recorded). The invoker selects
+/// Lavapipe through the single-ICD loader route (`VK_DRIVER_FILES` pointing
+/// at the Lavapipe ICD, `VK_ICD_FILENAMES` unset); the cell itself never
+/// mutates loader state.
+#[test]
+#[ignore = "environment required: portable GPU adapter/device + native event loop needed (Lavapipe control first)"]
+fn present_display_surface_configure_and_present_lavapipe() {
+    println!("declared cells: {CELL_LAVAPIPE_CONTROL} | {CELL_NAMED_HOST}");
+    let redraws = run_surface_cell(320, 240, 2, CELL_LAVAPIPE_CONTROL);
+    assert_eq!(redraws, 2, "control launch must meet its redraw budget");
+}
+
+/// Named-host cell: Linux/Wayland Radeon 780M (`synix`), brief only.
+///
+/// Exactly ONE small windowed surface under the maintainer ack: configure +
+/// one present + harness-bounded exit, with geometry, close verdict, and
+/// elapsed time printed as evidence. No fullscreen, no focus loop, no pixel
+/// comparison; tolerance stays OPEN.
+#[test]
+#[ignore = "environment required: named-host compositor + adapter needed (Linux/Wayland Radeon 780M synix, acked brief run only)"]
+fn present_display_surface_named_host_780m() {
+    println!("declared cells: {CELL_LAVAPIPE_CONTROL} | {CELL_NAMED_HOST}");
+    let redraws = run_surface_cell(320, 240, 1, CELL_NAMED_HOST);
+    assert_eq!(
+        redraws, 1,
+        "named-host cell runs ONE brief small windowed surface only"
+    );
 }
