@@ -210,6 +210,19 @@ content zorders sink below it):
    stroke surface resolved from the collected graphics context;
 3. one glyph-path command per entry label via the public `textpath`
    module (`decoration: "legend_label"`), identical route to tick labels.
+   Amended 2026-09-23 by the architecture-authority option-a ruling on
+   t_c9a0f98c: a `legend_label` (and later tick/date-glyph labels) may ride
+   as a coverage-blit command instead, carrying a per-label FT2Font raster
+   at output DPI with `get_hinting_flag()` into an alpha mask, anchored by
+   the SAME Matplotlib-provided anchor math (unchanged). Legend is the FIRST
+   consumer; tick/date-glyph labels are sequenced after (no same-lane
+   expansion). The native side composites the mask with the `agg_srgb`
+   blend with NO new rasterizer, and mask-digest discipline is kept. The
+   public `glyph_outline_commands` contract is UNTOUCHED, the vector/PDF
+   text path is UNTOUCHED (PNG-only), the eligibility surface is UNCHANGED,
+   and S15.1 is UNCHANGED. Alternative (b) (vector/renderer solution under
+   the existing contract) is REJECTED. Phase-B implementation is a SEPARATE
+   later lane; no Phase-B dispatch happens before this amendment merges.
 
 Still outside the slice and refused with an explicit reason: figure-level
 legends, legend subclasses, multi-column layouts, shadows, titles,
