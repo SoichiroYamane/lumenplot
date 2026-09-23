@@ -50,13 +50,26 @@ below are the manual equivalent:
 cargo fmt --all
 
 # Required checks before requesting review.
+# Use a fresh venv python for the python legs below (verify.sh creates one).
+python3 -m venv <venv>
+<venv>/bin/python -m pip install --editable .
+# verify.sh exports MPLCONFIGDIR to a fresh writable temp dir; ensure yours is writable.
 cargo fmt --all -- --check
+cargo metadata --locked --no-deps --format-version 1
+cargo check --locked --workspace --all-targets --all-features
 cargo test --locked --workspace --all-features
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-cargo metadata --locked --no-deps --format-version 1
+<venv>/bin/python scripts/check_workspace_architecture.py
+<venv>/bin/python scripts/check_phase2b_dependencies.py
+<venv>/bin/python scripts/check_requirements_traceability.py
+<venv>/bin/python -m unittest scripts.test_check_requirements_traceability
+<venv>/bin/python scripts/check_docs.py
+<venv>/bin/python -m unittest scripts.test_bench_analysis scripts.test_bench_ci scripts.test_check_docs scripts.test_check_phase2b_dependencies scripts.test_check_workspace_architecture scripts.test_phase3a2_manifest scripts.test_phase3a2_sbom scripts.test_phase3b_runtime scripts.test_phase3b_wheel_evidence scripts.test_verify
+<venv>/bin/python -m unittest discover -s tests/python
 nix flake check --all-systems --no-build --no-update-lock-file
 git diff --check
 ```
+scripts/verify.sh is the source of truth for the list above.
 
 For an environment that already has the local package installed, the two
 explicit bypasses are available for diagnosis only:
