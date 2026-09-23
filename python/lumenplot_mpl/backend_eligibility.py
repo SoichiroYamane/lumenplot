@@ -212,9 +212,11 @@ class _StaticEligibilityMixin:
         (R2) extension the visible non-empty ``xlabel``/``ylabel`` pair is
         eligible as well: each label renders as explicit glyph path
         commands through the same ``_check_tick_label_static`` surface as
-        tick labels. Everything else about the decoration surface (visible
+        tick labels. Since the B-2a (R3) extension the visible non-empty
+        center ``title`` is eligible as well through that same surface.
+        Everything else about the decoration surface (visible
         minor tick content, non-solid grid styles, an opaque facecolor,
-        titles, offset text, or child axes) records an explicit
+        non-center titles, offset text, or child axes) records an explicit
         unsupported reason.
         """
         if isinstance(ax, Axes3D):
@@ -241,13 +243,21 @@ class _StaticEligibilityMixin:
                 "facecolor='none' for strict mode",
                 "Axes",
             )
-        for title in (
-            ax.get_title("center"),
-            ax.get_title("left"),
-            ax.get_title("right"),
-        ):
-            if title != "":
+        # B-2a (R3): left/right titles stay refused (an explicit loc is a
+        # broader placement contract, out of R3). The center title is
+        # eligible below through the shared T-lane static surface.
+        for loc in ("left", "right"):
+            if ax.get_title(loc) != "":
                 self.unsupported("titles are unsupported", "Text")
+        # B-2a (R3): the visible non-empty center title is eligible
+        # through the shared T-lane static surface (same whitespace,
+        # multi-line, math/TeX, path-effect, font-size, sketch, snap, and
+        # clip contract as tick labels, plus an explicit hyperlink
+        # refusal). Legend titles stay refused. Empty or invisible titles
+        # draw nothing, so they skip the check like empty tick labels.
+        center_title = ax.title
+        if center_title.get_visible() and center_title.get_text() != "":
+            self._check_title_static(center_title)
         # B-2a (R2): the visible non-empty xlabel/ylabel pair is eligible
         # through the shared T-lane static surface (same whitespace,
         # multi-line, math/TeX, path-effect, font-size, sketch, snap, and
@@ -388,6 +398,20 @@ class _StaticEligibilityMixin:
         """Whitelist-check one visible non-empty axis label (B-2a R2).
 
         Axis labels render as filled glyph path commands through the
+        public ``lumenplot_mpl.textpath`` module exactly like tick
+        labels; they satisfy the same static text contract, plus an
+        explicit hyperlink refusal (the native seam carries no URL
+        target and must never drop one silently).
+        """
+        self._check_tick_label_static(label)
+        name = type(label).__name__
+        if label.get_url() is not None:
+            self.unsupported("hyperlinks are unsupported", name)
+
+    def _check_title_static(self, label: Any) -> None:
+        """Whitelist-check one visible non-empty center title (B-2a R3).
+
+        Center titles render as filled glyph path commands through the
         public ``lumenplot_mpl.textpath`` module exactly like tick
         labels; they satisfy the same static text contract, plus an
         explicit hyperlink refusal (the native seam carries no URL

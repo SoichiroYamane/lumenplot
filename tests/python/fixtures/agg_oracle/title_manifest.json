@@ -1,0 +1,351 @@
+{
+  "schema_version": "agg-oracle-manifest-v1",
+  "fixture_id": "center-title-axes-box-spines",
+  "oracle": {
+    "backend": "FigureCanvasAgg",
+    "matplotlib_version": "3.11.1",
+    "api_version": "1.1",
+    "canvas_construction": "matplotlib.backends.backend_agg.FigureCanvasAgg(figure)",
+    "render_call": "canvas.print_png(buffer, metadata={})"
+  },
+  "python_version": ">=3.11,<3.15",
+  "figure": {
+    "construction": "matplotlib.figure.Figure(figsize=(2.0, 1.0), dpi=100.0, facecolor='white', edgecolor='white')",
+    "options": {
+      "figsize_inches": [
+        2.0,
+        1.0
+      ],
+      "dpi": 100.0,
+      "facecolor": "white",
+      "edgecolor": "white",
+      "axes_construction": "figure.add_axes((0.22, 0.25, 0.66, 0.45))",
+      "axes_rect": [
+        0.22,
+        0.25,
+        0.66,
+        0.45
+      ],
+      "axes_facecolor": "none",
+      "xlim": [
+        0.0,
+        10.0
+      ],
+      "ylim": [
+        0.0,
+        5.0
+      ],
+      "xticks": [
+        0.0,
+        5.0,
+        10.0
+      ],
+      "xticklabels": [
+        "0",
+        "5",
+        "10"
+      ],
+      "yticks": [
+        0.0,
+        5.0
+      ],
+      "yticklabels": [
+        "0",
+        "5"
+      ],
+      "title": "ctitle",
+      "polygon_vertices": [
+        [
+          2.0,
+          1.0
+        ],
+        [
+          8.0,
+          1.0
+        ],
+        [
+          8.0,
+          4.0
+        ],
+        [
+          2.0,
+          4.0
+        ]
+      ],
+      "polygon_style": {
+        "facecolor": "red",
+        "edgecolor": "red",
+        "linewidth": 0.0,
+        "antialiased": true
+      },
+      "spine_style": {
+        "edgecolor": "black",
+        "linewidth": 0.8,
+        "visible": {
+          "bottom": true,
+          "top": true,
+          "left": true,
+          "right": true
+        }
+      },
+      "savefig_format": "png",
+      "print_png_metadata": {}
+    }
+  },
+  "effective_dpi": 100.0,
+  "dimensions": {
+    "width": 200,
+    "height": 100
+  },
+  "orientation": "top-to-bottom",
+  "channels": "RGBA8",
+  "rcparams": {
+    "agg.path.chunksize": 0,
+    "axes.edgecolor": "black",
+    "axes.facecolor": "none",
+    "axes.labelsize": 10.0,
+    "axes.labelcolor": "black",
+    "axes.linewidth": 0.8,
+    "axes.titlesize": 12.0,
+    "axes.titlelocation": "center",
+    "axes.titlepad": 6.0,
+    "figure.dpi": 100.0,
+    "figure.edgecolor": "white",
+    "figure.facecolor": "white",
+    "font.family": [
+      "DejaVu Sans"
+    ],
+    "font.size": 10.0,
+    "lines.antialiased": true,
+    "lines.solid_capstyle": "butt",
+    "lines.solid_joinstyle": "miter",
+    "patch.antialiased": true,
+    "patch.facecolor": "red",
+    "patch.edgecolor": "red",
+    "patch.linewidth": 0.0,
+    "path.simplify": false,
+    "savefig.dpi": 100.0,
+    "savefig.edgecolor": "white",
+    "savefig.facecolor": "white",
+    "savefig.format": "png",
+    "savefig.transparent": false,
+    "text.antialiased": true,
+    "xtick.labelsize": 10.0,
+    "xtick.major.pad": 3.5,
+    "xtick.major.size": 3.5,
+    "xtick.major.width": 0.8,
+    "ytick.labelsize": 10.0,
+    "ytick.major.pad": 3.5,
+    "ytick.major.size": 3.5,
+    "ytick.major.width": 0.8
+  },
+  "font": {
+    "family": "DejaVu Sans",
+    "properties": {
+      "style": "normal",
+      "variant": "normal",
+      "weight": "normal",
+      "stretch": "normal",
+      "size": 12.0
+    },
+    "file": "DejaVuSans.ttf",
+    "bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22"
+  },
+  "font_bytes_sha256": "3fdf69cabf06049ea70a00b5919340e2ce1e6d02b0cc3c4b44fb6801bd1e0d22",
+  "artist_class": "matplotlib.text.Text",
+  "secondary_classes": [
+    "matplotlib.spines.Spine",
+    "matplotlib.patches.Polygon"
+  ],
+  "primitive": {
+    "class": "matplotlib.text.Text",
+    "ticklabels": {
+      "xticks": [
+        0.0,
+        5.0,
+        10.0
+      ],
+      "xticklabels": [
+        "0",
+        "5",
+        "10"
+      ],
+      "yticks": [
+        0.0,
+        5.0
+      ],
+      "yticklabels": [
+        "0",
+        "5"
+      ]
+    },
+    "title": {
+      "center": "ctitle",
+      "left": "",
+      "right": ""
+    },
+    "spines": {
+      "edgecolor": "black",
+      "linewidth": 0.8,
+      "visible": {
+        "bottom": true,
+        "top": true,
+        "left": true,
+        "right": true
+      }
+    },
+    "polygon_style": {
+      "facecolor": "red",
+      "edgecolor": "red",
+      "linewidth": 0.0,
+      "antialiased": true
+    }
+  },
+  "input_data": {
+    "xticklocs": [
+      0.0,
+      5.0,
+      10.0
+    ],
+    "xticklabels": [
+      "0",
+      "5",
+      "10"
+    ],
+    "yticklocs": [
+      0.0,
+      5.0
+    ],
+    "yticklabels": [
+      "0",
+      "5"
+    ],
+    "title": "ctitle"
+  },
+  "topology": {
+    "api": "Axis.get_ticklocs/get_majorticklabels, Axes.get_title, Spine.get_visible/get_linewidth/get_edgecolor, Polygon.get_xy/get_facecolor",
+    "xlim": [
+      0.0,
+      10.0
+    ],
+    "ylim": [
+      0.0,
+      5.0
+    ],
+    "xticklocs": [
+      0.0,
+      5.0,
+      10.0
+    ],
+    "xticklabels": [
+      "0",
+      "5",
+      "10"
+    ],
+    "yticklocs": [
+      0.0,
+      5.0
+    ],
+    "yticklabels": [
+      "0",
+      "5"
+    ],
+    "title_center": "ctitle",
+    "title_left": "",
+    "title_right": "",
+    "spines": {
+      "bottom": {
+        "visible": true,
+        "linewidth": 0.8,
+        "edgecolor": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "top": {
+        "visible": true,
+        "linewidth": 0.8,
+        "edgecolor": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "left": {
+        "visible": true,
+        "linewidth": 0.8,
+        "edgecolor": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "right": {
+        "visible": true,
+        "linewidth": 0.8,
+        "edgecolor": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      }
+    },
+    "polygons": [
+      {
+        "vertices": [
+          [
+            2.0,
+            1.0
+          ],
+          [
+            8.0,
+            1.0
+          ],
+          [
+            8.0,
+            4.0
+          ],
+          [
+            2.0,
+            4.0
+          ],
+          [
+            2.0,
+            1.0
+          ]
+        ],
+        "facecolor": [
+          1.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      }
+    ]
+  },
+  "mask_generation": "reference-only: figure facecolor plus resolved polygon fill and spine/glyph ink; candidate/native pixels are not observed",
+  "reference_png_file": "title_reference.png",
+  "reference_png_sha256": "00cd45b49e397a0a0b2e2b3b0c38ac65851c19a532aec41f201c75ea22792ec2",
+  "mask_file": "title_mask.json",
+  "mask_sha256": "20c835e1c03ca0c78ce575ee1e795a08c9cc2c0b32cebb91602b7e7458e88b32",
+  "pixel_classes": [
+    "background",
+    "fully-covered",
+    "antialias-fringe",
+    "text-or-outline"
+  ],
+  "contract": {
+    "orientation": "top-to-bottom",
+    "channels": "RGBA8",
+    "background": "byte-equal",
+    "fully-covered": "byte-equal",
+    "fringe_max_channel_delta": 1,
+    "fringe_mismatch_rate_denominator": "total-pixels",
+    "fringe_mismatch_rate_max": 0.001
+  }
+}

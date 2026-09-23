@@ -865,7 +865,9 @@ class TestStrictUnsupported(unittest.TestCase):
     def test_text_unsupported(self):
         def build(ax):
             ax.add_line(Line2D([0, 1], [0, 1]))
-            ax.set_title("hello")
+            # B-2a (R3): the center title is eligible, so the
+            # non-whitelisted text pin uses the still-refused left title.
+            ax.set_title("hello", loc="left")
         canvas = self._canvas_with(build)
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
             canvas.render_png()
@@ -1130,12 +1132,12 @@ class TestDecoratedAxesEligibility(unittest.TestCase):
         self.assertEqual(result.diagnostics, ())
 
     def test_tick_label_text_is_still_unsupported(self):
-        """Titles/axis labels stay outside the strict slice: text support is
-        scoped to tick label glyphs (the PRAC-A-W wire-up), so a title must
-        not silently disappear."""
+        """Non-center titles stay outside the strict slice: text support is
+        scoped to tick label, axis label, and center title glyphs (the
+        T-lane wire-up), so a left title must not silently disappear."""
         def build(ax):
             self._plain_line(ax)
-            ax.set_title("hello")
+            ax.set_title("hello", loc="left")
 
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
             self._canvas_with(build).render_png()
@@ -2057,14 +2059,14 @@ class TestHybridFallback(unittest.TestCase):
         self.assertEqual(result.diagnostics[0].type, "Line2D")
 
     def test_traversal_crash_still_falls_back_with_diagnostic(self):
-        # Even a stage-two traversal crash (title text reaches
-        # RendererBase.draw_text, which has no base implementation) is a
-        # stable unsupported-capability event, so hybrid still degrades
-        # visibly instead of raising.
+        # Even a stage-two traversal refusal (a left title's draw_text
+        # has no enumerated entry, so the collector records an
+        # unsupported-capability event) is stable, so hybrid still
+        # degrades visibly instead of raising.
         def build(ax):
             ax.axison = False
             ax.add_line(Line2D([0, 1], [0, 1]))
-            ax.set_title("hybrid title")
+            ax.set_title("hybrid title", loc="left")
             ax.set_xlim(0, 10)
             ax.set_ylim(0, 5)
 
