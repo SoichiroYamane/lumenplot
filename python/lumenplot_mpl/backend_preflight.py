@@ -235,7 +235,7 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         self,
         figure: matplotlib.figure.Figure,
     ) -> list[dict]:
-        """Enumerate accepted tick, axis, and legend labels in draw order.
+        """Enumerate accepted tick, axis, title, and legend labels in draw order.
 
         Matplotlib draws each decorated axes' major ticks through public
         ``Axis.get_major_ticks``/``get_ticklocs`` in the same order the
@@ -243,13 +243,16 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         then y-axis; ``label1`` before ``label2`` per tick). The B-2a
         (R2) axis labels interleave per axis: the x-axis ``xlabel``
         draws after its x-tick labels and before the y-axis ticks, and
-        the y-axis ``ylabel`` draws after its y-tick labels. Only
+        the y-axis ``ylabel`` draws after its y-tick labels. The B-2a
+        (R3) center title draws after its axes' tick and axis labels as
+        a direct text child of the axes group (Matplotlib-provided
+        anchors/positions only; no title layout math here). Only
         visible non-empty labels whose tick location lies inside
         ``Axis.get_view_interval()`` enter the queue: ``Tick.draw``
         skips out-of-view ticks entirely, so an unfiltered enumeration
         would accept labels the renderer never draws. A whitelisted
-        legend then contributes its entry labels after its axes' tick
-        and axis labels.
+        legend then contributes its entry labels after its axes' tick,
+        axis, and title labels.
         """
         entries: list[dict] = []
         decorated_axes = self._decorated_axes or None
@@ -316,6 +319,27 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
                                 "family": tuple(axis_prop.get_family()),
                             }
                         )
+                # B-2a (R3): the center title draws after its axes' tick
+                # and axis labels (a direct text child of the axes group,
+                # carrying Matplotlib's own anchor/position). Only a
+                # visible non-empty title enters the queue: an empty or
+                # invisible title draws nothing.
+                center_title = ax.title
+                center_text = center_title.get_text()
+                if center_title.get_visible() and center_text != "":
+                    center_prop = center_title.get_fontproperties()
+                    entries.append(
+                        {
+                            "kind": "title",
+                            "artist": center_title,
+                            "text": str(center_text),
+                            "size": float(center_title.get_fontsize()),
+                            "angle": float(center_title.get_rotation()),
+                            "weight": center_prop.get_weight(),
+                            "style": center_prop.get_style(),
+                            "family": tuple(center_prop.get_family()),
+                        }
+                    )
             legend = ax.get_legend()
             if type(legend) is matplotlib.legend.Legend:
                 for label in legend.get_texts():
@@ -468,7 +492,9 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         that label's public string/font size/rotation. Since B-2a (R2)
         it additionally admits one ``draw_text`` per visible non-empty
         ``xlabel``/``ylabel``, in per-axis draw order (xlabel after its
-        x-ticks, ylabel after its y-ticks). Since PRAC-A-L it
+        x-ticks, ylabel after its y-ticks). Since B-2a (R3) it
+        additionally admits one ``draw_text`` for the visible non-empty
+        center title, after its axes' tick and axis labels. Since PRAC-A-L it
         additionally admits, per whitelisted legend, the rounded frame
         patch stroke and one handle stroke per entry (validated and
         converted into seam-ready commands keyed by legend identity).
@@ -863,7 +889,9 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         contain only ``xtick``/``ytick`` groups plus, since B-2a (R2), at
         most one direct ``text`` group per axis carrying that axis'
         ``xlabel``/``ylabel`` draw_text; tick-label texts stay nested
-        inside their ``xtick``/``ytick`` groups, and a legend contains an
+        inside their ``xtick``/``ytick`` groups. An axes group carries,
+        since B-2a (R3), at most one direct ``text`` child carrying that
+        axes' center title draw_text. A legend contains an
         optional frame patch followed by line/text entry pairs. The axes
         body remains order-free under LP-FUNC-035 D2, but unknown groups,
         bare callbacks, missing graphics contexts, and unbalanced nesting
@@ -1102,6 +1130,17 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
                         return False
                 elif child == "Poly3DCollection":
                     if not consume_poly3d():
+                        return False
+                elif child == "text":
+                    # B-2a (R3): the direct text child of an axes group
+                    # is that axes' center title draw_text (tick and
+                    # axis-label texts nest inside matplotlib.axis).
+                    # The draw-order cross-check already proved the text
+                    # matches the enumerated center title; the grammar
+                    # only proves the group shape.
+                    if consume_leaf(
+                        "text", "draw_text", ("draw_text_unexpected",)
+                    ) is None:
                         return False
                 elif child == "matplotlib.axis":
                     if not consume_axis():
@@ -1689,9 +1728,9 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         the Axis-unit placement Agg actually draws: grid/tick strokes with
         their axis unit below default content, spines z2.5 above it),
         while inverted or negative zorders interleave exactly as Agg
-        paints them. Tick and axis label glyphs stay appended after
-        content: the text wire-up owns their emission position and Agg
-        itself always paints labels last within the axes' decoration
+        paints them. Tick, axis label, and center title glyphs stay appended
+        after content: the text wire-up owns their emission position and
+        Agg itself always paints labels last within the axes' decoration
         surface.
         """
         if self._three_d_axes:
@@ -1921,7 +1960,8 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         (payload kind ``legend_label``), tagged with a distinct
         ``decoration`` marker. Since B-2a (R2) it renders ``xlabel`` /
         ``ylabel`` axis labels (payload kind ``axis_label``) with the
-        ``axis_label`` marker.
+        ``axis_label`` marker. Since B-2a (R3) it renders the center
+        ``title`` (payload kind ``title``) with the ``title`` marker.
         """
         commands: list[dict] = []
         scale = self._effective_dpi / 72.0
@@ -1935,6 +1975,8 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
                 decoration = "legend_label"
             elif label_kind == "axis_label":
                 decoration = "axis_label"
+            elif label_kind == "title":
+                decoration = "title"
             else:
                 decoration = "tick_label"
             try:
