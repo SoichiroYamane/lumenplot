@@ -1967,8 +1967,10 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         command per label: the private textpath coverage helper rasterizes
         the label with FT2Font at the output DPI into an alpha mask,
         anchored by the same Matplotlib-provided anchor below, and the
-        native side composites it with the agg_srgb blend. Tick, axis,
-        and title labels keep the outline route.
+        native side composites it with the agg_srgb blend. Under the
+        P3-NEXT Q1 allowlist tick labels ride the same coverage-blit
+        route (decoration ``tick_label`` kept, no new kind discriminator);
+        axis and title labels keep the outline route.
         """
         commands: list[dict] = []
         scale = self._effective_dpi / 72.0
@@ -1986,7 +1988,7 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
                 decoration = "title"
             else:
                 decoration = "tick_label"
-            if label_kind == "legend_label":
+            if label_kind in ("legend_label", "tick_label"):
                 try:
                     # The collector records the draw_text anchor in the same
                     # y-down display frame Agg consumes, so it feeds the

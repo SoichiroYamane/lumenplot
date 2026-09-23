@@ -351,12 +351,30 @@ class TestUnitConversionUpstream(unittest.TestCase):
         self.assertIsInstance(raw[0], dt.datetime)
 
     def test_glyph_commands_carry_the_formatter_strings(self):
-        """One filled path command per drawn label; the count equals the
-        visible in-view label set the formatter produced."""
+        """One coverage-blit image command per drawn label; the count equals
+        the visible in-view label set the formatter produced."""
+        import importlib
+        import unittest.mock
+
+        textpath = importlib.import_module("lumenplot_mpl.textpath")
+        support = importlib.import_module("lumenplot_mpl.backend_support")
         self.stub = _make_stub()
         patcher = _install_stub_native(self.stub)
         patcher.start()
         self.addCleanup(patcher.stop)
+        real_mask = textpath._label_coverage_mask
+        calls: list = []
+
+        def recording_mask(*args, **kwargs):
+            result = real_mask(*args, **kwargs)
+            calls.append((args, kwargs, result))
+            return result
+
+        mask_patcher = unittest.mock.patch.object(
+            textpath, "_label_coverage_mask", recording_mask
+        )
+        mask_patcher.start()
+        self.addCleanup(mask_patcher.stop)
 
         fig, canvas, ax = _pinned_date_canvas()
         result = canvas.render_png()
@@ -380,11 +398,82 @@ class TestUnitConversionUpstream(unittest.TestCase):
                     if label.get_visible() and label.get_text() != "":
                         expected_texts.append(str(label.get_text()))
         self.assertEqual(len(glyph_commands), len(expected_texts))
-        for command in glyph_commands:
-            self.assertIsNone(command["stroke_rgba"])
-            self.assertIsNotNone(command["fill_rgba"])
-            self.assertEqual(command["cap"], "butt")
-            self.assertEqual(command["join"], "miter")
+        # One coverage-helper call per tick label, carrying the
+        # formatter strings in draw order.
+        self.assertEqual(len(calls), len(expected_texts))
+        self.assertEqual([call[0][0] for call in calls], expected_texts)
+        live_labels = [
+            label
+            for axis in (ax.xaxis, ax.yaxis)
+            for label in axis.get_majorticklabels()
+            if label.get_visible() and label.get_text() != ""
+        ]
+        # The unfiltered artist list may exceed the drawn set (out-of-view
+        # ticks never enter the queue); it only resolves faces by text.
+        by_text = {}
+        for label in live_labels:
+            by_text.setdefault(str(label.get_text()), label)
+        for command, call in zip(glyph_commands, calls):
+            args, kwargs, outcome = call
+            text = args[0]
+            self.assertIn(text, expected_texts)
+            self.assertIn(text, by_text)
+            label = by_text[text]
+            self.assertEqual(args[0], str(label.get_text()))
+            self.assertEqual(args[3], 100.0)
+            self.assertEqual(args[4], float(label.get_rotation()))
+            self.assertEqual(kwargs["font_size_pt"], float(label.get_fontsize()))
+            self.assertEqual(kwargs["dpi"], 100.0)
+            label_prop = label.get_fontproperties()
+            self.assertEqual(
+                tuple(kwargs["prop"].get_family()),
+                tuple(label_prop.get_family()),
+            )
+            self.assertEqual(
+                kwargs["prop"].get_style(), label_prop.get_style()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_weight(), label_prop.get_weight()
+            )
+            left_col, top_row, mask_w, mask_h, mask = outcome
+            style = support._rgba8(label.get_color(), label.get_alpha())
+            # Representation pin: coverage-blit image command, never an
+            # outline path and never outline keys on an image command.
+            self.assertEqual(command["kind"], "image")
+            self.assertEqual(command["decoration"], "tick_label")
+            for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                self.assertNotIn(absent, command)
+            self.assertEqual(command["x"], float(left_col))
+            self.assertEqual(
+                command["y"], float(100.0 - (top_row + mask_h))
+            )
+            self.assertEqual(command["width"], mask_w)
+            self.assertEqual(command["height"], mask_h)
+            self.assertEqual(command["clip_rect"], [0.0, 0.0, 200.0, 100.0])
+            self.assertGreater(mask_w, 0)
+            self.assertGreater(mask_h, 0)
+            self.assertTrue(any(mask))
+            # Wire pin: every blit pixel carries the label color with the
+            # helper coverage folded into alpha, packed per the adapter.
+            raw_rgba = bytes(command["rgba"])
+            self.assertEqual(len(raw_rgba), 4 * mask_w * mask_h)
+            expected_rgba = bytearray(4 * mask_w * mask_h)
+            for index, cover in enumerate(mask):
+                expected_rgba[4 * index] = style[0]
+                expected_rgba[4 * index + 1] = style[1]
+                expected_rgba[4 * index + 2] = style[2]
+                expected_rgba[4 * index + 3] = textpath._agg_multiply_byte(
+                    style[3], int(cover)
+                )
+            self.assertEqual(raw_rgba, bytes(expected_rgba))
+            for index in range(mask_w * mask_h):
+                self.assertEqual(
+                    tuple(raw_rgba[4 * index:4 * index + 3]), tuple(style[:3])
+                )
+                self.assertEqual(
+                    raw_rgba[4 * index + 3],
+                    textpath._agg_multiply_byte(style[3], int(mask[index])),
+                )
 
 
 def _is_finite(value) -> bool:
