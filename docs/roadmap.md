@@ -28,6 +28,11 @@ Implemented with bounded local evidence:
   step geometry, with base-10 log axes and a limited Legend/text surface;
   compositing and date/unit-label code is merged, while its adopted
   traceability rows remain open pending reconciliation;
+- the P3 legend-first PNG-only label-coverage slice is landed (merged as
+  75a974d1): the glyph quarantine is removed and legend labels ride as
+  coverage-blit commands per ADR 0015 section 4b, with the LP-MPL-020
+  governance row staying Not implemented; tick/date-glyph labels stay
+  sequenced-after under t_8245d2fb;
 - the M1 synchronous CPU-side frame seam and the O-08 five-block benchmark
   harness;
 - bounded private RenderPacket validation with distinct scene/work/device
@@ -474,7 +479,7 @@ The recommended immediate queue is:
 1. **M0 baseline reconciliation** — update traceability for the latest merged
    work, settle the profile default, and make the clean verification command
    reliable on macOS/Nix and wheel-installed Python. The bounded M0 code and
-   evidence lanes are now merged locally; the release remains pre-alpha. Traceability now records bounded evidence for PR223 (B1B runtime-internal), PR224 (M5-5B outline-only v1), and PR225 (SINK-P0 Option-B consume-only) with zero status flips; profile default and clean verification path remain open.
+   evidence lanes are now merged locally; the release remains pre-alpha. Traceability now records bounded evidence for PR223 (B1B runtime-internal), PR224 (M5-5B outline-only v1), PR225 (SINK-P0 Option-B consume-only), and PR236 (P3 legend coverage-blit landing, LP-MPL-020 governance row unchanged) with zero status flips; profile default and clean verification path remain open.
 2. **M1 adapter modularization plus packaged runtime evidence** — reduce the
    `backend.py` collision hotspot without changing public behavior, then close
    the accepted Phase-3B package matrix.
