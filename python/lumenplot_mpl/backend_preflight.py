@@ -1962,6 +1962,13 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
         ``ylabel`` axis labels (payload kind ``axis_label``) with the
         ``axis_label`` marker. Since B-2a (R3) it renders the center
         ``title`` (payload kind ``title``) with the ``title`` marker.
+        Since the P3 PNG-only label-coverage amendment (ADR 0015 section
+        4b) legend entry labels instead ride as one coverage-blit image
+        command per label: the private textpath coverage helper rasterizes
+        the label with FT2Font at the output DPI into an alpha mask,
+        anchored by the same Matplotlib-provided anchor below, and the
+        native side composites it with the agg_srgb blend. Tick, axis,
+        and title labels keep the outline route.
         """
         commands: list[dict] = []
         scale = self._effective_dpi / 72.0
@@ -1979,6 +1986,54 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin):
                 decoration = "title"
             else:
                 decoration = "tick_label"
+            if label_kind == "legend_label":
+                try:
+                    # The collector records the draw_text anchor in the same
+                    # y-down display frame Agg consumes, so it feeds the
+                    # coverage helper unchanged (no second flip).
+                    left_col, top_row, mask_w, mask_h, mask = (
+                        textpath._label_coverage_mask(
+                            str(label.get_text()),
+                            anchor_x,
+                            anchor_y,
+                            float(self._height_px),
+                            angle_deg,
+                            font_size_pt=float(label.get_fontsize()),
+                            prop=label.get_fontproperties(),
+                            dpi=self._effective_dpi,
+                        )
+                    )
+                except ValueError as error:
+                    raise LumenPlotUnsupportedError(
+                        f"{decoration} glyphs are unsupported: {error}",
+                    ) from error
+                style_rgba = _rgba8(label.get_color(), label.get_alpha())
+                rgba = bytearray(4 * mask_w * mask_h)
+                for index, cover in enumerate(mask):
+                    rgba[4 * index] = style_rgba[0]
+                    rgba[4 * index + 1] = style_rgba[1]
+                    rgba[4 * index + 2] = style_rgba[2]
+                    rgba[4 * index + 3] = textpath._agg_multiply_byte(
+                        style_rgba[3], int(cover)
+                    )
+                commands.append(
+                    {
+                        "kind": "image",
+                        "decoration": decoration,
+                        "x": float(left_col),
+                        "y": float(self._height_px) - float(top_row + mask_h),
+                        "width": int(mask_w),
+                        "height": int(mask_h),
+                        "rgba": bytes(rgba),
+                        "clip_rect": [
+                            0.0,
+                            0.0,
+                            float(self._canvas_width_px),
+                            float(self._height_px),
+                        ],
+                    }
+                )
+                continue
             try:
                 outline = textpath._writer_glyph_outline_commands(
                     str(label.get_text()),
