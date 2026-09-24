@@ -81,7 +81,7 @@ class _StubNativeModule(types.SimpleNamespace):
 def _install_stub_native():
     import importlib
 
-    real = importlib.import_module("lumenplot_mpl.backend")
+    real = importlib.import_module("lumenplot_mpl.backend_strict")
     return unittest.mock.patch.object(real, "_native", lambda: _StubNativeModule)
 
 

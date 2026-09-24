@@ -142,7 +142,9 @@ class TestCalibratedUnitGeometry(unittest.TestCase):
         units.registry[_CalibratedValue] = _CalibratedConverter()
         self.addCleanup(self._restore_registry)
         self.patcher = unittest.mock.patch.object(
-            self.backend, "_native", lambda: _StubNative
+            __import__("lumenplot_mpl.backend_strict", fromlist=["_native"]),
+            "_native",
+            lambda: _StubNative,
         )
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
@@ -188,7 +190,9 @@ class TestUnrepresentableUnitData(unittest.TestCase):
         _StubNative.last_spec = None
         self.backend = _backend_module()
         self.patcher = unittest.mock.patch.object(
-            self.backend, "_native", lambda: _StubNative
+            __import__("lumenplot_mpl.backend_strict", fromlist=["_native"]),
+            "_native",
+            lambda: _StubNative,
         )
         self.patcher.start()
         self.addCleanup(self.patcher.stop)

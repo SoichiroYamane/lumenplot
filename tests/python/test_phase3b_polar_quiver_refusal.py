@@ -107,9 +107,7 @@ def _load_backend():
 
 
 def _install_stub_native():
-    real = backend_mod if isinstance(backend_mod, types.ModuleType) else (
-        __import__("lumenplot_mpl.backend", fromlist=["_native"])
-    )
+    real = __import__("lumenplot_mpl.backend_strict", fromlist=["_native"])
     return unittest.mock.patch.object(real, "_native", lambda: _StubNativeModule)
 
 

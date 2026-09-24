@@ -57,6 +57,7 @@ class TestBackendPrivateModuleBoundary(unittest.TestCase):
             package_dir / name
             for name in (
                 "backend.py",
+                "backend_strict.py",
                 "backend_preflight.py",
                 "backend_collector.py",
                 "backend_state.py",

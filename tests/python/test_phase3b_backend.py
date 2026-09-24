@@ -91,11 +91,7 @@ class _StubNativeModule(types.SimpleNamespace):
 
 
 def _install_stub_native():
-    # Resolve through the lazy proxy to the real module object before patching,
-    # so the render path (which reads the module global) sees the stub.
-    real = backend_mod if isinstance(backend_mod, types.ModuleType) else (
-        __import__("lumenplot_mpl.backend", fromlist=["_native"])
-    )
+    real = __import__("lumenplot_mpl.backend_strict", fromlist=["_native"])
     return unittest.mock.patch.object(real, "_native", lambda: _StubNativeModule)
 
 
@@ -2061,7 +2057,7 @@ class TestNativeSeamPresence(unittest.TestCase):
             def __getattr__(self, name):
                 raise AttributeError(name)
 
-        import lumenplot_mpl.backend as _real_backend
+        import lumenplot_mpl.backend_strict as _real_backend
         with unittest.mock.patch.object(_real_backend, "_native", lambda: Missing()):
             fig, canvas = _eligible_canvas()
             with self.assertRaises(backend_mod.LumenPlotUnsupportedError) as ctx:
@@ -2185,7 +2181,7 @@ class TestHybridFallback(unittest.TestCase):
             def __getattr__(self, name):
                 raise AttributeError(name)
 
-        import lumenplot_mpl.backend as real_backend
+        import lumenplot_mpl.backend_strict as real_backend
 
         # Content must be strictly eligible so the strict attempt reaches
         # the native seam; otherwise preflight fails first with
@@ -2216,7 +2212,7 @@ class TestHybridFallback(unittest.TestCase):
             def render_frame_png(spec):  # noqa: N802 - mirrors native name
                 raise RuntimeError("engine panic redacted")
 
-        import lumenplot_mpl.backend as real_backend
+        import lumenplot_mpl.backend_strict as real_backend
 
         def build(ax):
             ax.axison = False
@@ -2395,7 +2391,7 @@ class TestHybridTerminalFailures(unittest.TestCase):
         return _hybrid_canvas_with(build)
 
     def _install(self, module):
-        import lumenplot_mpl.backend as real_backend
+        import lumenplot_mpl.backend_strict as real_backend
 
         patcher = unittest.mock.patch.object(
             real_backend, "_native", lambda: module
@@ -2606,7 +2602,7 @@ class TestPanicIsTerminalFailure(unittest.TestCase):
     """§9: redacted Rust panics stay explicit terminal errors, both modes."""
 
     def _install(self, module):
-        import lumenplot_mpl.backend as real_backend
+        import lumenplot_mpl.backend_strict as real_backend
 
         patcher = unittest.mock.patch.object(
             real_backend, "_native", lambda: module
