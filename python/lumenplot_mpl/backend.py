@@ -70,6 +70,7 @@ from typing import Any
 import matplotlib
 from matplotlib.backend_bases import FigureCanvasBase, FigureManagerBase
 
+from lumenplot_mpl.backend_dispatch import _DispatchMixin
 from lumenplot_mpl.backend_guards import _OutputGuardMixin
 from lumenplot_mpl.backend_preflight import _EligibilityPreflight
 from lumenplot_mpl.backend_publication import _PublicationMixin
@@ -157,7 +158,7 @@ editor finds every touchpoint from one search.
 # ---------------------------------------------------------------------------
 
 
-class FigureCanvasLumenPlot(_OutputGuardMixin, _PublicationMixin, _StrictRenderMixin, FigureCanvasBase):
+class FigureCanvasLumenPlot(_DispatchMixin, _OutputGuardMixin, _PublicationMixin, _StrictRenderMixin, FigureCanvasBase):
     """Public Phase-3B canvas with hybrid-explicit default and strict PNG mode.
 
     Adapter-owned state is limited to an immutable last-publication record
@@ -368,21 +369,6 @@ class FigureCanvasLumenPlot(_OutputGuardMixin, _PublicationMixin, _StrictRenderM
                 code=_INVALID_INPUT_TOKEN,
             )
         return value
-
-    def _render(self, *, dpi: float | str | None = None,
-                **kwargs: Any) -> LumenPlotPngResult:
-        """Run preflight, build the spec, call the native seam once.
-
-        In hybrid mode a stable ``unsupported-capability`` failure of the
-        strict path is replaced by the whole-frame Agg fallback result; the
-        generation counter is spent exactly once for the whole attempt so
-        the diagnostic names the same attempt as the output. Any other
-        failure (missing native seam, internal errors) propagates in both
-        modes.
-        """
-        result, generation = self._render_attempt(dpi=dpi, **kwargs)
-        self._publication.publish(generation, result)
-        return result
 
     def _render_attempt(
         self,
