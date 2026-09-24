@@ -105,7 +105,9 @@ class _RuntimeErrorNativeModule(types.SimpleNamespace):
 
 def _install_stub(module_cls):
     return unittest.mock.patch.object(
-        backend_mod, "_native", lambda: module_cls
+        __import__("lumenplot_mpl.backend_strict", fromlist=["_native"]),
+        "_native",
+        lambda: module_cls,
     )
 
 

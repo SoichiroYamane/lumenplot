@@ -118,7 +118,9 @@ class TestStrictPreflightSoundness(unittest.TestCase):
         native = _NativeTrap()
 
         with unittest.mock.patch.object(
-            backend_mod, "_native", return_value=native
+            __import__("lumenplot_mpl.backend_strict", fromlist=["_native"]),
+            "_native",
+            return_value=native,
         ) as native_loader:
             with self.assertRaises(
                 backend_mod.LumenPlotUnsupportedError
@@ -182,7 +184,9 @@ class TestHybridPreflightSoundness(unittest.TestCase):
 
         with (
             unittest.mock.patch.object(
-                backend_mod, "_native", return_value=native
+                __import__("lumenplot_mpl.backend_strict", fromlist=["_native"]),
+                "_native",
+                return_value=native,
             ) as native_loader,
             unittest.mock.patch.object(Figure, "savefig", spy_savefig),
         ):

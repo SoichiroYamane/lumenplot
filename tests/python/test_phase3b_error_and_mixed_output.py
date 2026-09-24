@@ -86,11 +86,7 @@ def _load_backend():
 
 
 def _install_stub_native():
-    # Resolve through the lazy proxy to the real module object before patching,
-    # so the render path (which reads the module global) sees the stub.
-    real = backend_mod if isinstance(backend_mod, types.ModuleType) else (
-        __import__("lumenplot_mpl.backend", fromlist=["_native"])
-    )
+    real = __import__("lumenplot_mpl.backend_strict", fromlist=["_native"])
     return unittest.mock.patch.object(real, "_native", lambda: _StubNativeModule)
 
 
@@ -572,7 +568,7 @@ class TestTerminalAdapterErrors(unittest.TestCase):
         fig, canvas = _strict_canvas()
         ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
         _eligible_axes(ax)
-        real_backend = _load_backend()
+        real_backend = __import__("lumenplot_mpl.backend_strict", fromlist=["_native"])
         target = io.BytesIO()
         with unittest.mock.patch.object(
             real_backend, "_native", side_effect=ImportError("extension missing")
