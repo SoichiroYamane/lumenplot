@@ -63,7 +63,6 @@ that importing this module never depends on a built extension.
 
 from __future__ import annotations
 
-import io
 import math
 import os
 from typing import Any
@@ -72,6 +71,7 @@ import matplotlib
 from matplotlib.backend_bases import FigureCanvasBase, FigureManagerBase
 
 from lumenplot_mpl.backend_preflight import _EligibilityPreflight
+from lumenplot_mpl.backend_publication import _PublicationMixin
 from lumenplot_mpl.backend_state import _CanvasPublicationState
 from lumenplot_mpl.backend_strict import _StrictRenderMixin, _native
 from lumenplot_mpl.backend_types import (
@@ -156,7 +156,7 @@ editor finds every touchpoint from one search.
 # ---------------------------------------------------------------------------
 
 
-class FigureCanvasLumenPlot(_StrictRenderMixin, FigureCanvasBase):
+class FigureCanvasLumenPlot(_PublicationMixin, _StrictRenderMixin, FigureCanvasBase):
     """Public Phase-3B canvas with hybrid-explicit default and strict PNG mode.
 
     Adapter-owned state is limited to an immutable last-publication record
@@ -442,67 +442,6 @@ class FigureCanvasLumenPlot(_StrictRenderMixin, FigureCanvasBase):
         """Raise a stable output guard error after clearing stale state."""
         self._publication.clear()
         raise LumenPlotUnsupportedError(message, code=code)
-
-    def _render_hybrid_fallback(
-        self,
-        *,
-        generation: int,
-        dpi: float,
-        reason: str,
-        type_context: str | None,
-    ) -> LumenPlotPngResult:
-        """Produce the whole-frame Agg fallback result (API 0002/0005).
-
-        Renders the complete frame through stock public ``FigureCanvasAgg``
-        PNG output at the requested effective DPI, then restores any
-        temporary canvas state even on failure. Success publishes exactly
-        one structured diagnostic describing reason, type context,
-        generation, output format, and raster/vector scope in the returned
-        result; the caller publishes it only after any external write
-        succeeds. A failed fallback attempt publishes nothing.
-        """
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-
-        buffer = io.BytesIO()
-        previous_canvas = self.figure.canvas
-        try:
-            FigureCanvasAgg(self.figure)
-            self.figure.savefig(buffer, format="png", dpi=dpi)
-        finally:
-            previous_canvas.figure = self.figure
-            self.figure.canvas = previous_canvas
-        png_bytes = buffer.getvalue()
-        diagnostic = LumenPlotFallbackDiagnostic(
-            kind=_UNSUPPORTED_TOKEN,
-            type=type_context,
-            generation=generation,
-            output_format="png",
-            scope="whole-frame",
-            representation="raster",
-            fallback_type="matplotlib-agg",
-        )
-        return LumenPlotPngResult(png_bytes, (diagnostic,))
-
-    def _write_target(self, target: Any, data: bytes) -> None:
-        """Write finished bytes to path-like or binary file-like targets.
-
-        Adapter-owned files are opened/written/closed here; caller-owned
-        binary file-likes receive exactly one public ``write(bytes)`` and
-        are never closed. ``OSError`` propagates unchanged.
-        """
-        if hasattr(target, "write") and callable(target.write):
-            written = target.write(data)
-            if written is not None and written != len(data):
-                raise OSError(
-                    f"short write: expected {len(data)} bytes, wrote {written}"
-                )
-            return
-        with open(os.fspath(target), "wb") as handle:
-            written = handle.write(data)
-            if written != len(data):
-                raise OSError(
-                    f"short write: expected {len(data)} bytes, wrote {written}"
-                )
 
 
 #: Class alias fixed by API 0005 §1 (backend module identity).
