@@ -27,9 +27,13 @@ fn main() {
 
     let shader_path = Path::new("shaders/line.wgsl");
     let manifest_path = Path::new("shaders/manifest.toml");
-    let source = fs::read(shader_path).unwrap_or_else(|error| {
+    let mut source = fs::read(shader_path).unwrap_or_else(|error| {
         panic!("failed to read static WGSL artifact: {error}");
     });
+    // Normalize CRLF checkouts to LF before hashing so the digest matches the
+    // LF-pinned manifest on every platform. Stripping `\r` is the identity on
+    // LF input, so the pinned manifest hash is unchanged.
+    source.retain(|byte| *byte != b'\r');
     let manifest = fs::read_to_string(manifest_path).unwrap_or_else(|error| {
         panic!("failed to read static WGSL manifest: {error}");
     });
