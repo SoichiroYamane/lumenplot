@@ -60,6 +60,7 @@ class TestBackendPrivateModuleBoundary(unittest.TestCase):
                 "backend_strict.py",
                 "backend_publication.py",
                 "backend_guards.py",
+                "backend_dispatch.py",
                 "backend_preflight.py",
                 "backend_collector.py",
                 "backend_state.py",
