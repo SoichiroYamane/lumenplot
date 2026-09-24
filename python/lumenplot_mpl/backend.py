@@ -70,6 +70,7 @@ from typing import Any
 import matplotlib
 from matplotlib.backend_bases import FigureCanvasBase, FigureManagerBase
 
+from lumenplot_mpl.backend_guards import _OutputGuardMixin
 from lumenplot_mpl.backend_preflight import _EligibilityPreflight
 from lumenplot_mpl.backend_publication import _PublicationMixin
 from lumenplot_mpl.backend_state import _CanvasPublicationState
@@ -156,7 +157,7 @@ editor finds every touchpoint from one search.
 # ---------------------------------------------------------------------------
 
 
-class FigureCanvasLumenPlot(_PublicationMixin, _StrictRenderMixin, FigureCanvasBase):
+class FigureCanvasLumenPlot(_OutputGuardMixin, _PublicationMixin, _StrictRenderMixin, FigureCanvasBase):
     """Public Phase-3B canvas with hybrid-explicit default and strict PNG mode.
 
     Adapter-owned state is limited to an immutable last-publication record
@@ -432,16 +433,6 @@ class FigureCanvasLumenPlot(_PublicationMixin, _StrictRenderMixin, FigureCanvasB
                 reason=reason,
                 type_context=type_context,
             )
-
-    def _raise_output_error(
-        self,
-        message: str,
-        *,
-        code: str = _UNSUPPORTED_TOKEN,
-    ) -> None:
-        """Raise a stable output guard error after clearing stale state."""
-        self._publication.clear()
-        raise LumenPlotUnsupportedError(message, code=code)
 
 
 #: Class alias fixed by API 0005 §1 (backend module identity).
