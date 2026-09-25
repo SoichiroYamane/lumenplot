@@ -63,6 +63,7 @@ The following are fixed by the accepted architecture and must not be returned to
 - Accepted scope: API 0002 records stable public category/code tokens, capability/fallback diagnostics, internal `WorkOutcome`, and Rust/Python mapping. ADR 0010 additionally fixes the unpublished exhaustive Phase-1 `SceneErrorKind` set and its mapping to facade-owned `PublicError`. ADR 0011 fixes `as_str` as the sole public stable token observation and preserves the exact non-exhaustive/error trait boundary. ADR 0013 adds only the exhaustive source-less Phase-3A `BridgeError` export mapping; public fallback/result diagnostics remain a later Phase-3B decision.
 - Constraints: strict mode must be explicit; hybrid fallback must be observable; no silent omission or best-effort degradation.
 - Evidence: error mapping table, Python exception mapping, serialization/diagnostic review, and failure fixtures.
+- Setup-vs-product split (Q2 decided): missing environment is setup; present-but-unusable extension is product-test failure (README unchanged; roadmap M0 exit qualified).
 
 ### O-04 — Internal RenderPacket schema and resource lifecycle
 

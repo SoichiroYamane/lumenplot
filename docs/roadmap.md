@@ -128,8 +128,8 @@ Exit criteria:
   agree on implemented features and profile defaults;
 - the documented clean-checkout verification path passes without manual
   environment repair;
-- failures caused by an uninstalled package or wrong-platform extension are
-  reported as setup failures rather than product-test failures.
+- failures caused by an uninstalled package are
+  reported as setup failures rather than product-test failures; a present-but-unusable extension remains a product-test failure.
 
 ### M1 — Close and modularize the public Matplotlib slice
 
