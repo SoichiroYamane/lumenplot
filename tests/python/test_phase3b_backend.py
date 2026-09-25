@@ -390,7 +390,7 @@ class TestDpiAndFigsizeMatrix(unittest.TestCase):
             expected = [[pxx(0.0), pxy(0.0)], [pxx(10.0), pxy(5.0)]]
             expected_clip = [
                 bbox.x0,
-                height_px - (bbox.y0 + bbox.height),
+                bbox.y0,
                 bbox.width,
                 bbox.height,
             ]
@@ -403,8 +403,9 @@ class TestDpiAndFigsizeMatrix(unittest.TestCase):
         np.testing.assert_allclose(vertices, np.asarray(expected),
                                    rtol=0, atol=1e-9)
 
-        # clip_rect restates the axes rectangle in top-left pixel space
-        # with exclusive right/bottom edges.
+        # clip_rect restates the axes rectangle in seam-canonical
+        # bottom-left display pixels (x, y, w, h); the native rasterizer
+        # folds the row flip itself.
         clip = np.asarray(commands[0]["clip_rect"])
         np.testing.assert_allclose(clip, np.asarray(expected_clip),
                                    rtol=0, atol=1e-9)
@@ -1692,7 +1693,9 @@ class TestRectangularClipping(unittest.TestCase):
         return fig, canvas, ax
 
     def test_clip_rect_carries_axes_rectangle(self):
-        """Request carries the four-sided clip in top-left pixel space."""
+        """Request carries the four-sided clip in seam-canonical display
+        form: bottom-left-origin ``(x, y, w, h)`` pixels (the native
+        rasterizer folds the row flip itself)."""
         self._install_spec_stub()
         fig, canvas, ax = self._clipped_canvas()
         canvas.render_png()
@@ -1703,7 +1706,7 @@ class TestRectangularClipping(unittest.TestCase):
         self.assertEqual(len(commands), 2)
         expected_clip = [
             bbox.x0,
-            50 - (bbox.y0 + bbox.height),
+            bbox.y0,
             bbox.width,
             bbox.height,
         ]
@@ -1811,6 +1814,199 @@ class TestRectangularClipping(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Per-axes clip rectangles (per-axes port of the review corrections)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
+class TestPerAxesClipRects(unittest.TestCase):
+    """Per-axes clip reconciliation in seam-canonical display form:
+
+    (a) every axes' content strokes reconcile against their own axes
+        rectangle, not the first rectangle seen in the trace;
+    (b) ``clip_rect`` is encoded in the seam-canonical bottom-left display
+        form ``(x, y, w, h)`` — the native rasterizer folds the row flip
+        itself (``DeviceClip::from_display``), so the adapter must not
+        pre-flip;
+    (c) a second, different rectangle for the same axes is refused instead
+        of silently clipping with the wrong rectangle.
+    """
+
+    def setUp(self):
+        # Spec-level tests install the recording stub themselves via
+        # ``_install_stub()``; the raster-evidence test needs the real
+        # native seam and must not see it.
+        self._stub_patcher = None
+
+    def _install_stub(self):
+        assert self._stub_patcher is None
+        self._stub_patcher = _install_stub_native()
+        self._stub_patcher.start()
+        self.addCleanup(self._stub_patcher.stop)
+
+    @staticmethod
+    def _content_commands(spec):
+        """Stroke path commands of content lines (decorations/glyphs out)."""
+        return [
+            c
+            for c in (spec["commands"] or [])
+            if c["kind"] == "path"
+            and "decoration" not in c
+            and c["stroke_rgba"] is not None
+            and c.get("fill_rgba") is None
+        ]
+
+    def _two_axes_canvas(self):
+        """Two stacked axes; each carries one rectangle-leaving stroke.
+
+        Both axes sit off the vertical center line, so a mirrored (double-
+        flipped) clip lands in a disjoint row band and every assertion
+        below discriminates the encoding, not just the grouping.
+        """
+        fig = figure.Figure(figsize=(2.0, 2.0), dpi=100)
+        canvas = backend_mod.FigureCanvasLumenPlot(fig, mode="strict")
+        ax0 = fig.add_axes([0.1, 0.55, 0.8, 0.35])
+        ax1 = fig.add_axes([0.1, 0.1, 0.8, 0.35])
+        for ax in (ax0, ax1):
+            ax.set_facecolor("none")
+            ax.tick_params(labelbottom=False, labelleft=False)
+            ax.set_xlim(0.0, 10.0)
+            ax.set_ylim(0.0, 5.0)
+        ax0.add_line(Line2D([-50.0, 50.0], [2.5, 2.5], color="red",
+                            linewidth=2.0, solid_capstyle="butt",
+                            solid_joinstyle="miter"))
+        ax1.add_line(Line2D([-50.0, 50.0], [2.5, 2.5], color="blue",
+                            linewidth=2.0, solid_capstyle="butt",
+                            solid_joinstyle="miter"))
+        return fig, canvas, ax0, ax1
+
+    def test_each_axes_clips_to_its_own_rectangle(self):
+        """Content strokes of one axes never carry a sibling's clip."""
+        self._install_stub()
+        fig, canvas, ax0, ax1 = self._two_axes_canvas()
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        content = self._content_commands(spec)
+        self.assertEqual(len(content), 2)
+        for ax, command in ((ax0, content[0]), (ax1, content[1])):
+            bbox = ax.get_window_extent()
+            self.assertEqual(
+                command["clip_rect"],
+                [bbox.x0, bbox.y0, bbox.width, bbox.height],
+            )
+        del fig
+
+    def test_clip_rect_uses_seam_canonical_display_origin(self):
+        """clip_rect is (x, y, w, h) in bottom-left display pixels."""
+        self._install_stub()
+        fig, canvas = _eligible_canvas(figsize=(2.0, 1.0), dpi=100)
+        ax = fig.get_axes()[0]
+        # Off-center placement: the legacy double-flip encoding would put
+        # the clip origin at 36 px instead of 17 px on this 200x100 canvas.
+        ax.set_position([0.13, 0.17, 0.61, 0.47])
+        canvas.render_png()
+        spec = _StubNativeModule.last_spec
+        assert spec is not None
+        content = self._content_commands(spec)
+        self.assertEqual(len(content), 1)
+        bbox = ax.get_window_extent()
+        clip = content[0]["clip_rect"]
+        self.assertEqual(clip, [bbox.x0, bbox.y0, bbox.width, bbox.height])
+        legacy_y = 100 - (bbox.y0 + bbox.height)
+        self.assertNotEqual(
+            clip[1],
+            legacy_y,
+            "clip origin regressed to the pre-flip top-left encoding",
+        )
+        del fig
+
+    def test_overflow_stroke_pixels_stay_inside_own_axes(self):
+        """Native raster evidence: each axes' stroke inks only its own
+        rectangle (probe evidence of the review run)."""
+        try:
+            from lumenplot_mpl import _native
+        except (ImportError, AttributeError):
+            self.skipTest("native seam not built in this environment")
+        if not hasattr(_native, "render_frame_png"):
+            self.skipTest("render_frame_png not present yet")
+
+        fig, canvas, ax0, ax1 = self._two_axes_canvas()
+        result = canvas.render_png()
+        del fig, canvas
+        import numpy as np
+
+        width, height, rows = _decode_rgba8(result.png_bytes)
+        arr = np.frombuffer(b"".join(rows), dtype=np.uint8).reshape(
+            height, width, 4
+        )
+        red = (arr[..., 0] >= 200) & (arr[..., 1] < 100) & (arr[..., 2] < 100)
+        blue = (arr[..., 2] >= 200) & (arr[..., 0] < 100) & (
+            arr[..., 1] < 100
+        )
+
+        def band(ax):
+            """Inclusive top, exclusive bottom row indices of one axes."""
+            bbox = ax.get_window_extent()
+            return (
+                int(round(height - bbox.y1)),
+                int(round(height - bbox.y0)),
+            )
+
+        top0, bot0 = band(ax0)
+        top1, bot1 = band(ax1)
+        # Sanity: both strokes rendered at all.
+        self.assertTrue(red[top0:bot0, :].any(), "ax0 stroke missing")
+        self.assertTrue(blue[top1:bot1, :].any(), "ax1 stroke missing")
+        # No cross-axes bleed: each color stays inside its own axes band.
+        self.assertFalse(red[top1:bot1, :].any(),
+                         "ax0 stroke inked the sibling axes band")
+        self.assertFalse(blue[top0:bot0, :].any(),
+                         "ax1 stroke inked the sibling axes band")
+        # No horizontal escape past either axes rectangle either.
+        for mask, ax in ((red, ax0), (blue, ax1)):
+            bbox = ax.get_window_extent()
+            left = int(round(bbox.x0))
+            right = int(round(bbox.x1))
+            self.assertFalse(mask[:, :left].any(),
+                             "stroke inked left of its clip rectangle")
+            self.assertFalse(mask[:, right:].any(),
+                             "stroke inked right of its clip rectangle")
+
+    def test_disagreeing_clip_within_one_axes_is_refused(self):
+        """A changed rectangle for the same axes refuses the render."""
+        self._install_stub()
+        fig, canvas, ax0, _ = self._two_axes_canvas()
+        del ax0
+        ax0 = fig.get_axes()[0]
+        common = dict(color="red", linewidth=2.0, solid_capstyle="butt",
+                      solid_joinstyle="miter")
+        ax0.add_line(Line2D([2.0, 8.0], [1.0, 4.0], **common))
+
+        preflight_cls = backend_mod._EligibilityPreflight
+        original = preflight_cls._check_line_call
+
+        def poisoned(self_preflight, call, position):
+            original(self_preflight, call, position)
+            # Simulate a collector observing a different rectangle for the
+            # same axes than an earlier stroke of that axes did. Axes
+            # position 0 is this figure's first axes.
+            self_preflight._axes_clip_points[0] = (
+                (0.0, 0.0),
+                (1.0, 1.0),
+            )
+
+        with unittest.mock.patch.object(preflight_cls, "_check_line_call",
+                                        poisoned):
+            with self.assertRaises(
+                backend_mod.LumenPlotUnsupportedError
+            ) as context:
+                canvas.render_png()
+        self.assertIn("disagree", str(context.exception))
+        del fig
+
+
+# ---------------------------------------------------------------------------
 # Geometry edge cases: fractional axes placement, duplicate points
 # ---------------------------------------------------------------------------
 
@@ -1849,13 +2045,12 @@ class TestGeometryEdgeCases(unittest.TestCase):
         import numpy as np
 
         bbox, pxx, pxy = self._oracle(ax)
-        height_px = 100
         command = spec["commands"][0]
         self.assertEqual(
             command["clip_rect"],
             [
                 bbox.x0,
-                height_px - (bbox.y0 + bbox.height),
+                bbox.y0,
                 bbox.width,
                 bbox.height,
             ],
