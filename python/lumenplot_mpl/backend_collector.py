@@ -810,7 +810,7 @@ class _CollectorGrammarMixin:
         if gc.get_linewidth() != 0.0:
             self.unsupported("stroked figure background is unsupported")
 
-    def _check_line_call(self, call: dict) -> None:
+    def _check_line_call(self, call: dict, axes_position: int) -> None:
         path = call["path"]
         codes = path.codes
         if codes is not None and len(codes):
@@ -826,14 +826,16 @@ class _CollectorGrammarMixin:
         vertices = path.vertices
         if len(vertices) < 2:
             self.unsupported("degenerate single-vertex stroke")
-        self._check_stroke_common(call["gc"])
+        self._check_stroke_common(call["gc"], axes_position)
 
-    def _check_fill_call(self, call: dict) -> None:
+    def _check_fill_call(self, call: dict, axes_position: int) -> None:
         """Collector-side checks for one fill draw_path (LP-FUNC-032).
 
         Fills must stay polygonal (MOVETO/LINETO/CLOSEPOLY only), carry
-        a facecolor, and share the rectangular axes clip with every
-        other eligible stroke. The shared ``_check_stroke_common`` runs
+        a facecolor, and reconcile the rectangular axes clip against
+        their own axes' rectangle (per-axes reconciliation, keyed by the
+        enclosing axes' draw-order position). The shared
+        ``_check_stroke_common`` runs
         the dash/sketch/snap/clip surface; the clip bookkeeping also
         seeds the fill command's ``clip_rect``.
 
@@ -873,7 +875,7 @@ class _CollectorGrammarMixin:
         gc = call["gc"]
         if gc.get_hatch() is not None:
             self.unsupported("hatching is unsupported in strict mode")
-        self._check_stroke_common(gc)
+        self._check_stroke_common(gc, axes_position)
 
     def _check_fill_axis_alignment(self, call: dict) -> None:
         """Refuse one fill draw_path whose device-space edges slant.
@@ -1005,12 +1007,15 @@ class _CollectorGrammarMixin:
             )
             return
 
-    def _check_stroke_common(self, gc: Any) -> None:
+    def _check_stroke_common(self, gc: Any, axes_position: int) -> None:
         """Shared dash/sketch/snap/clip checks for one eligible stroke.
 
-        The rectangular-clip branch also seeds ``_clip_points`` so the
-        geometry assembly can attach an explicit ``clip_rect``; fills and
-        lines share exactly one axes rectangle.
+        The rectangular-clip branch reconciles ``_axes_clip_points``
+        against the enclosing axes' own rectangle, keyed by draw-order
+        position: a second, different rectangle for the same axes
+        refuses the frame instead of silently clipping with the wrong
+        one. ``_clip_points`` keeps its first-rectangle seed as a
+        fallback for geometry paths without an axes key.
         """
         if gc.get_dashes()[1] is not None:
             self.unsupported("dashed strokes are unsupported in strict mode")
@@ -1034,7 +1039,21 @@ class _CollectorGrammarMixin:
             self.unsupported("non-rectangular custom clip is unsupported")
         elif clip_rect is not None:
             # Remember the validated rectangular clip so the request can
-            # carry an explicit clip_rect. Every eligible stroke of this
-            # slice shares one axes rectangle.
+            # carry an explicit clip_rect. Content strokes of one axes
+            # reconcile against that axes' own rectangle, keyed by
+            # draw-order position; a second, different rectangle for the
+            # same position refuses the frame instead of silently
+            # clipping with the wrong one.
+            known = self._axes_clip_points.get(axes_position)
+            if known is not None and (
+                tuple(float(v) for row in known for v in row)
+                != tuple(float(v) for row in points for v in row)
+            ):
+                self.unsupported(
+                    "content strokes of one axes disagree on their "
+                    "rectangular clip"
+                )
+            elif known is None:
+                self._axes_clip_points[axes_position] = points
             if self._clip_points is None:
                 self._clip_points = points
