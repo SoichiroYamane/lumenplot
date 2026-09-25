@@ -78,6 +78,7 @@ surface is built the wrong way, regardless of whether its positive row passes.
 | Row | Constraint | Phase | Gate |
 | --- | --- | --- | --- |
 | `LP-FUNC-030` | publication Legend is not the primary large-series management panel | 2 | `AT-REVIEW-UX` |
+| `LP-UX-025` | publication Legend is not a substitute for a large-series management panel | 2 | `AT-REVIEW-UX` |
 | `LP-UX-001` | no fitting controls in the navigation UI | 0 | `AT-REVIEW-UX` |
 | `LP-UX-003` | no large permanent toolbar as primary interaction surface | 1-2 | `AT-REVIEW-UX` |
 | `LP-UX-004` | no permanently visible sidebar prerequisite for navigation | 1-2 | `AT-REVIEW-UX` |
@@ -96,7 +97,8 @@ surface is built the wrong way, regardless of whether its positive row passes.
 
 Registry sources: `traceability-v1.0.md` lines 100 (`LP-FUNC-030`),
 106 (`LP-UX-001`), 196–206 (`LP-UX-003`–`LP-UX-013`), 211 (`LP-UX-018`),
-218 (`LP-QUAL-016`), 221 (`LP-QUAL-019`), 230/234 (`LP-EXPORT-008/010`).
+218 (`LP-QUAL-016`), 221 (`LP-QUAL-019`), 230/234 (`LP-EXPORT-008/010`),
+235 (`LP-UX-025`).
 
 Adjacent positive rows these lanes must carry with them (not re-tabulated):
 event routing `LP-UX-014`/axis-only `LP-UX-015` (`AT-FUNC-INPUT`, phase 1-2 /
