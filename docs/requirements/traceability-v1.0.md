@@ -241,9 +241,9 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-MPL-007` | `MUST` | fallback fixture | 1-2 | v1 | `AT-MPL-FALLBACK` | Implemented (bounded Phase-3B local contract evidence: PR #32; `TestHybridFallback`, `TestHybridTerminalFailures`) |
 | `LP-MPL-008` | `MUST` | diagnostic schema and golden tests | 1-2 | v1 | `AT-MPL-FALLBACK` | Implemented (bounded Phase-3B local contract evidence: PR #32; `TestHybridFallback`, `TestHybridTerminalFailures`; schema fields also covered by strict-mode oracle classes) |
 | `LP-MPL-009` | `MUST` | mixed-output structural test | 2 | v1 | `AT-EXPORT-FALLBACK` | Not implemented |
-| `LP-MPL-010` | `SHOULD` | mapped-adapter review | 2 | v1 quality | `AT-MPL-FALLBACK` | Not implemented |
+| `LP-MPL-010` | `SHOULD` | mapped-adapter review | 2 | v1 quality | `AT-MPL-FALLBACK` | Not implemented (PR263 landed-note (merged as 3fdd88a with head dc2cfd4 from branch wt/t_44d473d4): design-research note deriving mapped subtree/Artist fallback review targets (docs/research/post-v1-mapped-subtree-fallback-notes.md, research-only with no implementation, contract, or support claim); row class and target unchanged, row stays open pending AT-MPL-FALLBACK evidence) |
 | `LP-MPL-011` | `MUST NOT` | separated benchmark claims | 1-3 | v1 | `AT-BENCH-PROFILE-SEPARATION` | Not measured (environment required where hardware or GPU is involved) |
-| `LP-MPL-012` | `SHOULD` | versioned text matrix | 2 | v1 quality | `AT-MPL-TEXT` | Not implemented |
+| `LP-MPL-012` | `SHOULD` | versioned text matrix | 2 | v1 quality | `AT-MPL-TEXT` | Not implemented (PR260 landed-note (merged as 9faef2f with slice head b7f30f5 from branch wt/t_2aae5d45): Phase-3B text-matrix evidence pin (tests/python/test_phase3b_text_matrix.py — strict-mode text refusal plus hybrid whole-frame Agg fallback, versioned matrix observed on Matplotlib 3.11.1); row class and target unchanged, row stays open pending AT-MPL-TEXT evidence) |
 | `LP-MPL-013` | `MUST` | reentrancy and counter tests | 1-2 | v1 | `AT-LIFE-FFI`, `AT-BENCH-PROFILE-SEPARATION` | Not measured (environment required where hardware or GPU is involved) |
 | `LP-MPL-014` | `REFERENCE` | compatibility matrix | 1-3 | reference | `AT-MPL-MATRIX` | Reference only — no support or implementation claim |
 | `LP-MPL-015` | `MUST NOT` | copy and ownership tests | 1 | v1 | `AT-LIFE-FFI`, `AT-BENCH-FFI` | Not measured (environment required where hardware or GPU is involved) |
@@ -289,7 +289,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-UX-023` | `MUST` | cursor interaction fixture | 2 | v1 | `AT-FUNC-CURSOR` | Not implemented |
 | `LP-UX-024` | `SHOULD` | measurement fixture | 5 | v1 non-blocking | `AT-FUNC-MEASUREMENT` | Not implemented |
 | `LP-EXPORT-010` | `MUST NOT` | export negative fixture | 2 | v1 | `AT-EXPORT-STATE` | Not implemented |
-| `LP-UX-025` | `MUST NOT` | UX review | 2 | v1 | `AT-REVIEW-UX` | Not implemented |
+| `LP-UX-025` | `MUST NOT` | UX review | 2 | v1 | `AT-REVIEW-UX` | Not implemented (PR264 landed-note (merged as 39755e2 with slice head 4f8636e from branch wt/t_bb3d7d74_review_fix): staging-note §1.2 gains the LP-UX-025 MUST-NOT row (publication Legend is not a substitute for a large-series management panel) with registry-source citation, docs-only; row class and target unchanged, row stays open pending AT-REVIEW-UX evidence) |
 | `LP-UX-026` | `SHOULD` | panel fixture if shipped | 5 | optional | `AT-FUNC-SERIES-PANEL` | Not implemented |
 | `LP-UX-027` | `SHOULD` | large-panel benchmark | 5 | optional | `AT-BENCH-SERIES-PANEL` | Not measured (environment required where hardware or GPU is involved) |
 | `LP-UX-028` | `MUST` | keyboard matrix | 2 | v1 | `AT-FUNC-KEYBOARD-A11Y` | Not implemented (bounded B1B runtime-internal evidence: PR #223, merged as 460edbb via 78d95d3; route_keyboard_matches_both_motion_preferences in crates/lumenplot-runtime/src/input.rs pins live route_keyboard agreement with route_with_motion under Normal and Reduced plus bare route over 23 accepted keyboard routes and 11 keyboard rejections; zero production-code change with no pub promotion and no facade/viewer/API/schema touch; full keyboard matrix and release closure stay open) |
@@ -485,7 +485,7 @@ Every `MUST` and `MUST NOT` entry appears in the registry below with at least on
 | `LP-EXPORT-009` | `MUST` | `AT-EXPORT-FALLBACK` | Not implemented |
 | `LP-UX-023` | `MUST` | `AT-FUNC-CURSOR` | Not implemented |
 | `LP-EXPORT-010` | `MUST NOT` | `AT-EXPORT-STATE` | Not implemented |
-| `LP-UX-025` | `MUST NOT` | `AT-REVIEW-UX` | Not implemented |
+| `LP-UX-025` | `MUST NOT` | `AT-REVIEW-UX` | Not implemented (PR264 landed-note (merged as 39755e2 with slice head 4f8636e from branch wt/t_bb3d7d74_review_fix): staging-note §1.2 gains the LP-UX-025 MUST-NOT row (publication Legend is not a substitute for a large-series management panel) with registry-source citation, docs-only; row class and target unchanged, row stays open pending AT-REVIEW-UX evidence) |
 | `LP-UX-028` | `MUST` | `AT-FUNC-KEYBOARD-A11Y` | Not implemented (bounded B1B runtime-internal evidence: PR #223, merged as 460edbb; live keyboard parity pin passes in the CI Rust gate; full matrix and release closure stay open) |
 | `LP-UX-030` | `MUST` | `AT-FUNC-KEYBOARD-A11Y` | Not implemented |
 | `LP-UX-031` | `MUST` | `AT-REVIEW-A11Y` | Not implemented (bounded M5-C evidence merged (PR #144 / 9228895): five public default constants and LineCue frozen; unrounded AT-REVIEW-A11Y contrast fixture and checker contract pass; full requirement remains open because no consumer/state/platform closure.) |
