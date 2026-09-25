@@ -131,11 +131,10 @@ python3 -m unittest discover -s tests/python -p 'test_agg_oracle_fill.py' -v
 | M3 style contract | `TestBarStyleContract`; per-bar style resolution; negative and stacked baselines | LANDED |
 | M4 strict/hybrid | `TestBarModeBehavior`; `TestBarWhitelist` | LANDED |
 | M5 negative cases | Rotated rectangles, non-finite geometry, and out-of-contract bar styles refused in `_check_rectangle_static` | LANDED |
-| M6 Agg fixtures | `TestBarPixelParity` (`tests/python/test_phase3b_bar.py`); pinned bar/histogram oracle `test_agg_oracle_bar.py` on branch `agg/bar-oracle` (PR #102) with rect-stroke AA convergence (PR #107) | OPEN (oracle PR unmerged) |
+| M6 Agg fixtures | `TestBarPixelParity` (`tests/python/test_phase3b_bar.py`); pinned bar/histogram oracle `test_agg_oracle_bar.py` (PR #102, merged as 24bde5a) with rect-stroke AA convergence (PR #107) | LANDED |
 | R1 rollback | §4 procedure, instantiated for bars | LANDED (rule) |
 
-PR #102 is OPEN: its evidence must not be cited as landed. The C3 Agg-fixture
-cell flips to LANDED only after PR #102 merges green.
+PR #102 is MERGED as 24bde5a: its evidence is landed. The C3 Agg-fixture cell is LANDED.
 
 Check:
 
@@ -278,7 +277,7 @@ applied by this file; the canonical
 | --- | --- | --- |
 | #68 / #69 / #70, integrated by #71 | W1 static-geometry wave: fill (`LP-FUNC-032`), bar (`LP-FUNC-033`), step drawstyles (`LP-FUNC-034`) with §5.4 Agg-oracle parity fixtures | Merged |
 | #101 | Pinned Agg oracle for fill primitives (`TestCommittedFillFixture`, `TestFillNativeAggParity`); CI fix re-scoped pixel input to the axis-aligned exact surface | Merged |
-| #102 | Pinned Agg oracle for bar and histogram (`test_agg_oracle_bar.py`) | OPEN — not evidence |
+| #102 | Pinned Agg oracle for bar and histogram (`test_agg_oracle_bar.py`) | Merged |
 | #103 | Strict preflight soundness fixtures (`TestStrictPreflightSoundness`, `TestHybridPreflightSoundness`) | Merged |
 | #105 | Axis-aware gap fixtures (`TestCommittedGapAxesFixture`, `TestGapAdapterSemantics`); test-only, no source change | Merged |
 | #106 | F1 Line2D-gap residual reduction (24.8 cell coverage in `crates/lumenplot-python/src/frame/agg_line.rs`) | Merged |
