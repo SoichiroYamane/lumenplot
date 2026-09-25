@@ -58,6 +58,13 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
         self.line_paths = 0
         self.fill_paths = 0
         self._clip_points: Any = None
+        # Rectangular clip of each axes' content strokes, keyed by the
+        # axes' draw-order position in ``Figure.get_axes``. Strokes of one
+        # axes reconcile against that axes' own rectangle only; a second,
+        # different rectangle for the same axes is refused instead of
+        # silently clipping with the wrong rectangle. ``_clip_points``
+        # keeps its first-rectangle seed as a fallback.
+        self._axes_clip_points: dict[int, Any] = {}
         self._height_px = 0
         self._canvas_width_px = 0
         self._effective_dpi = 100.0
@@ -196,11 +203,22 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
         total = len(collected)
         events = collected
         stack: list[str] = []
+        # Draw-order position of the innermost open axes group. The
+        # validated trace opens axes groups only at figure>patch depth and
+        # never nests them, so this ordinal is the axes' position in
+        # ``Figure.get_axes``; it keys the per-axes clip reconciliation.
+        current_axes = -1
 
         while idx < total:
             kind = events[idx][0]
             if kind == "open":
-                stack.append(events[idx][1])
+                tag = events[idx][1]
+                # Top-level axes groups open straight under the figure
+                # group (the figure patch has already closed by then);
+                # nothing else may claim the ordinal.
+                if tag == "axes" and stack == ["figure"]:
+                    current_axes += 1
+                stack.append(tag)
                 idx += 1
                 continue
             if kind == "close":
@@ -263,7 +281,10 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
                     if any(part == "axes" for part in stack[:-1]):
                         if stack[-1] == "FillBetweenPolyCollection":
                             # A fill-between collection group: every
-                            # draw_path inside is fill content.
+                            # draw_path inside is fill content; the
+                            # enclosing axes group keys the per-axes clip
+                            # reconciliation.
+                            call["axes_position"] = current_axes
                             fill_calls.append(call)
                             continue
                         gc = call["gc"]
@@ -289,7 +310,10 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
                             # targeted static decoration walk.
                             continue
                         # Everything else under axes > patch with a real
-                        # facecolor is user fill content (LP-FUNC-032).
+                        # facecolor is user fill content (LP-FUNC-032); the
+                        # enclosing axes group keys the per-axes clip
+                        # reconciliation.
+                        call["axes_position"] = current_axes
                         fill_calls.append(call)
                         continue
                     self.unsupported(
@@ -300,7 +324,10 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
                 if len(stack) >= 3 and stack[-1] == "line2d":
                     if any(part == "axes" for part in stack[:-1]):
                         if stack[-2] == "axes":
-                            # A direct content line of this axes.
+                            # A direct content line of this axes; the
+                            # enclosing axes group keys the per-axes clip
+                            # reconciliation.
+                            call["axes_position"] = current_axes
                             line_calls.append(call)
                             if self._three_d_axes:
                                 self._three_d_events.append(("line", call))
@@ -400,10 +427,10 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
 
         for call in line_calls:
             self.line_paths += 1
-            self._check_line_call(call)
+            self._check_line_call(call, call["axes_position"])
         for call in fill_calls:
             self.fill_paths += 1
-            self._check_fill_call(call)
+            self._check_fill_call(call, call["axes_position"])
         if self._three_d_axes:
             for kind, payload in self._three_d_events:
                 if kind == "poly":
@@ -795,6 +822,13 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
 
             if self._clip_points is None:
                 self._clip_points = ((x0, y0), (x0 + w, y0 + h))
+            # Content strokes of one axes reconcile against that axes'
+            # own rectangle, keyed by draw-order position.
+            if ax_index not in self._axes_clip_points:
+                self._axes_clip_points[ax_index] = (
+                    (x0, y0),
+                    (x0 + w, y0 + h),
+                )
 
             decorated = (
                 ax_index < len(self._decorated_axes)
@@ -862,7 +896,8 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
                     matplotlib.collections.FillBetweenPolyCollection,
                 ):
                     continue
-                fill = self._fill_command(collection, to_px_x, to_px_y)
+                fill = self._fill_command(collection, to_px_x, to_px_y,
+                                          ax_index)
                 _emit(collection.get_zorder(),
                       _rank_of(collection),
                       [fill] if fill is not None else [])
@@ -872,11 +907,12 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
                     or isinstance(patch, matplotlib.patches.Rectangle)
                 ):
                     continue
-                fill = self._fill_command(patch, to_px_x, to_px_y)
+                fill = self._fill_command(patch, to_px_x, to_px_y, ax_index)
                 _emit(patch.get_zorder(), _rank_of(patch),
                       [fill] if fill is not None else [])
             for line in ax.get_lines():
-                spec_command = self._line_command(line, to_px_x, to_px_y)
+                spec_command = self._line_command(line, to_px_x, to_px_y,
+                                                  ax_index)
                 _emit(line.get_zorder(), _rank_of(line),
                       [spec_command] if spec_command is not None else [])
             legend = ax.get_legend()
@@ -1250,7 +1286,7 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
 
         return commands
 
-    def _fill_command(self, artist, to_px_x, to_px_y):
+    def _fill_command(self, artist, to_px_x, to_px_y, axes_position: int):
         """Build one fill path command from a Polygon or poly-collection.
 
         LP-FUNC-032 style contract (Agg-identical resolution):
@@ -1448,18 +1484,23 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
             )
             joinstyle = "miter"
 
-        # The validated rectangular clip, in top-left pixel space with
-        # exclusive right/bottom edges (frozen seam contract).
+        # The validated rectangular clip, in seam-canonical bottom-left
+        # display pixels ``(x, y, w, h)``. The native rasterizer folds the
+        # display-to-row flip itself (``DeviceClip::from_display``), so
+        # the adapter must not pre-flip.
         clip_rect: list[float] | None = None
-        if self._clip_points is not None:
-            (cx0, cy0), (cx1, cy1) = self._clip_points
+        clip_points = self._axes_clip_points.get(
+            axes_position, self._clip_points
+        )
+        if clip_points is not None:
+            (cx0, cy0), (cx1, cy1) = clip_points
             left = min(cx0, cx1)
             right = max(cx0, cx1)
             bottom = min(cy0, cy1)
             top = max(cy0, cy1)
             clip_rect = [
                 float(left),
-                float(self._height_px - top),
+                float(bottom),
                 float(right - left),
                 float(top - bottom),
             ]
@@ -1558,7 +1599,7 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
             command["rectilinear_snap"] = True
         return command
 
-    def _line_command(self, line, to_px_x, to_px_y):
+    def _line_command(self, line, to_px_x, to_px_y, axes_position: int):
         name = type(line).__name__
         if not isinstance(line, matplotlib.lines.Line2D):
             self.unsupported("non-line artist reached rendering", name)
@@ -1647,18 +1688,23 @@ class _EligibilityPreflight(_StaticEligibilityMixin, _LegendMixin, _CollectorGra
                 "strict-mode style set",
                 name,
             )
-        # The validated rectangular clip, in top-left pixel space with
-        # exclusive right/bottom edges (frozen seam contract).
+        # The validated rectangular clip, in seam-canonical bottom-left
+        # display pixels ``(x, y, w, h)``. The native rasterizer folds the
+        # display-to-row flip itself (``DeviceClip::from_display``), so
+        # the adapter must not pre-flip.
         clip_rect: list[float] | None = None
-        if self._clip_points is not None:
-            (cx0, cy0), (cx1, cy1) = self._clip_points
+        clip_points = self._axes_clip_points.get(
+            axes_position, self._clip_points
+        )
+        if clip_points is not None:
+            (cx0, cy0), (cx1, cy1) = clip_points
             left = min(cx0, cx1)
             right = max(cx0, cx1)
             bottom = min(cy0, cy1)
             top = max(cy0, cy1)
             clip_rect = [
                 float(left),
-                float(self._height_px - top),
+                float(bottom),
                 float(right - left),
                 float(top - bottom),
             ]
