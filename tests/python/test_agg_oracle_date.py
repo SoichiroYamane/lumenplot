@@ -492,13 +492,6 @@ class TestDateAxisAdapterSemantics(unittest.TestCase):
             self.assertEqual(command["join"], "miter")
 
 
-@unittest.skip(
-    "Fixture-only landing per commander 2026-09-12 (ticklabels precedent): "
-    "strict parity red on first candidate (thin 0.8pt grid/spine/tick "
-    "coverage + date-glyph fringe, rasterizer trait shared with ticklabels "
-    "lane); re-measure scheduled post-PR171 convergence lane. S15.1 gate "
-    "unchanged."
-)
 class TestDateAxisNativeAggParity(unittest.TestCase):
     """Compare the fixed date input through the real adapter/native seam only.
 
