@@ -350,13 +350,14 @@ class _StaticEligibilityMixin:
     def _check_tick_label_static(self, label: Any) -> None:
         """Whitelist-check one visible major tick label (PRAC-A-W).
 
-        The label is rendered as explicit filled glyph path commands built
-        by the public ``lumenplot_mpl.textpath`` module from the label's
-        own public ``FontProperties`` (family/style/weight) and resolved
-        font size; only its string, font face, font size, color, alpha,
-        rotation, alignment, and position are honored. Anything outside
-        the supported surface is refused here so stage two never observes
-        an unexpected ``draw_text``.
+        Whitelisted tick labels (and legend entry labels) ride kind:image
+        coverage-blit commands per the ADR 0015 section 4b PNG-only label-
+        coverage amendment (per-label FT2Font raster at the output DPI
+        into an alpha mask, same Matplotlib-provided anchor math, agg_srgb
+        composite); only the label's string, font face, font size, color,
+        alpha, rotation, alignment, and position are honored. Anything
+        outside the supported surface is refused here so stage two never
+        observes an unexpected ``draw_text``.
         """
         name = type(label).__name__
         if label.get_text() != label.get_text().strip():
