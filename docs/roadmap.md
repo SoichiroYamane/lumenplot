@@ -109,8 +109,8 @@ Implement:
 
 - reconcile the traceability rows and architecture summaries with the merged
   compositing and date/unit-label slices, preserving bounded evidence and
-  leaving LP-FUNC-035 and LP-FUNC-037 open until their acceptance evidence is
-  reviewed;
+  leaving LP-FUNC-035 open until its acceptance evidence is reviewed
+  (LP-FUNC-037 flipped to Implemented-bounded on the accepted t_ca1e5e0b GREEN evidence per Appendix B item 13, ADR 0015 s4b pointer, S15.1 unchanged);
 - keep the implemented `hybrid` default synchronized with the accepted
   `hybrid-explicit` profile, while retaining the current staged `strict` /
   `hybrid` spelling until the M1 public profile-name closure;
@@ -485,7 +485,7 @@ The recommended immediate queue is:
 1. **M0 baseline reconciliation** — update traceability for the latest merged
    work, settle the profile default, and make the clean verification command
    reliable on macOS/Nix and wheel-installed Python. The bounded M0 code and
-   evidence lanes are now merged locally; the release remains pre-alpha. Traceability now records bounded evidence for PR223 (B1B runtime-internal), PR224 (M5-5B outline-only v1), PR225 (SINK-P0 Option-B consume-only), PR236 (P3 legend coverage-blit landing, LP-MPL-020 governance row unchanged), and PR242 (M1-N3 collector-grammar extraction, move-only, LP-MPL-020 governance row unchanged) with zero status flips; profile default and clean verification path remain open.
+   evidence lanes are now merged locally; the release remains pre-alpha. Traceability now records bounded evidence for PR223 (B1B runtime-internal), PR224 (M5-5B outline-only v1), PR225 (SINK-P0 Option-B consume-only), PR236 (P3 legend coverage-blit landing, LP-MPL-020 governance row unchanged), and PR242 (M1-N3 collector-grammar extraction, move-only, LP-MPL-020 governance row unchanged) with zero status flips for that batch; LP-FUNC-037 flips to Implemented-bounded under this envelope (Appendix B item 13, ADR 0015 s4b pointer, checker 29/137 to 30/136); profile default and clean verification path remain open.
 2. **M1 adapter modularization plus packaged runtime evidence** — reduce the
    `backend.py` collision hotspot without changing public behavior, then close
    the accepted Phase-3B package matrix.
