@@ -412,11 +412,13 @@ class _StaticEligibilityMixin:
     def _check_title_static(self, label: Any) -> None:
         """Whitelist-check one visible non-empty center title (B-2a R3).
 
-        Center titles render as filled glyph path commands through the
-        public ``lumenplot_mpl.textpath`` module exactly like tick
-        labels; they satisfy the same static text contract, plus an
-        explicit hyperlink refusal (the native seam carries no URL
-        target and must never drop one silently).
+        Whitelisted center titles ride kind:image coverage-blit
+        commands per the ADR 0015 section 4b PNG-only label-coverage
+        amendment (per-label FT2Font raster at the output DPI into an
+        alpha mask, same Matplotlib-provided anchor math, agg_srgb
+        composite); they satisfy the same static text contract as tick
+        labels, plus an explicit hyperlink refusal (the native seam
+        carries no URL target and must never drop one silently).
         """
         self._check_tick_label_static(label)
         name = type(label).__name__

@@ -594,7 +594,9 @@ class _FrameMixin:
         native side composites it with the agg_srgb blend. Under the
         P3-NEXT Q1 allowlist tick labels ride the same coverage-blit
         route (decoration ``tick_label`` kept, no new kind discriminator);
-        axis and title labels keep the outline route.
+        since the title slice the center ``title`` rides the same
+        coverage-blit route (decoration ``title`` kept); axis labels
+        keep the outline route.
         """
         commands: list[dict] = []
         scale = self._effective_dpi / 72.0
@@ -612,7 +614,7 @@ class _FrameMixin:
                 decoration = "title"
             else:
                 decoration = "tick_label"
-            if label_kind in ("legend_label", "tick_label"):
+            if label_kind in ("legend_label", "tick_label", "title"):
                 try:
                     # The collector records the draw_text anchor in the same
                     # y-down display frame Agg consumes, so it feeds the

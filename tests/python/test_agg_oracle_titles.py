@@ -1,9 +1,8 @@
 """Focused Agg-oracle tests for the center-title + axes-box fixture (B-2a R3).
 
 The semantic checks run without the compiled extension.  A strict native
-pixel comparison is deliberately NOT asserted here: tick ink rides as
-coverage-blit image commands (per-label helper pins below) while the
-title glyph keeps its per-face topology pin below, but the
+pixel comparison is deliberately NOT asserted here: all six labels ride
+as coverage-blit image commands (per-label helper pins below), but the
 0.8pt spine/tick-stroke antialiased fringe exceeds the fixed S15.1 fringe
 budget on the current native rasterizer, while tolerances, spine geometry
 paths, and native crates are all frozen for this lane.  The committed
@@ -227,8 +226,8 @@ class TestTitleAdapterSemantics(unittest.TestCase):
         self.assertIsInstance(commands, list)
         return commands
 
-    def test_strict_spec_carries_six_glyph_commands_in_draw_order(self):
-        """Tick blits + title outline queue x-ticks/y-ticks/title."""
+    def test_strict_spec_carries_six_blit_commands_in_draw_order(self):
+        """Tick blits + title blit queue x-ticks/y-ticks/title."""
 
         textpath = importlib.import_module("lumenplot_mpl.textpath")
         support = importlib.import_module("lumenplot_mpl.backend_support")
@@ -278,9 +277,11 @@ class TestTitleAdapterSemantics(unittest.TestCase):
             ["0", "5", "10", "0", "5"],
         )
         self.assertEqual(len(ticks), len(tick_labels))
-        # One coverage-helper call per tick label, in draw order.
-        self.assertEqual(len(calls), len(tick_labels))
-        for command, label, call in zip(ticks, tick_labels, calls):
+        # One coverage-helper call per label in draw order: the five tick
+        # labels plus the center title last.
+        self.assertEqual(len(calls), len(tick_labels) + 1)
+        self.assertEqual(calls[-1][0][0], "ctitle")
+        for command, label, call in zip(ticks, tick_labels, calls[: len(tick_labels)]):
             args, kwargs, outcome = call
             self.assertEqual(args[0], str(label.get_text()))
             self.assertEqual(args[3], 100.0)
@@ -347,24 +348,78 @@ class TestTitleAdapterSemantics(unittest.TestCase):
                     raw_rgba[4 * index + 3],
                     textpath._agg_multiply_byte(style[3], int(mask[index])),
                 )
-        # The title glyph keeps the outline route pins.
-        for command in titles:
-            self.assertEqual(command["fill_rgba"], [0, 0, 0, 255])
-            self.assertIsNone(command["stroke_rgba"])
-        # The title glyph keeps its own label face's topology.
+        # The title rides the same coverage-blit route: one helper call
+        # carrying the title face, one kind:image command, same wire.
         with fixture_rc_context():
             _figure, axes = build_fixture_figure()
-            label = axes.title
-        expected = textpath.glyph_outline_commands(
-            str(label.get_text()),
-            (0.0, 0.0),
-            1.0,
-            0.0,
-            font_size_pt=float(label.get_fontsize()),
-            prop=label.get_fontproperties(),
-        )[0]
-        self.assertEqual(titles[0]["codes"], expected["codes"])
-        self.assertEqual(len(titles[0]["vertices"]), len(expected["vertices"]))
+            title_label = axes.title
+        self.assertEqual(len(titles), 1)
+        title_args, title_kwargs, title_outcome = calls[-1]
+        self.assertEqual(title_args[0], "ctitle")
+        self.assertEqual(title_args[3], 100.0)
+        self.assertEqual(
+            title_args[4], float(title_label.get_rotation())
+        )
+        for anchor in (title_args[1], title_args[2]):
+            self.assertTrue(anchor == anchor)
+            self.assertLess(abs(float(anchor)), 1e9)
+        self.assertEqual(
+            title_kwargs["font_size_pt"], float(title_label.get_fontsize())
+        )
+        self.assertEqual(title_kwargs["dpi"], EFFECTIVE_DPI)
+        title_prop = title_label.get_fontproperties()
+        self.assertEqual(
+            tuple(title_kwargs["prop"].get_family()),
+            tuple(title_prop.get_family()),
+        )
+        self.assertEqual(
+            title_kwargs["prop"].get_style(), title_prop.get_style()
+        )
+        self.assertEqual(
+            title_kwargs["prop"].get_weight(), title_prop.get_weight()
+        )
+        self.assertEqual(
+            title_kwargs["prop"].get_size_in_points(),
+            float(title_label.get_fontsize()),
+        )
+        left_col, top_row, mask_w, mask_h, mask = title_outcome
+        title_style = support._rgba8(
+            title_label.get_color(), title_label.get_alpha()
+        )
+        title_command = titles[0]
+        # Representation pin: coverage-blit image command, never an
+        # outline path and never outline keys on an image command.
+        self.assertEqual(title_command["kind"], "image")
+        self.assertEqual(title_command["decoration"], "title")
+        for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+            self.assertNotIn(absent, title_command)
+        self.assertEqual(title_command["x"], float(left_col))
+        self.assertEqual(
+            title_command["y"], float(100.0 - (top_row + mask_h))
+        )
+        self.assertEqual(title_command["width"], mask_w)
+        self.assertEqual(title_command["height"], mask_h)
+        self.assertEqual(title_command["clip_rect"], [0.0, 0.0, 200.0, 100.0])
+        self.assertGreater(mask_w, 0)
+        self.assertGreater(mask_h, 0)
+        self.assertTrue(any(mask))
+        # Wire pin: every blit pixel carries the label color with the
+        # helper coverage folded into alpha, packed per the adapter.
+        raw_rgba = bytes(title_command["rgba"])
+        self.assertEqual(len(raw_rgba), 4 * mask_w * mask_h)
+        expected_rgba = bytearray(4 * mask_w * mask_h)
+        for index, cover in enumerate(mask):
+            expected_rgba[4 * index] = title_style[0]
+            expected_rgba[4 * index + 1] = title_style[1]
+            expected_rgba[4 * index + 2] = title_style[2]
+            expected_rgba[4 * index + 3] = textpath._agg_multiply_byte(
+                title_style[3], int(cover)
+            )
+        self.assertEqual(raw_rgba, bytes(expected_rgba))
+        # Draw-order pin: the title blit queues after every tick blit.
+        title_index = commands.index(title_command)
+        for tick_command in ticks:
+            self.assertLess(commands.index(tick_command), title_index)
 
     def test_strict_spec_spines_trace_the_axes_box(self):
         """All four visible spine edges ride the fixture axes rectangle."""
