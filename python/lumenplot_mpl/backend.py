@@ -70,6 +70,7 @@ from typing import Any
 import matplotlib
 from matplotlib.backend_bases import FigureCanvasBase, FigureManagerBase
 
+from lumenplot_mpl.backend_attempt import _AttemptMixin
 from lumenplot_mpl.backend_dispatch import _DispatchMixin
 from lumenplot_mpl.backend_guards import _OutputGuardMixin
 from lumenplot_mpl.backend_preflight import _EligibilityPreflight
@@ -158,7 +159,7 @@ editor finds every touchpoint from one search.
 # ---------------------------------------------------------------------------
 
 
-class FigureCanvasLumenPlot(_DispatchMixin, _OutputGuardMixin, _PublicationMixin, _StrictRenderMixin, FigureCanvasBase):
+class FigureCanvasLumenPlot(_DispatchMixin, _OutputGuardMixin, _PublicationMixin, _StrictRenderMixin, _AttemptMixin, FigureCanvasBase):
     """Public Phase-3B canvas with hybrid-explicit default and strict PNG mode.
 
     Adapter-owned state is limited to an immutable last-publication record
@@ -370,55 +371,6 @@ class FigureCanvasLumenPlot(_DispatchMixin, _OutputGuardMixin, _PublicationMixin
             )
         return value
 
-    def _render_attempt(
-        self,
-        *,
-        dpi: float | str | None = None,
-        **kwargs: Any,
-    ) -> tuple[LumenPlotPngResult, int]:
-        """Render one attempt and return its result with its generation.
-
-        Publication is deliberately separate from rendering. Callers that
-        write to an external target publish only after that write succeeds;
-        callers that only request owned bytes publish immediately after this
-        method returns.
-        """
-        generation = self._publication.begin_attempt()
-        try:
-            return self._render_attempt_body(
-                generation=generation,
-                dpi=dpi,
-                **kwargs,
-            ), generation
-        except BaseException:
-            self._publication.clear_if_current(generation)
-            raise
-
-    def _render_attempt_body(
-        self,
-        *,
-        generation: int,
-        dpi: float | str | None = None,
-        **kwargs: Any,
-    ) -> LumenPlotPngResult:
-        """Run strict-first dispatch for an already-started attempt."""
-        try:
-            return self._render_strict(
-                generation=generation,
-                dpi=dpi,
-                **kwargs,
-            )
-        except LumenPlotUnsupportedError as error:
-            if error.code != _UNSUPPORTED_TOKEN or self._mode != "hybrid":
-                raise
-            reason = str(error)
-            type_context = error.type_context
-            return self._render_hybrid_fallback(
-                generation=generation,
-                dpi=self._resolve_dpi(dpi),
-                reason=reason,
-                type_context=type_context,
-            )
 
 
 #: Class alias fixed by API 0005 §1 (backend module identity).
