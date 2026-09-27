@@ -73,6 +73,7 @@ from matplotlib.backend_bases import FigureCanvasBase, FigureManagerBase
 from lumenplot_mpl.backend_attempt import _AttemptMixin
 from lumenplot_mpl.backend_dispatch import _DispatchMixin
 from lumenplot_mpl.backend_guards import _OutputGuardMixin
+from lumenplot_mpl.backend_lifecycle import _LifecycleMixin
 from lumenplot_mpl.backend_output import _OutputMixin
 from lumenplot_mpl.backend_preflight import _EligibilityPreflight
 from lumenplot_mpl.backend_publication import _PublicationMixin
@@ -160,7 +161,7 @@ editor finds every touchpoint from one search.
 # ---------------------------------------------------------------------------
 
 
-class FigureCanvasLumenPlot(_DispatchMixin, _OutputGuardMixin, _PublicationMixin, _StrictRenderMixin, _AttemptMixin, _OutputMixin, FigureCanvasBase):
+class FigureCanvasLumenPlot(_DispatchMixin, _OutputGuardMixin, _PublicationMixin, _StrictRenderMixin, _AttemptMixin, _OutputMixin, _LifecycleMixin, FigureCanvasBase):
     """Public Phase-3B canvas with hybrid-explicit default and strict PNG mode.
 
     Adapter-owned state is limited to an immutable last-publication record
@@ -171,29 +172,6 @@ class FigureCanvasLumenPlot(_DispatchMixin, _OutputGuardMixin, _PublicationMixin
     """
 
     filetypes = filetypes
-
-    def __init__(self, figure=None, *, mode: str = "hybrid"):
-        if mode not in ("strict", "hybrid"):
-            raise ValueError(
-                f"mode must be 'strict' or 'hybrid', got {mode!r}"
-            )
-        self._mode = mode
-        self._publication = _CanvasPublicationState()
-        super().__init__(figure)
-
-    @property
-    def mode(self) -> str:
-        """Selected profile mode: ``'strict'`` or ``'hybrid'``."""
-        return self._mode
-
-    @property
-    def last_diagnostics(self) -> tuple:
-        """Read-only observation of the last published diagnostics."""
-        return self._publication.last_diagnostics
-
-    @property
-    def _generation(self) -> int:
-        return self._publication.generation
 
 
 #: Class alias fixed by API 0005 §1 (backend module identity).
