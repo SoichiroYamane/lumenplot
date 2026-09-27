@@ -104,16 +104,19 @@ python3 -m unittest discover -s tests/python -p 'test_mpl_preflight_soundness.py
 | M2 collector trace | `TestFillCollectorTrace` (`tests/python/test_phase3b_fill.py`); span rectangles resolve unit-square corners through the public transform; `stack[-1] == "FillBetweenPolyCollection"` branch in the trace reconciler | LANDED |
 | M3 style contract | `TestFillStyleContract`; empty-edgecolor collections resolve to stroke `None`; Agg-compat blend mode for fills | LANDED |
 | M4 strict/hybrid | `TestFillWhitelist` strict/hybrid mode behavior; whole-frame Agg fallback path for refused fills | LANDED |
-| M5 negative cases | Non-polygonal fills refused (`MOVETO`/`LINETO`/`CLOSEPOLY`-only in `_check_fill_call`); rotated-rectangle bars refused (C3); slanted-fill refusal — see note | PROPOSED (slanted part) |
+| M5 negative cases | Non-polygonal fills refused (`MOVETO`/`LINETO`/`CLOSEPOLY`-only in `_check_fill_call`); rotated-rectangle bars refused (C3); slanted-fill refusal — see note (landed via 3f37c60; `TestSlantedFillRefusal`, `tests/python/test_phase3b_fill.py` :628) | LANDED |
 | M6 Agg fixtures | `TestCommittedFillFixture` + `TestFillNativeAggParity` (`tests/python/test_agg_oracle_fill.py`, PR #101) covering fill, fill-between, vspan, hspan; two-layer stackplot composition via `TestCommittedStackplotFixture` + `TestStackplotNativeAggParity` (`tests/python/test_agg_oracle_stackplot.py`, PR #161, fixture_id `stackplot-two-layer-opaque`); PR101-CI-FIX re-scoped the pixel-parity input to the axis-aligned exact surface (slanted edges fail the fixed gate with a fringe-only signature and were removed from the input, not tolerated) | LANDED (axis-aligned) |
 | R1 rollback | §4 procedure, instantiated for fills | LANDED (rule) |
 
 Slanted-fill note (FILL-AA decision (b), 2026-09-04): slanted fills exit
 strict eligibility — strict refuses before writing, hybrid uses whole-frame
 Agg fallback — while axis-aligned fills stay strict-eligible under the
-unchanged fixed gate. The decision is recorded; the enforcing code is
-**not** on `origin/main` and is therefore PROPOSED, not evidence. Landing
-it is the precondition for any `LP-MPL-020` flip that names fills.
+unchanged fixed gate. The decision is recorded and the enforcing code has
+landed on `origin/main` via 3f37c60 (`_check_fill_axis_alignment`,
+`python/lumenplot_mpl/backend_collector.py` :880, wired via `_check_fill_call`
+:831/:874; `TestSlantedFillRefusal`, `tests/python/test_phase3b_fill.py` :628,
+re-verified 3/3 green on `origin/main` 11a2b87). That landing is the cited
+precondition for any `LP-MPL-020` flip that names fills.
 
 Check:
 
