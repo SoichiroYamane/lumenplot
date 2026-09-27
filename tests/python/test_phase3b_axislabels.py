@@ -1,8 +1,9 @@
 """B-2a axis-label contract tests (LP-MPL-020, R2 subset).
 
 Covers the four per-class mechanics for the visible non-empty
-``xlabel``/``ylabel`` pair rendered natively as filled glyph-outline
-path commands (B-2a R2: xlabel/ylabel eligible, titles refused):
+``xlabel``/``ylabel`` pair rendered natively as one kind:image
+coverage-blit command per label (axis-label slice: ADR 0015
+section 4b route; xlabel/ylabel eligible, titles refused):
 
 - M1 whitelist: a default decorated axes with visible xlabel/ylabel is
   strict-eligible; the ``_check_axis_label_static`` surface (shared
@@ -13,17 +14,20 @@ path commands (B-2a R2: xlabel/ylabel eligible, titles refused):
   hyperlinks.
 - M2 collector trace: the stage-two ``draw_text`` queue observes labels
   in draw order (x-ticks, xlabel, y-ticks, ylabel) and the emitted spec
-  carries one glyph command per label in that order with the
-  ``axis_label`` decoration marker.
+  carries one kind:image command per label in that order with the
+  ``axis_label`` decoration marker (never outline keys); empty or
+  invisible axis labels draw nothing.
 - M3 style contract: the label's own public ``FontProperties``
-  (family/style/weight) and resolved size flow into the outline through
-  ``lumenplot_mpl.textpath``; faces change geometry, and outlines agree
-  with ``TextPath`` for the same properties within S15.1 part 3 (1e-6).
+  (family/style/weight) and resolved size flow into the coverage mask
+  through ``lumenplot_mpl.textpath._label_coverage_mask`` at the output
+  DPI with the hinting flag; faces change the mask, anchored by the
+  same Matplotlib-provided anchor math and composited agg_srgb.
 - M4 strict behavior: a refused label raises before any native write and
   hybrid mode falls back whole-frame with exactly one diagnostic.
 
 Pixel parity against the pinned Agg oracle lives in
 ``test_agg_oracle_axislabels.py``; this module needs only the stub seam.
+No strict native pixel gate is asserted here (spine-fringe red).
 """
 
 from __future__ import annotations
@@ -351,7 +355,7 @@ class TestAxisLabelDrawOrder(unittest.TestCase):
             ],
         )
 
-    def test_spec_carries_one_glyph_command_per_label_in_order(self):
+    def test_spec_carries_one_blit_command_per_label_in_order(self):
         patcher = _install_stub_native()
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -359,23 +363,61 @@ class TestAxisLabelDrawOrder(unittest.TestCase):
         result = _strict_render(fig)
         self.assertEqual(result.diagnostics, ())
         commands = _StubNativeModule.last_spec["commands"]
-        glyphs = [c for c in commands if c.get("decoration") == "axis_label"]
-        self.assertEqual(len(glyphs), 2)
+        blits = [c for c in commands if c.get("decoration") == "axis_label"]
+        self.assertEqual(len(blits), 2)
+        # Representation pin: coverage-blit image commands, never an
+        # outline path and never outline keys on an image command.
+        for command in blits:
+            self.assertEqual(command["kind"], "image")
+            for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                self.assertNotIn(absent, command)
         ticks = [c for c in commands if c.get("decoration") == "tick_label"]
         self.assertEqual(len(ticks), 4)
-        # Glyph commands paint after every axes content command: the text
+        # Blit commands paint after every axes content command: the text
         # wire-up owns the emission position (backend.py z-order contract).
         last_content = max(
             index
             for index, command in enumerate(commands)
             if command.get("decoration") not in ("tick_label", "axis_label")
         )
-        first_glyph = min(
+        first_blit = min(
             index
             for index, command in enumerate(commands)
             if command.get("decoration") in ("tick_label", "axis_label")
         )
-        self.assertGreater(first_glyph, last_content)
+        self.assertGreater(first_blit, last_content)
+        # Draw-order pin: the xlabel blit queues after the x-tick blits
+        # and before the y-tick blits; the ylabel blit queues last.
+        order = [c.get("decoration") for c in commands
+                 if c.get("decoration") in ("tick_label", "axis_label")]
+        self.assertEqual(
+            order,
+            ["tick_label", "tick_label", "axis_label",
+             "tick_label", "tick_label", "axis_label"],
+        )
+
+    def test_spec_empty_and_invisible_axis_labels_draw_nothing(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        fig, ax = _labeled_figure()
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        result = _strict_render(fig)
+        self.assertEqual(result.diagnostics, ())
+        commands = _StubNativeModule.last_spec["commands"]
+        self.assertEqual(
+            [c for c in commands if c.get("decoration") == "axis_label"], []
+        )
+        fig, ax = _labeled_figure()
+        ax.xaxis.get_label().set_visible(False)
+        ax.yaxis.get_label().set_visible(False)
+        result = _strict_render(fig)
+        self.assertEqual(result.diagnostics, ())
+        commands = _StubNativeModule.last_spec["commands"]
+        self.assertEqual(
+            [c for c in commands if c.get("decoration") == "axis_label"], []
+        )
 
 
 @unittest.skipUnless(MATPLOTLIB_PRESENT, "matplotlib not in this offline cell")
@@ -394,42 +436,50 @@ class TestAxisLabelStyleContract(unittest.TestCase):
         ax.yaxis.get_label().set_style("italic")
         result = _strict_render(fig)
         self.assertEqual(result.diagnostics, ())
-        glyphs = [
+        blits = [
             c
             for c in _StubNativeModule.last_spec["commands"]
             if c.get("decoration") == "axis_label"
         ]
-        self.assertEqual(len(glyphs), 2)
+        self.assertEqual(len(blits), 2)
+        for command in blits:
+            self.assertEqual(command["kind"], "image")
 
-    def test_face_changes_outline_geometry(self):
-        """The face must flow into the outline (catches prop=None drift)."""
+    def test_face_changes_coverage_mask(self):
+        """The face must flow into the coverage mask (catches prop drift)."""
         textpath = _load_textpath()
-        normal = textpath.glyph_outline_commands(
+        normal = textpath._label_coverage_mask(
             "xlab",
-            (0.0, 0.0),
-            1.0,
+            100.0,
+            20.0,
+            100.0,
             0.0,
             font_size_pt=10.0,
             prop=FontProperties(weight="normal", style="normal"),
-        )[0]
-        bold = textpath.glyph_outline_commands(
+            dpi=100.0,
+        )
+        bold = textpath._label_coverage_mask(
             "xlab",
-            (0.0, 0.0),
-            1.0,
+            100.0,
+            20.0,
+            100.0,
             0.0,
             font_size_pt=10.0,
             prop=FontProperties(weight="bold", style="normal"),
-        )[0]
-        italic = textpath.glyph_outline_commands(
+            dpi=100.0,
+        )
+        italic = textpath._label_coverage_mask(
             "xlab",
-            (0.0, 0.0),
-            1.0,
+            100.0,
+            20.0,
+            100.0,
             0.0,
             font_size_pt=10.0,
             prop=FontProperties(weight="normal", style="italic"),
-        )[0]
-        self.assertNotEqual(bold["vertices"], normal["vertices"])
-        self.assertNotEqual(italic["vertices"], normal["vertices"])
+            dpi=100.0,
+        )
+        self.assertNotEqual(bytes(bold[4]), bytes(normal[4]))
+        self.assertNotEqual(bytes(italic[4]), bytes(normal[4]))
 
     def test_outline_matches_textpath_within_s151(self):
         """S15.1 part 3: outline vertices agree within 1e-6 logical points."""
@@ -472,11 +522,12 @@ class TestAxisLabelStyleContract(unittest.TestCase):
             )
         self.assertIn("unsupported-text-path", str(ctx.exception))
 
-    def test_spec_glyph_topology_matches_resolved_face(self):
-        """End to end: each spec glyph keeps its label face's topology."""
-        from matplotlib.path import Path
+    def test_spec_axis_label_blits_carry_resolved_faces(self):
+        """End to end: each spec axis-label blit rides its label face's mask."""
+        import importlib
 
         textpath = _load_textpath()
+        support = importlib.import_module("lumenplot_mpl.backend_support")
         preflight_mod = _load_preflight()
         fig, ax = _labeled_figure()
         ax.xaxis.get_label().set_weight("bold")
@@ -485,35 +536,90 @@ class TestAxisLabelStyleContract(unittest.TestCase):
         self.assertEqual(preflight.reasons, [])
         preflight.collect(fig, width_px=200, height_px=100, dpi=100.0)
         self.assertEqual(preflight.reasons, [])
-        spec = preflight.build_frame_spec(
-            fig, width_px=200, height_px=100, output_dpi=100.0
-        )
+        real_mask = textpath._label_coverage_mask
+        calls: list = []
+
+        def recording_mask(*args, **kwargs):
+            result = real_mask(*args, **kwargs)
+            calls.append((args, kwargs, result))
+            return result
+
+        with unittest.mock.patch.object(
+            textpath, "_label_coverage_mask", recording_mask
+        ):
+            spec = preflight.build_frame_spec(
+                fig, width_px=200, height_px=100, output_dpi=100.0
+            )
         self.assertEqual(preflight.reasons, [])
-        glyphs = [c for c in spec["commands"] if c.get("decoration") == "axis_label"]
+        blits = [c for c in spec["commands"]
+                 if c.get("decoration") == "axis_label"]
         payloads = [p for p in preflight._observed_text_payloads
                     if p.get("kind") == "axis_label"]
-        self.assertEqual(len(glyphs), len(payloads))
-        self.assertEqual(len(glyphs), 2)
-        for command, payload in zip(glyphs, payloads):
+        self.assertEqual(len(blits), len(payloads))
+        self.assertEqual(len(blits), 2)
+        # One coverage-helper call per axis label, in draw order: the
+        # xlabel first, then the rotated ylabel (angle rides the existing
+        # parameterization, pinned here rather than redesigned).
+        label_calls = [call for call in calls
+                       if call[0][0] in ("xlab", "ylab")]
+        self.assertEqual([call[0][0] for call in label_calls],
+                         ["xlab", "ylab"])
+        for command, payload, call in zip(blits, payloads, label_calls):
             label = payload["artist"]
-            expected = textpath.glyph_outline_commands(
-                str(label.get_text()),
-                (0.0, 0.0),
-                1.0,
-                0.0,
-                font_size_pt=float(label.get_fontsize()),
-                prop=label.get_fontproperties(),
-            )[0]
-            # An affine placement never changes topology: same codes and
-            # vertex count as the resolved-face outline.
-            self.assertEqual(command["codes"], expected["codes"])
-            self.assertEqual(len(command["vertices"]), len(expected["vertices"]))
-            reference = TextPath(
-                (0.0, 0.0),
-                str(label.get_text()),
-                size=float(label.get_fontsize()),
-                prop=label.get_fontproperties(),
+            args, kwargs, outcome = call
+            self.assertEqual(args[0], str(label.get_text()))
+            self.assertEqual(args[3], 100.0)
+            self.assertEqual(args[4], float(label.get_rotation()))
+            # Only finiteness is pinned on the anchor here while exact
+            # geometry rides the command pins below.
+            for anchor in (args[1], args[2]):
+                self.assertTrue(anchor == anchor)
+                self.assertLess(abs(float(anchor)), 1e9)
+            self.assertEqual(kwargs["font_size_pt"], float(label.get_fontsize()))
+            self.assertEqual(kwargs["dpi"], 100.0)
+            label_prop = label.get_fontproperties()
+            self.assertEqual(
+                tuple(kwargs["prop"].get_family()),
+                tuple(label_prop.get_family()),
             )
-            # The seam vocabulary reuses the Path code numerics, so the
-            # resolved-face outline must carry the TextPath codes verbatim.
-            self.assertEqual(expected["codes"], [int(code) for code in reference.codes])
+            self.assertEqual(
+                kwargs["prop"].get_style(), label_prop.get_style()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_weight(), label_prop.get_weight()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_size_in_points(),
+                float(label.get_fontsize()),
+            )
+            left_col, top_row, mask_w, mask_h, mask = outcome
+            style = support._rgba8(label.get_color(), label.get_alpha())
+            # Representation pin: coverage-blit image command, never an
+            # outline path and never outline keys on an image command.
+            self.assertEqual(command["kind"], "image")
+            self.assertEqual(command["decoration"], "axis_label")
+            for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                self.assertNotIn(absent, command)
+            self.assertEqual(command["x"], float(left_col))
+            self.assertEqual(
+                command["y"], float(100.0 - (top_row + mask_h))
+            )
+            self.assertEqual(command["width"], mask_w)
+            self.assertEqual(command["height"], mask_h)
+            self.assertEqual(command["clip_rect"], [0.0, 0.0, 200.0, 100.0])
+            self.assertGreater(mask_w, 0)
+            self.assertGreater(mask_h, 0)
+            self.assertTrue(any(mask))
+            # Wire pin: every blit pixel carries the label color with the
+            # helper coverage folded into alpha, packed per the adapter.
+            raw_rgba = bytes(command["rgba"])
+            self.assertEqual(len(raw_rgba), 4 * mask_w * mask_h)
+            expected_rgba = bytearray(4 * mask_w * mask_h)
+            for index, cover in enumerate(mask):
+                expected_rgba[4 * index] = style[0]
+                expected_rgba[4 * index + 1] = style[1]
+                expected_rgba[4 * index + 2] = style[2]
+                expected_rgba[4 * index + 3] = textpath._agg_multiply_byte(
+                    style[3], int(cover)
+                )
+            self.assertEqual(raw_rgba, bytes(expected_rgba))
