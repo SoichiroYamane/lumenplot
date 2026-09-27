@@ -3578,6 +3578,7 @@ PHASE3A2_PHASE3B_PACKAGE_FILES = frozenset(
         "backend_frame.py",
         "backend_frame_3d.py",
         "backend_textlabels.py",
+        "backend_decoration.py",
         "backend_collector.py",
         "backend_state.py",
         "backend_eligibility.py",
