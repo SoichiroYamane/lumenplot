@@ -319,7 +319,7 @@ class TestModuleHygiene(unittest.TestCase):
     def test_public_surface_is_exactly_documented(self):
         module = _load_module()
         self.assertEqual(
-            set(module.__all__), {"glyph_outline_commands", "UNSUPPORTED_TEXT_PATH"}
+            set(module.__all__), {"glyph_outline_commands"}
         )
         self.assertTrue(callable(module.glyph_outline_commands))
 
