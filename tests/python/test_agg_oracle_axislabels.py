@@ -1,9 +1,9 @@
 """Focused Agg-oracle tests for the axis-label + axes-box fixture (B-2a R2).
 
 The semantic checks run without the compiled extension.  A strict native
-pixel comparison is deliberately NOT asserted here: tick ink rides as
-coverage-blit image commands (per-label helper pins below) while axis
-glyphs keep per-face topology pins below, but the
+pixel comparison is deliberately NOT asserted here: all seven labels
+ride as coverage-blit image commands (per-label helper pins below),
+but the
 0.8pt spine/tick-stroke antialiased fringe exceeds the fixed S15.1 fringe
 budget on the current native rasterizer, while tolerances, spine geometry
 paths, and native crates are all frozen for this lane.  The committed
@@ -229,8 +229,8 @@ class TestAxisLabelAdapterSemantics(unittest.TestCase):
         self.assertIsInstance(commands, list)
         return commands
 
-    def test_strict_spec_carries_seven_glyph_commands_in_draw_order(self):
-        """Tick blits + axis outlines queue x-ticks/xlabel/y-ticks/ylabel."""
+    def test_strict_spec_carries_seven_blit_commands_in_draw_order(self):
+        """Tick blits + axis blits queue x-ticks/xlabel/y-ticks/ylabel."""
 
         textpath = importlib.import_module("lumenplot_mpl.textpath")
         support = importlib.import_module("lumenplot_mpl.backend_support")
@@ -273,17 +273,25 @@ class TestAxisLabelAdapterSemantics(unittest.TestCase):
              ("xlab", "axis_label"), ("0", "tick_label"), ("5", "tick_label"),
              ("ylab", "axis_label")],
         )
-        glyphs = [c for c in commands
-                  if c.get("decoration") in ("tick_label", "axis_label")]
-        self.assertEqual(len(glyphs), len(expected_order))
+        blits = [c for c in commands
+                 if c.get("decoration") in ("tick_label", "axis_label")]
+        self.assertEqual(len(blits), len(expected_order))
         self.assertEqual(
             [label.get_text() for label in tick_labels],
             ["0", "5", "10", "0", "5"],
         )
         self.assertEqual(len(ticks), len(tick_labels))
-        # One coverage-helper call per tick label, in draw order.
-        self.assertEqual(len(calls), len(tick_labels))
-        for command, label, call in zip(ticks, tick_labels, calls):
+        # One coverage-helper call per label in draw order: the three
+        # x-tick labels, the xlabel, the two y-tick labels, the ylabel.
+        self.assertEqual(len(calls), len(tick_labels) + 2)
+        self.assertEqual(
+            [call[0][0] for call in calls],
+            ["0", "5", "10", "xlab", "0", "5", "ylab"],
+        )
+        tick_calls = [call for call in calls
+                      if call[0][0] not in ("xlab", "ylab")]
+        self.assertEqual(len(tick_calls), len(tick_labels))
+        for command, label, call in zip(ticks, tick_labels, tick_calls):
             args, kwargs, outcome = call
             self.assertEqual(args[0], str(label.get_text()))
             self.assertEqual(args[3], 100.0)
@@ -350,26 +358,88 @@ class TestAxisLabelAdapterSemantics(unittest.TestCase):
                     raw_rgba[4 * index + 3],
                     textpath._agg_multiply_byte(style[3], int(mask[index])),
                 )
-        # Axis labels keep the outline route pins.
-        for command in axes_labels:
-            self.assertEqual(command["fill_rgba"], [0, 0, 0, 255])
-            self.assertIsNone(command["stroke_rgba"])
-        # Each axis glyph keeps its own label face's topology.
-        for command, axis_text in zip(
-            axes_labels, [axes.get_xlabel(), axes.get_ylabel()]
-        ):
-            label = (axes.xaxis.get_label() if axis_text == axes.get_xlabel()
-                     else axes.yaxis.get_label())
-            expected = textpath.glyph_outline_commands(
-                str(label.get_text()),
-                (0.0, 0.0),
-                1.0,
-                0.0,
-                font_size_pt=float(label.get_fontsize()),
-                prop=label.get_fontproperties(),
-            )[0]
-            self.assertEqual(command["codes"], expected["codes"])
-            self.assertEqual(len(command["vertices"]), len(expected["vertices"]))
+        # Axis labels ride the same coverage-blit route: one helper call
+        # per label carrying its face (the ylabel call keeps rotation
+        # 90 through the existing angle parameterization), one
+        # kind:image command each, same wire as the tick blits.
+        with fixture_rc_context():
+            _figure, axes = build_fixture_figure()
+            axis_labels = [axes.xaxis.get_label(), axes.yaxis.get_label()]
+            self.assertEqual(
+                [label.get_text() for label in axis_labels],
+                ["xlab", "ylab"],
+            )
+        self.assertEqual(len(axes_labels), len(axis_labels))
+        axis_calls = [call for call in calls
+                      if call[0][0] in ("xlab", "ylab")]
+        self.assertEqual(len(axis_calls), len(axis_labels))
+        for command, label, call in zip(axes_labels, axis_labels, axis_calls):
+            args, kwargs, outcome = call
+            self.assertEqual(args[0], str(label.get_text()))
+            self.assertEqual(args[3], 100.0)
+            self.assertEqual(args[4], float(label.get_rotation()))
+            for anchor in (args[1], args[2]):
+                self.assertTrue(anchor == anchor)
+                self.assertLess(abs(float(anchor)), 1e9)
+            self.assertEqual(
+                kwargs["font_size_pt"], float(label.get_fontsize())
+            )
+            self.assertEqual(kwargs["dpi"], EFFECTIVE_DPI)
+            label_prop = label.get_fontproperties()
+            self.assertEqual(
+                tuple(kwargs["prop"].get_family()),
+                tuple(label_prop.get_family()),
+            )
+            self.assertEqual(
+                kwargs["prop"].get_style(), label_prop.get_style()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_weight(), label_prop.get_weight()
+            )
+            self.assertEqual(
+                kwargs["prop"].get_size_in_points(),
+                float(label.get_fontsize()),
+            )
+            left_col, top_row, mask_w, mask_h, mask = outcome
+            style = support._rgba8(label.get_color(), label.get_alpha())
+            # Representation pin: coverage-blit image command, never an
+            # outline path and never outline keys on an image command.
+            self.assertEqual(command["kind"], "image")
+            self.assertEqual(command["decoration"], "axis_label")
+            for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                self.assertNotIn(absent, command)
+            self.assertEqual(command["x"], float(left_col))
+            self.assertEqual(
+                command["y"], float(100.0 - (top_row + mask_h))
+            )
+            self.assertEqual(command["width"], mask_w)
+            self.assertEqual(command["height"], mask_h)
+            self.assertEqual(command["clip_rect"], [0.0, 0.0, 200.0, 100.0])
+            self.assertGreater(mask_w, 0)
+            self.assertGreater(mask_h, 0)
+            self.assertTrue(any(mask))
+            # Wire pin: every blit pixel carries the label color with the
+            # helper coverage folded into alpha, packed per the adapter.
+            raw_rgba = bytes(command["rgba"])
+            self.assertEqual(len(raw_rgba), 4 * mask_w * mask_h)
+            expected_rgba = bytearray(4 * mask_w * mask_h)
+            for index, cover in enumerate(mask):
+                expected_rgba[4 * index] = style[0]
+                expected_rgba[4 * index + 1] = style[1]
+                expected_rgba[4 * index + 2] = style[2]
+                expected_rgba[4 * index + 3] = textpath._agg_multiply_byte(
+                    style[3], int(cover)
+                )
+            self.assertEqual(raw_rgba, bytes(expected_rgba))
+        # Draw-order pin: the xlabel blit queues after the x-tick blits
+        # and the ylabel blit queues after every other label blit.
+        label_order = [c.get("decoration") for c in commands
+                       if c.get("decoration") in ("tick_label", "axis_label")]
+        self.assertEqual(
+            label_order,
+            ["tick_label", "tick_label", "tick_label", "axis_label",
+             "tick_label", "tick_label", "axis_label"],
+        )
 
     def test_strict_spec_spines_trace_the_axes_box(self):
         """All four visible spine edges ride the fixture axes rectangle."""
