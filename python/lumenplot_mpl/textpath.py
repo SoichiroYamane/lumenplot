@@ -35,7 +35,7 @@ from matplotlib.font_manager import FontProperties
 from matplotlib.path import Path
 from matplotlib.textpath import TextPath
 
-__all__ = ["glyph_outline_commands", "UNSUPPORTED_TEXT_PATH"]
+__all__ = ["glyph_outline_commands"]
 
 
 def _unsupported(reason: str) -> ValueError:
