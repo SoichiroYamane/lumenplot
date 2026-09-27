@@ -327,8 +327,9 @@ class _FrameMixin(_Frame3DMixin):
         P3-NEXT Q1 allowlist tick labels ride the same coverage-blit
         route (decoration ``tick_label`` kept, no new kind discriminator);
         since the title slice the center ``title`` rides the same
-        coverage-blit route (decoration ``title`` kept); axis labels
-        keep the outline route.
+        coverage-blit route (decoration ``title`` kept); since the
+        axis-label slice the ``xlabel``/``ylabel`` pair rides the same
+        coverage-blit route (decoration ``axis_label`` kept).
         """
         commands: list[dict] = []
         scale = self._effective_dpi / 72.0
@@ -346,7 +347,7 @@ class _FrameMixin(_Frame3DMixin):
                 decoration = "title"
             else:
                 decoration = "tick_label"
-            if label_kind in ("legend_label", "tick_label", "title"):
+            if label_kind in ("legend_label", "tick_label", "title", "axis_label"):
                 try:
                     # The collector records the draw_text anchor in the same
                     # y-down display frame Agg consumes, so it feeds the
