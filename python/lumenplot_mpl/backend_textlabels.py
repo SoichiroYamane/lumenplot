@@ -47,7 +47,9 @@ class _TextLabelsMixin:
         ``decoration`` marker. Since B-2a (R2) it renders ``xlabel`` /
         ``ylabel`` axis labels (payload kind ``axis_label``) with the
         ``axis_label`` marker. Since B-2a (R3) it renders the center
-        ``title`` (payload kind ``title``) with the ``title`` marker.
+        ``title`` (payload kind ``title``) with the ``title`` marker,
+        and since the loc-title slice the left/right ``title`` pair
+        rides the same payload kind and marker.
         Since the P3 PNG-only label-coverage amendment (ADR 0015 section
         4b) legend entry labels instead ride as one coverage-blit image
         command per label: the private textpath coverage helper rasterizes
@@ -58,6 +60,9 @@ class _TextLabelsMixin:
         route (decoration ``tick_label`` kept, no new kind discriminator);
         since the title slice the center ``title`` rides the same
         coverage-blit route (decoration ``title`` kept); since the
+        loc-title slice the left/right ``title`` pair rides that same
+        route (decoration ``title`` kept, no new kind discriminator);
+        since the
         axis-label slice the ``xlabel``/``ylabel`` pair rides the same
         coverage-blit route (decoration ``axis_label`` kept).
         """

@@ -11,6 +11,14 @@ native spine-stroke lane can add the pixel gate without regenerating
 evidence.  The manifest contract (schema ``agg-oracle-manifest-v1``,
 byte-equal background/fully-covered, fringe delta 1, mismatch rate
 0.001) is UNCHANGED from the tick-label fixture.
+
+The loc-title slice adds two title-only fixtures (``left``/``right``):
+each frame carries its loc title as the only text (no tick labels, no
+visible spines, one axis-aligned polygon as the required strict content
+artist), so the loc evidence avoids spine/tick fringe coupling by
+construction.  No strict native pixel gate is asserted for them either
+(no G3 parity class); the committed references plus the
+adapter-semantics blit pins below are the loc evidence.
 """
 
 from __future__ import annotations
@@ -48,34 +56,47 @@ if MATPLOTLIB_PRESENT:
         from .generate_agg_oracle_titles import (
             EFFECTIVE_DPI,
             FIXTURE_DIR,
+            LOC_MANIFEST_PATHS,
+            LOC_TITLES,
             MANIFEST_PATH,
             ORACLE_MATPLOTLIB_VERSION,
             TITLE,
             XTICKLABELS,
             YTICKLABELS,
             build_fixture_figure,
+            build_loc_fixture_figure,
             fixture_rc_context,
             public_axis_topology,
+            render_loc_reference,
             render_reference,
         )
     except ImportError:  # ``unittest discover -s tests/python``
         from generate_agg_oracle_titles import (
             EFFECTIVE_DPI,
             FIXTURE_DIR,
+            LOC_MANIFEST_PATHS,
+            LOC_TITLES,
             MANIFEST_PATH,
             ORACLE_MATPLOTLIB_VERSION,
             TITLE,
             XTICKLABELS,
             YTICKLABELS,
             build_fixture_figure,
+            build_loc_fixture_figure,
             fixture_rc_context,
             public_axis_topology,
+            render_loc_reference,
             render_reference,
         )
 else:
     EFFECTIVE_DPI = 0.0
     FIXTURE_DIR = Path(__file__).with_name("fixtures") / "agg_oracle"
     MANIFEST_PATH = FIXTURE_DIR / "title_manifest.json"
+    LOC_TITLES = {"left": "ltitle", "right": "rtitle"}
+    LOC_MANIFEST_PATHS = {
+        loc: FIXTURE_DIR / f"title_loc_{loc}_manifest.json"
+        for loc in LOC_TITLES
+    }
     ORACLE_MATPLOTLIB_VERSION = "3.11.1"
     TITLE = "ctitle"
     XTICKLABELS = ("0", "5", "10")
@@ -473,3 +494,284 @@ class TestTitleAdapterSemantics(unittest.TestCase):
         self.assertAlmostEqual(max(xs), 149.6, places=6)
         self.assertAlmostEqual(min(ys), 34.0, places=6)
         self.assertAlmostEqual(max(ys), 61.0, places=6)
+
+
+class TestCommittedLocTitleFixtures(unittest.TestCase):
+    """The committed title-only fixtures, generated without native code."""
+
+    def setUp(self):
+        _require_pinned_matplotlib()
+
+    def test_manifest_records_pinned_render_contract_and_digests(self):
+        for loc in ("left", "right"):
+            with self.subTest(loc=loc):
+                fixture = load_reference_fixture(LOC_MANIFEST_PATHS[loc])
+                manifest = fixture.manifest
+                text = LOC_TITLES[loc]
+                self.assertEqual(manifest["fixture_id"], f"{loc}-title-only")
+                self.assertEqual(manifest["oracle"]["backend"], "FigureCanvasAgg")
+                self.assertEqual(
+                    manifest["oracle"]["matplotlib_version"], "3.11.1"
+                )
+                self.assertEqual(manifest["oracle"]["api_version"], "1.1")
+                self.assertEqual(
+                    manifest["oracle"]["canvas_construction"],
+                    "matplotlib.backends.backend_agg.FigureCanvasAgg(figure)",
+                )
+                self.assertEqual(
+                    manifest["oracle"]["render_call"],
+                    "canvas.print_png(buffer, metadata={})",
+                )
+                self.assertEqual(
+                    manifest["figure"]["construction"],
+                    "matplotlib.figure.Figure(figsize=(2.0, 1.0), dpi=100.0, "
+                    "facecolor='white', edgecolor='white')",
+                )
+                self.assertEqual(manifest["effective_dpi"], EFFECTIVE_DPI)
+                self.assertEqual(
+                    manifest["dimensions"], {"width": 200, "height": 100}
+                )
+                self.assertEqual(manifest["orientation"], "top-to-bottom")
+                self.assertEqual(manifest["channels"], "RGBA8")
+                self.assertEqual(
+                    manifest["artist_class"], "matplotlib.text.Text"
+                )
+                self.assertEqual(
+                    manifest["font"]["bytes_sha256"],
+                    manifest["font_bytes_sha256"],
+                )
+                self.assertEqual(
+                    hashlib.sha256(fixture.reference_png).hexdigest(),
+                    manifest["reference_png_sha256"],
+                )
+                self.assertEqual(
+                    hashlib.sha256(
+                        (FIXTURE_DIR / manifest["mask_file"]).read_bytes()
+                    ).hexdigest(),
+                    manifest["mask_sha256"],
+                )
+                expected_titles = {"center": "", "left": "", "right": ""}
+                expected_titles[loc] = text
+                self.assertEqual(
+                    manifest["primitive"]["title"], expected_titles
+                )
+                self.assertEqual(
+                    manifest["primitive"]["ticklabels"],
+                    {
+                        "xticks": [],
+                        "xticklabels": [],
+                        "yticks": [],
+                        "yticklabels": [],
+                    },
+                )
+                # UNCHANGED manifest contract: same schema and thresholds
+                # as the center-title fixture.
+                self.assertEqual(
+                    manifest["schema_version"], "agg-oracle-manifest-v1"
+                )
+                self.assertEqual(
+                    manifest["contract"],
+                    {
+                        "orientation": "top-to-bottom",
+                        "channels": "RGBA8",
+                        "background": "byte-equal",
+                        "fully-covered": "byte-equal",
+                        "fringe_max_channel_delta": 1,
+                        "fringe_mismatch_rate_denominator": "total-pixels",
+                        "fringe_mismatch_rate_max": 0.001,
+                    },
+                )
+
+    def test_generator_reproduces_committed_png_mask_and_topology(self):
+        for loc in ("left", "right"):
+            with self.subTest(loc=loc):
+                fixture = load_reference_fixture(LOC_MANIFEST_PATHS[loc])
+                generated_png, generated_mask, generated_topology, dimensions = (
+                    render_loc_reference(loc)
+                )
+                self.assertEqual(generated_png, fixture.reference_png)
+                self.assertTrue(
+                    np.array_equal(generated_mask, fixture.mask.labels)
+                )
+                self.assertEqual(dimensions, (200, 100))
+                self.assertEqual(
+                    generated_topology, fixture.manifest["topology"]
+                )
+
+    def test_public_axis_surface_matches_manifest(self):
+        """Boundary tick/title facts come from public getters only."""
+
+        for loc in ("left", "right"):
+            with self.subTest(loc=loc):
+                fixture = load_reference_fixture(LOC_MANIFEST_PATHS[loc])
+                with fixture_rc_context():
+                    _figure, axes = build_loc_fixture_figure(loc)
+                    topology = public_axis_topology(axes)
+                self.assertEqual(topology["xticklocs"], [])
+                self.assertEqual(topology["xticklabels"], [])
+                self.assertEqual(topology["yticklocs"], [])
+                self.assertEqual(topology["yticklabels"], [])
+                self.assertEqual(topology["title_center"], "")
+                self.assertEqual(topology[f"title_{loc}"], LOC_TITLES[loc])
+                self.assertEqual(topology, fixture.manifest["topology"])
+                # Title-only: every mask pixel is background, resolved
+                # fill/title ink, or fringe -- no spine/tick coupling.
+                self.assertEqual(
+                    set(np.unique(fixture.mask.labels)),
+                    {
+                        PIXEL_CLASS_CODES["background"],
+                        PIXEL_CLASS_CODES["fully-covered"],
+                        PIXEL_CLASS_CODES["antialias-fringe"],
+                    },
+                )
+
+
+class TestLocTitleAdapterSemantics(unittest.TestCase):
+    """The adapter spec reproduces the title-only surface, no native code."""
+
+    def setUp(self):
+        _require_pinned_matplotlib()
+
+    def _capture_spec(self, loc):
+        backend = importlib.import_module("lumenplot_mpl.backend")
+        captured: dict[str, Any] = {}
+
+        def capture_spec(spec, _generation):
+            captured.update(spec)
+            return b"native-spec-only"
+
+        with fixture_rc_context():
+            figure, _axes = build_loc_fixture_figure(loc)
+            canvas = backend.FigureCanvasLumenPlot(figure, mode="strict")
+            with unittest.mock.patch.object(
+                canvas, "_call_native", side_effect=capture_spec
+            ):
+                result = canvas.render_png(dpi=EFFECTIVE_DPI)
+        self.assertEqual(result.diagnostics, ())
+        commands = captured["commands"]
+        self.assertIsInstance(commands, list)
+        return commands
+
+    def test_strict_spec_carries_single_title_blit_and_no_tick_blits(self):
+        """One loc-title blit queues after the polygon fill; no ticks."""
+
+        textpath = importlib.import_module("lumenplot_mpl.textpath")
+        support = importlib.import_module("lumenplot_mpl.backend_support")
+        real_mask = textpath._label_coverage_mask
+
+        for loc in ("left", "right"):
+            with self.subTest(loc=loc):
+                calls: list = []
+
+                def recording_mask(*args, **kwargs):
+                    result = real_mask(*args, **kwargs)
+                    calls.append((args, kwargs, result))
+                    return result
+
+                with unittest.mock.patch.object(
+                    textpath, "_label_coverage_mask", recording_mask
+                ):
+                    commands = self._capture_spec(loc)
+                text = LOC_TITLES[loc]
+                ticks = [
+                    c
+                    for c in commands
+                    if c.get("decoration") == "tick_label"
+                ]
+                titles = [
+                    c for c in commands if c.get("decoration") == "title"
+                ]
+                # Title-only: no tick blits, exactly one title blit.
+                self.assertEqual(ticks, [])
+                self.assertEqual(len(titles), 1)
+                # Exactly one coverage-helper call carrying the loc title.
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][0][0], text)
+                with fixture_rc_context():
+                    _figure, axes = build_loc_fixture_figure(loc)
+                    title_label = (
+                        axes._left_title
+                        if loc == "left"
+                        else axes._right_title
+                    )
+                title_args, title_kwargs, title_outcome = calls[0]
+                self.assertEqual(title_args[0], text)
+                self.assertEqual(title_args[3], 100.0)
+                self.assertEqual(
+                    title_args[4], float(title_label.get_rotation())
+                )
+                for anchor in (title_args[1], title_args[2]):
+                    self.assertTrue(anchor == anchor)
+                    self.assertLess(abs(float(anchor)), 1e9)
+                self.assertEqual(
+                    title_kwargs["font_size_pt"],
+                    float(title_label.get_fontsize()),
+                )
+                self.assertEqual(title_kwargs["dpi"], EFFECTIVE_DPI)
+                title_prop = title_label.get_fontproperties()
+                self.assertEqual(
+                    tuple(title_kwargs["prop"].get_family()),
+                    tuple(title_prop.get_family()),
+                )
+                self.assertEqual(
+                    title_kwargs["prop"].get_style(), title_prop.get_style()
+                )
+                self.assertEqual(
+                    title_kwargs["prop"].get_weight(),
+                    title_prop.get_weight(),
+                )
+                self.assertEqual(
+                    title_kwargs["prop"].get_size_in_points(),
+                    float(title_label.get_fontsize()),
+                )
+                left_col, top_row, mask_w, mask_h, mask = title_outcome
+                title_style = support._rgba8(
+                    title_label.get_color(), title_label.get_alpha()
+                )
+                title_command = titles[0]
+                # Representation pin: coverage-blit image command, never
+                # an outline path and never outline keys on an image
+                # command.
+                self.assertEqual(title_command["kind"], "image")
+                self.assertEqual(title_command["decoration"], "title")
+                for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                    self.assertNotIn(absent, title_command)
+                self.assertEqual(title_command["x"], float(left_col))
+                self.assertEqual(
+                    title_command["y"], float(100.0 - (top_row + mask_h))
+                )
+                self.assertEqual(title_command["width"], mask_w)
+                self.assertEqual(title_command["height"], mask_h)
+                self.assertEqual(
+                    title_command["clip_rect"], [0.0, 0.0, 200.0, 100.0]
+                )
+                self.assertGreater(mask_w, 0)
+                self.assertGreater(mask_h, 0)
+                self.assertTrue(any(mask))
+                # Wire pin: every blit pixel carries the label color with
+                # the helper coverage folded into alpha, per the adapter.
+                raw_rgba = bytes(title_command["rgba"])
+                self.assertEqual(len(raw_rgba), 4 * mask_w * mask_h)
+                expected_rgba = bytearray(4 * mask_w * mask_h)
+                for index, cover in enumerate(mask):
+                    expected_rgba[4 * index] = title_style[0]
+                    expected_rgba[4 * index + 1] = title_style[1]
+                    expected_rgba[4 * index + 2] = title_style[2]
+                    expected_rgba[4 * index + 3] = (
+                        textpath._agg_multiply_byte(
+                            title_style[3], int(cover)
+                        )
+                    )
+                self.assertEqual(raw_rgba, bytes(expected_rgba))
+                # Draw-order pin: the title blit queues after the
+                # polygon fill content command.
+                fills = [
+                    c
+                    for c in commands
+                    if c.get("kind") == "path"
+                    and c.get("fill_rgba") == [255, 0, 0, 255]
+                ]
+                self.assertEqual(len(fills), 1)
+                self.assertLess(
+                    commands.index(fills[0]), commands.index(title_command)
+                )

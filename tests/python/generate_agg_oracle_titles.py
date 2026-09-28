@@ -22,6 +22,14 @@ Run from the repository root with::
 
 Use ``--check`` in a test or verification job to prove the committed PNG and
 mask are byte-stable for the pinned Matplotlib cell.
+
+The loc-title slice adds two title-only fixtures (one ``left`` title, one
+``right`` title, each the only text in its frame: no tick labels, no
+visible spines, one axis-aligned polygon as the required strict content
+artist). They avoid spine/tick fringe coupling by construction and carry
+no strict native pixel gate (no G3 parity class). Generate and check
+them with ``--loc left`` / ``--loc right``; the default ``--loc center``
+reproduces the exact pre-existing behavior byte-for-byte.
 """
 
 from __future__ import annotations
@@ -56,6 +64,21 @@ FIXTURE_DIR = Path(__file__).with_name("fixtures") / "agg_oracle"
 MANIFEST_PATH = FIXTURE_DIR / "title_manifest.json"
 REFERENCE_PNG_PATH = FIXTURE_DIR / "title_reference.png"
 MASK_PATH = FIXTURE_DIR / "title_mask.json"
+
+# Loc-title slice: one title-only fixture per non-center loc. Each frame
+# carries exactly one title as its only text (no tick labels, no visible
+# spines); the polygon stays as the required strict content artist.
+LOC_TITLES = {"left": "ltitle", "right": "rtitle"}
+LOC_MANIFEST_PATHS = {
+    loc: FIXTURE_DIR / f"title_loc_{loc}_manifest.json" for loc in LOC_TITLES
+}
+LOC_REFERENCE_PNG_PATHS = {
+    loc: FIXTURE_DIR / f"title_loc_{loc}_reference.png" for loc in LOC_TITLES
+}
+LOC_MASK_PATHS = {
+    loc: FIXTURE_DIR / f"title_loc_{loc}_mask.json" for loc in LOC_TITLES
+}
+LOC_SPINE_VISIBILITY = {"bottom": False, "top": False, "left": False, "right": False}
 
 ORACLE_MATPLOTLIB_VERSION = "3.11.1"
 ORACLE_API_VERSION = "1.1"
@@ -169,6 +192,41 @@ def build_fixture_figure() -> tuple[Figure, Any]:
     axes.set_yticks(list(YTICKS))
     axes.set_yticklabels(list(YTICKLABELS))
     axes.set_title(TITLE)
+    return figure, axes
+
+
+def build_loc_fixture_figure(loc: str = "left") -> tuple[Figure, Any]:
+    """Build the exact fixed title-only Figure/input for one loc."""
+
+    if loc not in LOC_TITLES:
+        raise ValueError(f"loc fixture requires one of {sorted(LOC_TITLES)}")
+    text = LOC_TITLES[loc]
+    figure = Figure(
+        figsize=FIGSIZE_INCHES,
+        dpi=EFFECTIVE_DPI,
+        facecolor="white",
+        edgecolor="white",
+    )
+    axes = figure.add_axes(AXES_RECT)
+    axes.set_facecolor("none")
+    axes.add_patch(
+        Polygon(
+            list(POLYGON_VERTICES),
+            facecolor=POLYGON_STYLE["facecolor"],
+            edgecolor=POLYGON_STYLE["edgecolor"],
+            linewidth=POLYGON_STYLE["linewidth"],
+            antialiased=POLYGON_STYLE["antialiased"],
+        )
+    )
+    axes.set_xlim(*XLIM)
+    axes.set_ylim(*YLIM)
+    # Title-only: no ticks (hence no tick labels or strokes) and no
+    # visible spines, so the loc title is the only text ink in the frame.
+    axes.set_xticks([])
+    axes.set_yticks([])
+    for spine in axes.spines.values():
+        spine.set_visible(False)
+    axes.set_title(text, loc=loc)
     return figure, axes
 
 
@@ -325,6 +383,30 @@ def render_reference() -> tuple[bytes, np.ndarray, dict[str, Any], tuple[int, in
     return reference_png, mask, topology, dimensions
 
 
+def render_loc_reference(
+    loc: str = "left",
+) -> tuple[bytes, np.ndarray, dict[str, Any], tuple[int, int]]:
+    """Render the fixed title-only input for one loc with FigureCanvasAgg."""
+
+    if loc not in LOC_TITLES:
+        raise ValueError(f"loc fixture requires one of {sorted(LOC_TITLES)}")
+    with fixture_rc_context():
+        figure, axes = build_loc_fixture_figure(loc)
+        canvas = FigureCanvasAgg(figure)
+        buffer = io.BytesIO()
+        # Direct FigureCanvasAgg.print_png is the pinned oracle operation.
+        canvas.print_png(buffer, metadata={})
+        reference_png = buffer.getvalue()
+        decoded = decode_png_rgba8(reference_png)
+        topology = public_axis_topology(axes)
+        mask = _reference_mask(decoded.rgba, figure)
+        width_px, height_px = (
+            int(value) for value in canvas.get_width_height()
+        )
+        dimensions = (width_px, height_px)
+    return reference_png, mask, topology, dimensions
+
+
 def _manifest(
     *,
     reference_digest: str,
@@ -436,6 +518,124 @@ def _manifest(
     }
 
 
+def _loc_manifest(
+    loc: str,
+    *,
+    reference_digest: str,
+    mask_digest: str,
+    font_digest: str,
+    topology: dict[str, Any],
+    dimensions: tuple[int, int],
+) -> dict[str, Any]:
+    if loc not in LOC_TITLES:
+        raise ValueError(f"loc fixture requires one of {sorted(LOC_TITLES)}")
+    width, height = dimensions
+    font_identity, _ = _font_identity()
+    text = LOC_TITLES[loc]
+    titles = {"center": "", "left": "", "right": ""}
+    titles[loc] = text
+    return {
+        "schema_version": "agg-oracle-manifest-v1",
+        "fixture_id": f"{loc}-title-only",
+        "oracle": {
+            "backend": "FigureCanvasAgg",
+            "matplotlib_version": ORACLE_MATPLOTLIB_VERSION,
+            "api_version": ORACLE_API_VERSION,
+            "canvas_construction": (
+                "matplotlib.backends.backend_agg.FigureCanvasAgg(figure)"
+            ),
+            "render_call": "canvas.print_png(buffer, metadata={})",
+        },
+        "python_version": PYTHON_VERSION_RANGE,
+        "figure": {
+            "construction": (
+                "matplotlib.figure.Figure(figsize=(2.0, 1.0), dpi=100.0, "
+                "facecolor='white', edgecolor='white')"
+            ),
+            "options": {
+                "figsize_inches": list(FIGSIZE_INCHES),
+                "dpi": EFFECTIVE_DPI,
+                "facecolor": "white",
+                "edgecolor": "white",
+                "axes_construction": "figure.add_axes((0.22, 0.25, 0.66, 0.45))",
+                "axes_rect": list(AXES_RECT),
+                "axes_facecolor": "none",
+                "xlim": list(XLIM),
+                "ylim": list(YLIM),
+                "xticks": [],
+                "xticklabels": [],
+                "yticks": [],
+                "yticklabels": [],
+                "title": text,
+                "title_loc": loc,
+                "polygon_vertices": [list(vertex) for vertex in POLYGON_VERTICES],
+                "polygon_style": dict(POLYGON_STYLE),
+                "spine_style": {
+                    "edgecolor": SPINE_STYLE["edgecolor"],
+                    "linewidth": SPINE_STYLE["linewidth"],
+                    "visible": dict(LOC_SPINE_VISIBILITY),
+                },
+                "savefig_format": "png",
+                "print_png_metadata": {},
+            },
+        },
+        "effective_dpi": EFFECTIVE_DPI,
+        "dimensions": {"width": width, "height": height},
+        "orientation": "top-to-bottom",
+        "channels": "RGBA8",
+        "rcparams": RC_PARAMS,
+        "font": font_identity,
+        "font_bytes_sha256": font_digest,
+        "artist_class": "matplotlib.text.Text",
+        "secondary_classes": [
+            "matplotlib.patches.Polygon",
+        ],
+        "primitive": {
+            "class": "matplotlib.text.Text",
+            "ticklabels": {
+                "xticks": [],
+                "xticklabels": [],
+                "yticks": [],
+                "yticklabels": [],
+            },
+            "title": titles,
+            "spines": {
+                "edgecolor": SPINE_STYLE["edgecolor"],
+                "linewidth": SPINE_STYLE["linewidth"],
+                "visible": dict(LOC_SPINE_VISIBILITY),
+            },
+            "polygon_style": dict(POLYGON_STYLE),
+        },
+        "input_data": {
+            "xticklocs": [],
+            "xticklabels": [],
+            "yticklocs": [],
+            "yticklabels": [],
+            "title": text,
+            "title_loc": loc,
+        },
+        "topology": topology,
+        "mask_generation": (
+            "reference-only: figure facecolor plus resolved polygon fill and "
+            "title glyph ink; candidate/native pixels are not observed"
+        ),
+        "reference_png_file": LOC_REFERENCE_PNG_PATHS[loc].name,
+        "reference_png_sha256": reference_digest,
+        "mask_file": LOC_MASK_PATHS[loc].name,
+        "mask_sha256": mask_digest,
+        "pixel_classes": PIXEL_CLASSES,
+        "contract": {
+            "orientation": "top-to-bottom",
+            "channels": "RGBA8",
+            "background": "byte-equal",
+            "fully-covered": "byte-equal",
+            "fringe_max_channel_delta": 1,
+            "fringe_mismatch_rate_denominator": "total-pixels",
+            "fringe_mismatch_rate_max": 0.001,
+        },
+    }
+
+
 def _json_bytes(payload: Any) -> bytes:
     return (json.dumps(payload, indent=2, sort_keys=False) + "\n").encode("utf-8")
 
@@ -518,6 +718,63 @@ def check_fixture() -> dict[str, Any]:
     }
 
 
+def write_loc_fixture(loc: str = "left") -> dict[str, Any]:
+    """Generate the loc PNG/mask/manifest files and validate digests."""
+
+    if loc not in LOC_TITLES:
+        raise ValueError(f"loc fixture requires one of {sorted(LOC_TITLES)}")
+    reference_png, mask, topology, dimensions = render_loc_reference(loc)
+    font_identity, font_digest = _font_identity()
+    del font_identity
+    mask_bytes = _mask_bytes(mask)
+    reference_digest = hashlib.sha256(reference_png).hexdigest()
+    mask_digest = hashlib.sha256(mask_bytes).hexdigest()
+    manifest = _loc_manifest(
+        loc,
+        reference_digest=reference_digest,
+        mask_digest=mask_digest,
+        font_digest=font_digest,
+        topology=topology,
+        dimensions=dimensions,
+    )
+    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    LOC_REFERENCE_PNG_PATHS[loc].write_bytes(reference_png)
+    LOC_MASK_PATHS[loc].write_bytes(mask_bytes)
+    LOC_MANIFEST_PATHS[loc].write_bytes(_json_bytes(manifest))
+    # The same loader used by the focused tests verifies image/mask dimensions
+    # and both committed SHA-256 values after generation.
+    load_reference_fixture(LOC_MANIFEST_PATHS[loc])
+    return manifest
+
+
+def check_loc_fixture(loc: str = "left") -> dict[str, Any]:
+    """Regenerate a loc fixture in memory; require exact committed bytes."""
+
+    if loc not in LOC_TITLES:
+        raise ValueError(f"loc fixture requires one of {sorted(LOC_TITLES)}")
+    fixture = load_reference_fixture(LOC_MANIFEST_PATHS[loc])
+    reference_png, mask, topology, dimensions = render_loc_reference(loc)
+    if reference_png != fixture.reference_png:
+        raise AssertionError("committed Agg reference differs from regeneration")
+    if not np.array_equal(mask, fixture.mask.labels):
+        raise AssertionError("committed Agg mask differs from regeneration")
+    if dimensions != (
+        int(fixture.manifest["dimensions"]["width"]),
+        int(fixture.manifest["dimensions"]["height"]),
+    ):
+        raise AssertionError("committed dimensions differ from regeneration")
+    if topology != fixture.manifest["topology"]:
+        raise AssertionError("committed topology differs from regeneration")
+    return {
+        "reference_png_sha256": hashlib.sha256(reference_png).hexdigest(),
+        "mask_sha256": hashlib.sha256(
+            LOC_MASK_PATHS[loc].read_bytes()
+        ).hexdigest(),
+        "dimensions": {"width": dimensions[0], "height": dimensions[1]},
+        "topology": topology,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -525,8 +782,19 @@ def main() -> int:
         action="store_true",
         help="regenerate in memory and compare exact committed bytes",
     )
+    parser.add_argument(
+        "--loc",
+        choices=("center", "left", "right"),
+        default="center",
+        help="which title fixture to write or check (default: center)",
+    )
     args = parser.parse_args()
-    result = check_fixture() if args.check else write_fixture()
+    if args.loc == "center":
+        result = check_fixture() if args.check else write_fixture()
+    elif args.check:
+        result = check_loc_fixture(args.loc)
+    else:
+        result = write_loc_fixture(args.loc)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
