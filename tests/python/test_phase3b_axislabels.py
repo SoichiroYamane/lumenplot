@@ -3,12 +3,13 @@
 Covers the four per-class mechanics for the visible non-empty
 ``xlabel``/``ylabel`` pair rendered natively as one kind:image
 coverage-blit command per label (axis-label slice: ADR 0015
-section 4b route; xlabel/ylabel eligible, titles refused):
+section 4b route; xlabel/ylabel eligible; center/left/right titles
+eligible since the loc-title slice, pinned in test_phase3b_titles.py):
 
 - M1 whitelist: a default decorated axes with visible xlabel/ylabel is
   strict-eligible; the ``_check_axis_label_static`` surface (shared
   ``_check_tick_label_static`` contract plus hyperlink refusal) keeps
-  refusing titles (center/left/right), offset text, multi-line labels,
+  refusing offset text, multi-line labels,
   leading/trailing whitespace, math/TeX text, path effects,
   non-positive font size, sketch, snap, custom clipping, and
   hyperlinks.
@@ -148,22 +149,22 @@ class TestAxisLabelWhitelist(unittest.TestCase):
         self.assertEqual(result.diagnostics, ())
 
     def test_center_title_is_strict_eligible(self):
-        # B-2a (R3) Q1-remainder ruling: the visible non-empty center
-        # title is eligible; left/right titles stay refused below.
+        # Loc-title slice: the visible non-empty center/left/right titles
+        # are each eligible through the shared T-lane static surface.
         fig, ax = _labeled_figure()
         ax.set_title("hello")
         result = _strict_render(fig)
         self.assertEqual(result.diagnostics, ())
         self.assertEqual(ax.get_title("center"), "hello")
 
-    def test_left_and_right_titles_refused(self):
-        for loc in ("left", "right"):
+    def test_left_and_right_titles_are_strict_eligible(self):
+        for loc, text in (("left", "ltitle"), ("right", "rtitle")):
             with self.subTest(loc=loc):
                 fig, ax = _labeled_figure()
-                ax.set_title("hello", loc=loc)
-                backend = _load_backend()
-                with self.assertRaises(backend.LumenPlotUnsupportedError):
-                    _strict_render(fig)
+                ax.set_title(text, loc=loc)
+                result = _strict_render(fig)
+                self.assertEqual(result.diagnostics, ())
+                self.assertEqual(ax.get_title(loc), text)
 
     def test_offset_text_refused(self):
         # Natural offset: large limits with the default scalar formatter
@@ -291,7 +292,7 @@ class TestAxisLabelWhitelist(unittest.TestCase):
     def test_refusal_writes_nothing_to_native_seam(self):
         """M4: strict mode fails before writing (no partial publication)."""
         fig, ax = _labeled_figure()
-        ax.set_title("bad title", loc="left")
+        ax.set_title("bad\ntitle")
         backend = _load_backend()
         with self.assertRaises(backend.LumenPlotUnsupportedError):
             _strict_render(fig)
@@ -300,7 +301,7 @@ class TestAxisLabelWhitelist(unittest.TestCase):
     def test_hybrid_refused_label_falls_back_with_one_diagnostic(self):
         """M4: hybrid renders refused labels once through whole-frame Agg."""
         fig, ax = _labeled_figure()
-        ax.set_title("bad title", loc="left")
+        ax.set_title("bad\ntitle")
         backend = _load_backend()
         canvas = backend.FigureCanvasLumenPlot(fig, mode="hybrid")
         result = canvas.render_png()
