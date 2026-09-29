@@ -342,3 +342,87 @@ class _FillMixin:
             # for both face and edge; fill-only commands remain unsnapped.
             command["rectilinear_snap"] = True
         return command
+
+    def _check_patch_static(self, patch: matplotlib.patches.Patch) -> None:
+        """Static style checks for one whitelisted ``Patch`` (LP-FUNC-032).
+
+        The fill style contract mirrors Agg's own resolution: the artist's
+        resolved face/edge colors and alpha are authoritative, hatching
+        and path effects are outside the slice, and a negative width is
+        refused rather than clamped.
+        """
+        name = type(patch).__name__
+        if patch.get_hatch() is not None:
+            self.unsupported("hatching is unsupported in strict mode", name)
+        if patch.get_path_effects():
+            self.unsupported("path effects are unsupported", name)
+        if patch.get_sketch_params() is not None:
+            self.unsupported("sketch parameters are unsupported", name)
+        if float(patch.get_linewidth()) < 0:
+            self.unsupported("negative line width", name)
+        if not bool(getattr(patch, "get_fill", bool)()):
+            self.unsupported(
+                "unfilled patches are unsupported; use a line instead",
+                name,
+            )
+        if str(patch.get_joinstyle()) not in ("miter", "round", "bevel"):
+            # Defensive: every Matplotlib joinstyle maps to a seam selector;
+            # an unknown value means the collector contract drifted.
+            self.unsupported(
+                f"joinstyle {patch.get_joinstyle()!r} is unsupported", name
+            )
+
+    def _check_rectangle_static(
+        self, patch: matplotlib.patches.Rectangle
+    ) -> None:
+        """Static style checks for one bar ``Rectangle`` (LP-FUNC-033).
+
+        Bars are axis-aligned filled rectangles anchored to a declared
+        baseline: the LP-FUNC-032 patch surface applies, plus an explicit
+        refusal of rotated rectangles (``angle != 0``) — a tilted bar is
+        outside the declared-baseline contract and must never be silently
+        rendered as its axis-aligned bounding box.
+        """
+        self._check_patch_static(patch)
+        name = type(patch).__name__
+        if float(patch.get_angle()) != 0.0:
+            self.unsupported(
+                f"rotated rectangles (angle {float(patch.get_angle())!r}) "
+                "are unsupported; bars must be axis-aligned",
+                name,
+            )
+
+    def _check_fill_collection_static(
+        self, collection: matplotlib.collections.Collection
+    ) -> None:
+        """Static style checks for one whitelisted poly-collection.
+
+        Only the LP-FUNC-032 ``FillBetweenPolyCollection`` is eligible;
+        any other collection class reaching here is an internal fault of
+        the whitelist dispatch and records an explicit reason.
+        """
+        name = type(collection).__name__
+        if not isinstance(
+            collection, matplotlib.collections.FillBetweenPolyCollection
+        ):
+            self.unsupported(
+                f"collection {name} is outside the supported whitelist",
+                name,
+            )
+            return
+        if collection.get_hatch() is not None:
+            self.unsupported("hatching is unsupported in strict mode", name)
+        if collection.get_path_effects():
+            self.unsupported("path effects are unsupported", name)
+        if collection.get_sketch_params() is not None:
+            self.unsupported("sketch parameters are unsupported", name)
+        widths = collection.get_linewidth()
+        import numpy as _np
+
+        width_list = _np.atleast_1d(
+            _np.asarray(widths, dtype=float).ravel()
+        )
+        for width in width_list:
+            if float(width) < 0:
+                self.unsupported("negative line width", name)
+                return
