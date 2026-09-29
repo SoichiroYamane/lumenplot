@@ -1,23 +1,24 @@
-"""B-2a center-title contract tests (LP-MPL-020, R3 subset).
+"""B-2a center/loc-title contract tests (LP-MPL-020, R3 + loc slice).
 
-Covers the four per-class mechanics for the visible non-empty center
-``title`` rendered natively as one kind:image coverage-blit command
-(title slice: ADR 0015 section 4b route; center title eligible,
-left/right titles refused):
+Covers the four per-class mechanics for the visible non-empty
+center/left/right ``title`` each rendered natively as one kind:image
+coverage-blit command (title slice: ADR 0015 section 4b route; center
+title eligible; loc-title slice: left/right titles eligible through
+the same ``_check_title_static`` surface):
 
-- M1 whitelist: a default decorated axes with a visible center title is
+- M1 whitelist: a default decorated axes with visible titles is
   strict-eligible; the ``_check_title_static`` surface (shared
   ``_check_tick_label_static`` contract plus hyperlink refusal) keeps
-  refusing left/right titles, legend titles, offset text, multi-line
+  refusing legend titles, offset text, multi-line
   titles, leading/trailing whitespace, math/TeX text, path effects,
   non-positive font size, sketch, snap, custom clipping, and
   hyperlinks.
 - M2 collector trace: the stage-two ``draw_text`` queue observes the
-  title after its axes' tick and axis labels (legend entries, when
-  present, queue after the title) and the emitted spec carries one
-  kind:image command for the title in that order with the ``title``
-  decoration marker (never outline keys); empty or invisible titles
-  draw nothing.
+  titles after their axes' tick and axis labels in center, left, right
+  order (legend entries, when present, queue after the titles) and the
+  emitted spec carries one kind:image command per title in that order
+  with the ``title`` decoration marker (never outline keys); empty or
+  invisible titles draw nothing.
 - M3 style contract: the title's own public ``FontProperties``
   (family/style/weight) and resolved size flow into the coverage mask
   through ``lumenplot_mpl.textpath._label_coverage_mask`` at the output
@@ -118,6 +119,14 @@ def _titled_figure():
     return fig, ax
 
 
+def _loc_titled_figure(loc, text):
+    """Build a strict-eligible figure with a visible loc title only."""
+    fig, ax = _titled_figure()
+    ax.set_title("")
+    ax.set_title(text, loc=loc)
+    return fig, ax
+
+
 def _strict_render(fig):
     backend = _load_backend()
     return backend.FigureCanvasLumenPlot(fig, mode="strict").render_png()
@@ -149,14 +158,27 @@ class TestTitleWhitelist(unittest.TestCase):
         result = _strict_render(fig)
         self.assertEqual(result.diagnostics, ())
 
-    def test_left_and_right_titles_refused(self):
+    def test_left_and_right_titles_are_strict_eligible(self):
+        for loc, text in (("left", "ltitle"), ("right", "rtitle")):
+            with self.subTest(loc=loc):
+                fig, ax = _loc_titled_figure(loc, text)
+                result = _strict_render(fig)
+                self.assertEqual(result.diagnostics, ())
+                self.assertEqual(ax.get_title(loc), text)
+                self.assertEqual(ax.get_title("center"), "")
+
+    def test_empty_and_invisible_loc_titles_stay_eligible(self):
         for loc in ("left", "right"):
             with self.subTest(loc=loc):
-                fig, ax = _titled_figure()
-                ax.set_title("hello", loc=loc)
-                backend = _load_backend()
-                with self.assertRaises(backend.LumenPlotUnsupportedError):
-                    _strict_render(fig)
+                fig, ax = _loc_titled_figure(loc, "ltitle")
+                ax.set_title("", loc=loc)
+                result = _strict_render(fig)
+                self.assertEqual(result.diagnostics, ())
+                fig, ax = _loc_titled_figure(loc, "ltitle")
+                title = ax._left_title if loc == "left" else ax._right_title
+                title.set_visible(False)
+                result = _strict_render(fig)
+                self.assertEqual(result.diagnostics, ())
 
     def test_legend_title_refused(self):
         # Legend titles are P3-owned (t_c9a0f98c still pending): a legend
@@ -304,7 +326,7 @@ class TestTitleWhitelist(unittest.TestCase):
     def test_refusal_writes_nothing_to_native_seam(self):
         """M4: strict mode fails before writing (no partial publication)."""
         fig, ax = _titled_figure()
-        ax.set_title("bad title", loc="left")
+        ax.set_title("bad\ntitle")
         backend = _load_backend()
         with self.assertRaises(backend.LumenPlotUnsupportedError):
             _strict_render(fig)
@@ -313,7 +335,7 @@ class TestTitleWhitelist(unittest.TestCase):
     def test_hybrid_refused_title_falls_back_with_one_diagnostic(self):
         """M4: hybrid renders refused titles once through whole-frame Agg."""
         fig, ax = _titled_figure()
-        ax.set_title("bad title", loc="left")
+        ax.set_title("bad\ntitle")
         backend = _load_backend()
         canvas = backend.FigureCanvasLumenPlot(fig, mode="hybrid")
         result = canvas.render_png()
@@ -367,6 +389,36 @@ class TestTitleDrawOrder(unittest.TestCase):
                 ("yb", "tick_label"),
                 ("ylab", "axis_label"),
                 ("ctitle", "title"),
+            ],
+        )
+
+    def test_loc_titles_queue_after_center_in_draw_order(self):
+        fig, ax = _titled_figure()
+        ax.set_title("ltitle", loc="left")
+        ax.set_title("rtitle", loc="right")
+        self.assertEqual(
+            self._collect_texts(fig),
+            [
+                ("xa", "tick_label"),
+                ("xb", "tick_label"),
+                ("ya", "tick_label"),
+                ("yb", "tick_label"),
+                ("ctitle", "title"),
+                ("ltitle", "title"),
+                ("rtitle", "title"),
+            ],
+        )
+
+    def test_loc_title_without_center_queues_after_ticks(self):
+        fig, ax = _loc_titled_figure("left", "ltitle")
+        self.assertEqual(
+            self._collect_texts(fig),
+            [
+                ("xa", "tick_label"),
+                ("xb", "tick_label"),
+                ("ya", "tick_label"),
+                ("yb", "tick_label"),
+                ("ltitle", "title"),
             ],
         )
 
@@ -430,6 +482,32 @@ class TestTitleDrawOrder(unittest.TestCase):
         title_index = commands.index(titles[0])
         for tick in ticks:
             self.assertLess(commands.index(tick), title_index)
+
+    def test_spec_carries_one_blit_per_loc_title_in_order(self):
+        patcher = _install_stub_native()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        fig, ax = _titled_figure()
+        ax.set_title("ltitle", loc="left")
+        ax.set_title("rtitle", loc="right")
+        result = _strict_render(fig)
+        self.assertEqual(result.diagnostics, ())
+        commands = _StubNativeModule.last_spec["commands"]
+        titles = [c for c in commands if c.get("decoration") == "title"]
+        self.assertEqual(len(titles), 3)
+        # Representation pin: coverage-blit image commands, never an
+        # outline path and never outline keys on an image command.
+        for title in titles:
+            self.assertEqual(title["kind"], "image")
+            for absent in ("codes", "vertices", "fill_rgba", "stroke_rgba"):
+                self.assertNotIn(absent, title)
+        # Draw-order pin: center, then left, then right, after ticks.
+        ticks = [c for c in commands if c.get("decoration") == "tick_label"]
+        self.assertEqual(len(ticks), 4)
+        title_indices = [commands.index(title) for title in titles]
+        self.assertEqual(title_indices, sorted(title_indices))
+        for tick in ticks:
+            self.assertLess(commands.index(tick), title_indices[0])
 
     def test_spec_title_blit_after_axis_label_commands(self):
         patcher = _install_stub_native()
@@ -507,6 +585,22 @@ class TestTitleStyleContract(unittest.TestCase):
         ]
         self.assertEqual(len(titles), 1)
         self.assertEqual(titles[0]["kind"], "image")
+
+    def test_bold_loc_titles_are_eligible(self):
+        for loc in ("left", "right"):
+            with self.subTest(loc=loc):
+                fig, ax = _loc_titled_figure(loc, "ltitle")
+                title = ax._left_title if loc == "left" else ax._right_title
+                title.set_weight("bold")
+                result = _strict_render(fig)
+                self.assertEqual(result.diagnostics, ())
+                titles = [
+                    c
+                    for c in _StubNativeModule.last_spec["commands"]
+                    if c.get("decoration") == "title"
+                ]
+                self.assertEqual(len(titles), 1)
+                self.assertEqual(titles[0]["kind"], "image")
 
     def test_face_changes_coverage_mask(self):
         """The face must flow into the coverage mask (catches prop drift)."""

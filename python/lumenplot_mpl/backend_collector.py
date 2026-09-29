@@ -179,7 +179,9 @@ class _CollectorGrammarMixin:
         draws after its x-tick labels and before the y-axis ticks, and
         the y-axis ``ylabel`` draws after its y-tick labels. The B-2a
         (R3) center title draws after its axes' tick and axis labels as
-        a direct text child of the axes group (Matplotlib-provided
+        a direct text child of the axes group, and since the loc-title
+        slice the left title draws after the center title and the right
+        title draws after the left title (Matplotlib-provided
         anchors/positions only; no title layout math here). Only
         visible non-empty labels whose tick location lies inside
         ``Axis.get_view_interval()`` enter the queue: ``Tick.draw``
@@ -253,10 +255,11 @@ class _CollectorGrammarMixin:
                                 "family": tuple(axis_prop.get_family()),
                             }
                         )
-                # B-2a (R3): the center title draws after its axes' tick
-                # and axis labels (a direct text child of the axes group,
-                # carrying Matplotlib's own anchor/position). Only a
-                # visible non-empty title enters the queue: an empty or
+                # B-2a (R3) plus the loc-title slice: the center, left, and
+                # right titles draw after their axes' tick and axis labels
+                # in that order (each a direct text child of the axes
+                # group, carrying Matplotlib's own anchor/position). Only
+                # a visible non-empty title enters the queue: an empty or
                 # invisible title draws nothing.
                 center_title = ax.title
                 center_text = center_title.get_text()
@@ -272,6 +275,23 @@ class _CollectorGrammarMixin:
                             "weight": center_prop.get_weight(),
                             "style": center_prop.get_style(),
                             "family": tuple(center_prop.get_family()),
+                        }
+                    )
+                for loc_title in (ax._left_title, ax._right_title):
+                    loc_text = loc_title.get_text()
+                    if not loc_title.get_visible() or loc_text == "":
+                        continue
+                    loc_prop = loc_title.get_fontproperties()
+                    entries.append(
+                        {
+                            "kind": "title",
+                            "artist": loc_title,
+                            "text": str(loc_text),
+                            "size": float(loc_title.get_fontsize()),
+                            "angle": float(loc_title.get_rotation()),
+                            "weight": loc_prop.get_weight(),
+                            "style": loc_prop.get_style(),
+                            "family": tuple(loc_prop.get_family()),
                         }
                     )
             legend = ax.get_legend()
@@ -504,8 +524,9 @@ class _CollectorGrammarMixin:
         most one direct ``text`` group per axis carrying that axis'
         ``xlabel``/``ylabel`` draw_text; tick-label texts stay nested
         inside their ``xtick``/``ytick`` groups. An axes group carries,
-        since B-2a (R3), at most one direct ``text`` child carrying that
-        axes' center title draw_text. A legend contains an
+        since B-2a (R3) plus the loc-title slice, up to three direct
+        ``text`` children carrying that axes' center, left, and right
+        title draw_texts in that order. A legend contains an
         optional frame patch followed by line/text entry pairs. The axes
         body remains order-free under LP-FUNC-035 D2, but unknown groups,
         bare callbacks, missing graphics contexts, and unbalanced nesting
@@ -746,12 +767,13 @@ class _CollectorGrammarMixin:
                     if not consume_poly3d():
                         return False
                 elif child == "text":
-                    # B-2a (R3): the direct text child of an axes group
-                    # is that axes' center title draw_text (tick and
-                    # axis-label texts nest inside matplotlib.axis).
-                    # The draw-order cross-check already proved the text
-                    # matches the enumerated center title; the grammar
-                    # only proves the group shape.
+                    # B-2a (R3) plus the loc-title slice: each direct
+                    # text child of an axes group is one of that axes'
+                    # center, left, or right title draw_texts in that
+                    # order (tick and axis-label texts nest inside
+                    # matplotlib.axis). The draw-order cross-check
+                    # already proved each text matches its enumerated
+                    # title; the grammar only proves the group shape.
                     if consume_leaf(
                         "text", "draw_text", ("draw_text_unexpected",)
                     ) is None:

@@ -1128,13 +1128,17 @@ class TestDecoratedAxesEligibility(unittest.TestCase):
         self.assertNotIn("spine", kinds)
         self.assertEqual(result.diagnostics, ())
 
-    def test_tick_label_text_is_still_unsupported(self):
-        """Non-center titles stay outside the strict slice: text support is
-        scoped to tick label, axis label, and center title glyphs (the
-        T-lane wire-up), so a left title must not silently disappear."""
+    def test_multiline_title_text_is_still_unsupported(self):
+        """Still-refused text raises instead of silently disappearing.
+
+        Text support is scoped to the T-lane whitelist (tick labels,
+        axis labels, and center/left/right titles since the loc-title
+        slice), so a multi-line title stays outside it and must raise
+        rather than vanish.
+        """
         def build(ax):
             self._plain_line(ax)
-            ax.set_title("hello", loc="left")
+            ax.set_title("bad\ntitle")
 
         with self.assertRaises(backend_mod.LumenPlotUnsupportedError):
             self._canvas_with(build).render_png()

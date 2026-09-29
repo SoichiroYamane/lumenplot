@@ -213,11 +213,12 @@ class _StaticEligibilityMixin:
         eligible as well: each label renders as explicit glyph path
         commands through the same ``_check_tick_label_static`` surface as
         tick labels. Since the B-2a (R3) extension the visible non-empty
-        center ``title`` is eligible as well through that same surface.
-        Everything else about the decoration surface (visible
-        minor tick content, non-solid grid styles, an opaque facecolor,
-        non-center titles, offset text, or child axes) records an explicit
-        unsupported reason.
+        center ``title`` is eligible as well through that same surface,
+        and since the loc-title slice the visible non-empty left/right
+        ``title`` pair is eligible through it too. Everything else about
+        the decoration surface (visible minor tick content, non-solid
+        grid styles, an opaque facecolor, offset text, or child axes)
+        records an explicit unsupported reason.
         """
         if isinstance(ax, Axes3D):
             if decorated:
@@ -243,21 +244,20 @@ class _StaticEligibilityMixin:
                 "facecolor='none' for strict mode",
                 "Axes",
             )
-        # B-2a (R3): left/right titles stay refused (an explicit loc is a
-        # broader placement contract, out of R3). The center title is
-        # eligible below through the shared T-lane static surface.
-        for loc in ("left", "right"):
-            if ax.get_title(loc) != "":
-                self.unsupported("titles are unsupported", "Text")
-        # B-2a (R3): the visible non-empty center title is eligible
-        # through the shared T-lane static surface (same whitespace,
-        # multi-line, math/TeX, path-effect, font-size, sketch, snap, and
-        # clip contract as tick labels, plus an explicit hyperlink
-        # refusal). Legend titles stay refused. Empty or invisible titles
-        # draw nothing, so they skip the check like empty tick labels.
+        # Loc-title slice: the visible non-empty center/left/right titles
+        # are each eligible through the shared T-lane static surface
+        # (same whitespace, multi-line, math/TeX, path-effect, font-size,
+        # sketch, snap, and clip contract as tick labels, plus an explicit
+        # hyperlink refusal). Legend titles stay refused. Empty or
+        # invisible titles draw nothing, so they skip the check like empty
+        # tick labels. Draw order is center, then left, then right (the
+        # order Matplotlib emits their direct text children).
         center_title = ax.title
         if center_title.get_visible() and center_title.get_text() != "":
             self._check_title_static(center_title)
+        for loc_title in (ax._left_title, ax._right_title):
+            if loc_title.get_visible() and loc_title.get_text() != "":
+                self._check_title_static(loc_title)
         # B-2a (R2): the visible non-empty xlabel/ylabel pair is eligible
         # through the shared T-lane static surface (same whitespace,
         # multi-line, math/TeX, path-effect, font-size, sketch, snap, and
@@ -412,9 +412,9 @@ class _StaticEligibilityMixin:
             self.unsupported("hyperlinks are unsupported", name)
 
     def _check_title_static(self, label: Any) -> None:
-        """Whitelist-check one visible non-empty center title (B-2a R3).
+        """Whitelist-check one visible non-empty axes title (center/left/right).
 
-        Whitelisted center titles ride kind:image coverage-blit
+        Whitelisted titles ride kind:image coverage-blit
         commands per the ADR 0015 section 4b PNG-only label-coverage
         amendment (per-label FT2Font raster at the output DPI into an
         alpha mask, same Matplotlib-provided anchor math, agg_srgb
