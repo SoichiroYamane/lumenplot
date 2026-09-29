@@ -8,6 +8,8 @@ wiring stay in ``backend_frame.py``.
 
 from __future__ import annotations
 
+import math
+
 import matplotlib.lines
 
 from lumenplot_mpl.backend_support import (
@@ -153,3 +155,53 @@ class _LineMixin:
             "antialias": True,
             "clip_rect": clip_rect,
         }
+
+    def _check_line2d_static(self, line: matplotlib.lines.Line2D) -> None:
+        name = type(line).__name__
+        if line.get_marker() != "None":
+            self.unsupported("markers are unsupported in strict mode", name)
+        # LP-FUNC-034: the step drawstyles are exact vertex-generation
+        # semantics, not approximations -- the line path is expanded to
+        # Matplotlib's own step polyline before projection, so eligibility
+        # extends only to this family. Every other non-default drawstyle
+        # (and any future value) is still refused explicitly.
+        if (
+            line.get_drawstyle() != "default"
+            and line.get_drawstyle() not in _STEP_DRASTYLES
+        ):
+            self.unsupported("non-default drawstyle is unsupported", name)
+        if line.is_dashed():
+            self.unsupported("dashed strokes are unsupported in strict mode", name)
+        width = float(line.get_linewidth())
+        if not math.isfinite(width) or width < 0.0:
+            self.unsupported("line width must be finite and non-negative", name)
+        if line.get_path_effects():
+            self.unsupported("path effects are unsupported", name)
+        if line.get_sketch_params() is not None:
+            self.unsupported("sketch parameters are unsupported", name)
+        if line.get_snap() is not None:
+            self.unsupported("explicit snap is unsupported", name)
+        if line.get_clip_path() is not None:
+            self.unsupported("custom clipping is unsupported", name)
+        if line.get_url() is not None:
+            self.unsupported("hyperlinks are unsupported", name)
+        # ADR-0015 §5: the native request supports exactly Butt cap and
+        # Miter join. Effective styles outside that set are rejected, not
+        # approximated; Matplotlib's defaults (projecting/round) must be
+        # overridden explicitly by strict-mode callers.
+        cap = str(line.get_solid_capstyle())
+        join = str(line.get_solid_joinstyle())
+        if cap != "butt":
+            self.unsupported(
+                f"solid cap style {cap!r} is unsupported; "
+                "strict mode requires 'butt'",
+                name,
+            )
+        if join != "miter":
+            self.unsupported(
+                f"solid join style {join!r} is unsupported; "
+                "strict mode requires 'miter'",
+                name,
+            )
+        if line.get_gid() is None:
+            return
