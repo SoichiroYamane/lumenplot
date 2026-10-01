@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 
 import matplotlib.lines
+from matplotlib.path import Path
 
 from lumenplot_mpl.backend_support import (
     _STEP_DRASTYLES,
@@ -205,3 +206,21 @@ class _LineMixin:
             )
         if line.get_gid() is None:
             return
+
+    def _check_line_call(self, call: dict, axes_position: int) -> None:
+        path = call["path"]
+        codes = path.codes
+        if codes is not None and len(codes):
+            code_values = {int(code) for code in codes}
+            allowed = {
+                int(Path.MOVETO),
+                int(Path.LINETO),
+                int(Path.CLOSEPOLY),
+                0,
+            }
+            if not code_values <= allowed:
+                self.unsupported("curved path segments are unsupported")
+        vertices = path.vertices
+        if len(vertices) < 2:
+            self.unsupported("degenerate single-vertex stroke")
+        self._check_stroke_common(call["gc"], axes_position)
