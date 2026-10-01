@@ -13,4 +13,4 @@ wgpu = { version = "=29.0.4", default-features = false, features = ["std", "wgsl
 
 [build-dependencies]
 naga = { version = "=29.0.4", default-features = false, features = ["wgsl-in"] }
-sha2 = { version = "=0.10.9", default-features = false }
+sha2 = { version = "=0.11.0", default-features = false }
