@@ -832,24 +832,6 @@ class _CollectorGrammarMixin:
         if gc.get_linewidth() != 0.0:
             self.unsupported("stroked figure background is unsupported")
 
-    def _check_line_call(self, call: dict, axes_position: int) -> None:
-        path = call["path"]
-        codes = path.codes
-        if codes is not None and len(codes):
-            code_values = {int(code) for code in codes}
-            allowed = {
-                int(Path.MOVETO),
-                int(Path.LINETO),
-                int(Path.CLOSEPOLY),
-                0,
-            }
-            if not code_values <= allowed:
-                self.unsupported("curved path segments are unsupported")
-        vertices = path.vertices
-        if len(vertices) < 2:
-            self.unsupported("degenerate single-vertex stroke")
-        self._check_stroke_common(call["gc"], axes_position)
-
     def _check_fill_call(self, call: dict, axes_position: int) -> None:
         """Collector-side checks for one fill draw_path (LP-FUNC-032).
 
