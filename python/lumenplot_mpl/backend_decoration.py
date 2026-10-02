@@ -193,3 +193,33 @@ class _DecorationMixin:
                 commands.append(command)
 
         return commands
+
+    def _decoration_flags(
+        self, events: list[tuple], axes_count: int
+    ) -> list[bool]:
+        """Return which Axes emitted a public decoration group.
+
+        The callback stream is the only public observation of the decoration
+        mode.  Keep the result aligned with ``Figure.get_axes()`` so the
+        geometry assembler can make the same decision without reading an
+        undocumented Axes attribute.
+        """
+        flags = [False] * axes_count
+        axes_index = -1
+        in_axes = False
+        for event in events:
+            kind = event[0]
+            tag = event[1] if len(event) > 1 else None
+            if kind == "open" and tag == "axes":
+                axes_index += 1
+                in_axes = axes_index < axes_count
+            elif kind == "close" and tag == "axes":
+                in_axes = False
+            elif (
+                in_axes
+                and axes_index < axes_count
+                and kind == "open"
+                and tag in ("matplotlib.axis", "axis3d", "pane3d", "grid3d")
+            ):
+                flags[axes_index] = True
+        return flags
