@@ -28,7 +28,7 @@ WGPU_LOCK_SHA256 = "58d77cc67bdd45814b214c3bbd5681a94775811226d186899608e44efce1
 # Repinned 2026-09-23 for PR230 M4-PRESENT-2: the lockfile gains only the
 # surface-wgpu rename edge of pinned wgpu 29.0.4 in lumenplot-window
 # (commander ruling ref t_25d6515f; no version or checksum change).
-WINIT_WGPU_LOCK_SHA256 = "6c26143f4f7a82e55f4ed16faf466a99e46d40375293b7bc94672f97bc85f794"
+WINIT_WGPU_LOCK_SHA256 = "5b7b3a7414a8bf22455eeceed96fbbe765887ce7f4bc003bab5769b8f17cc285"
 WGPU_PACKAGE_VERSION = "29.0.4"
 WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
 WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
@@ -58,8 +58,8 @@ WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
         },
     },
     "sha2": {
-        "version": "0.10.9",
-        "checksum": "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283",
+        "version": "0.11.0",
+        "checksum": "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4",
         "license": "MIT OR Apache-2.0",
         "dependencies": {"cfg-if", "cpufeatures", "digest"},
     },
