@@ -723,7 +723,7 @@ EXPECTED_EXPORT_EXTERNAL_DEPENDENCIES = {
         "features": ["std"],
     },
     "harfrust": {
-        "version": "=0.12.0",
+        "version": "=0.13.3",
     },
     "subsetter": {
         "version": "=0.2.6",

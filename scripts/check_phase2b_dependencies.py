@@ -28,7 +28,11 @@ WGPU_LOCK_SHA256 = "58d77cc67bdd45814b214c3bbd5681a94775811226d186899608e44efce1
 # Repinned 2026-09-23 for PR230 M4-PRESENT-2: the lockfile gains only the
 # surface-wgpu rename edge of pinned wgpu 29.0.4 in lumenplot-window
 # (commander ruling ref t_25d6515f; no version or checksum change).
-WINIT_WGPU_LOCK_SHA256 = "6c26143f4f7a82e55f4ed16faf466a99e46d40375293b7bc94672f97bc85f794"
+# Repinned Slice A (harfrust 0.13.3): the lockfile gains the direct harfrust
+# 0.13.3 + read-fonts 0.43.3 lineages (parley 0.11.1 keeps harfrust 0.12.0;
+# no other registry change). The non-winit base digest above is untouched:
+# that tree state is not produced on this lane, so its repin is deferred.
+WINIT_WGPU_LOCK_SHA256 = "ce16d31f5da8767dd24002d092e431efc7da7a33ee29ac158ad45bcaad42fb96"
 WGPU_PACKAGE_VERSION = "29.0.4"
 WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
 WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
@@ -396,13 +400,14 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         },
     },
     "harfrust": {
-        "version": "0.12.0",
-        "checksum": "c03d949a14aa089bbb282f7dd76a498a7f684428e4257202efc119ec010376f9",
+        "version": "0.13.3",
+        "checksum": "948d0741125ba89cd3e1c23e5642415b6ade7e1d29d67ba25fb925b533e989d6",
         "license": "MIT",
         "dependencies": {
             "bitflags",
             "bytemuck",
-            "read-fonts 0.41.0",
+            "once_cell",
+            "read-fonts 0.43.3",
             "smallvec"
         },
     },
@@ -570,7 +575,7 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         "license": "Apache-2.0 OR MIT",
         "dependencies": {
             "fontique",
-            "harfrust",
+            "harfrust 0.12.0",
             "hashbrown 0.17.1",
             "icu_normalizer",
             "icu_properties",
@@ -608,8 +613,8 @@ EXPECTED_REGISTRY: dict[str, dict[str, Any]] = {
         },
     },
     "read-fonts": {
-        "version": "0.41.0",
-        "checksum": "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709",
+        "version": "0.43.3",
+        "checksum": "005c8acf251756c478b0bf402885bfd88a1476020c4c7e6060edc1aa68da38ea",
         "license": "MIT OR Apache-2.0",
         "dependencies": {
             "bytemuck",
@@ -803,7 +808,8 @@ WINIT_LOCK_EDGE_OVERRIDES: dict[str, set[str]] = {
     "harfrust": {
         "bitflags 2.13.1",
         "bytemuck",
-        "read-fonts 0.41.0",
+        "once_cell",
+        "read-fonts 0.43.3",
         "smallvec",
     },
     "naga": {
@@ -860,7 +866,7 @@ WINIT_LOCK_EDGE_OVERRIDES: dict[str, set[str]] = {
 WINIT_WORKSPACE_EDGE_OVERRIDES: dict[str, set[str]] = {
     "lumenplot-export": {
         "fontique",
-        "harfrust",
+        "harfrust 0.13.3",
         "lumenplot-engine",
         "parley",
         "png",
