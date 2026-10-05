@@ -2934,7 +2934,7 @@ fn body_macro_is_below_root_scope() {
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
             source = path.read_text(encoding="utf-8")
-            marker = 'sha2 = { version = "=0.10.9", default-features = false }\n'
+            marker = 'sha2 = { version = "=0.11.0", default-features = false }\n'
             self.assertIn(marker, source)
             path.write_text(source.replace(marker, marker + 'serde = "1"\n', 1), encoding="utf-8")
 
