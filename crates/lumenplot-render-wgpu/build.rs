@@ -71,7 +71,10 @@ fn main() {
         panic!("WGSL manifest coordinate space is not the pinned Phase-B value");
     }
 
-    let actual = format!("{:x}", Sha256::digest(&source));
+    let actual = Sha256::digest(&source)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     if actual != expected {
         panic!("static WGSL artifact hash does not match its manifest");
     }

@@ -1420,7 +1420,6 @@ def check_metadata(metadata: dict[str, Any], errors: list[str]) -> None:
         "ash",
         "crc32fast",
         "crunchy",
-        "generic-array",
         "icu_locale_fallback_data",
         "icu_normalizer_data",
         "icu_properties_data",
