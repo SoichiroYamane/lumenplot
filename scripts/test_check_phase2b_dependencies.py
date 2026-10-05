@@ -95,7 +95,7 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
         def mutate(root: Path) -> None:
             path = root / "Cargo.lock"
             source = path.read_text(encoding="utf-8")
-            marker = 'checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"'
+            marker = 'checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"'
             self.assertIn(marker, source)
             path.write_text(
                 source.replace(

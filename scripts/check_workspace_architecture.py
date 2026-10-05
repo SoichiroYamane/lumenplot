@@ -118,7 +118,7 @@ WGPU_BUILD_EXTERNAL_DEPENDENCIES = {
         "features": ["wgsl-in"],
     },
     "sha2": {
-        "version": "=0.10.9",
+        "version": "=0.11.0",
         "default-features": False,
     },
 }
