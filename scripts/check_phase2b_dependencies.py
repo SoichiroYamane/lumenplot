@@ -28,7 +28,7 @@ WGPU_LOCK_SHA256 = "58d77cc67bdd45814b214c3bbd5681a94775811226d186899608e44efce1
 # Repinned 2026-09-23 for PR230 M4-PRESENT-2: the lockfile gains only the
 # surface-wgpu rename edge of pinned wgpu 29.0.4 in lumenplot-window
 # (commander ruling ref t_25d6515f; no version or checksum change).
-WINIT_WGPU_LOCK_SHA256 = "8b713431a13ba434a5fd9574a91ea8237f2f8fb34db61c0d3bde81cee6235f09"
+WINIT_WGPU_LOCK_SHA256 = "1665b8e11882217c42efd50b3559808985eb682767d9e2aeb2c942151b79ed61"
 WGPU_PACKAGE_VERSION = "30.0.1"
 WGPU_PACKAGE_SHA256 = "527ccdf43dd5b2e8676eed9984ce00e2bbb0a1b85b70c1969dcb6cd2eb55ab9e"
 WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
@@ -38,7 +38,7 @@ WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
         "license": "MIT OR Apache-2.0",
         "dependencies": {
             "arrayvec",
-            "bit-set 0.10.0",
+            "bit-set",
             "bitflags 2.13.1",
             "cfg-if",
             "cfg_aliases",
@@ -808,7 +808,7 @@ WINIT_LOCK_EDGE_OVERRIDES: dict[str, set[str]] = {
     },
     "naga": {
         "arrayvec",
-        "bit-set 0.10.0",
+        "bit-set",
         "bitflags 2.13.1",
         "cfg-if",
         "cfg_aliases",
@@ -879,20 +879,6 @@ WINIT_WORKSPACE_EDGE_OVERRIDES: dict[str, set[str]] = {
         "objc2 0.6.4",
         "objc2-foundation 0.3.2",
         "objc2-metal 0.3.2",
-    },
-}
-# Interim wgpu30 dual-major workspace override (commander ruling on t_086e4b1a).
-# The lock holds both wgpu@29.0.4 (window) and wgpu@30.0.1 (render), so the
-# render-wgpu lock edges render with version suffixes while cargo metadata
-# resolves plain names. One constant cannot match both; this lock-only
-# override keeps the gate fail-closed. SUNSET: remove on window wgpu30
-# single-major migration (plain edges restore the one-constant invariant).
-WGPU_DUAL_MAJOR_WORKSPACE_EDGE_OVERRIDES: dict[str, set[str]] = {
-    "lumenplot-render-wgpu": {
-        "lumenplot-render-api",
-        "naga 30.0.1",
-        "sha2",
-        "wgpu 30.0.1",
     },
 }
 # Version-keyed winit-tree pins, validated only while the winit inventory is
@@ -1202,8 +1188,6 @@ def check_lock(root: Path, errors: list[str]) -> None:
         }
         if winit_active and name in WINIT_WORKSPACE_EDGE_OVERRIDES:
             expected = WINIT_WORKSPACE_EDGE_OVERRIDES[name]
-        if "wgpu@29.0.4" in actual and f"wgpu@{WGPU_PACKAGE_VERSION}" in actual and name in WGPU_DUAL_MAJOR_WORKSPACE_EDGE_OVERRIDES:
-            expected = WGPU_DUAL_MAJOR_WORKSPACE_EDGE_OVERRIDES[name]
         if dependencies != expected:
             errors.append(f"Cargo.lock dependency graph drift for workspace package {name}")
 

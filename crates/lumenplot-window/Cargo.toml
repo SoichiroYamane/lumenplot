@@ -22,4 +22,4 @@ winit = { version = "=0.30.13" }
 # M4-PRESENT-2 lane: the surface transport names the portable backend through
 # this renamed edge so the window source never spells the backend crate name.
 # Pinned to the exact reviewed baseline the render-wgpu crate uses.
-surface-wgpu = { package = "wgpu", version = "=29.0.4", default-features = false, features = ["std", "wgsl", "vulkan"] }
+surface-wgpu = { package = "wgpu", version = "=30.0.1", default-features = false, features = ["std", "wgsl", "vulkan"] }

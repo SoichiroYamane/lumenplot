@@ -143,7 +143,7 @@ WINDOW_EXTERNAL_DEPENDENCIES = {
     },
     "surface-wgpu": {
         "package": "wgpu",
-        "version": "=29.0.4",
+        "version": "=30.0.1",
         "default-features": False,
         "features": ["std", "wgsl", "vulkan"],
     },
