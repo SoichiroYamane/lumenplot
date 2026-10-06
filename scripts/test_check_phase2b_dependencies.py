@@ -58,14 +58,14 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             marker = (
                 'name = "wgpu"\n'
-                'version = "29.0.4"\n'
+                'version = "30.0.1"\n'
                 'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
-                'checksum = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"'
+                'checksum = "527ccdf43dd5b2e8676eed9984ce00e2bbb0a1b85b70c1969dcb6cd2eb55ab9e"'
             )
             self.assertIn(marker, source)
             path.write_text(
                 source.replace(
-                    'checksum = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"',
+                    'checksum = "527ccdf43dd5b2e8676eed9984ce00e2bbb0a1b85b70c1969dcb6cd2eb55ab9e"',
                     'checksum = "0000000000000000000000000000000000000000000000000000000000000000"',
                     1,
                 ),
@@ -78,7 +78,7 @@ class Phase2BDependencyMutationTests(unittest.TestCase):
         def mutate(root: Path) -> None:
             path = root / "Cargo.lock"
             source = path.read_text(encoding="utf-8")
-            marker = 'checksum = "b2bf919621e7975acb27d881bae2fb993e0d45c8e0446e85e6272971e00dc8df"'
+            marker = 'checksum = "a616d2fb8c89516ac2723a581f69d6c18576046bed761bd6b305e5618e6ae130"'
             self.assertIn(marker, source)
             path.write_text(
                 source.replace(

@@ -881,6 +881,20 @@ WINIT_WORKSPACE_EDGE_OVERRIDES: dict[str, set[str]] = {
         "objc2-metal 0.3.2",
     },
 }
+# Interim wgpu30 dual-major workspace override (commander ruling on t_086e4b1a).
+# The lock holds both wgpu@29.0.4 (window) and wgpu@30.0.1 (render), so the
+# render-wgpu lock edges render with version suffixes while cargo metadata
+# resolves plain names. One constant cannot match both; this lock-only
+# override keeps the gate fail-closed. SUNSET: remove on window wgpu30
+# single-major migration (plain edges restore the one-constant invariant).
+WGPU_DUAL_MAJOR_WORKSPACE_EDGE_OVERRIDES: dict[str, set[str]] = {
+    "lumenplot-render-wgpu": {
+        "lumenplot-render-api",
+        "naga 30.0.1",
+        "sha2",
+        "wgpu 30.0.1",
+    },
+}
 # Version-keyed winit-tree pins, validated only while the winit inventory is
 # present. EXPECTED_REGISTRY above stays name-keyed (newest lineage only, per
 # the rustc-hash/syn convention), so the winit tree's second lineages live
@@ -1188,6 +1202,8 @@ def check_lock(root: Path, errors: list[str]) -> None:
         }
         if winit_active and name in WINIT_WORKSPACE_EDGE_OVERRIDES:
             expected = WINIT_WORKSPACE_EDGE_OVERRIDES[name]
+        if "wgpu@29.0.4" in actual and f"wgpu@{WGPU_PACKAGE_VERSION}" in actual and name in WGPU_DUAL_MAJOR_WORKSPACE_EDGE_OVERRIDES:
+            expected = WGPU_DUAL_MAJOR_WORKSPACE_EDGE_OVERRIDES[name]
         if dependencies != expected:
             errors.append(f"Cargo.lock dependency graph drift for workspace package {name}")
 
