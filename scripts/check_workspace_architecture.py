@@ -106,14 +106,14 @@ METAL_TARGET_EXTERNAL_DEPENDENCIES = {
 METAL_TARGET_GATE = 'cfg(target_os = "macos")'
 WGPU_EXTERNAL_DEPENDENCIES = {
     "wgpu": {
-        "version": "=29.0.4",
+        "version": "=30.0.1",
         "default-features": False,
         "features": ["std", "wgsl", "vulkan"],
     },
 }
 WGPU_BUILD_EXTERNAL_DEPENDENCIES = {
     "naga": {
-        "version": "=29.0.4",
+        "version": "=30.0.1",
         "default-features": False,
         "features": ["wgsl-in"],
     },

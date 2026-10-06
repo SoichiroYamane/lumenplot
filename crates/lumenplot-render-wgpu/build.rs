@@ -14,9 +14,9 @@ use sha2::{Digest, Sha256};
 const EXPECTED_SCHEMA: &str = "1";
 const EXPECTED_ARTIFACT: &str = "line.wgsl";
 const EXPECTED_SOURCE_REVISION: &str = "lumenplot-line-wgsl-v1";
-const EXPECTED_VALIDATOR: &str = "naga 29.0.4";
+const EXPECTED_VALIDATOR: &str = "naga 30.0.1";
 const EXPECTED_VALIDATION: &str =
-    "naga WGSL parser plus wgpu 29.0.4 checked shader at renderer initialization";
+    "naga WGSL parser plus wgpu 30.0.1 checked shader at renderer initialization";
 const EXPECTED_RESOURCE_LAYOUT: &str =
     "group0/binding0 uniform(viewport_px, half_width_px, color_linear)";
 const EXPECTED_COORDINATE_SPACE: &str = "DisplayLogical top-left";

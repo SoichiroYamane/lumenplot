@@ -1530,7 +1530,7 @@ fn prepare_frame(
 /// family draws last on top. No new WGSL module, pipeline, or
 /// resource-table entry exists for this lane: every draw reuses the
 /// static line artifact with per-draw uniforms, which keeps the
-/// `shaders/line.wgsl` manifest triple-pin, the `naga 29.0.4`
+/// `shaders/line.wgsl` manifest triple-pin, the `naga 30.0.1`
 /// validation, the `DisplayLogical top-left` space, and the no-runtime-
 /// download rule exactly as pinned.
 #[derive(Clone, Debug)]

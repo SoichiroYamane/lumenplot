@@ -3,7 +3,7 @@
 pub(crate) const LINE_SHADER_SOURCE: &str = include_str!("../shaders/line.wgsl");
 const LINE_SHADER_SOURCE_REVISION: &str = "lumenplot-line-wgsl-v1";
 const LINE_SHADER_VALIDATION: &str =
-    "naga WGSL parser plus wgpu 29.0.4 checked shader at renderer initialization";
+    "naga WGSL parser plus wgpu 30.0.1 checked shader at renderer initialization";
 const LINE_SHADER_RESOURCE_LAYOUT: &str =
     "group0/binding0 uniform(viewport_px, half_width_px, color_linear)";
 const LINE_SHADER_SHA256: &str = "e0c3b4d3247963a1b8a96fe91dacb2f1c6f14ee5c31ed1c91fd6bbcc5ec9cbf3";
