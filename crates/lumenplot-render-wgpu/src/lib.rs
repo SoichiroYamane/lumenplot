@@ -296,6 +296,7 @@ impl Renderer {
             power_preference: wgpu::PowerPreference::LowPower,
             force_fallback_adapter: false,
             compatible_surface: None,
+            apply_limit_buckets: false,
         }))
         .map_err(|_| {
             RenderError::new(
@@ -631,7 +632,12 @@ impl Renderer {
         })?;
         rgba8.resize(prepared.tight_bytes, 0);
         {
-            let mapped = readback_slice.get_mapped_range();
+            let mapped = readback_slice.get_mapped_range().map_err(|_| {
+                RenderError::new(
+                    RenderErrorKind::ReadbackFailed,
+                    "portable GPU mapped-range access failed",
+                )
+            })?;
             for row in 0..prepared.height as usize {
                 let source_start = row * prepared.row_pitch as usize;
                 let source_end = source_start + prepared.tight_row_bytes;
@@ -969,7 +975,12 @@ impl Renderer {
         })?;
         rgba8.resize(prepared.tight_bytes, 0);
         {
-            let mapped = readback_slice.get_mapped_range();
+            let mapped = readback_slice.get_mapped_range().map_err(|_| {
+                RenderError::new(
+                    RenderErrorKind::ReadbackFailed,
+                    "portable GPU mapped-range access failed",
+                )
+            })?;
             for row in 0..prepared.height as usize {
                 let source_start = row * prepared.row_pitch as usize;
                 let source_end = source_start + prepared.tight_row_bytes;
@@ -1191,7 +1202,7 @@ fn create_gpu_resources(device: &wgpu::Device) -> Result<GpuResources, RenderErr
             module: &shader,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
-            buffers: &[VERTEX_LAYOUT],
+            buffers: &[Some(VERTEX_LAYOUT)],
         },
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
