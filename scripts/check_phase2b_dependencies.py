@@ -28,32 +28,32 @@ WGPU_LOCK_SHA256 = "58d77cc67bdd45814b214c3bbd5681a94775811226d186899608e44efce1
 # Repinned 2026-09-23 for PR230 M4-PRESENT-2: the lockfile gains only the
 # surface-wgpu rename edge of pinned wgpu 29.0.4 in lumenplot-window
 # (commander ruling ref t_25d6515f; no version or checksum change).
-WINIT_WGPU_LOCK_SHA256 = "6c26143f4f7a82e55f4ed16faf466a99e46d40375293b7bc94672f97bc85f794"
-WGPU_PACKAGE_VERSION = "29.0.4"
-WGPU_PACKAGE_SHA256 = "76e8840e1ba2881d4cbb18d2147627a56af426ff064c0401eb0c8410c6325d07"
+WINIT_WGPU_LOCK_SHA256 = "1665b8e11882217c42efd50b3559808985eb682767d9e2aeb2c942151b79ed61"
+WGPU_PACKAGE_VERSION = "30.0.1"
+WGPU_PACKAGE_SHA256 = "527ccdf43dd5b2e8676eed9984ce00e2bbb0a1b85b70c1969dcb6cd2eb55ab9e"
 WGPU_BUILD_REGISTRY: dict[str, dict[str, Any]] = {
     "naga": {
-        "version": "29.0.4",
-        "checksum": "b2bf919621e7975acb27d881bae2fb993e0d45c8e0446e85e6272971e00dc8df",
+        "version": "30.0.1",
+        "checksum": "a616d2fb8c89516ac2723a581f69d6c18576046bed761bd6b305e5618e6ae130",
         "license": "MIT OR Apache-2.0",
         "dependencies": {
             "arrayvec",
             "bit-set",
-            "bitflags",
+            "bitflags 2.13.1",
             "cfg-if",
             "cfg_aliases",
             "codespan-reporting",
             "half",
-            "hashbrown 0.16.1",
-            "hexf-parse",
+            "hashbrown 0.17.1",
             "indexmap",
             "libm",
             "log",
+            "naga-types",
             "num-traits",
             "once_cell",
             "rustc-hash 1.1.0",
             "spirv",
-            "thiserror",
+            "thiserror 2.0.20",
             "unicode-ident",
         },
     },
@@ -814,11 +814,11 @@ WINIT_LOCK_EDGE_OVERRIDES: dict[str, set[str]] = {
         "cfg_aliases",
         "codespan-reporting",
         "half",
-        "hashbrown 0.16.1",
-        "hexf-parse",
+        "hashbrown 0.17.1",
         "indexmap",
         "libm",
         "log",
+        "naga-types",
         "num-traits",
         "once_cell",
         "rustc-hash 1.1.0",

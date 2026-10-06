@@ -108,6 +108,7 @@ impl SurfaceTransport {
                 power_preference: surface_wgpu::PowerPreference::LowPower,
                 force_fallback_adapter: false,
                 compatible_surface: Some(&surface),
+                apply_limit_buckets: false,
             }),
         )
         .map_err(|_| {
@@ -144,6 +145,7 @@ impl SurfaceTransport {
             desired_maximum_frame_latency: 2,
             alpha_mode: surface_wgpu::CompositeAlphaMode::Auto,
             view_formats: Vec::new(),
+            color_space: surface_wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
         Ok(Self {
@@ -260,7 +262,7 @@ impl SurfaceTransport {
             });
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-        texture.present();
+        self.queue.present(texture);
     }
 }
 

@@ -55,7 +55,7 @@ const GPU_CPU_ORACLE_TOLERANCE_STATUS: &str = "OPEN: numeric GPU-vs-CPU/Agg boun
 /// each layer fails closed on drift.
 const EXPECTED_SOURCE_REVISION: &str = "lumenplot-line-wgsl-v1";
 const EXPECTED_VALIDATION: &str =
-    "naga WGSL parser plus wgpu 29.0.4 checked shader at renderer initialization";
+    "naga WGSL parser plus wgpu 30.0.1 checked shader at renderer initialization";
 const EXPECTED_RESOURCE_LAYOUT: &str =
     "group0/binding0 uniform(viewport_px, half_width_px, color_linear)";
 const EXPECTED_ARTIFACT_SHA256: &str =
@@ -69,7 +69,7 @@ fn manifest_metadata_is_authoritative_and_fail_closed() {
         "artifact = \"line.wgsl\"".to_string(),
         format!("source_revision = \"{EXPECTED_SOURCE_REVISION}\""),
         format!("sha256 = \"{EXPECTED_ARTIFACT_SHA256}\""),
-        "validator = \"naga 29.0.4\"".to_string(),
+        "validator = \"naga 30.0.1\"".to_string(),
         format!("validation = \"{EXPECTED_VALIDATION}\""),
         format!("resource_layout = \"{EXPECTED_RESOURCE_LAYOUT}\""),
         "coordinate_space = \"DisplayLogical top-left\"".to_string(),

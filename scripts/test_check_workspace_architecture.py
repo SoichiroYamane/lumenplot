@@ -2892,7 +2892,7 @@ fn body_macro_is_below_root_scope() {
             path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
-                    'version = "=29.0.4"',
+                    'version = "=30.0.1"',
                     'version = "=29.0.3"',
                     1,
                 ),
@@ -2908,9 +2908,9 @@ fn body_macro_is_below_root_scope() {
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
             source = path.read_text(encoding="utf-8")
-            marker = 'naga = { version = "=29.0.4", default-features = false, features = ["wgsl-in"] }'
+            marker = 'naga = { version = "=30.0.1", default-features = false, features = ["wgsl-in"] }'
             self.assertIn(marker, source)
-            path.write_text(source.replace(marker, marker.replace('=29.0.4', '=29.0.3'), 1), encoding="utf-8")
+            path.write_text(source.replace(marker, marker.replace('=30.0.1', '=29.0.3'), 1), encoding="utf-8")
 
         self.assert_mutation_rejected(
             mutate,
@@ -2921,7 +2921,7 @@ fn body_macro_is_below_root_scope() {
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
             source = path.read_text(encoding="utf-8")
-            marker = 'naga = { version = "=29.0.4", default-features = false, features = ["wgsl-in"] }\n'
+            marker = 'naga = { version = "=30.0.1", default-features = false, features = ["wgsl-in"] }\n'
             self.assertIn(marker, source)
             path.write_text(source.replace(marker, "", 1), encoding="utf-8")
 
@@ -2960,7 +2960,7 @@ fn body_macro_is_below_root_scope() {
         def mutate(root: Path) -> None:
             path = root / "crates/lumenplot-render-wgpu/Cargo.toml"
             source = path.read_text(encoding="utf-8")
-            marker = 'wgpu = { version = "=29.0.4", default-features = false, features = ["std", "wgsl", "vulkan"] }\n'
+            marker = 'wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl", "vulkan"] }\n'
             self.assertIn(marker, source)
             path.write_text(source.replace(marker, "", 1), encoding="utf-8")
 
